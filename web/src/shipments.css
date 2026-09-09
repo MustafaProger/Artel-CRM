@@ -1,0 +1,248 @@
+.shipments-workspace{min-width:0;max-width:100%;font-size:14px;color:#243c34}
+.shipments-workspace .button,.shipment-editor .button,.shipment-delete-dialog .button{font-size:14px;min-height:42px;padding:10px 14px;border-radius:8px}
+.shipment-overview{display:flex;align-items:center;gap:30px;margin-bottom:24px;flex-wrap:wrap}
+.shipment-overview>div{display:flex;flex-direction:column;gap:7px;min-width:0}
+.shipment-overview>div>span{color:#586f64;font-size:14px}
+.shipment-overview>div>strong{font-size:23px;letter-spacing:-.5px;font-weight:650;font-variant-numeric:tabular-nums}
+.shipment-overview small{font-weight:450;font-size:15px;color:#5c7066}
+.shipment-overview .shipment-count{flex-direction:row;align-items:center;gap:12px;margin-right:auto}
+.shipment-count>svg{color:#247357;flex-shrink:0}
+.shipment-count strong{font-size:29px;color:#173f30;margin-right:5px}
+.shipment-settlement-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.shipment-settlement-tabs button{padding:12px 18px;font-size:14px;font-weight:600;border-radius:9px;border:1px solid #cbd9d0;background:#fff;color:#4d6659;min-height:44px}
+.shipment-settlement-tabs button:hover{border-color:#568f72;background:#eef7f0}
+.shipment-settlement-tabs button.selected{background:#176849;color:#fff;border-color:#176849;box-shadow:0 3px 7px #17684918}
+.shipment-panel{border-color:#cfdbd2;border-radius:12px}
+.shipment-toolbar{display:flex;align-items:center;gap:12px;padding:20px 20px 15px;flex-wrap:wrap}
+.shipment-search{display:flex;align-items:center;gap:10px;border:1px solid #c8d5cc;border-radius:8px;min-height:44px;padding:0 12px;flex:1;min-width:230px;color:#60796c}
+.shipment-search input{border:0;outline:0;font-size:14px;width:100%;background:transparent;min-height:42px;color:#283f33}
+.shipment-search input::placeholder{color:#708177}
+.shipment-manager-filter{position:relative;display:flex;align-items:center;min-width:170px;max-width:240px;border:1px solid #c8d5cc;border-radius:8px;background:#fff}
+.shipment-manager-filter select{width:100%;padding:11px 35px 11px 12px;border:0;appearance:none;background:transparent;font-size:14px;color:#354f40;min-width:0}
+.shipment-manager-filter>svg{position:absolute;right:11px;pointer-events:none}
+.shipment-template-row{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:0 20px 17px;flex-wrap:wrap}
+.shipment-template-tabs{display:flex;gap:4px;background:#eef3f0;padding:4px;border-radius:9px;max-width:100%}
+.shipment-template-tabs button{background:transparent;border:0;display:flex;align-items:center;gap:8px;border-radius:7px;min-height:39px;padding:8px 11px;font-size:14px;font-weight:550;color:#607469;white-space:nowrap}
+.shipment-template-tabs button.selected{background:#fff;color:#204e39;box-shadow:0 1px 5px #3147341f}
+.shipment-template-tabs small{padding:2px 5px;background:#d9e8de;border-radius:4px;font-size:12px;color:#38644b;font-variant-numeric:tabular-nums}
+.shipment-template-row>span{font-size:13px;color:#52695d;line-height:1.5}
+.shipment-grid-scroll{width:100%;max-width:100%;height:min(70vh,720px);min-height:350px;overflow:auto;position:relative;overscroll-behavior:contain;border-block:1px solid #bfcfc4;scrollbar-color:#7b9b88 #edf2ee;scrollbar-width:auto}
+.shipment-grid-scroll:focus-visible{outline-offset:-3px}
+.shipment-grid{table-layout:fixed;border-collapse:separate;border-spacing:0;text-align:left;font-size:14px;white-space:nowrap;min-width:100%;color:#294634}
+.shipment-grid th,.shipment-grid td{box-sizing:border-box;border:0;border-right:1px solid #e0e8e1;padding:12px 14px;color:#304b3b}
+.shipment-grid th:first-child,.shipment-grid td:first-child{padding-left:14px}
+.shipment-grid th:last-child,.shipment-grid td:last-child{padding-right:14px}
+.shipment-grid .shipment-group-headings th{position:sticky;top:0;height:36px;padding:8px 14px;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;z-index:6;white-space:nowrap;border-right:1px solid #ffffff40}
+.shipment-grid .shipment-column-headings th{position:sticky;top:36px;height:64px;max-height:64px;white-space:normal;line-height:1.3;font-size:14px;font-weight:650;z-index:6;border-bottom:1px solid #bdcec3}
+.shipment-grid .group-operation{background:#dce9f8;color:#174574}
+.shipment-grid .group-sale{background:#d4eedf;color:#165632}
+.shipment-grid .group-purchase{background:#e6e1f7;color:#50347e}
+.shipment-grid .group-delivery{background:#f8e9c9;color:#785115}
+.shipment-grid .group-settlement{background:#cfe9e1;color:#155348}
+.shipment-grid .shipment-group-headings .group-operation{background:#34659b;color:#fff}
+.shipment-grid .shipment-group-headings .group-sale{background:#287e51;color:#fff}
+.shipment-grid .shipment-group-headings .group-purchase{background:#735397;color:#fff}
+.shipment-grid .shipment-group-headings .group-delivery{background:#a27429;color:#fff}
+.shipment-grid .shipment-group-headings .group-settlement{background:#287568;color:#fff}
+.shipment-grid tbody td{height:60px;max-height:60px;border-bottom:1px solid #dfe8e1;background:#fff;overflow:hidden;text-overflow:ellipsis;line-height:1.45;font-size:14px}
+.shipment-grid tbody tr:nth-child(even) td{background:#f7faf8}
+.shipment-grid tbody tr:hover td{background:#edf5ef}
+.shipment-grid .shipment-sticky{position:sticky;z-index:3}
+.shipment-grid .shipment-column-headings .shipment-sticky{z-index:8}
+.shipment-grid [data-field="customer_name"],.shipment-grid td.shipment-sticky:nth-child(4){border-right-color:#bdcdc2}
+.shipment-grid td.shipment-numeric{text-align:right;font-variant-numeric:tabular-nums}
+.shipment-grid td.shipment-emphasis{font-weight:650;color:#21523b}
+.shipment-cell-value{display:block;overflow:hidden;text-overflow:ellipsis}
+.shipment-company-link{border:0;background:transparent;color:#195640;font-size:14px;line-height:1.4;font-weight:600;text-align:left;padding:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.shipment-company-link:hover{text-decoration:underline;text-underline-offset:3px}
+.shipment-grid .shipment-actions-heading{right:0;z-index:10!important;top:0!important;background:#e7eee9;color:#355443!important;font-size:12px!important;letter-spacing:0!important;border-left:1px solid #c8d8ce}
+.shipment-grid .shipment-row-actions{position:sticky;right:0;z-index:4;border-left:1px solid #d4e0d7;text-align:center;white-space:nowrap;overflow:visible}
+.shipment-grid .shipment-row-actions .icon-button{width:34px;height:34px;padding:7px;color:#327455}
+.shipment-grid .shipment-row-actions .shipment-delete-button{color:#a34339}
+.shipment-grid .shipment-row-actions .shipment-delete-button:hover{background:#fce5df}
+.shipment-grid .shipment-spacer td{padding:0;border:0;background:transparent}
+.shipment-grid .shipment-spacer:hover td{background:transparent}
+.shipment-table-state{position:sticky;left:0;width:100%;min-height:235px;display:flex;align-items:center;justify-content:center;gap:14px;flex-direction:column;padding:28px;text-align:center;font-size:14px;color:#597364}
+.shipment-table-state strong{font-size:18px;color:#304e3c}
+.shipment-table-state p{max-width:440px;line-height:1.6}
+.shipment-load-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;min-height:68px;padding:13px 20px;color:#4c6a57;font-size:14px}
+.shipment-load-footer>span{display:flex;align-items:center;gap:7px}
+.shipment-source-note{font-size:14px;color:#587161;line-height:1.6;margin-top:15px}
+.shipment-error{padding:14px 16px;border:1px solid #e2b9ae;background:#fff3ef;border-radius:8px;font-size:14px;color:#973829;line-height:1.6;margin:12px 20px}
+.shipment-error-text{font-size:13px;color:#a33424;line-height:1.5;margin-top:7px}
+.shipment-success-text{font-size:13px;color:#216a43;line-height:1.5;margin-top:7px}
+.shipment-editor,.shipment-delete-dialog{border:1px solid #bfcfc4;border-radius:16px;box-shadow:0 24px 100px #19372635;color:#274a37;background:#fff;padding:0;width:min(980px,calc(100vw - 40px));max-height:calc(100dvh - 48px)}
+.shipment-editor::backdrop,.shipment-delete-dialog::backdrop{background:#172f286e;backdrop-filter:blur(4px)}
+.shipment-editor>form{display:flex;flex-direction:column;max-height:calc(100dvh - 52px)}
+.shipment-editor-heading{padding:24px 28px 20px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-shrink:0;border-bottom:1px solid #dbe6de}
+.shipment-editor-heading>div>span{font-size:12px;font-weight:650;letter-spacing:1px;color:#5c7765}
+.shipment-editor-heading h2{font-size:27px;letter-spacing:-.6px;font-weight:650;margin-top:8px}
+.shipment-editor-heading .icon-button{width:36px;height:36px;color:#4c6d58}
+.shipment-editor-body{overflow-y:auto;overscroll-behavior:contain;padding:20px 28px 28px;min-height:0}
+.shipment-editor-note{font-size:14px;color:#5d7565;line-height:1.7;margin-bottom:24px}
+.shipment-editor-note.shipment-manual-note{margin:18px 0 0;font-size:13px}
+.shipment-fieldset{margin:0 0 23px;padding:18px;border:1px solid #cbdad1;border-radius:10px;min-width:0}
+.shipment-fieldset legend{font-size:16px;font-weight:650;padding:0 9px}
+.shipment-fieldset.group-operation{background:#f5f9ff;border-color:#c6d7eb}.shipment-fieldset.group-operation legend{color:#235584}
+.shipment-fieldset.group-sale{background:#f3faf5;border-color:#c5dfcc}.shipment-fieldset.group-sale legend{color:#276143}
+.shipment-fieldset.group-purchase{background:#f9f7fe;border-color:#d7cdec}.shipment-fieldset.group-purchase legend{color:#67448f}
+.shipment-fieldset.group-delivery{background:#fffbf0;border-color:#e7d5af}.shipment-fieldset.group-delivery legend{color:#846127}
+.shipment-fieldset.group-settlement{background:#f1faf6;border-color:#badccf}.shipment-fieldset.group-settlement legend{color:#216454}
+.shipment-field-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:19px 16px}
+.shipment-field{display:flex;flex-direction:column;gap:8px;min-width:0}
+.shipment-field>span,.company-picker>label{font-size:14px;font-weight:550;color:#3e5c49;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.shipment-field>span>small{font-size:12px;color:#657e6e;font-weight:400}
+.shipment-field input,.shipment-field select,.company-combobox,.company-add input{font-size:15px;min-height:44px;border:1px solid #b7ccbd;background:#fff;border-radius:7px;color:#2b4836;padding:10px 11px;min-width:0;width:100%}
+.shipment-field input::placeholder,.company-combobox input::placeholder,.company-add input::placeholder{color:#789182;font-size:14px}
+.shipment-field>small{font-size:12px;color:#667e6e;line-height:1.5}
+.company-picker{grid-column:span 2;position:relative;min-width:0}
+.company-picker>label{margin-bottom:8px}
+.company-combobox{display:flex;align-items:center;gap:8px;padding:0 10px;color:#66836f}
+.company-combobox input{min-width:0;width:100%;font-size:15px;min-height:42px;border:0;outline:0;background:transparent;color:#2b4836}
+.company-combobox:focus-within{outline:3px solid #90b8a0;outline-offset:1px}
+.company-combobox input:focus-visible{outline:0}
+.company-options{position:absolute;inset:75px 0 auto;max-height:250px;overflow:auto;background:#fff;border:1px solid #b8cbbd;box-shadow:0 8px 24px #1c48282b;border-radius:9px;z-index:12;padding:5px}
+.company-options button{width:100%;text-align:left;display:flex;align-items:center;gap:10px;padding:10px;border:0;background:transparent;font-size:14px;border-radius:5px;line-height:1.4;color:#315a3f}
+.company-options button>span{min-width:0;overflow-wrap:anywhere;flex:1}
+.company-options button>svg{flex-shrink:0}
+.company-options button.active,.company-options button:hover{background:#e7f3eb}
+.company-options small{font-size:12px;color:#637e6b;display:block;margin-top:4px}
+.company-options p{padding:10px;font-size:13px;color:#627c6b;line-height:1.5}
+.company-add{display:flex;gap:8px;margin-top:8px}
+.company-add input{font-size:14px;min-height:40px;padding:8px 10px;flex:1;width:0}
+.shipment-editor .company-add .button{font-size:13px;min-height:40px;padding:8px 10px}
+.shipment-original-fields{border-top:1px solid #d5e2d9;padding-top:16px;font-size:14px;color:#5e7867}
+.shipment-original-fields summary{cursor:pointer;padding:5px 0}
+.shipment-original-fields .shipment-field{margin-top:16px;max-width:300px}
+.shipment-editor-footer{padding:17px 28px;border-top:1px solid #d1dfd5;display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-shrink:0;background:#f8fbf8;border-radius:0 0 16px 16px}
+.shipment-save-hint{margin-right:auto;display:flex;align-items:center;gap:6px;font-size:13px;color:#52755c}
+.shipment-discard{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px;width:100%}
+.shipment-discard>span{margin-right:auto;color:#8c4b2c}
+.shipment-editor .button.danger,.shipment-delete-dialog .button.danger{background:#a3372b;color:#fff;border-color:#a3372b}
+.shipment-editor .button.danger:hover,.shipment-delete-dialog .button.danger:hover{background:#84271f}
+.shipment-delete-dialog{max-width:510px;padding:28px}
+.shipment-delete-dialog h2{font-size:25px;font-weight:650;letter-spacing:-.5px}
+.shipment-delete-dialog p{font-size:15px;line-height:1.65;color:#5b7664;margin-top:16px;overflow-wrap:anywhere}
+.shipment-delete-details{padding:17px;background:#f2f7f3;border-radius:8px;display:flex;flex-direction:column;gap:8px;font-size:15px;margin-top:18px}
+.shipment-delete-details strong{font-variant-numeric:tabular-nums}
+.shipment-delete-dialog footer{display:flex;gap:10px;justify-content:flex-end;margin-top:25px}
+.shipment-delete-dialog .shipment-error{margin-inline:0}
+@media(max-width:1150px){.shipment-overview{gap:20px}.shipment-overview .shipment-count{margin-right:0}.shipment-overview>.button{margin-left:auto}.shipment-overview>div>strong{font-size:21px}.shipment-template-row>span{font-size:12px}}
+@media(max-width:760px){.shipment-overview{gap:19px;display:grid;grid-template-columns:1fr 1fr}.shipment-overview .shipment-count{grid-column:1/-1}.shipment-overview>.button{grid-column:1/-1;width:100%;margin:0}.shipment-count strong{font-size:28px}.shipment-overview>div>strong{font-size:22px}.shipment-overview>div>span{font-size:13px}.shipment-settlement-tabs{gap:7px}.shipment-settlement-tabs button{padding:10px 13px;font-size:14px}.shipment-toolbar{padding:16px 13px 13px;gap:10px}.shipment-search{flex-basis:100%;min-width:0}.shipment-manager-filter{flex:1;min-width:0;max-width:none}.shipment-toolbar>.button{font-size:13px}.shipment-template-row{padding:0 13px 14px;gap:10px}.shipment-template-tabs{width:100%;gap:2px;overflow-x:auto}.shipment-template-tabs button{flex:1;justify-content:center;font-size:13px;padding:8px 7px;gap:5px}.shipment-template-tabs small{font-size:11px}.shipment-template-row>span{font-size:12px}.shipment-grid-scroll{height:65vh;min-height:340px}.shipment-grid .shipment-row-actions{position:static}.shipment-grid .shipment-actions-heading{position:sticky;right:auto}.shipment-load-footer{padding:13px;font-size:13px;align-items:flex-start}.shipment-load-footer .button{font-size:13px}.shipment-editor{width:calc(100vw - 20px);max-height:calc(100dvh - 24px)}.shipment-editor>form{max-height:calc(100dvh - 28px)}.shipment-editor-heading{padding:20px}.shipment-editor-heading h2{font-size:23px}.shipment-editor-heading>div>span{font-size:11px}.shipment-editor-body{padding:18px 18px 24px}.shipment-field-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.shipment-fieldset{padding:14px}.shipment-editor-footer{padding:13px 18px;flex-wrap:wrap}.shipment-save-hint{flex-basis:100%;margin-bottom:4px}.shipment-delete-dialog{width:calc(100vw - 28px);padding:23px}.shipment-delete-dialog footer{flex-wrap:wrap}.shipment-delete-dialog h2{font-size:23px}}
+@media(max-width:420px){.shipment-template-tabs button{font-size:12px;padding-inline:5px;gap:4px}.shipment-template-tabs small{padding:2px 4px}.shipment-overview>div>strong{font-size:23px}.shipment-overview{grid-template-columns:1fr;column-gap:12px}.shipment-field-grid{grid-template-columns:1fr}.company-picker{grid-column:span 1}.shipment-fieldset{padding:13px}.shipment-editor-body{padding-inline:13px}.shipment-editor-footer{padding-inline:13px}.shipment-editor-footer>.button{flex:1;white-space:normal}.shipment-editor .button{padding-inline:10px}.shipment-editor-heading{padding:18px}.shipment-discard .button{width:100%}.shipment-save-hint{font-size:12px}.shipment-source-note{font-size:13px}.shipment-settlement-tabs button:first-child{flex-basis:100%}.shipment-delete-dialog footer>.button{flex:1;font-size:13px}}
+@media(max-width:1100px){.shipment-grid tbody .shipment-sticky{position:static}.shipment-grid .shipment-column-headings .shipment-sticky{left:auto!important;z-index:6}.shipment-grid .shipment-row-actions{position:static}.shipment-grid .shipment-actions-heading{right:auto}}
+
+/* Shipment workspace occupies the viewport; navigation is an on-demand drawer. */
+.shipments-focus .topbar,.shipments-focus .page-heading,.shipments-focus .page-footer{display:none}
+.shipments-focus .workspace-main{margin:0;width:100%;min-width:0}
+.shipments-focus #main-content{margin:0;padding:0;max-width:none;height:100dvh;min-height:0;overflow:hidden}
+.shipments-focus .page-content{height:100%;animation:none}
+.shipments-focus .sidebar{transform:translateX(-100%);width:250px;z-index:201;transition:transform .15s}
+.shipments-focus .sidebar.is-open{transform:translateX(0);box-shadow:10px 0 40px #14362730}
+.shipments-focus .sidebar-scrim{display:block;position:fixed;inset:0;z-index:200;border:0;background:#20392c66}
+.shipments-workspace{height:100%;display:flex;flex-direction:column;background:#fff}
+.shipment-immersive{position:fixed;inset:0;z-index:100;height:100dvh}
+.shipment-panel{flex:1;display:flex;flex-direction:column;min-height:0;border:0;border-radius:0;overflow:hidden}
+.shipment-toolbar{padding:9px 12px;gap:10px;flex-wrap:nowrap;flex-shrink:0;border-bottom:1px solid #dce5df}
+.shipment-toolbar h1{font-size:20px;letter-spacing:-.4px;line-height:1;margin:0 8px 0 0;flex-shrink:0}
+.shipment-toolbar .shipment-search{max-width:540px;min-width:100px;min-height:36px;background:#f8faf9;margin-right:auto}
+.shipment-toolbar .shipment-search input{min-height:34px;font-size:13px}
+.shipments-workspace .button{min-height:34px;font-size:13px;padding:6px 10px;text-decoration:none}
+.shipment-template-row{padding:6px 12px;gap:8px;flex-wrap:nowrap;flex-shrink:0;background:#f5f8f6}
+.shipment-view-controls,.shipment-view-actions{display:flex;gap:7px;align-items:center;min-width:0}
+.shipment-view-controls{flex-wrap:wrap}
+.shipment-view-controls select{min-height:30px;border:1px solid #cbd9d1;border-radius:5px;background:#fff;color:#365545;padding:4px 7px;font-size:12px;max-width:190px}
+.shipment-grid-scroll{height:auto;min-height:0;flex:1;width:100%;border-top:1px solid #aebfb4;scrollbar-gutter:stable}
+.shipment-grid{font-size:13px}
+.shipment-grid th,.shipment-grid td,.shipment-grid th:first-child,.shipment-grid td:first-child,.shipment-grid th:last-child,.shipment-grid td:last-child{padding:4px 9px}
+.shipment-grid .shipment-group-headings th{height:28px;padding:5px 10px;font-size:10px;letter-spacing:.7px}
+.shipment-grid .shipment-column-headings th{top:28px;height:48px;max-height:48px;padding:3px 5px 3px 9px;font-size:12px}
+.shipment-grid tbody td{height:38px;max-height:38px;font-size:13px;padding-top:2px;padding-bottom:2px;line-height:1.3}
+.shipment-grid tbody td:focus{outline:2px solid #187248;outline-offset:-2px;background:#e1f3e8;position:relative;z-index:5}
+.shipment-grid tbody td.shipment-sticky:focus{position:sticky}
+.shipment-company-link{font-size:13px;line-height:1.3}
+.shipment-grid .shipment-row-actions .icon-button{min-height:28px;height:28px;min-width:30px;width:30px;padding:5px}
+.column-controls{display:flex;align-items:center;gap:3px;height:100%;min-width:0}
+.column-sort{flex:1;display:flex;align-items:center;gap:4px;min-width:0;text-align:left;white-space:normal;line-height:1.25;font-size:12px;font-weight:650;color:inherit;border:0;background:none;padding:3px 0}
+.column-sort svg{flex-shrink:0}
+.column-filter{display:grid;place-items:center;flex-shrink:0;border:1px solid transparent;background:transparent;color:inherit;width:25px;height:27px;border-radius:4px;padding:4px}
+.column-filter:hover,.column-filter.is-filtered{background:#fff;border-color:#7e9e8a;color:#125c37}
+.shipment-load-footer{min-height:38px;padding:4px 12px;font-size:12px;gap:8px;background:#f5f8f6;flex-shrink:0}
+.shipment-footer-totals{font-variant-numeric:tabular-nums;font-weight:600}
+.shipment-filter-dialog{padding:18px;border:1px solid #c0d3c6;border-radius:12px;width:min(380px,calc(100vw - 24px));max-height:calc(100dvh - 32px);overflow:auto;color:#284b37;box-shadow:0 16px 60px #112a2633}
+.shipment-filter-dialog::backdrop{background:#12302333}
+.shipment-filter-dialog header{display:flex;align-items:center;gap:12px;justify-content:space-between;margin-bottom:15px}
+.shipment-filter-dialog h2{font-size:17px;line-height:1.35}
+.shipment-filter-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.filter-search{width:100%;border:1px solid #bacfc1;border-radius:6px;padding:9px;margin-top:12px;font-size:14px}
+.filter-selection-actions{display:flex;gap:12px;justify-content:space-between;margin:12px 0}
+.filter-values{height:240px;overflow:auto;border:1px solid #dbe5dd;border-radius:6px;padding:4px}
+.filter-values label{display:flex;align-items:center;gap:9px;padding:7px;font-size:13px;overflow-wrap:anywhere}
+.filter-values label:hover{background:#edf6ef}
+.filter-values input{flex-shrink:0;width:16px;height:16px;accent-color:#1d714b}
+.filter-values p{font-size:12px;padding:8px;color:#567260}
+.filter-range{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.shipment-calculation-strip{display:flex;flex-wrap:wrap;gap:12px 28px;padding:14px 0 0}
+.shipment-calculated{min-width:120px;display:flex;flex-direction:column;gap:6px;font-size:12px;color:#5b7463}
+.shipment-calculated output{font-size:16px;font-weight:600;color:#28513a;font-variant-numeric:tabular-nums}
+.shipment-calculation-warning{font-size:13px;color:#835a24;margin-top:10px}
+.directory-select .company-options{z-index:20}
+.directory-select{grid-column:span 1}
+.directory-select .company-options p{font-size:13px;padding:10px;line-height:1.5}
+.directory-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+.directory-create,.directory-list{padding:22px;margin-bottom:20px}
+.directory-create h2{font-size:18px;margin-bottom:18px}
+.directory-create>.button{margin-top:18px}
+.directory-rows{max-height:550px;overflow:auto;margin-top:14px}
+.directory-rows>div{display:flex;flex-direction:column;gap:5px;padding:12px 0;border-bottom:1px solid #e0e8e2;font-size:14px;overflow-wrap:anywhere}
+.directory-rows>div span{font-size:12px;color:#587462;line-height:1.6}
+@media(min-width:801px){.shipment-grid tbody .shipment-sticky{position:sticky}.shipment-grid .shipment-column-headings .shipment-sticky[data-field="date"]{left:0!important;z-index:8}.shipment-grid .shipment-column-headings .shipment-sticky[data-field="customer_name"]{left:132px!important;z-index:8}}
+@media(max-width:800px){.shipment-toolbar{flex-wrap:wrap;padding:7px 9px;gap:7px}.shipment-toolbar h1{font-size:18px;margin-right:auto}.shipment-toolbar .shipment-search{order:5;max-width:none;flex-basis:100%}.shipment-toolbar>.button{font-size:12px;gap:4px}.shipment-template-row{padding:5px 8px;align-items:flex-start}.shipment-view-controls{gap:5px}.shipment-view-controls select{max-width:145px;font-size:11px}.shipment-view-actions{flex-direction:column;align-items:flex-end;flex-shrink:0}.shipment-grid tbody .shipment-sticky{position:static}.shipment-grid .shipment-column-headings .shipment-sticky{left:auto!important;z-index:6}.shipment-footer-totals{display:none!important}.shipment-load-footer{font-size:11px}.directory-create,.directory-list{padding:16px}.directory-tabs{gap:6px}.directory-tabs .button{font-size:12px;padding:7px 9px}.directory-create .shipment-field-grid{grid-template-columns:1fr}}
+@media(max-width:420px){.shipment-toolbar h1{font-size:17px}.shipment-toolbar a.button{font-size:0;gap:0}.shipment-toolbar a.button svg{width:18px}.shipment-toolbar>.button.primary{font-size:11px;padding:6px}.shipment-template-row{gap:4px}.shipment-view-controls select{max-width:123px}.shipment-view-actions .button{font-size:11px}.shipment-field-grid{grid-template-columns:1fr}}
+@media(max-width:800px){.shipment-template-row{position:relative;padding-right:58px;min-height:75px}.shipment-view-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.shipment-view-controls select{width:100%;max-width:none;min-width:0}.shipment-view-actions{position:absolute;right:7px;top:5px;max-width:48px}.shipment-view-actions .button{max-width:48px;font-size:10px;white-space:normal;line-height:1.2;gap:3px;padding:5px}.shipment-view-actions .button svg{width:12px;flex-shrink:0}}
+@media(max-width:800px){.shipment-template-row:has(.shipment-view-actions>button:nth-child(2)){min-height:110px}}
+
+/* A trip keeps its truck totals above the separate customer allocations. */
+.shipment-trip-editor{width:min(1040px,calc(100vw - 40px))}
+.shipment-trip-editor .shipment-editor-body{scroll-padding-block:20px}
+.shipment-trip-editor .shipment-error{margin:0 0 20px;outline-offset:3px}
+.shipment-trip-intro{margin-bottom:24px;max-width:720px}
+.shipment-trip-loading{min-height:260px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center;color:#597364;font-size:14px;line-height:1.6}
+.shipment-trip-customers{margin:0 0 30px}
+.shipment-trip-section-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 18px}
+.shipment-trip-section-heading h3{font-size:19px;font-weight:650;letter-spacing:-.25px;color:#224e37}
+.shipment-trip-section-heading p{font-size:13px;line-height:1.6;color:#61786a;margin-top:6px}
+.shipment-trip-count{min-width:33px;height:33px;display:grid;place-items:center;background:#e8f2ec;border:1px solid #cce0d2;border-radius:50%;color:#286146;font-size:14px;font-weight:650;flex-shrink:0}
+.shipment-trip-customer{margin-bottom:16px}
+.shipment-trip-customer-actions{display:flex;justify-content:flex-end;margin:-3px 0 13px}
+.shipment-trip-editor .shipment-trip-remove{border:0;box-shadow:none;color:#9a4a35;background:transparent;min-height:32px;padding:5px 7px;font-size:12px;gap:5px}
+.shipment-trip-editor .shipment-trip-remove:hover{background:#f9e9e2;color:#843822}
+.shipment-trip-client-totals{margin-top:19px;padding-top:16px;border-top:1px solid #d1e5d8;align-items:center}
+.shipment-trip-client-totals .shipment-calculated:first-child output{font-size:21px;color:#176342}
+.shipment-trip-auto{margin-left:auto;font-size:12px;color:#658371;line-height:1.4}
+.shipment-trip-editor .shipment-trip-add{width:100%;min-height:45px;justify-content:center;border:1px dashed #93b8a1;background:#fff;color:#246341}
+.shipment-trip-editor .shipment-trip-add:hover{border-color:#377a50;background:#f0f8f2}
+.shipment-trip-distribution{padding:0 2px}
+.shipment-trip-distribution .shipment-calculation-strip{padding-top:18px;gap:16px 30px}
+.shipment-trip-distribution p{font-size:12px;line-height:1.6;color:#667e6c;margin-top:12px}
+.shipment-trip-field-note{font-size:12px;line-height:1.6;color:#7c734e;margin-top:14px}
+.shipment-trip-fleet{display:flex;gap:12px;align-items:flex-start;margin-top:20px;padding-top:16px;border-top:1px solid #e8dfc9;color:#866432}
+.shipment-trip-fleet>svg{flex-shrink:0;margin-top:2px}
+.shipment-trip-fleet>div{display:flex;flex-wrap:wrap;gap:15px 28px;min-width:0}
+.shipment-trip-fleet p{display:flex;flex-direction:column;gap:6px;font-size:14px;line-height:1.5;min-width:0}
+.shipment-trip-fleet span{font-size:12px;color:#837447}
+.shipment-trip-fleet strong,.shipment-trip-fleet a{font-size:14px;font-weight:550;font-variant-numeric:tabular-nums;color:#6e5427;overflow-wrap:anywhere}
+.shipment-trip-fleet a{text-decoration:none}.shipment-trip-fleet a:hover{text-decoration:underline}
+.shipment-trip-extras{border:1px solid #d3e0d7;border-radius:10px;background:#fafcfb}
+.shipment-trip-extras>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:15px;cursor:pointer;padding:18px;color:#31563f;min-height:66px}
+.shipment-trip-extras>summary::-webkit-details-marker{display:none}
+.shipment-trip-extras>summary>div{display:flex;flex-direction:column;gap:5px;min-width:0}
+.shipment-trip-extras>summary span{font-size:15px;font-weight:600}
+.shipment-trip-extras>summary small{font-size:12px;font-weight:400;color:#6d8273}
+.shipment-trip-extras>summary>svg{flex-shrink:0;transition:transform .15s}
+.shipment-trip-extras[open]>summary>svg{transform:rotate(180deg)}
+.shipment-trip-extras-body{display:grid;grid-template-columns:minmax(0,280px) 1fr;align-items:center;gap:22px;padding:0 18px 20px}
+.shipment-trip-extras-body p{font-size:13px;line-height:1.7;color:#64796b}
+.shipment-trip-editor input:disabled,.shipment-trip-editor .company-combobox:has(input:disabled){background:#edf2ee;opacity:.7}
+@media(max-width:760px){.shipment-trip-editor{width:calc(100vw - 20px)}.shipment-trip-editor .shipment-field-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.shipment-trip-editor .shipment-fieldset{padding:16px 14px}.shipment-trip-section-heading h3{font-size:18px}.shipment-trip-intro{font-size:13px}.shipment-trip-auto{margin-left:0}.shipment-trip-extras-body{grid-template-columns:1fr;gap:12px}.shipment-trip-extras-body .shipment-field{max-width:320px}}
+@media(max-width:540px){.shipment-trip-editor .shipment-field-grid{grid-template-columns:1fr}.shipment-trip-editor .shipment-editor-body{padding-inline:14px}.shipment-trip-editor .shipment-fieldset{padding-inline:13px}.shipment-trip-client-totals{gap:16px 22px}.shipment-trip-auto{flex-basis:100%}.shipment-trip-editor .shipment-calculated{min-width:100px}.shipment-trip-extras>summary{padding:16px 13px}.shipment-trip-extras-body{padding-inline:13px}.shipment-trip-editor .shipment-field>span,.shipment-trip-editor .company-picker>label{font-size:13px}.shipment-trip-section-heading p{font-size:12px}.shipment-trip-editor .shipment-editor-footer{padding:12px 14px}.shipment-trip-editor .shipment-editor-footer>.button{flex:1;min-width:0;font-size:12px;white-space:normal;justify-content:center;line-height:1.35}.shipment-trip-editor .shipment-editor-footer>.button.primary{flex:1.6}.shipment-trip-fleet>div{gap:14px}}

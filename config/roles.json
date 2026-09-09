@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "status": "specification_only",
+  "authorization_implemented": false,
+  "description": "Спецификация будущих ролей. Файл не защищает локальные данные и не создаёт учётные записи.",
+  "default_decision": "deny",
+  "active_roles_per_user": 1,
+  "accounts": [],
+  "role_assignments": [],
+  "ownership_assignments": [],
+  "additional_record_grants": [],
+  "ownership_policy": {
+    "company_owner_field": "owner_user_id",
+    "shipment_owner_field": "owner_user_id",
+    "shipment_customer_field": "customer_id",
+    "shipment_related_party_fields": ["supplier_id", "carrier_id"],
+    "imported_owner_default": null,
+    "infer_owners_from_source": false,
+    "unassigned_access_roles": ["director", "admin"],
+    "manager_company_scope": "company.owner_user_id == authenticated_user.id",
+    "manager_shipment_scope": "shipment.owner_user_id == authenticated_user.id AND customer.id == shipment.customer_id AND customer.owner_user_id == authenticated_user.id",
+    "company_reassignment_cascades_to_shipments": false,
+    "reassignment_roles": ["director", "admin"],
+    "manager_create_owner_source": "authenticated_user.id",
+    "manager_create_shipment_requires_owned_customer": true,
+    "manager_owner_override": "reject",
+    "manager_role_override": "reject"
+  },
+  "scope_definitions": {
+    "all": "Все записи, включая записи без владельца и без подтверждённой связи с компанией.",
+    "own_company": "company.owner_user_id == authenticated_user.id",
+    "own_shipment_in_own_company": "shipment.owner_user_id == authenticated_user.id AND customer.id == shipment.customer_id AND customer.owner_user_id == authenticated_user.id",
+    "explicitly_granted_company": "Компания явно разрешена директором/администратором, company.owner_user_id != null.",
+    "shipments_of_explicitly_granted_company": "Покупатель по shipment.customer_id явно разрешён директором/администратором, customer.owner_user_id != null AND shipment.owner_user_id != null.",
+    "explicitly_granted_shipment": "Отгрузка явно разрешена директором/администратором, shipment.owner_user_id != null, покупатель по shipment.customer_id существует и customer.owner_user_id != null.",
+    "company_of_explicitly_granted_shipment": "Только покупатель по shipment.customer_id отгрузки из области explicitly_granted_shipment."
+  },
+  "roles": [
+    {
+      "id": "director",
+      "name": "Директор",
+      "requirement_status": "requested",
+      "enabled_for_assignment": true,
+      "permissions": [{"resource": "*", "actions": ["*"], "scope": "all"}]
+    },
+    {
+      "id": "admin",
+      "name": "Администратор",
+      "requirement_status": "requested_with_assumption",
+      "assumption": "Полный доступ к бизнес-данным предложен для импорта, проверки и распределения записей.",
+      "enabled_for_assignment": true,
+      "permissions": [{"resource": "*", "actions": ["*"], "scope": "all"}]
+    },
+    {
+      "id": "manager",
+      "name": "Менеджер",
+      "requirement_status": "requested",
+      "enabled_for_assignment": true,
+      "permissions": [
+        {"resource": "companies", "actions": ["read", "create", "update", "export"], "scope": "own_company"},
+        {"resource": "shipments", "actions": ["read", "create", "update", "export"], "scope": "own_shipment_in_own_company"},
+        {"resource": "company_reports", "actions": ["read", "export"], "scope": "own_company"},
+        {"resource": "shipment_reports", "actions": ["read", "export"], "scope": "own_shipment_in_own_company"}
+      ],
+      "forbidden_mutation_fields": ["owner_user_id", "role", "roles", "permissions", "additional_record_grants", "id"],
+      "denied_resources": ["payments", "company_summaries", "raw_workbook"],
+      "company_projection": {
+        "excluded_fields": ["payment_ids", "occurrences"],
+        "shipment_ids_filter_scope": "own_shipment_in_own_company"
+      },
+      "related_party_projection": {
+        "fields": ["supplier_id", "carrier_id"],
+        "display": "Только названия поставщика и перевозчика из доступной отгрузки.",
+        "grants_company_card_access": false,
+        "grants_related_shipments_access": false,
+        "grants_payments_access": false
+      },
+      "report_data_sources": ["companies_with_company_projection", "shipments_with_own_shipment_in_own_company_scope"],
+      "financial_statement_access_from_company_ownership": false
+    },
+    {
+      "id": "accountant",
+      "name": "Бухгалтер",
+      "requirement_status": "proposed",
+      "enabled_for_assignment": false,
+      "permissions": [],
+      "activation_requires": "Уточнить состав роли, задать конкретные разрешённые финансовые поля и реализовать серверные проверки.",
+      "proposed_permissions": [
+        {"resource": "companies", "actions": ["read"], "scope": "explicitly_granted_company", "field_group": "financial"},
+        {"resource": "shipments", "actions": ["read"], "scope": "shipments_of_explicitly_granted_company", "field_group": "financial"},
+        {"resource": "shipments", "actions": ["update"], "scope": "shipments_of_explicitly_granted_company", "field_group": "payment"}
+      ]
+    },
+    {
+      "id": "warehouse",
+      "name": "Сотрудник склада",
+      "requirement_status": "proposed",
+      "enabled_for_assignment": false,
+      "permissions": [],
+      "activation_requires": "Уточнить состав роли, задать конкретные разрешённые логистические поля и реализовать серверные проверки.",
+      "proposed_permissions": [
+        {"resource": "companies", "actions": ["read"], "scope": "company_of_explicitly_granted_shipment", "field_group": "delivery_requisites"},
+        {"resource": "shipments", "actions": ["read"], "scope": "explicitly_granted_shipment", "field_group": "logistics"},
+        {"resource": "shipments", "actions": ["update"], "scope": "explicitly_granted_shipment", "fields": ["status", "actual_shipment_date", "warehouse_note"]}
+      ]
+    }
+  ],
+  "field_groups": {
+    "financial": null,
+    "payment": null,
+    "delivery_requisites": null,
+    "logistics": null
+  },
+  "unresolved_field_group_policy": "deny",
+  "enforcement_requirements": [
+    "Идентификатор пользователя и роль берутся из проверенного серверного состояния.",
+    "Область доступа применяется на сервере к чтению, записи, отчётам, подсказкам и экспорту.",
+    "Проверка полномочий и изменение записи должны быть атомарны.",
+    "Запрещённые системные поля отклоняются, включая вложенные и пакетные запросы.",
+    "Смена роли, блокировка и передача владельца отзывают прежний доступ.",
+    "Изменения ролей и владельцев записываются в аудит без секретов.",
+    "Полная локальная выгрузка не публикуется как статический ресурс для менеджеров."
+  ]
+}
