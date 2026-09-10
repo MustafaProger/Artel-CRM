@@ -119,7 +119,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   // Managers may create for themselves and then explicitly hand their task over; they cannot write into another employee's list directly.
   if (!previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
   const companyId = kind === 'notes' ? null : get('companyId', null);
-  if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
+  if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId && (!company.directoryArchived || previous && 'companyId' in previous && previous.companyId === companyId)))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
   const now = new Date().toISOString();
   const common = { id: id ?? `work-${kind}-${body.requestId ?? randomUUID()}`, version: (previous?.version ?? 0) + 1, assigneeId, createdAt: previous?.createdAt ?? now, updatedAt: now, createdBy: previous?.createdBy ?? actor.id, updatedBy: actor.id };
   let entry: AnyWorkEntry;

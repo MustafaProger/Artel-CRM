@@ -1,18 +1,15 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, Menu, PackageCheck, Search, PanelLeftClose, PanelLeftOpen, Truck, Users, Wallet, X, type LucideIcon } from 'lucide-react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, Menu, PackageCheck, Search, PanelLeftClose, PanelLeftOpen, Truck, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
 import ChinaPage from './ChinaPage'
-import TeamPage from './TeamPage'
 import ShipmentsPage from './ShipmentsPage'
 import DirectoriesPage from './DirectoriesPage'
-import CompanySearchDialog from './CompanySearchDialog'
 import WorkPage from './WorkPage'
 import AuthGate from './AuthGate'
-import AccountManagement from './AccountManagement'
 import type { AccountUser } from './auth-model'
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
-type Page = 'overview' | 'work' | 'shipments' | 'payments' | 'stock' | 'china' | 'operator' | 'payroll' | 'team' | 'directories'
+type Page = 'overview' | 'work' | 'shipments' | 'payments' | 'stock' | 'china' | 'operator' | 'payroll' | 'directories'
 const pages: {id: Page; title: string; icon: LucideIcon; section: number; description: string}[] = [
   {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:''},
   {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
@@ -23,7 +20,6 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
   {id:'payroll',title:'ЗП',icon:Banknote,section:1,description:''},
   {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Компании и менеджеры, товары, водители и автомобили.'},
-  {id:'team',title:'Команды и роли',icon:Users,section:1,description:'Пользователи и права доступа.'},
 ]
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
@@ -35,14 +31,14 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const [error,setError] = useState('')
   const [page,setPage] = useState<Page>(getPage)
   const [menu,setMenu] = useState(false)
+  const [mobile,setMobile] = useState(() => matchMedia('(max-width: 760px)').matches)
+  useEffect(() => { const media = matchMedia('(max-width: 760px)'); const change = () => {setMobile(media.matches);setMenu(false)}; media.addEventListener('change', change); return () => media.removeEventListener('change', change) }, [])
+  useEffect(() => { if (!menu) return; const overflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => {document.body.style.overflow = overflow} }, [menu])
   const [collapsed,setCollapsed] = useState(()=>{try{return localStorage.getItem('artel-sidebar-collapsed')==='true'}catch{return false}})
   const toggleSidebar = ()=>setCollapsed(value=>{const next=!value;try{localStorage.setItem('artel-sidebar-collapsed',String(next))}catch{/* Storage may be disabled. */}return next})
-  const [search,setSearch] = useState('')
-  const [companySearch,setCompanySearch] = useState(false)
   const [period,setPeriod] = useState('all')
   const [detail,setDetail] = useState<Detail | null>(null)
   const [toast,setToast] = useState('')
-  const searchRef = useRef<HTMLInputElement>(null)
   const sidebarRef = useRef<HTMLElement>(null)
   useEffect(() => {
     if (!menu) return
@@ -64,22 +60,23 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   useEffect(() => { if(location.hash === '#companies') location.replace('#shipments') }, [])
   useEffect(() => { const handle = () => {const nextPage=getPage();setPage(nextPage);setMenu(false);setDetail(null);setToast('')}; window.addEventListener('hashchange',handle);return () => window.removeEventListener('hashchange',handle) },[])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''),3200); return () => clearTimeout(timer) },[toast])
-  useEffect(() => { const key = (event: KeyboardEvent) => {if((event.metaKey || event.ctrlKey) && event.key === 'k') {event.preventDefault();setCompanySearch(true)} if(event.key === 'Escape') setMenu(false)};window.addEventListener('keydown',key);return () => window.removeEventListener('keydown',key) },[])
+  useEffect(() => { const key = (event: KeyboardEvent) => {if(event.key === 'Escape') setMenu(false)};window.addEventListener('keydown',key);return () => window.removeEventListener('keydown',key) },[])
   const navigate = (id: Page) => {location.hash = id;setPage(id);setMenu(false);window.scrollTo({top:0,behavior:'instant'})}
   const active = pages.find(p => p.id === page)!
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
   return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
+    <a className="skip-link" href="#main-content" onClick={event => {event.preventDefault();document.getElementById('main-content')?.focus()}}>К содержимому</a>
     {menu && <button className="sidebar-scrim" aria-label="Закрыть меню" onClick={() => setMenu(false)}/>}
-    <aside id="app-navigation" ref={sidebarRef} inert={page === 'shipments' && !menu} role={menu ? 'dialog' : undefined} aria-modal={menu ? true : undefined} aria-label={menu ? 'Меню разделов' : undefined} className={`sidebar ${menu ? 'is-open' : ''}`}>
+    <aside id="app-navigation" ref={sidebarRef} inert={(mobile || page === 'shipments') && !menu} role={menu ? 'dialog' : undefined} aria-modal={menu ? true : undefined} aria-label={menu ? 'Меню разделов' : undefined} className={`sidebar ${menu ? 'is-open' : ''}`}>
       <div className="sidebar-heading"><a className="brand" href="#overview" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артель</span></a><button className="icon-button sidebar-toggle" aria-label={collapsed?'Развернуть панель':'Свернуть панель'} title={collapsed?'Развернуть панель':'Свернуть панель'} aria-expanded={!collapsed} onClick={toggleSidebar}>{collapsed?<PanelLeftOpen size={20}/>:<PanelLeftClose size={20}/>}</button><button className="icon-button sidebar-mobile-close" aria-label="Закрыть меню" onClick={()=>setMenu(false)}><X size={20}/></button></div>
       <nav aria-label="Основная навигация">{pages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={data && p.id === 'shipments' ? data.overview.shipmentCount : undefined}/>)}</nav>
       <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
       <nav aria-label="Управление">{pages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
-      <div className="sidebar-bottom"><button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button></div>
+      <div className="sidebar-bottom"><div className="sidebar-account"><span>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div><button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button></div>
     </aside>
     <div className="workspace-main" inert={menu}>
-      <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Открыть меню" onClick={() => setMenu(true)}><Menu size={21}/></button><strong>{active.title}</strong></div><div className="topbar-actions"><form className="global-search" onSubmit={e => {e.preventDefault();setCompanySearch(true)}}><button type="submit" className="icon-button global-search-submit" aria-label="Найти контрагента" title="Найти контрагента"><Search size={18}/></button><input ref={searchRef} aria-label="Глобальный поиск контрагентов" placeholder="Найти контрагента…" value={search} onChange={e => setSearch(e.target.value)}/><kbd>⌘ K</kbd></form><div className="auth-user"><span title={user.name}>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div></div></header>
-      <main id="main-content"><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments' || page === 'payments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
+      <header className="topbar"><a className="brand mobile-brand" href="#overview" aria-label="Артель — обзор"><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span>Артель</span></a><div className="breadcrumb"><strong>{active.title}</strong></div><div className="topbar-actions"><div className="auth-user"><span title={user.name}>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div></div><button className="icon-button mobile-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><span className="two-line-menu" aria-hidden="true"><i/><i/></span></button></header>
+      <main id="main-content" tabIndex={-1}><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments' || page === 'payments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
       {page === 'shipments' && (!data || error) && <button className="button" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={20}/>Меню</button>}
       {error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
       {['overview','stock'].includes(page) && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
@@ -90,12 +87,10 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
       {page === 'payments' && <Payments data={data} period={period} open={setDetail} notify={notifyExport}/>}
-      {page === 'team' && <>{canManage&&<AccountManagement directories={data.directories!}/>}<TeamPage managerLabels={data.directories!.managers.map(m => ({name:m.name,shipmentCount:data.managers.find(manager=>manager.label===m.name)?.shipmentCount??0}))}/></>}
       </div>}
       <footer className="page-footer"><span><span className="tiny-mark">а</span> Артель CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>
       </main>
     </div>
-    {companySearch && data && <CompanySearchDialog companies={data.companies} initialQuery={search} onClose={()=>setCompanySearch(false)} onOpen={company=>{setCompanySearch(false);setDetail({kind:'company',item:company})}}/>}
     {detail && data && <DetailDialog detail={detail} data={data} onClose={() => setDetail(null)} open={setDetail}/>}
     {toast && <div className="toast" role="status"><Check size={18}/>{toast}</div>}
   </div>

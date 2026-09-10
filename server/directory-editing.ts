@@ -29,7 +29,7 @@ export function updateDirectoryEntry(kind: string, id: string, input: Record<str
   return { entry, created: false };
 }
 
-export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData, id?: string) {
+export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData, id?: string): { entry: Company; created: boolean } {
   if (Object.keys(input).some(key => !['kind', 'version', 'name', 'inn', 'roles', 'managerId', 'addresses', ...companyFields.map(([key])=>key)].includes(key))) throw new ApiError(400, 'Неизвестное поле компании.');
   const previous = id ? snapshot.companies.find(company => company.id === id) : undefined;
   if (id && !previous) throw new ApiError(404, 'Компания не найдена.');
@@ -39,6 +39,16 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   if (input.inn !== undefined && typeof input.inn !== 'string') throw new ApiError(400, 'Проверьте ИНН.');
   const inn = (input.inn as string | undefined)?.trim() || undefined;
   if (inn && !validInn(inn)) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр.');
+  // Explicitly adding the same legal entity restores its stable historical identity.
+  const archived = !id ? snapshot.companies.filter(company => company.directoryArchived && (inn ? company.inn === inn : !company.inn && normalizeName(company.name) === normalizeName(name))) : [];
+  if (archived.length === 1 && Array.isArray(input.addresses) && Array.isArray(input.roles)) {
+    const company = archived[0];
+    const addresses = snapshot.directories!.addresses.filter(address => address.companyId === company.id).map(({ id, name, kind }) => ({ id, name, kind }));
+    const added = input.addresses.filter(raw => !raw || typeof raw !== 'object' || !addresses.some(address => address.kind === raw.kind && normalizeName(address.name) === normalizeName(String(raw.name))));
+    const restored = saveCompany({ ...input, version: company.version ?? 0, roles: [...new Set([...company.roles.filter(role => ['customer', 'supplier', 'carrier'].includes(role)), ...input.roles])], addresses: [...addresses, ...added] }, snapshot, data, company.id);
+    restored.entry.directoryArchived = false;
+    return restored;
+  }
   if (snapshot.companies.some(company => company.id !== id && inn && company.inn === inn)) throw new ApiError(409, 'Компания с таким ИНН уже есть в справочнике.');
   if (!previous && snapshot.companies.some(company => normalizeName(company.name) === normalizeName(name) && (!inn || !company.inn))) throw new ApiError(409, 'Компания с таким названием уже есть. Откройте её карточку.');
   if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier'].includes(String(role)) && !(role === 'carrier' && previous?.roles.includes('carrier')))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');

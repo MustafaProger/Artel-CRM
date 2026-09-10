@@ -41,7 +41,7 @@ export function mutateChina(data: OperationsData, snapshot: Snapshot, actor: Acc
   if (kind === 'days') {
     if (!Array.isArray(body.fuels) || !body.fuels.length || body.fuels.length > 100) throw new ApiError(400, 'Добавьте от 1 до 100 строк заправок.');
     fuels = body.fuels.map(fuel => {
-      if (!obj(fuel) || Object.keys(fuel).some(key => !['supplierId','litres','amount'].includes(key)) || !text(fuel.supplierId) || !snapshot.companies.some(company => company.id === fuel.supplierId && company.roles.includes('supplier'))) throw new ApiError(400, 'Выберите поставщика из общего справочника.');
+      if (!obj(fuel) || Object.keys(fuel).some(key => !['supplierId','litres','amount'].includes(key)) || !text(fuel.supplierId) || !snapshot.companies.some(company => company.id === fuel.supplierId && company.roles.includes('supplier') && (!company.directoryArchived || previous?.fuels.some(row => row.supplierId === company.id)))) throw new ApiError(400, 'Выберите поставщика из общего справочника.');
       if (!amount(fuel.litres) || !decimal(fuel.litres)?.gt(0) || !amount(fuel.amount)) throw new ApiError(400, 'Литры должны быть больше нуля, сумма — неотрицательной. До 18 цифр и 6 знаков после точки.');
       return { supplierId: fuel.supplierId, litres: decimal(fuel.litres)!.toFixed(), amount: decimal(fuel.amount)!.toFixed() };
     });

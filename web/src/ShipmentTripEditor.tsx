@@ -125,7 +125,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const vehicle = directories.vehicles.find(entry => entry.id === fields.vehicle_id)
   const capacity = vehicle?.capacityLitres == null ? null : numericValue(String(vehicle.capacityLitres))
   const overCapacity = capacity != null && capacity.gt(0) && totalLitres.gt(capacity)
-  const companyEntries = companies.map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))
+  const companyEntries = (current: string) => companies.filter(company => !company.directoryArchived || company.id === current).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))
   const vehicleEntries = directories.vehicles.map(entry => ({ id: entry.id, name: entry.name || entry.plate, detail: [entry.name && entry.name !== entry.plate ? entry.plate : '', entry.capacityLitres ? `${number(entry.capacityLitres)} л` : ''].filter(Boolean).join(' · ') }))
 
   const changed = () => { setConfirmClose(false); setError('') }
@@ -215,7 +215,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
           {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
           <fieldset className="shipment-fieldset group-purchase"><legend>Отгрузка и поставщик</legend><div className="shipment-field-grid">
             {input('Дата отгрузки', 'date', { type: 'date', required: true })}
-            {select('Поставщик', 'supplier_id', companyEntries, { required: true })}
+            {select('Поставщик', 'supplier_id', companyEntries(draft.fields.supplier_id), { required: true })}
             {select('Место загрузки', 'loading_address_id', directories.addresses.filter(address => address.kind === 'loading' && address.companyId === fields.supplier_id), { disabled: !fields.supplier_id })}
             {input('Цена поставщика за тонну, ₽', 'purchase_price_unspecified_unit', { required: true })}
             {input('Тоннаж всей машины, т', 'quantity_tonnes', { required: true })}
@@ -231,7 +231,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                 <legend>Клиент {index + 1}</legend>
                 {draft.customers.length > 1 && <div className="shipment-trip-customer-actions"><button type="button" className="button shipment-trip-remove" aria-label={`Удалить клиента ${index + 1}`} disabled={disabled} onClick={() => removeCustomer(customer.key)}><Trash2 size={15}/>Удалить клиента {index + 1}</button></div>}
                 <div className="shipment-field-grid">
-                  {select('Клиент', 'customer_id', companyEntries.filter(company => availableShipmentCustomer(directories, company.id, customer.fields.customer_id)), { required: true, customer })}
+                  {select('Клиент', 'customer_id', companyEntries(customer.fields.customer_id).filter(company => availableShipmentCustomer(directories, company.id, customer.fields.customer_id)), { required: true, customer })}
                   {select('Форма оплаты', 'payment_form_id', directories.paymentForms, { required: true, customer })}
                   {input('Количество литров, л', 'quantity_litres', { required: true, customer })}
                   {input('Цена за литр, ₽', 'sale_price_per_litre', { required: true, customer })}

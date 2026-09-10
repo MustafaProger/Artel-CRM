@@ -57,7 +57,7 @@ try {
   }
   await page.goto(`${base}/#china`);
   await expect(page.getByRole('heading', { name: 'Артель Китай', exact: true })).toBeVisible();
-  await expect(page.getByText('Баланс: расчёт не настроен', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('china-balance')).toHaveText('0');
   for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure('china', width); }
   await page.goto(`${base}/#operator`);
   await expect(page.getByRole('region', { name: 'Операторская: рабочее пространство', exact: true })).toContainText('Excel-файл с системой учёта не предоставлен');
@@ -70,22 +70,11 @@ try {
   for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure('payroll', width); }
   check('Salary has separate driver and manager tabs with empty panels and no invented calculations');
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(`${base}/#team`);
-  await expect(page.getByRole('heading', { name: 'Учётные записи', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Роли команды', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Добавить пользователя', exact: true }).click();
-  const form = page.locator('.account-form');
-  await form.getByLabel('Имя', { exact: true }).fill('Менеджер интерфейс QA');
-  await form.getByLabel('Логин', { exact: true }).fill('navigation-manager');
-  await form.getByLabel('Пароль', { exact: true }).fill(managerPassword);
-  await form.getByRole('combobox', { name: /^Роль/ }).selectOption('manager');
-  const managerId = await form.getByRole('combobox', { name: /^Сотрудник справочника/ }).locator('option').nth(1).getAttribute('value');
-  await form.getByRole('combobox', { name: /^Сотрудник справочника/ }).selectOption(managerId);
-  await form.getByRole('button', { name: 'Сохранить пользователя', exact: true }).click();
-  await expect(page.locator('.account-row').filter({ hasText: 'Менеджер интерфейс QA' })).toBeVisible();
-  await page.reload();
-  await expect(page.locator('.team-stat').filter({ hasText: 'Действующие пользователи' }).locator('strong')).toHaveText('2 пользователей');
-  for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure('team-director', width); }
-  check('Director creates a manager with directory association in AccountManagement; real active-user count is 2');
+  await expect(page.getByRole('heading', {name:'Обзор',exact:true})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Команды и роли',exact:true})).toHaveCount(0);
+  const setupData = await context.request.get(`${base}/api/snapshot`).then(response=>response.json());
+  assert.equal((await context.request.post(`${base}/api/auth/users`, {data:{name:'Менеджер интерфейс QA',login:'navigation-manager',password:managerPassword,role:'manager',managerId:setupData.directories.managers[0].id}})).status(),201);
+  check('Team page removed; existing server roles retained for authenticated accounts');
   await page.getByRole('button', { name: 'Выйти', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Вход', exact: true })).toBeVisible();
   assert.equal((await context.request.get(`${base}/api/snapshot`)).status(), 401);
@@ -93,7 +82,7 @@ try {
   await page.getByLabel('Логин', { exact: true }).fill('navigation-manager');
   await page.getByLabel('Пароль', { exact: true }).fill(managerPassword);
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Роли команды', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Обзор', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Добавить пользователя', exact: true })).toHaveCount(0);
   await expect(page.locator('.account-panel')).toHaveCount(0);
   assert.equal((await context.request.get(`${base}/api/auth/session`).then(response => response.json())).user.role, 'manager');

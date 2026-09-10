@@ -21,7 +21,7 @@ export default function DirectoriesPage({data,onChanged,canManage=true}:{data:Sn
   const [tab,setTab] = useState<Tab>('customers'), [query,setQuery] = useState(''), [page,setPage] = useState(0)
   const [editor,setEditor] = useState<{id?:string} | null>(null), [notice,setNotice] = useState(''), [deleting,setDeleting] = useState<DirectoryRow|null>(null)
   const catalog = data.directories!
-  const rows: DirectoryRow[] = companyTab(tab) ? data.companies.filter(company => company.roles.includes(tab === 'customers' ? 'customer' : 'supplier')).map(company => ({
+  const rows: DirectoryRow[] = companyTab(tab) ? data.companies.filter(company => !company.directoryArchived && company.roles.includes(tab === 'customers' ? 'customer' : 'supplier')).map(company => ({
     id: company.id, name: company.name, version: company.version, roles: company.roles,
     detail: [company.inn ? `ИНН ${company.inn}` : 'ИНН не указан', ...company.roles.filter(r => r in roleLabels).map(r => roleLabels[r as keyof typeof roleLabels])].join(' · '),
     manager: catalog.managers.find(manager => manager.id === customerManagerId(catalog, company.id))?.name || 'Не назначен',
@@ -50,7 +50,7 @@ export default function DirectoriesPage({data,onChanged,canManage=true}:{data:Sn
       <div className="directory-pagination"><span>{visible.length ? `${currentPage*30+1}–${Math.min((currentPage+1)*30,visible.length)} из ${visible.length}` : '0 записей'}</span><div><button className="icon-button" aria-label="Предыдущая страница справочника" disabled={!currentPage} onClick={()=>setPage(currentPage-1)}><ChevronLeft size={18}/></button><span>{currentPage+1} / {lastPage+1}</span><button className="icon-button" aria-label="Следующая страница справочника" disabled={currentPage===lastPage} onClick={()=>setPage(currentPage+1)}><ChevronRight size={18}/></button></div></div>
     </section>
     {canManage && <div className="directory-maintenance"><button className="button" onClick={() => setCleanup(true)}>Очистка справочников</button></div>}
-    {cleanup && canManage && <DirectoryCleanup onClose={() => setCleanup(false)} onDone={backup => { setCleanup(false); setNotice(`Справочники очищены. Проверенная резервная копия: ${backup}`); onChanged() }}/>}
+    {cleanup && canManage && <DirectoryCleanup onClose={() => setCleanup(false)} onDone={backup => { setCleanup(false); setNotice(`Клиенты и поставщики очищены. Проверенная резервная копия: ${backup}`); onChanged() }}/>}
     {editor && canManage && <DirectoryEditor tab={tab} id={editor.id} data={data} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice(editor.id ? 'Изменения сохранены' : 'Запись добавлена');onChanged()}}/>}
     {deleting && canManage && <DirectoryDelete tab={tab} row={deleting} onClose={()=>setDeleting(null)} onDeleted={()=>{setDeleting(null);setNotice('Запись удалена из справочника');onChanged()}}/>}
   </div>

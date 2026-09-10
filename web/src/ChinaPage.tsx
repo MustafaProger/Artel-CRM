@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Decimal from 'decimal.js';
+import { chinaTotals, sumChinaAmounts } from './china-calculations';
 import { Plus, Save, X } from 'lucide-react';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
@@ -7,30 +7,37 @@ import type { ChinaData, ChinaDay, ChinaFuel } from './china-model';
 import { formatDate } from './utils';
 import { today } from './shipment-calculations';
 import './china.css';
-const Exact = Decimal.clone({ precision: 80 });
 const number = (value: string) => { const [whole, fraction] = value.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + (fraction ? `,${fraction}` : ''); };
-const sum = (values: string[]) => values.reduce((total, value) => total.plus(value), new Exact(0)).toFixed();
+const sum = sumChinaAmounts;
 type Editor = { kind: 'days' | 'payments'; day?: ChinaDay };
 type ChinaResponse = { china: ChinaData; suppliers: Company[] };
 export default function ChinaPage({ canManage }: { canManage: boolean }) {
   const [data, setData] = useState<ChinaResponse | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false), [notice, setNotice] = useState('');
+  const request = useRef<AbortController | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const refresh = useCallback(async () => {
+    request.current?.abort();
+    const controller = new AbortController(); request.current = controller; const signal = controller.signal;
     setLoading(true);
     try { const response = await fetch('/api/china', { signal, cache: 'no-store' }); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить учёт.'); if (!signal?.aborted) { setData(result); setError(''); } }
     catch (reason) { if (!signal?.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
     finally { if (!signal?.aborted) setLoading(false); }
   }, []);
-  useEffect(() => { if (!canManage) return; const controller = new AbortController(); void refresh(controller.signal); return () => controller.abort(); }, [refresh, canManage]);
+  useEffect(() => { if (!canManage) return; void refresh(); const visible = () => {if (document.visibilityState === 'visible') void refresh()}; const timer = window.setInterval(visible, 30000); window.addEventListener('focus', visible); return () => { request.current?.abort(); clearInterval(timer); window.removeEventListener('focus', visible) }; }, [refresh, canManage]);
   const days = data ? [...new Set([...data.china.days.map(day => day.date), ...data.china.payments.map(payment => payment.date)])].sort().reverse() : [];
-  return <section className="panel china-page"><header className="china-heading"><h2>Артель Китай</h2><span className="china-balance">Баланс: расчёт не настроен</span></header><p className="china-hint">Формула баланса не определена. Заправки и платежи учитываются отдельно.</p>
+  const totals = data ? chinaTotals(data.china) : null;
+  return <section className="panel china-page"><header className="china-heading"><h2>Артель Китай</h2><span className="china-period">За всё время</span></header>
+    {canManage && <div className="china-totals" aria-label="Итоги Китая" aria-busy={loading}><div className="china-balance"><span>Баланс</span><strong data-testid="china-balance">{totals ? number(totals.balance) : '—'}</strong><small>Поступления минус заправки</small></div><div><span>Поступления</span><strong data-testid="china-total-payments">{totals ? number(totals.payments) : '—'}</strong></div><div><span>Заправки</span><strong data-testid="china-total-fuel">{totals ? number(totals.fuel) : '—'}</strong></div></div>}
     {!canManage ? <p className="china-hint">Учёт доступен директору и администратору в рамках действующих ролей.</p> : <>
       <div className="china-actions"><button className="button primary" disabled={!data || loading} onClick={() => setEditor({ kind: 'days' })}><Plus size={16}/>Добавить день</button><button className="button" disabled={!data || loading} onClick={() => setEditor({ kind: 'payments' })}><Plus size={16}/>Добавить платёж</button><button className="button" disabled={loading} onClick={() => void refresh()}>Обновить</button></div>
       {notice && <p className="work-notice" role="status">{notice}</p>}{error && <p className="shipment-error" role="alert">{error}</p>}
-      <div className="china-table-scroll"><table className="china-table"><thead><tr><th>Дата</th><th>Количество литров</th><th>Сумма заправок</th><th>Поступления</th></tr></thead><tbody>{days.map(date => { const day = data!.china.days.find(day => day.date === date); const payments = data!.china.payments.filter(payment => payment.date === date); return <tr key={date}><td>{day ? <button className="china-day-link" aria-label={`Открыть день ${date}`} onClick={() => setEditor({ kind: 'days', day })}>{formatDate(date)}</button> : formatDate(date)}</td><td>{day ? number(sum(day.fuels.map(fuel => fuel.litres))) : '—'}</td><td>{day ? <><strong>{number(sum(day.fuels.map(fuel => fuel.amount)))}</strong><details className="china-details"><summary>Заправки · {day.fuels.length}</summary>{day.fuels.map((fuel, index) => <div key={index}>{data!.suppliers.find(supplier => supplier.id === fuel.supplierId)?.name ?? 'Поставщик недоступен'}<small>{number(fuel.litres)} л · {number(fuel.amount)}</small></div>)}</details></> : '—'}</td><td className="china-incoming">{payments.length ? <><strong>+{number(sum(payments.map(payment => payment.amount)))}</strong><details className="china-details"><summary>Платежи · {payments.length}</summary>{payments.map(payment => <div key={payment.id}>+{number(payment.amount)}</div>)}</details></> : '—'}</td></tr>; })}</tbody></table></div>
+      <div className="china-table-scroll"><table className="china-table"><thead><tr><th>Дата</th><th title="Количество литров">Литры</th><th title="Сумма заправок">Заправки</th><th>Поступления</th></tr></thead><tbody>{days.map(date => { const day = data!.china.days.find(day => day.date === date); const payments = data!.china.payments.filter(payment => payment.date === date); return <tr key={date}><td>{day ? <button className="china-day-link" aria-label={`Открыть день ${date}`} onClick={() => setEditor({ kind: 'days', day })}>{<ChinaDate date={date}/>}</button> : <ChinaDate date={date}/>}</td><td>{day ? number(sum(day.fuels.map(fuel => fuel.litres))) : '—'}</td><td>{day ? <><strong>{number(sum(day.fuels.map(fuel => fuel.amount)))}</strong><details className="china-details"><summary>Заправки · {day.fuels.length}</summary>{day.fuels.map((fuel, index) => <div key={index}>{data!.suppliers.find(supplier => supplier.id === fuel.supplierId)?.name ?? 'Поставщик недоступен'}<small>{number(fuel.litres)} л · {number(fuel.amount)}</small></div>)}</details></> : '—'}</td><td className="china-incoming">{payments.length ? <><strong>+{number(sum(payments.map(payment => payment.amount)))}</strong><details className="china-details"><summary>Платежи · {payments.length}</summary>{payments.map(payment => <div key={payment.id}>+{number(payment.amount)}</div>)}</details></> : '—'}</td></tr>; })}</tbody></table></div>
       {!days.length && <p className="china-hint">{loading ? 'Загрузка…' : 'Заправки и платежи пока не внесены.'}</p>}
-      {editor && data && <ChinaEditor editor={editor} suppliers={data.suppliers} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); setNotice('Запись сохранена.'); void refresh(); }}/>}</>}
+      {editor && data && <ChinaEditor editor={editor} suppliers={data.suppliers.filter(supplier => !supplier.directoryArchived || editor.day?.fuels.some(fuel => fuel.supplierId === supplier.id))} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); setNotice('Запись сохранена.'); void refresh(); }}/>}</>}
   </section>;
+}
+function ChinaDate({ date }: { date: string }) {
+  return <time dateTime={date} title={formatDate(date)} aria-label={formatDate(date)}>{date.slice(8,10)}.{date.slice(5,7)}<span className="china-date-year">.{date.slice(0,4)}</span></time>;
 }
 function ChinaEditor({ editor, suppliers, onClose, onSaved }: { editor: Editor; suppliers: Company[]; onClose: () => void; onSaved: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);

@@ -12,7 +12,7 @@ import { scopeSnapshot, checkShipmentWrite } from './auth-scope';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
 import { readWork, mutateWork, workFile } from './work-operations';
-import { prepareDirectoryCleanup } from './directory-cleanup';
+import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-cleanup';
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
@@ -374,7 +374,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         requireManage(requireUser(stored, request));
         if (request.method === 'GET') {
           try {
-            const preview = prepareDirectoryCleanup(base, stored);
+            const preview = url.searchParams.get('scope') === 'companies' ? prepareCompanyCleanup(base, stored) : prepareDirectoryCleanup(base, stored);
             return write(response, 200, JSON.stringify({ counts: preview.counts, revision: stored.revision, available: !!operations.backup }));
           } catch (error) {
             if (error instanceof ApiError && error.status === 409) return write(response, 200, JSON.stringify({ blocked: error.message, revision: stored.revision, available: false }));
@@ -383,12 +383,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request);
-        if (body.confirm !== 'clear-directories' || Object.keys(body).some(key => !['confirm','revision'].includes(key))) throw new ApiError(400, 'Подтвердите очистку справочников.');
+        if (body.confirm !== 'clear-directories' || body.scope !== undefined && body.scope !== 'companies' || Object.keys(body).some(key => !['confirm','revision','scope'].includes(key))) throw new ApiError(400, 'Подтвердите очистку справочников.');
         if (!operations.backup) throw new ApiError(503, 'Резервное копирование недоступно. Очистка запрещена.');
         const result = await operations.mutate(base.provenance.sourceSha256, async data => {
           requireManage(requireUser(data, request));
           if (body.revision !== data.revision) throw new ApiError(409, 'Данные изменены. Откройте предварительную проверку заново.');
-          const prepared = prepareDirectoryCleanup(base, data);
+          const prepared = body.scope === 'companies' ? prepareCompanyCleanup(base, data) : prepareDirectoryCleanup(base, data);
           const backup = await operations.backup!(data);
           data.companies = prepared.data.companies;
           data.directories = prepared.data.directories;

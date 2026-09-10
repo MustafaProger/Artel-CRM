@@ -10,11 +10,54 @@ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore, decodeOperations, encodeOperations } from '../server/operations-store';
 import { saveCompany } from '../server/directory-editing';
 import { clearOperations } from '../server/reset-operations';
-import { prepareDirectoryCleanup } from '../server/directory-cleanup';
+import { prepareCompanyCleanup, prepareDirectoryCleanup } from '../server/directory-cleanup';
+import { chinaTotals } from '../web/src/china-calculations';
 import { currentSnapshot } from '../server/shipment-operations';
 import type { Snapshot } from '../web/src/model';
 import { azsShipmentTemplates, fieldValue, shipmentTemplates } from '../web/src/shipment-templates';
 const base = await loadSnapshot(resolve('data/local-xlsx-final'));
+
+test('China balance handles empty, negative, payment-only dates and precise large amounts', () => {
+  assert.deepEqual(chinaTotals({ days: [], payments: [] }), { payments: '0', fuel: '0', balance: '0' });
+  const common = { createdAt: '2026-09-10T00:00:00.000Z', createdBy: 'director' };
+  const china = { days: [{ ...common, id: 'day', date: '2025-01-01', version: 1, updatedAt: common.createdAt, fuels: [{ supplierId: 'supplier', litres: '0.1', amount: '999999999999999999.123456' }, { supplierId: 'supplier', litres: '0.2', amount: '0.000001' }] }], payments: [{ ...common, id: 'payment', date: '2026-01-02', amount: '0.1' }] };
+  assert.equal(chinaTotals(china).balance, '-999999999999999999.023457');
+  china.payments.push({ ...common, id: 'payment2', date: '2024-12-01', amount: '999999999999999999.2' });
+  assert.equal(chinaTotals(china).balance, '0.176543');
+});
+
+test('scoped company cleanup preserves every other directory and historical record, verifies backup and restores identity on adding again', async () => {
+  const r = await setup();
+  try {
+    const before = await r.snapshot();
+    const supplier = before.companies.find(company => company.roles.includes('supplier'))!;
+    const day = await r.director('/api/china/days', 'POST', { date: '2026-09-10', fuels: [{ supplierId: supplier.id, litres: '100', amount: '300' }] });
+    assert.equal(day.status, 201);
+    const original = await r.store.read(base.provenance.sourceSha256);
+    const preview = await r.director('/api/directories/cleanup?scope=companies');
+    assert.equal(preview.body.available, true);
+    assert.deepEqual(Object.keys(preview.body.counts).sort(), ['customers', 'suppliers']);
+    assert.deepEqual(prepareCompanyCleanup(base, original).data.directories, original.directories);
+    const payload = { confirm: 'clear-directories', scope: 'companies', revision: original.revision };
+    assert.equal((await r.director('/api/directories/cleanup', 'POST', { ...payload, revision: original.revision - 1 })).status, 409);
+    const result = await r.director('/api/directories/cleanup', 'POST', payload);
+    assert.equal(result.status, 200);
+    assert.deepEqual(decodeOperations(await readFile(result.body.backup, 'utf8'), base.provenance.sourceSha256), original);
+    const after = await r.snapshot(), stored = await r.store.read(base.provenance.sourceSha256);
+    assert.equal(after.companies.filter(company => !company.directoryArchived && company.roles.some(role => ['customer', 'supplier'].includes(role))).length, 0);
+    assert.deepEqual(after.shipments, before.shipments);
+    assert.deepEqual(after.payments, before.payments);
+    assert.deepEqual(after.stocks, before.stocks);
+    for (const key of ['directories', 'work', 'accounts', 'china', 'shipments', 'paymentAllocations'] as const) assert.deepEqual(stored[key], original[key]);
+    assert.equal((await r.director('/api/china/days', 'POST', { date: '2026-09-11', fuels: day.body.entry.fuels })).status, 400);
+    assert.equal((await r.director(`/api/china/days/${day.body.entry.id}`, 'PATCH', { version: 1, date: '2026-09-10', fuels: [{ ...day.body.entry.fuels[0], amount: '350' }] })).status, 200);
+    const restored = await r.director('/api/directories', 'POST', { kind: 'companies', name: supplier.name, inn: supplier.inn, roles: ['supplier'], addresses: [] });
+    assert.equal(restored.status, 200);
+    assert.equal(restored.body.entry.id, supplier.id);
+    assert.equal(restored.body.entry.directoryArchived, false);
+    assert.deepEqual((await r.snapshot()).shipments, before.shipments);
+  } finally { await r.close(); }
+});
 async function setup(clear = false, backupFails = false) {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-requirements-'));
   const store = new OperationsStore(directory);
@@ -60,7 +103,7 @@ test('task comments, private downloadable files, handoff, archive and restoratio
   } finally { await r.close(); }
 });
 
-test('China stores multiple suppliers per day, independent payments, exact decimals and no balance formula', async () => {
+test('China stores multiple suppliers per day, independent payments, exact decimals and an all-time balance', async () => {
   const r = await setup();
   try {
     const suppliers = (await r.snapshot()).companies.filter(c=>c.roles.includes('supplier')).slice(0,2);
@@ -71,7 +114,7 @@ test('China stores multiple suppliers per day, independent payments, exact decim
     const payment={requestId:randomUUID(),date:payload.date,amount:'900.35'};
     assert.equal((await r.director('/api/china/payments','POST',payment)).status,201); assert.equal((await r.director('/api/china/payments','POST',payment)).status,200);
     assert.equal((await r.director('/api/china/payments','POST',{date:'2026-09-12',amount:'10'})).status,201);
-    const all=(await r.director('/api/china')).body.china; assert.deepEqual(all.days[0].fuels,payload.fuels); assert.equal(all.payments.length,2); assert.ok(!('balance' in all));
+    const all=(await r.director('/api/china')).body.china; assert.deepEqual(all.days[0].fuels,payload.fuels); assert.equal(all.payments.length,2); assert.deepEqual(chinaTotals(all), { payments: '910.35', fuel: '701', balance: '209.35' });
     const more=[...payload.fuels,{supplierId:suppliers[0].id,litres:'0.25',amount:'0'}];
     assert.equal((await r.director(`/api/china/days/${first.body.entry.id}`,'PATCH',{version:1,date:payload.date,fuels:more})).status,200);
     assert.equal((await r.director(`/api/china/days/${first.body.entry.id}`,'PATCH',{version:1,date:payload.date,fuels:more})).status,409);

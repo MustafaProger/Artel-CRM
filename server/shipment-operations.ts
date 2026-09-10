@@ -351,7 +351,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
     const idKey = `${role}_id`, nameKey = `${role}_name`;
     if (Object.hasOwn(data, idKey)) {
       const company = snapshot.companies.find(c => c.id === data[idKey]);
-      if (!company) throw new ApiError(400,'Выберите существующего контрагента или поставщика.');
+      if (!company || company.directoryArchived && company.id !== previous?.[`${role}Id`]) throw new ApiError(400,'Выберите действующего клиента или поставщика из справочника.');
       data[nameKey] = company.name; data[`${role}_inn`] = company.inn ?? null;
     } else if (Object.hasOwn(data,nameKey)) throw new ApiError(400,'Выберите фирму из справочника.');
   }

@@ -9,6 +9,8 @@ export interface Metric {
 }
 
 export interface Company extends CompanyDetails {
+  /** Removed from active customer/supplier directories; retained for historical references. */
+  directoryArchived?: boolean;
   id: string;
   version?: number;
   name: string;

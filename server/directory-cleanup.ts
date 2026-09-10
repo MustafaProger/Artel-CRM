@@ -3,6 +3,21 @@ import type { OperationsData } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
 import { deleteDirectoryEntry } from './directory-deletion';
 
+/** Clear only the active customer/supplier lists without breaking historical references. */
+export function prepareCompanyCleanup(base: Snapshot, original: OperationsData) {
+  const data = structuredClone(original);
+  const snapshot = currentSnapshot(base, data);
+  const targets = snapshot.companies.filter(company => !company.directoryArchived && company.roles.some(role => ['customer', 'supplier'].includes(role)));
+  const counts = { customers: targets.filter(company => company.roles.includes('customer')).length, suppliers: targets.filter(company => company.roles.includes('supplier')).length };
+  for (const company of targets) {
+    const archived = { ...company, directoryArchived: true, version: (company.version ?? 0) + 1 };
+    const index = data.companies.findIndex(row => row.id === company.id);
+    if (index < 0) data.companies.push(archived); else data.companies[index] = archived;
+  }
+  currentSnapshot(base, data);
+  return { data, counts };
+}
+
 /** Prepare the complete change on a copy. Any external dependency cancels the whole cleanup. */
 export function prepareDirectoryCleanup(base: Snapshot, original: OperationsData) {
   const data = structuredClone(original);

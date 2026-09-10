@@ -16,7 +16,8 @@
     "test:azs-ui": "node scripts/verify_azs.mjs",
     "test:work-ui": "node scripts/verify_work.mjs",
     "test:auth-ui": "node scripts/verify_navigation_auth.mjs",
-    "test:requirements-ui": "node --import tsx scripts/verify_requirements.mjs"
+    "test:requirements-ui": "node --import tsx scripts/verify_requirements.mjs",
+    "test:design-ui": "node scripts/verify_apple.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",
@@ -26,6 +27,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.55.0",
     "@types/node": "^24.0.0",
