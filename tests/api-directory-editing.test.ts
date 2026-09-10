@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
-import { createSnapshotMiddleware, loadSnapshot, type LocalApiOptions } from '../server/local-api';
+import { createSnapshotMiddleware, loadSnapshot, type LocalApiOptions } from './test-api';
 import { OperationsStore } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
 import { clearOperations } from '../server/reset-operations';

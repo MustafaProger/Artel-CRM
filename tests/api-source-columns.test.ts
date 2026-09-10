@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import Decimal from 'decimal.js';
-import { loadSnapshot } from '../server/local-api';
+import { loadSnapshot } from './test-api';
 import { currentSnapshot, prepareShipmentFields, shipmentPage } from '../server/shipment-operations';
 import type { OperationsData } from '../server/operations-store';
 import { fieldValue, shipmentColumns } from '../web/src/shipment-templates';

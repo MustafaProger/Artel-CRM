@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { calculateShipment, TEMPLATE_PROFIT_RULE, unpaidShipmentDays } from '../web/src/shipment-calculations';
-import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+import { createSnapshotMiddleware, loadSnapshot } from './test-api';
 import { currentSnapshot, prepareShipmentFields } from '../server/shipment-operations';
 import { emptyDirectories } from '../server/directory-operations';
 import { OperationsStore, type OperationsData } from '../server/operations-store';

@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import Decimal from 'decimal.js';
-import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+import { createSnapshotMiddleware, loadSnapshot } from './test-api';
 import { OperationsStore } from '../server/operations-store';
 import type { Shipment, ShipmentTrip, ShipmentTripResponse, Snapshot } from '../web/src/model';
 import { allocateTrip } from '../web/src/trip-calculations';

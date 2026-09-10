@@ -3,6 +3,7 @@ import type { CalculationRules, PaymentAllocation } from './model'
 import { settlementKind } from './shipment-settlement'
 
 const Exact = Decimal.clone({ precision: 80 })
+export const AZS_PROFIT_RULE = 'azs-payment-form' as const
 export const TEMPLATE_PROFIT_RULE = 'template-payment-form' as const
 export const decimal = (value: string | null | undefined) => {
   const text = value?.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.')
@@ -29,10 +30,13 @@ export function unpaidShipmentDays(date: string | null | undefined, saleAmount: 
   const sale = decimal(saleAmount), paid = decimal(paidAmount)
   return sale && paid && paid.gte(sale) ? null : daysSinceShipment(date, asOf)
 }
-/** One calculation path for the editor and API. Unknown business rules stay explicit. */
-export function calculateShipment(input: Record<string, string | null>, rules: CalculationRules, options: {
+export interface ShipmentCalculationOptions {
   historical?: boolean; recalculate?: boolean; changedFields?: string[]; allocations?: PaymentAllocation[]; asOf?: string;
-} = {}) {
+}
+
+/** One calculation path for the editor and API. Unknown business rules stay explicit. */
+export function calculateShipment(input: Record<string, string | null>, rules: CalculationRules, options: ShipmentCalculationOptions = {}) {
+  if (input.shipment_type === 'azs') return calculateAzsShipment(input, options)
   const fields = { ...input }, warnings: string[] = []
   const value = (key: string) => decimal(fields[key])
   const date = validDate(fields.date)
@@ -71,6 +75,14 @@ export function calculateShipment(input: Record<string, string | null>, rules: C
       fields.profit_source = rules.profit === 'excel-rounded' ? profit.toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed() : profit.toFixed()
     }
   }
+  applyShipmentPayments(input, fields, options, saleChanged)
+  return { fields, warnings }
+}
+
+/** Shared bank-allocation accounting, independent of the shipment pricing model. */
+function applyShipmentPayments(input: Record<string, string | null>, fields: Record<string, string | null>, options: ShipmentCalculationOptions, saleChanged: boolean) {
+  const value = (key: string) => decimal(fields[key])
+  const date = validDate(fields.date)
   // Unmapped bank rows never count as payments for a shipment. Legacy paid values
   // remain the opening amount until a separate reconciliation migrates them.
   const allocations = options.allocations ?? []
@@ -96,5 +108,26 @@ export function calculateShipment(input: Record<string, string | null>, rules: C
   }
   fields.overdue_days = paid && saleAmount ? overdueDays(fields.payment_due_date, settlementDate, paid.gte(saleAmount), options.asOf) : null
   fields.days_since_shipment = unpaidShipmentDays(date, fields.customer_amount, fields.paid_amount_source, options.asOf)
+  return fields
+}
+
+/** AZS has three manual inputs; tanker quantities and expenses cannot change its profit. */
+export function calculateAzsShipment(input: Record<string, string | null>, options: ShipmentCalculationOptions = {}) {
+  const fields = { ...input }, warnings: string[] = []
+  fields.shipment_type = 'azs'
+  fields.month = validDate(fields.date)?.slice(0, 7) ?? null
+  const sale = decimal(fields.customer_amount), purchase = decimal(fields.purchase_amount)
+  const form = settlementKind(fields.payment_form)
+  fields.profit_source = sale && purchase && sale.gte(0) && purchase.gte(0) && ['cash', 'cashless'].includes(form)
+    ? sale.minus(form === 'cash' ? purchase.times('0.83') : purchase).toFixed() : null
+  if (!['cash', 'cashless'].includes(form)) warnings.push('Для АЗС выберите наличные или безнал. Ф2 недоступна.')
+  // There is no approved AZS sale-per-litre or KVP rule in the project.
+  fields.sale_price_per_litre ??= null
+  fields.kvp_source ??= null
+  warnings.push('Формула цены продажи за литр АЗС ожидает согласования.')
+  warnings.push('Правило КВП для АЗС ожидает согласования.')
+  const litres = decimal(fields.quantity_litres)
+  if (!litres?.gt(0)) warnings.push('Количество литров должно быть больше нуля.')
+  applyShipmentPayments(input, fields, options, true)
   return { fields, warnings }
 }

@@ -28,9 +28,11 @@ const unusedId = (desired: string, rows: { id: string }[]) => {
 
 /** Add the supplied fleet to both old and new stores, keeping existing records verbatim. */
 export function withFleetDirectories(saved: Directories): Directories {
+  if (saved.fleetSeedApplied) return saved;
   const result = { ...saved, vehicles: [...saved.vehicles], drivers: [...saved.drivers] };
   const vehicleIds = new Map<string, string>();
   for (const seed of vehicles) {
+    if (saved.deletedEntries?.vehicles?.includes(seed.id)) continue;
     const key = vehicleKey(seed.name!);
     const existing = result.vehicles.find(row => row.id === seed.id) ?? result.vehicles.find(row => [row.name, row.plate, [row.brand, row.model, row.plate].filter(Boolean).join(' ')].some(label => label && vehicleKey(label) === key));
     if (existing) vehicleIds.set(seed.id, existing.id);
@@ -41,10 +43,11 @@ export function withFleetDirectories(saved: Directories): Directories {
     }
   }
   for (const seed of drivers) {
+    if (saved.deletedEntries?.drivers?.includes(seed.id) || !vehicleIds.has(seed.vehicleId)) continue;
     if (result.drivers.some(row => row.id === seed.id || nameKey(row.name) === nameKey(seed.name))) continue;
     result.drivers.push({ ...seed, id: unusedId(seed.id, result.drivers), vehicleId: vehicleIds.get(seed.vehicleId)! });
   }
-  return result;
+  return { ...result, fleetSeedApplied: true };
 }
 
 export const validLitres = (value: unknown): value is string => typeof value === 'string' && /^\d{1,9}(?:\.\d{1,6})?$/.test(value) && new Decimal(value).gt(0);

@@ -5,15 +5,17 @@ import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { validInn } from './checko';
+import { companyRoleUsed } from './directory-deletion';
 
-export type EditableDirectory = 'managers' | 'products' | 'vehicles' | 'drivers';
+export type EditableDirectory = 'managers' | 'products' | 'paymentForms' | 'vehicles' | 'drivers' | 'addresses';
 export function updateDirectoryEntry(kind: string, id: string, input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
-  if (!['managers', 'products', 'vehicles', 'drivers'].includes(kind)) throw new ApiError(400, 'Неизвестный справочник.');
+  if (!['managers', 'products', 'paymentForms', 'vehicles', 'drivers', 'addresses'].includes(kind)) throw new ApiError(400, 'Неизвестный справочник.');
   const key = kind as EditableDirectory;
   const previous = snapshot.directories![key].find(row => row.id === id);
   if (!previous) throw new ApiError(404, 'Запись не найдена.');
   if (input.version !== (previous.version ?? 0)) throw new ApiError(409, 'Запись уже изменена. Закройте карточку и откройте её снова.');
   const { version: _version, ...fields } = input;
+  if (key === 'addresses' && 'companyId' in previous && (fields.companyId !== previous.companyId || fields.addressKind !== previous.kind) && snapshot.shipments.some(row => [row.fields.loading_address_id, row.fields.unloading_address_id].includes(id))) throw new ApiError(409, 'Адрес используется в отгрузке. Нельзя изменить его компанию или тип.');
   // Reuse creation validation, excluding only the record being edited.
   const catalog = { ...snapshot.directories!, [key]: snapshot.directories![key].filter(row => row.id !== id) };
   const draft = structuredClone(data);
@@ -39,8 +41,11 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   if (inn && !validInn(inn)) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр.');
   if (snapshot.companies.some(company => company.id !== id && inn && company.inn === inn)) throw new ApiError(409, 'Компания с таким ИНН уже есть в справочнике.');
   if (!previous && snapshot.companies.some(company => normalizeName(company.name) === normalizeName(name) && (!inn || !company.inn))) throw new ApiError(409, 'Компания с таким названием уже есть. Откройте её карточку.');
-  if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier', 'carrier'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании.');
-  const roles = [...new Set(input.roles as string[])];
+  if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier'].includes(String(role)) && !(role === 'carrier' && previous?.roles.includes('carrier')))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
+  if (!input.roles.some(role => ['customer', 'supplier'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
+  const roles = [...new Set([...(input.roles as string[]), ...(previous?.roles.filter(role => !['customer', 'supplier'].includes(role)) ?? [])])];
+  if (previous?.roles.includes('supplier') && !roles.includes('supplier') && data.china?.days.some(day => day.fuels.some(fuel => fuel.supplierId === previous.id))) throw new ApiError(409, 'Нельзя убрать тип «Поставщик»: компания используется в заправках Китая.');
+  if (previous) for (const role of ['customer', 'supplier'] as const) if (previous.roles.includes(role) && !roles.includes(role) && companyRoleUsed(snapshot, previous, role)) throw new ApiError(409, `Нельзя убрать тип «${role === 'customer' ? 'Клиент' : 'Поставщик'}»: компания используется в отгрузках.`);
   const managerId = input.managerId || null;
   if (managerId !== null && (typeof managerId !== 'string' || !snapshot.directories!.managers.some(manager => manager.id === managerId))) throw new ApiError(400, 'Выберите менеджера из справочника.');
   const companyId = id ?? `company-local-${randomUUID()}`;
@@ -54,7 +59,8 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
     const key = `${raw.kind}:${normalizeName(name)}`;
     if (seen.has(key) || raw.id && seen.has(raw.id)) throw new ApiError(400, 'Адрес указан дважды.');
     seen.add(key); if (raw.id) seen.add(raw.id);
-    return { id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind };
+    const previousAddress = oldAddresses.find(row => row.id === raw.id);
+    return { id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name ? 0 : 1) } : {}) };
   });
   const removed = oldAddresses.filter(address => !addresses.some(row => row.id === address.id));
   if (snapshot.shipments.some(row => removed.some(address => [row.fields.loading_address_id, row.fields.unloading_address_id].includes(address.id)))) throw new ApiError(409, 'Адрес используется в отгрузке. Его можно изменить, но нельзя удалить.');

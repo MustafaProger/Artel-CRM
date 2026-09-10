@@ -4,7 +4,7 @@ import { ChevronDown, LoaderCircle, Plus, Save, Trash2, Truck, X } from 'lucide-
 import DirectorySelect, { type SelectEntry } from './DirectorySelect'
 import type { ShipmentEditorProps } from './ShipmentEditor'
 import { calculateShipment, daysSinceShipment, today, unpaidShipmentDays } from './shipment-calculations'
-import { customerManagerId } from './customer-manager'
+import { customerManagerId, availableShipmentCustomer } from './customer-manager'
 import { allocateTrip } from './trip-calculations'
 import { number } from './utils'
 
@@ -231,7 +231,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                 <legend>Клиент {index + 1}</legend>
                 {draft.customers.length > 1 && <div className="shipment-trip-customer-actions"><button type="button" className="button shipment-trip-remove" aria-label={`Удалить клиента ${index + 1}`} disabled={disabled} onClick={() => removeCustomer(customer.key)}><Trash2 size={15}/>Удалить клиента {index + 1}</button></div>}
                 <div className="shipment-field-grid">
-                  {select('Клиент', 'customer_id', companyEntries, { required: true, customer })}
+                  {select('Клиент', 'customer_id', companyEntries.filter(company => availableShipmentCustomer(directories, company.id, customer.fields.customer_id)), { required: true, customer })}
                   {select('Форма оплаты', 'payment_form_id', directories.paymentForms, { required: true, customer })}
                   {input('Количество литров, л', 'quantity_litres', { required: true, customer })}
                   {input('Цена за литр, ₽', 'sale_price_per_litre', { required: true, customer })}

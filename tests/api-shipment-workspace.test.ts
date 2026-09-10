@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+import { createSnapshotMiddleware, loadSnapshot } from './test-api';
 import { currentSnapshot, shipmentPage, prepareShipmentFields } from '../server/shipment-operations';
 import { OperationsStore, type OperationsData } from '../server/operations-store';
 import { emptyDirectories } from '../server/directory-operations';

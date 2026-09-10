@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { CalculationRules, Company, Metric, Shipment, ShipmentsResponse, Snapshot } from '../web/src/model';
-import { calculateShipment, TEMPLATE_PROFIT_RULE } from '../web/src/shipment-calculations';
+import { calculateShipment, TEMPLATE_PROFIT_RULE, AZS_PROFIT_RULE } from '../web/src/shipment-calculations';
 import { settlementKind } from '../web/src/shipment-settlement';
 import { customerManagerId } from '../web/src/customer-manager';
 import { directoriesFor } from './directory-operations';
@@ -13,7 +13,7 @@ import { StoreError, type OperationsData } from './operations-store';
 
 const Exact = Decimal.clone({ precision: 80 });
 export const SHIPMENT_FIELDS = [
-  'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
+  'shipment_type', 'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
   'quantity_tonnes', 'quantity_litres', 'sale_price_per_tonne', 'sale_price_per_litre', 'customer_amount',
   'supplier_name', 'purchase_price_unspecified_unit', 'purchase_amount', 'carrier_name', 'transport_amount',
   'kvp_source', 'profit_source', 'paid_amount_source', 'debt_overpayment_source', 'term_source', 'unlabelled_note',
@@ -150,8 +150,10 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
     overview: { ...base.overview, paymentCount: 0, incoming: metric([]), outgoing: metric([]), missingPaymentDates: 0 },
     provenance: { ...base.provenance, counts: { counterparties: base.companies.length, manager_labels: directories.managers.length, shipment_rows: 0, payment_rows: 0, payments_with_amount: 0, incomplete_payment_rows: 0, stock_monthly_rows: 0, company_summary_rows: 0 } },
   };
-  const companies = base.companies.map(company => ({ ...company }));
+  const deletedCompanies = new Set(directories.deletedEntries?.companies ?? []);
+  const companies = base.companies.filter(company => !deletedCompanies.has(company.id)).map(company => ({ ...company }));
   for (const metadata of store.companies) {
+    if (deletedCompanies.has(metadata.id)) continue;
     const index = companies.findIndex(company => company.id === metadata.id);
     if (index >= 0) companies[index] = { ...companies[index], ...metadata };
     else companies.push({ ...metadata });
@@ -182,9 +184,12 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
     for (const [key,role,kind] of [['loading_address_id','supplier','loading'],['unloading_address_id','customer','delivery']] as const) {
       if (fields[key] && !directories.addresses.some(a => a.id === fields[key] && a.companyId === row[`${role}Id`] && a.kind === kind)) throw new StoreError('Invalid shipment address');
     }
+    if (fields.shipment_type && !['tanker','azs'].includes(fields.shipment_type)) throw new StoreError('Invalid shipment type');
+    const azs = fields.shipment_type === 'azs';
+    if (azs && fields.trip_id) throw new StoreError('AZS cannot belong to a tanker trip');
     const historical = fields.calculation_mode !== 'automatic';
-    if (!historical) fields.profit_rule = TEMPLATE_PROFIT_RULE;
-    const rules: CalculationRules = { sale: historical ? row.calculationRules?.sale ?? null : 'litres', purchase: ['litres','tonnes'].includes(fields.purchase_unit ?? '') ? fields.purchase_unit as 'litres'|'tonnes' : row.calculationRules?.purchase ?? null, profit: (fields.profit_rule as CalculationRules['profit']) ?? row.calculationRules?.profit ?? directories.defaults.profit, debtSign: 'paid-minus-sale' };
+    if (!historical) fields.profit_rule = azs ? AZS_PROFIT_RULE : TEMPLATE_PROFIT_RULE;
+    const rules: CalculationRules = azs ? {sale:null,purchase:null,profit:AZS_PROFIT_RULE,debtSign:'paid-minus-sale'} : { sale: historical ? row.calculationRules?.sale ?? null : 'litres', purchase: ['litres','tonnes'].includes(fields.purchase_unit ?? '') ? fields.purchase_unit as 'litres'|'tonnes' : row.calculationRules?.purchase ?? null, profit: (fields.profit_rule as CalculationRules['profit']) ?? row.calculationRules?.profit ?? directories.defaults.profit, debtSign: 'paid-minus-sale' };
     const calculated = calculateShipment(fields, rules, { historical, allocations: (store.paymentAllocations ?? []).filter(a => a.shipmentId === row.id) });
     row.fields = calculated.fields; row.fields.purchase_unit ??= rules.purchase;
     const canonicalProduct = directories.products.find(p => normalizeName(p.name) === normalizeName(row.product ?? ''));
@@ -278,9 +283,12 @@ export function shipmentPage(snapshot: Snapshot, params: URLSearchParams): Shipm
   const manager = params.get('manager') ?? 'all';
   const settlement = params.get('settlement') ?? 'all';
   if (!['all', 'cashless', 'cash', 'f2', 'unspecified'].includes(settlement)) throw new ApiError(400, 'Неизвестная форма оплаты.');
+  const type = params.get('type') ?? 'all';
+  if (!['all', 'tanker', 'azs'].includes(type)) throw new ApiError(400, 'Неизвестный тип отгрузки.');
   const companyId = params.get('companyId');
   const filters = parseFilters(params);
   const baseRows = snapshot.shipments.filter(row =>
+    (type === 'all' || (row.fields.shipment_type ?? 'tanker') === type) &&
     (period === 'all' || row.date?.startsWith(period)) &&
     (manager === 'all' || (manager === 'none' ? row.manager === null : row.manager !== null && normalizeName(row.manager) === normalizeName(manager))) &&
     (settlement === 'all' || shipmentSettlement(row) === settlement) &&
@@ -323,8 +331,17 @@ export function inferCalculationRules(cells: Record<string, { formula?: string |
 export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot) {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400,'Укажите поля операции.');
   const data = { ...input }, catalog = snapshot.directories!;
+  if (Object.hasOwn(data, 'shipment_type') && !['tanker', 'azs'].includes(data.shipment_type as string)) throw new ApiError(400, 'Выберите тип отгрузки: бензовозы или АЗС.');
+  const type = data.shipment_type ?? previous?.fields.shipment_type ?? 'tanker';
+  if (previous && type !== (previous.fields.shipment_type ?? 'tanker')) throw new ApiError(400, 'Изменять тип существующей отгрузки нельзя. Создайте отдельную операцию нужного типа.');
+  const azs = type === 'azs';
+  if (azs) {
+    const editable = new Set(['shipment_type', 'document_number', 'date', 'customer_id', 'supplier_id', 'manager_id', 'product_id', 'payment_form_id', 'quantity_litres', 'customer_amount', 'purchase_amount']);
+    for (const key of Object.keys(data)) if (!editable.has(key)) throw new ApiError(400, `Поле ${key} недоступно для отгрузки АЗС.`);
+  }
+  data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
-  for (const key of automatic) if (Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
+  for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);
     if (managerId && (!previous || data.customer_id !== previous.customerId || Object.hasOwn(data, 'manager_id'))) data.manager_id = managerId;
@@ -370,6 +387,14 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
     data.vehicle_id = vehicle?.id ?? driver?.vehicleId ?? null;
   }
   const fields = validateShipmentFields(data, previous, snapshot.companies);
+  if (azs) {
+    for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','customer_amount','purchase_amount']) if (fields[key] == null || fields[key] === '') throw new ApiError(400, `Заполните обязательное поле АЗС: ${key}.`);
+    if (!['cash','cashless'].includes(settlementKind(fields.payment_form))) throw new ApiError(400, 'Для АЗС доступны только наличные и безнал. Ф2 недоступна.');
+    if (!new Exact(fields.quantity_litres!).gt(0)) throw new ApiError(400, 'Количество литров должно быть больше нуля.');
+    for (const key of ['customer_amount','purchase_amount']) if (new Exact(fields[key]!).lt(0)) throw new ApiError(400, 'Суммы покупателя и поставщика не могут быть отрицательными.');
+    fields.calculation_mode = 'automatic'; fields.profit_rule = AZS_PROFIT_RULE;
+    return calculateShipment(fields,{sale:null,purchase:null,profit:AZS_PROFIT_RULE,debtSign:'paid-minus-sale'}).fields;
+  }
   if (!previous || previous.fields.calculation_mode === 'automatic') {
     for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit']) if (!fields[key]) throw new ApiError(400,`Заполните обязательное поле: ${key}.`);
     fields.calculation_mode = 'automatic';

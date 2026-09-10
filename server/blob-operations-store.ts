@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { get, put, BlobPreconditionFailedError } from '@vercel/blob';
 import { ApiError } from './api-error';
 import { decodeOperations, encodeOperations, StoreError, type OperationsData, type OperationsStorage } from './operations-store';
@@ -14,6 +15,15 @@ export class BlobOperationsStore implements OperationsStorage {
     const raw = await new Response(result.stream).text();
     if (Buffer.byteLength(raw) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
     return { data: decodeOperations(raw, sourceSha256), etag: result.blob.etag };
+  }
+
+  async backup(data: OperationsData): Promise<string> {
+    const pathname = `artel/backups/directories-${Date.now()}-${randomUUID()}.json`;
+    const encoded = encodeOperations(data);
+    await this.client.put(pathname, encoded, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType: 'application/json' });
+    const result = await this.client.get(pathname, { access: 'private', useCache: false });
+    if (!result || result.statusCode !== 200 || !result.stream || await new Response(result.stream).text() !== encoded) throw new StoreError('Backup verification failed');
+    return pathname;
   }
 
   async read(sourceSha256: string) { return (await this.load(sourceSha256)).data; }

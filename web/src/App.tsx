@@ -1,26 +1,36 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Fuel, LayoutDashboard, LoaderCircle, Menu, PackageCheck, Search, PanelLeftClose, PanelLeftOpen, Truck, Users, Wallet, X, type LucideIcon } from 'lucide-react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, Menu, PackageCheck, Search, PanelLeftClose, PanelLeftOpen, Truck, Users, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
+import ChinaPage from './ChinaPage'
 import TeamPage from './TeamPage'
 import ShipmentsPage from './ShipmentsPage'
 import DirectoriesPage from './DirectoriesPage'
 import CompanySearchDialog from './CompanySearchDialog'
-import { StockPage } from './SourcePages'
-import { number, money, shortNumber, formatDate, monthName, initial, roleName, descendingDate, downloadCsv, sum } from './utils'
+import WorkPage from './WorkPage'
+import AuthGate from './AuthGate'
+import AccountManagement from './AccountManagement'
+import type { AccountUser } from './auth-model'
+import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
-type Page = 'overview' | 'shipments' | 'payments' | 'stock' | 'team' | 'directories'
+type Page = 'overview' | 'work' | 'shipments' | 'payments' | 'stock' | 'china' | 'operator' | 'payroll' | 'team' | 'directories'
 const pages: {id: Page; title: string; icon: LucideIcon; section: number; description: string}[] = [
-  {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:'Отгрузки, расчёты и показатели бизнеса.'},
+  {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:''},
+  {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
   {id:'shipments',title:'Отгрузки',icon:Truck,section:0,description:'Движение топлива — от поставщика до покупателя.'},
   {id:'payments',title:'Платежи',icon:Wallet,section:0,description:'Поступления и списания из банковской выписки.'},
-  {id:'stock',title:'Склад',icon:PackageCheck,section:0,description:'Месячные сводки поступления, расхода и остатков.'},
+  {id:'stock',title:'Склад',icon:PackageCheck,section:0,description:''},
+  {id:'china',title:'Китай',icon:Globe,section:0,description:''},
+  {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
+  {id:'payroll',title:'ЗП',icon:Banknote,section:1,description:''},
   {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Компании и менеджеры, товары, водители и автомобили.'},
-  {id:'team',title:'Команда и роли',icon:Users,section:1,description:'Структура команды и будущие правила доступа.'},
+  {id:'team',title:'Команды и роли',icon:Users,section:1,description:'Пользователи и права доступа.'},
 ]
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
-export default function App() {
+export default function App(){return <AuthGate>{(user,onLogout)=><WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</AuthGate>}
+function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
+  const canManage=user.role!=='manager'
   const [data,setData] = useState<Snapshot | null>(null)
   const [error,setError] = useState('')
   const [page,setPage] = useState<Page>(getPage)
@@ -68,16 +78,19 @@ export default function App() {
       <div className="sidebar-bottom"><button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button></div>
     </aside>
     <div className="workspace-main" inert={menu}>
-      <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Открыть меню" onClick={() => setMenu(true)}><Menu size={21}/></button><strong>{active.title}</strong></div><div className="topbar-actions"><form className="global-search" onSubmit={e => {e.preventDefault();setCompanySearch(true)}}><button type="submit" className="icon-button global-search-submit" aria-label="Найти контрагента" title="Найти контрагента"><Search size={18}/></button><input ref={searchRef} aria-label="Глобальный поиск контрагентов" placeholder="Найти контрагента…" value={search} onChange={e => setSearch(e.target.value)}/><kbd>⌘ K</kbd></form><span className="topbar-local"><span/>Локально</span></div></header>
-      <main id="main-content"><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{page === 'overview' ? 'Обзор бизнеса' : active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'overview' || page === 'shipments' || page === 'payments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
+      <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Открыть меню" onClick={() => setMenu(true)}><Menu size={21}/></button><strong>{active.title}</strong></div><div className="topbar-actions"><form className="global-search" onSubmit={e => {e.preventDefault();setCompanySearch(true)}}><button type="submit" className="icon-button global-search-submit" aria-label="Найти контрагента" title="Найти контрагента"><Search size={18}/></button><input ref={searchRef} aria-label="Глобальный поиск контрагентов" placeholder="Найти контрагента…" value={search} onChange={e => setSearch(e.target.value)}/><kbd>⌘ K</kbd></form><div className="auth-user"><span title={user.name}>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div></div></header>
+      <main id="main-content"><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments' || page === 'payments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
       {page === 'shipments' && (!data || error) && <button className="button" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={20}/>Меню</button>}
       {error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
-      {page === 'overview' && <Overview data={data} period={period} navigate={navigate} open={setDetail} onFindCompany={()=>setCompanySearch(true)}/>}
-      {page === 'shipments' && <ShipmentsPage onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
-      {page === 'directories' && <DirectoriesPage data={data} onChanged={fetchData}/>}
+      {['overview','stock'].includes(page) && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
+      {page === 'china' && <ChinaPage canManage={canManage}/>}
+      {page === 'operator' && <section className="blank-workspace" aria-label="Операторская: рабочее пространство"><p className="soft-notice">Excel-файл с системой учёта не предоставлен. Структура работы и расчёты пока не настроены.</p></section>}
+      {page === 'work' && <WorkPage/>}
+      {page === 'payroll' && <PayrollPage/>}
+      {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+      {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
       {page === 'payments' && <Payments data={data} period={period} open={setDetail} notify={notifyExport}/>}
-      {page === 'stock' && <StockPage data={data}/>}
-      {page === 'team' && <TeamPage managerLabels={data.directories!.managers.map(m => ({name:m.name,shipmentCount:data.managers.find(manager=>manager.label===m.name)?.shipmentCount??0}))}/>}
+      {page === 'team' && <>{canManage&&<AccountManagement directories={data.directories!}/>}<TeamPage managerLabels={data.directories!.managers.map(m => ({name:m.name,shipmentCount:data.managers.find(manager=>manager.label===m.name)?.shipmentCount??0}))}/></>}
       </div>}
       <footer className="page-footer"><span><span className="tiny-mark">а</span> Артель CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>
       </main>
@@ -90,37 +103,10 @@ export default function App() {
 function NavItem({title,icon:Icon,active,onClick,count}: {title:string;icon:LucideIcon;active:boolean;onClick:()=>void;count?:number}) {return <button className={`nav-item ${active?'active':''}`} aria-label={title} title={title} onClick={onClick} aria-current={active?'page':undefined}><Icon size={19} strokeWidth={1.7}/><span>{title}</span>{count !== undefined && <small>{number(count)}</small>}{active && <span className="active-indicator"/>}</button>}
 function Stat({label,value,unit,description,icon:Icon,trend}: {label:string;value:string;unit?:string;description:string;icon:LucideIcon;trend?:number[]}) {return <div className="stat-card"><div className="stat-label">{label}<Icon size={18}/></div><div className="stat-value">{value}<span>{unit}</span></div><div className="stat-bottom"><span>{description}</span>{trend && <Sparkline values={trend}/>}</div></div>}
 function Sparkline({values}: {values:number[]}) {const max = Math.max(...values,1),min=Math.min(...values,0);return <svg viewBox="0 0 84 26" className="sparkline" aria-hidden="true"><polyline points={values.map((v,i)=>`${i*84/Math.max(values.length-1,1)},${24-(v-min)/(max-min)*21}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/></svg>}
-function Overview({data,period,navigate,open,onFindCompany}: {data:Snapshot;period:string;navigate:(p:Page)=>void;open:(d:Detail)=>void;onFindCompany:()=>void}) {
-  const [metric,setMetric] = useState<'revenue'|'liters'>('revenue')
-  const months = data.monthly.slice(-12)
-  const aggregate = period === 'all' ? data.overview : data.monthly.find(m=>m.month === period) || data.overview
-  const [recent,setRecent] = useState<{items:Shipment[];topCustomers:{id:string;name:string;revenue:string|null}[];summary?:{customerCount:number}} | null>(null)
-  const [recentError,setRecentError] = useState('')
-  useEffect(() => {
-    const controller = new AbortController()
-    setRecent(null); setRecentError('')
-    fetch(`/api/shipments?limit=5&period=${encodeURIComponent(period)}`, {signal:controller.signal})
-      .then(async response => { if(!response.ok) throw new Error('Не удалось загрузить последние отгрузки'); return response.json() })
-      .then(setRecent).catch(error => { if(error.name !== 'AbortError') setRecentError(error.message) })
-    return () => controller.abort()
-  }, [period,data])
-  const rows = recent?.items || []
-  const activeCompanies = recent?.summary?.customerCount
-  const top = (recent?.topCustomers || []).slice(0,4).map(company => ({...company,value:company.revenue || '0'}))
-  const chartMax = Math.max(...months.map(m=>Number(m[metric].total)),1)
-  return <>
-    <div className="snapshot-banner"><span className="banner-icon"><Database size={17}/></span><p><strong>Ваши отгрузки под контролем</strong><span>Создавайте и редактируйте отгрузки. Управляйте компаниями и их менеджерами в справочнике.</span></p><button onClick={()=>navigate('shipments')}>К отгрузкам <ArrowRight size={16}/></button></div>
-    <div className="stats-grid"><Stat label="Сумма отгрузок" value={shortNumber(aggregate.revenue.total)} unit="₽" description="По сохранённым значениям" icon={Wallet} trend={months.map(m=>Number(m.revenue.total))}/><Stat label="Объём топлива" value={shortNumber(aggregate.liters.total)} unit="л" description="По строкам отгрузок" icon={Fuel} trend={months.map(m=>Number(m.liters.total))}/><Stat label="Отгрузки" value={number(aggregate.shipmentCount)} description={period === 'all' ? 'Операций в рабочей базе' : 'За выбранный месяц'} icon={Truck}/><Stat label={period === 'all' ? 'Контрагенты' : 'Покупатели'} value={number(period==='all'?data.companies.length:activeCompanies)} description={period === 'all' ? 'Обозначений в справочнике' : 'В отгрузках месяца'} icon={Building2}/></div>
-    <div className="overview-grid"><section className="panel chart-panel"><div className="panel-heading"><div><h2>Динамика отгрузок</h2><p>{months.length ? `${monthName(months[0].month)} — ${monthName(months[months.length-1].month)}` : 'Нет датированных записей'}</p></div><div className="segmented"><button className={metric==='revenue'?'selected':''} onClick={()=>setMetric('revenue')}>Сумма</button><button className={metric==='liters'?'selected':''} onClick={()=>setMetric('liters')}>Литры</button></div></div><div className="chart-key"><span/>{metric==='revenue'?'Сумма отгрузок, ₽':'Объём отгрузок, л'}</div><div className="bar-chart"><div className="chart-axis">{[1,.75,.5,.25,0].map(x=><span key={x}>{shortNumber(chartMax*x)}</span>)}</div><div className="chart-plot"><div className="chart-gridlines">{[0,1,2,3,4].map(x=><i key={x}/>)}</div><div className="bars">{months.map(m=><div className={`bar-column ${period===m.month?'highlight':''}`} key={m.month}><div className="bar-track"><div tabIndex={0} aria-label={`${monthName(m.month)}: ${number(m[metric].total)} ${metric==='revenue'?'рублей':'литров'}`} className="bar" style={{height:`${Math.max(0,Number(m[metric].total)/chartMax*100)}%`}}><span className="bar-tooltip">{monthName(m.month)}<strong>{number(m[metric].total)} {metric==='revenue'?'₽':'л'}</strong></span></div></div><span className="bar-label">{monthName(m.month,true).replace('.','')}</span></div>)}</div></div></div><div className="chart-note">{period === 'all' ? 'Динамика за последние 12 месяцев с данными.' : 'График показывает общий период; выбранный месяц выделен.'} Пустые значения не заменены нулями в записях.</div></section>
-    <section className="panel top-companies"><div className="panel-heading"><div><h2>Основные покупатели</h2><p>По сумме отгрузок</p></div><Building2 size={19}/></div>{top.length ? <div className="ranking">{top.map((c,i)=><button key={c.id} className="rank-row" onClick={()=>open({kind:'company',item:data.companies.find(x=>x.id===c.id)!})}><span className={`company-avatar shade-${i}`}>{initial(c.name)}</span><span className="rank-info"><strong>{c.name}</strong><span className="rank-track"><i style={{width:`${Math.max(0,Number(c.value)/Math.max(Number(top[0].value),1)*100)}%`}}/></span></span><span className="rank-value">{shortNumber(c.value)} ₽</span></button>)}</div>:recentError?<p className="soft-notice">{recentError}</p>:!recent?<p className="soft-notice">Загружаем покупателей…</p>:<Empty/>}<button className="panel-bottom-button" onClick={onFindCompany}>Найти контрагента <ArrowRight size={16}/></button></section></div>
-    <section className="panel"><div className="panel-heading"><div className="heading-with-counter"><h2>Последние отгрузки</h2><span className="counter">{number(aggregate.shipmentCount)}</span></div><button className="text-button" onClick={()=>navigate('shipments')}>Все отгрузки <ArrowRight size={15}/></button></div>{recentError ? <p className="soft-notice" role="alert">{recentError}</p> : recent ? <ShipmentTable rows={rows} open={open} compact/> : <p className="soft-notice">Загружаем последние отгрузки…</p>}</section>
-  </>
-}
 function Empty(){return <div className="empty-state"><Search size={25}/><strong>Ничего не найдено</strong><span>Попробуйте другой запрос или сбросьте фильтры.</span></div>}
 function SearchField({value,onChange,placeholder}: {value:string;onChange:(v:string)=>void;placeholder:string}) {return <label className="table-search"><Search size={17}/><input aria-label={placeholder} placeholder={placeholder} value={value} onChange={e=>onChange(e.target.value)}/>{value&&<button className="clear-input" aria-label="Очистить поиск" onClick={()=>onChange('')}><X size={14}/></button>}</label>}
 function Pagination({page,setPage,total,size=12}: {page:number;setPage:(n:number)=>void;total:number;size?:number}) {const max=Math.max(1,Math.ceil(total/size));return <div className="pagination"><span>{total?`${number((page-1)*size+1)}–${number(Math.min(page*size,total))}`:'0'} из {number(total)}</span><div><button className="icon-button" disabled={page<=1} aria-label="Предыдущая страница" onClick={()=>setPage(page-1)}><ChevronLeft size={17}/></button><span>{page} <span className="muted">/ {max}</span></span><button className="icon-button" disabled={page>=max} aria-label="Следующая страница" onClick={()=>setPage(page+1)}><ChevronRight size={17}/></button></div></div>}
 function ExportButton({onClick}: {onClick:()=>void}) {return <button className="button" onClick={onClick}><ArrowDownToLine size={16}/>Экспорт CSV</button>}
-function ShipmentTable({rows,open,compact=false}: {rows:Shipment[];open:(d:Detail)=>void;compact?:boolean}) {return <div className="table-scroll"><table><thead><tr><th>Дата / строка</th><th>Покупатель</th>{!compact&&<th>Поставщик</th>}<th>Топливо</th><th className="align-right">Объём, л</th><th className="align-right">Сумма, ₽</th><th>Менеджер</th><th/></tr></thead><tbody>{rows.map(s=><tr key={s.id}><td><button className="date-link" onClick={()=>open({kind:'shipment',item:s})}>{formatDate(s.date)}<small>{s.sourceRow ? `#${s.sourceRow}` : 'В CRM'}</small></button></td><td><button className="company-text-link" onClick={()=>open({kind:'shipment',item:s})}>{s.customer||'Покупатель не указан'}</button></td>{!compact&&<td className="truncate-cell">{s.supplier||'—'}</td>}<td><span className="fuel-badge"><span/>{s.product||'Не указано'}</span></td><td className="align-right tabular">{number(s.liters,2)}</td><td className="align-right tabular strong">{number(s.revenue,2)}</td><td><span className="manager-label">{s.manager&&<span className="mini-avatar">{initial(s.manager).slice(0,1)}</span>}{s.manager||'—'}</span></td><td><button className="icon-button" aria-label={`Открыть отгрузку ${s.sourceRow}`} onClick={()=>open({kind:'shipment',item:s})}><ChevronRight size={15}/></button></td></tr>)}</tbody></table>{!rows.length&&<Empty/>}</div>}
 function Payments({data,period,open,notify}: {data:Snapshot;period:string;open:(d:Detail)=>void;notify:()=>void}) {
  const [query,setQuery]=useState(''),[direction,setDirection]=useState('all'),[page,setPage]=useState(1)
  useEffect(()=>setPage(1),[query,direction,period])
@@ -158,3 +144,5 @@ function CompanyShipmentRecords({company,open}: {company:Company;open:(detail:De
  return <div className="dialog-records">{rows.map(shipment=><button key={shipment.id} onClick={()=>open({kind:'shipment',item:shipment})}><span><strong>{formatDate(shipment.date)} · {shipment.product||'Топливо не указано'}</strong><small>{shipment.customer||'Без покупателя'}</small></span><strong>{number(shipment.liters,2)} л</strong><ChevronRight size={16}/></button>)}{loading&&<p className="soft-notice">Загружаем отгрузки…</p>}{error&&<div className="soft-notice" role="alert">{error} <button className="button" onClick={()=>setRetry(value=>value+1)}>Повторить</button></div>}{!loading&&!error&&!rows.length&&<Empty/>}{!loading&&!error&&rows.length<total&&<button className="button" onClick={()=>setOffset(rows.length)}>Показать ещё 50</button>}</div>
 }
 function flagLabel(flag:string) {return ({incoming_amount_stored_as_text:'поступление распознано из текста',outgoing_amount_stored_as_text:'списание распознано из текста',manager_formula_broken:'повреждена формула менеджера',manager_unresolved:'менеджер не определён',missing_customer:'не указан покупатель',missing_supplier:'не указан поставщик',missing_counterparty:'не указан контрагент',no_nonzero_amount:'нет ненулевой суммы',missing_or_invalid_date:'дата отсутствует или некорректна',both_incoming_and_outgoing:'одновременно поступление и списание',invalid_date:'некорректная дата',zero_date:'ноль вместо даты',incomplete_source_row:'неполная строка',missing_date:'дата отсутствует'}[flag]||flag.replaceAll('_',' '))}
+
+function PayrollPage(){const [tab,setTab]=useState('drivers');return <><div className="payroll-tabs" role="tablist" aria-label="Направление зарплат">{[['drivers','Зарплаты водителей'],['managers','Зарплаты менеджеров']].map(([id,title])=><button key={id} id={`payroll-${id}`} className={`button ${tab===id?'primary':''}`} role="tab" aria-selected={tab===id} aria-controls="payroll-content" onClick={()=>setTab(id)}>{title}</button>)}</div><section id="payroll-content" role="tabpanel" aria-labelledby={`payroll-${tab}`} className="payroll-space"/></>}

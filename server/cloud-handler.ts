@@ -7,6 +7,7 @@ import { sameOrigin } from './cloud-auth';
 
 const middleware = createSnapshotMiddleware(resolve(process.cwd(), 'data/local-xlsx-final'), {
   operationsStore: new BlobOperationsStore(),
+  secureCookies: true,
   authorizeRequest: sameOrigin,
   checkoApiKey: process.env.CHECKO_API_KEY,
 });

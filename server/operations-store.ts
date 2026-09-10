@@ -5,6 +5,11 @@ import { dirname, resolve } from 'node:path';
 import type { Company, Directories, PaymentAllocation } from '../web/src/model';
 import { migrateShipmentDirectories } from './migrations/002-shipment-directories';
 import { validPhone, validVehicleMetadata, withFleetDirectories } from './fleet-directory';
+import type { ChinaData } from '../web/src/china-model';
+import { validateChina } from './china-operations';
+import type { WorkData } from '../web/src/work-model';
+import { validateWorkData } from './work-operations';
+import { validateAccounts, type AccountsData } from './auth';
 
 export interface ShipmentOverride {
   fields: Record<string, string | null>;
@@ -24,6 +29,9 @@ export interface OperationsData {
   paymentAllocations?: PaymentAllocation[];
   /** Explicit reset: source operations must never be imported again. */
   sourceOperationsCleared?: boolean;
+  work?: WorkData;
+  china?: ChinaData;
+  accounts?: AccountsData;
 }
 
 export class StoreError extends Error {}
@@ -36,8 +44,16 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 export function validate(data: unknown, sourceSha256: string): asserts data is OperationsData {
   if (!object(data) || (data.schemaVersion !== 1 && data.schemaVersion !== 2) || data.sourceSha256 !== sourceSha256 || !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 || !object(data.shipments) || !Array.isArray(data.companies)) throw new StoreError('Invalid operations store');
   if (data.sourceOperationsCleared !== undefined && typeof data.sourceOperationsCleared !== 'boolean') throw new StoreError('Invalid operations reset');
+  validateChina(data.china);
+  if (data.work !== undefined) validateWorkData(data.work);
+  if (data.accounts !== undefined) { try { validateAccounts(data.accounts as AccountsData); } catch { throw new StoreError('Invalid accounts'); } }
   if (data.schemaVersion === 2) {
     const directories = data.directories;
+    if (object(directories) && directories.fleetSeedApplied !== undefined && typeof directories.fleetSeedApplied !== 'boolean') throw new StoreError('Invalid fleet migration');
+    if (object(directories) && directories.deletedEntries !== undefined) {
+      if (!object(directories.deletedEntries)) throw new StoreError('Invalid directory deletions');
+      for (const [kind, ids] of Object.entries(directories.deletedEntries)) if (!['companies','managers','products','paymentForms','vehicles','drivers','addresses'].includes(kind) || !strings(ids) || ids.some(id=>!id) || new Set(ids).size!==ids.length) throw new StoreError('Invalid directory deletions');
+    }
     if (!object(directories) || !object(directories.defaults) || ![null,'template-payment-form','simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
     if (directories.customerManagers !== undefined) {
       if (!Array.isArray(directories.customerManagers)) throw new StoreError('Invalid customer managers');
@@ -92,14 +108,28 @@ export function decodeOperations(raw: string, sourceSha256: string): OperationsD
 
 export function encodeOperations(data: OperationsData): string {
   validate(data, data.sourceSha256);
-  return JSON.stringify({ sha256: hash(JSON.stringify(data)), data });
+  const encoded = JSON.stringify({ sha256: hash(JSON.stringify(data)), data });
+  if (Buffer.byteLength(encoded) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
+  return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup'>>;
 
 export class OperationsStore {
   readonly path: string;
   constructor(directory: string) { this.path = resolve(directory, 'operations.json'); }
+
+  async backup(data: OperationsData): Promise<string> {
+    const folder = resolve(dirname(this.path), 'backups');
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    const path = resolve(folder, `directories-${Date.now()}-${randomUUID()}.json`);
+    const encoded = encodeOperations(data);
+    const file = await open(path, 'wx', 0o600);
+    try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
+    const saved = await open(path, 'r');
+    try { if (encodeOperations(decodeOperations(await saved.readFile('utf8'), data.sourceSha256)) !== encoded) throw new StoreError('Backup verification failed'); } finally { await saved.close(); }
+    return path;
+  }
 
   async read(sourceSha256: string): Promise<OperationsData> {
     let raw: string;
@@ -140,7 +170,7 @@ export class OperationsStore {
         if (changed) {
           data.revision++;
           validate(data, sourceSha256);
-          const encoded = JSON.stringify({ sha256: hash(JSON.stringify(data)), data });
+          const encoded = encodeOperations(data);
           const temporary = `${this.path}.${randomUUID()}.tmp`;
           try {
             const file = await open(temporary, 'wx', 0o600);

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { loadSnapshot } from '../server/local-api';
+import { loadSnapshot } from './test-api';
 import { currentSnapshot, prepareShipmentFields } from '../server/shipment-operations';
 import { emptyDirectories, addDirectoryEntry } from '../server/directory-operations';
 import { OperationsStore, type OperationsData } from '../server/operations-store';

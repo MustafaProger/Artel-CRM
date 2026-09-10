@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LoaderCircle, Save, X } from 'lucide-react'
-import type { Company, Directories, Shipment } from './model'
+import type { Company, Directories, Shipment, ShipmentType } from './model'
 import DirectorySelect from './DirectorySelect'
-import { customerManagerId } from './customer-manager'
+import { customerManagerId, availableShipmentCustomer } from './customer-manager'
 import { calculateShipment, TEMPLATE_PROFIT_RULE, today } from './shipment-calculations'
 import { number, monthName, formatDate } from './utils'
 import ShipmentTripEditor from './ShipmentTripEditor'
+import ShipmentAzsEditor from './ShipmentAzsEditor'
 
 export interface ShipmentEditorProps {
-  shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void
+  shipmentType?: ShipmentType; shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void
 }
 export default function ShipmentEditor(props: ShipmentEditorProps) {
+  if ((props.shipment?.fields.shipment_type ?? props.shipmentType) === 'azs') return <ShipmentAzsEditor {...props}/>
   return !props.shipment || props.shipment.fields.trip_id ? <ShipmentTripEditor {...props}/> : <LegacyShipmentEditor {...props}/>
 }
 
@@ -65,7 +67,7 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
         {input('Дата операции','date','date',true)}{select('Менеджер','manager_id',directories.managers,{required:true,legacy:shipment?.manager})}{select('Форма оплаты','payment_form_id',directories.paymentForms,{required:true,legacy:shipment?.fields.payment_form})}{select('Товар','product_id',directories.products,{required:true,legacy:shipment?.product})}{input('Количество тонн','quantity_tonnes','text',true)}{input('Количество литров','quantity_litres','text',true)}
       </div><div className="shipment-calculation-strip">{output('Месяц',calculation.fields.month?monthName(calculation.fields.month):null)}</div></fieldset>
       <fieldset className="shipment-fieldset group-sale"><legend>Продажа</legend><div className="shipment-field-grid">
-        {select('Контрагент','customer_id',companyEntries,{required:true})}{select('Адрес выгрузки','unloading_address_id',directories.addresses.filter(a=>a.kind==='delivery'&&a.companyId===fields.customer_id),{disabled:!fields.customer_id,legacy:fields.customer_id===initial.customer_id?shipment?.fields.unloading_address:null})}{input(shipment?.calculationRules?.sale==='tonnes'?'Цена продажи за тонну, ₽ (исходник)':'Цена продажи за литр, ₽','sale_price_per_litre','text',true)}
+        {select('Контрагент','customer_id',companyEntries.filter(company => availableShipmentCustomer(directories, company.id, fields.customer_id)),{required:true})}{select('Адрес выгрузки','unloading_address_id',directories.addresses.filter(a=>a.kind==='delivery'&&a.companyId===fields.customer_id),{disabled:!fields.customer_id,legacy:fields.customer_id===initial.customer_id?shipment?.fields.unloading_address:null})}{input(shipment?.calculationRules?.sale==='tonnes'?'Цена продажи за тонну, ₽ (исходник)':'Цена продажи за литр, ₽','sale_price_per_litre','text',true)}
       </div><div className="shipment-calculation-strip">{output('ИНН контрагента',customer?.inn??(fields.customer_id===initial.customer_id?shipment?.fields.customer_inn:null))}{output('Цена продажи за тонну, ₽',calculation.fields.sale_price_per_tonne,true)}{output('Сумма покупателя, ₽',calculation.fields.customer_amount,true)}</div></fieldset>
       <fieldset className="shipment-fieldset group-purchase"><legend>Закупка</legend><div className="shipment-field-grid">
         {select('Поставщик','supplier_id',companyEntries,{required:true})}{select('Адрес загрузки','loading_address_id',directories.addresses.filter(a=>a.kind==='loading'&&a.companyId===fields.supplier_id),{disabled:!fields.supplier_id,legacy:fields.supplier_id===initial.supplier_id?shipment?.fields.loading_address:null})}{input('Цена закупки, ₽','purchase_price_unspecified_unit','text',true)}<label className="shipment-field"><span>Единица цены закупки *</span><select aria-label="Единица цены закупки" value={fields.purchase_unit} required={!shipment} disabled={saving} onChange={e=>update('purchase_unit',e.target.value)}><option value="">Выберите единицу</option><option value="tonnes">₽ за тонну</option><option value="litres">₽ за литр</option></select></label>

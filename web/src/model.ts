@@ -27,6 +27,8 @@ export interface Company extends CompanyDetails {
   registryCheckedAt?: string;
 }
 
+export type ShipmentType = 'tanker' | 'azs';
+
 export interface Shipment {
   id: string;
   /** Source records start at zero; each saved edit increments the version. */
@@ -187,7 +189,7 @@ export interface NamedEntry { id: string; name: string; version?: number }
 export interface Vehicle extends VehicleDetails { id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
 export interface Driver extends NamedEntry, DriverDetails { vehicleId: string; phone?: string }
 export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery' }
-export type ProfitRule = 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
+export type ProfitRule = 'azs-payment-form' | 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
 export interface CalculationRules {
   sale: 'litres' | 'tonnes' | null;
   purchase: 'litres' | 'tonnes' | null;
@@ -199,6 +201,10 @@ export interface PaymentAllocation {
 }
 export interface DuplicateCandidate { kind: string; names: string[]; ids: string[]; reason: string }
 export interface Directories {
+  /** Derived per authenticated manager; never stored as role assignments. */
+  assignedCustomerIds?: string[];
+  fleetSeedApplied?: boolean;
+  deletedEntries?: Partial<Record<'companies'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses', string[]>>;
   managers: NamedEntry[]; products: NamedEntry[]; paymentForms: NamedEntry[];
   vehicles: Vehicle[]; drivers: Driver[]; addresses: ShipmentAddress[];
   defaults: { profit: ProfitRule | null };

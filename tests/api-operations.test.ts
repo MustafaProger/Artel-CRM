@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import Decimal from 'decimal.js';
-import { createSnapshotMiddleware, loadSnapshot, type LocalApiOptions } from '../server/local-api';
+import { createSnapshotMiddleware, loadSnapshot, type LocalApiOptions } from './test-api';
 import { validInn } from '../server/checko';
 import { directoriesFor } from '../server/directory-operations';
 import type { Company, Shipment, ShipmentsResponse, Snapshot } from '../web/src/model';

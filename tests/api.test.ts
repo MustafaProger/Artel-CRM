@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Snapshot } from '../web/src/model';
-import { createSnapshotMiddleware, decimalValue, exactMetric, loadSnapshot, sourceDate } from '../server/local-api';
+import { createSnapshotMiddleware, decimalValue, exactMetric, loadSnapshot, sourceDate } from './test-api';
 
 const dataDirectory = resolve('data/local-xlsx-final');
 let snapshot: Snapshot;

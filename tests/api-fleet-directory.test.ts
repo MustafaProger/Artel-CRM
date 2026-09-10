@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
-import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+import { createSnapshotMiddleware, loadSnapshot } from './test-api';
 import { emptyDirectories } from '../server/directory-operations';
 import { OperationsStore, type OperationsData } from '../server/operations-store';
 import type { Directories } from '../web/src/model';

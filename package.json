@@ -12,7 +12,11 @@
     "lint": "eslint web/src server tests vite.config.ts",
     "test": "npm run test:api",
     "test:shipments-ui": "node scripts/verify_shipments_excel.mjs",
-    "test:directories-ui": "node scripts/verify_directories.mjs"
+    "test:directories-ui": "node scripts/verify_directories.mjs",
+    "test:azs-ui": "node scripts/verify_azs.mjs",
+    "test:work-ui": "node scripts/verify_work.mjs",
+    "test:auth-ui": "node scripts/verify_navigation_auth.mjs",
+    "test:requirements-ui": "node --import tsx scripts/verify_requirements.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

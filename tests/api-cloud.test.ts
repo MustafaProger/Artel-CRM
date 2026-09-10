@@ -85,3 +85,21 @@ test('weak compression ETags fail closed instead of issuing an invalid condition
   await assert.rejects(new BlobOperationsStore('test', client).mutate('source', () => ({ changed: true, result: true })), StoreError);
   assert.equal(writes, 0);
 });
+
+test('private cloud backup is read back and verified before it can authorize cleanup', async () => {
+  const data: OperationsData = {schemaVersion:1,sourceSha256:'source',revision:7,shipments:{},companies:[]};
+  let saved = '', path = '', corrupt = false;
+  const client = {
+    put: (async (pathname, body, options) => {
+      assert.match(pathname, /^artel\/backups\/directories-/); assert.equal(options.access,'private'); assert.equal(options.allowOverwrite,false); assert.equal(options.addRandomSuffix,false);
+      saved=String(body); path=pathname; return {} as Awaited<ReturnType<typeof put>>;
+    }) as typeof put,
+    get: (async (pathname, options) => {
+      assert.equal(pathname,path); assert.equal(options.access,'private'); assert.equal(options.useCache,false);
+      return {statusCode:200,stream:new Response(corrupt?'{}':saved).body!} as Awaited<ReturnType<typeof get>>;
+    }) as typeof get,
+  };
+  const store = new BlobOperationsStore('test',client);
+  assert.equal(await store.backup(data),path); assert.equal(saved,encodeOperations(data));
+  corrupt=true; await assert.rejects(store.backup(data),StoreError);
+});

@@ -9,18 +9,18 @@ import { TEMPLATE_PROFIT_RULE } from '../web/src/shipment-calculations';
 export const normalizeName = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
 export const normalizePlate = (value: string) => value.normalize('NFKC').toUpperCase().replace(/[\s-]/g, '').replace(/[ABCEHKMOPTXY]/g, c => ({ A:'А',B:'В',C:'С',E:'Е',H:'Н',K:'К',M:'М',O:'О',P:'Р',T:'Т',X:'Х',Y:'У' }[c]!));
 export const emptyDirectories = (): Directories => ({ managers: [], products: [], paymentForms: [], vehicles: [], drivers: [], addresses: [], defaults: { profit: TEMPLATE_PROFIT_RULE }, duplicates: [], customerManagers: [] });
-const stableId = (kind: string, name: string) => `${kind}-${createHash('sha256').update(normalizeName(name)).digest('hex').slice(0,16)}`;
+export const directoryEntryId = (kind: string, name: string) => `${kind}-${createHash('sha256').update(normalizeName(name)).digest('hex').slice(0,16)}`;
 export function directoriesFor(base: Snapshot, store: OperationsData): Directories {
   const saved = withFleetDirectories(store.directories ?? emptyDirectories());
   const named = (kind: 'managers' | 'products' | 'paymentForms', labels: string[]) => {
     const unique = new Map<string, NamedEntry>();
-    for (const name of labels) if (name.trim() && name !== '0' && !saved[kind].some(row => row.id === stableId(kind, name))) unique.set(normalizeName(name), { id: stableId(kind, name), name: name.trim() });
-    for (const row of saved[kind]) unique.set(normalizeName(row.name), row);
+    for (const name of labels) if (name.trim() && name !== '0' && !saved.deletedEntries?.[kind]?.includes(directoryEntryId(kind, name)) && !saved[kind].some(row => row.id === directoryEntryId(kind, name))) unique.set(normalizeName(name), { id: directoryEntryId(kind, name), name: name.trim() });
+    for (const row of saved[kind]) if (!saved.deletedEntries?.[kind]?.includes(row.id)) unique.set(normalizeName(row.name), row);
     return [...unique.values()].sort((a,b) => a.name.localeCompare(b.name, 'ru'));
   };
   const local = Object.values(store.shipments).filter(row => !row.deleted);
   const duplicates = base.quality.aliasCandidates.map(group => ({ kind: 'companies', ...group, reason: 'Сходные названия без подтверждённого общего ИНН. Связи сохранены; требуется проверка.' }));
-  const companies = [...base.companies.filter(c => !store.companies.some(s => s.id === c.id)), ...store.companies];
+  const companies = [...base.companies.filter(c => !store.companies.some(s => s.id === c.id)), ...store.companies].filter(company => !saved.deletedEntries?.companies?.includes(company.id));
   const names = new Map<string, typeof companies>();
   for (const company of companies) { const key = normalizeName(company.name); names.set(key, [...(names.get(key) ?? []),company]); }
   for (const group of names.values()) if (group.length > 1) duplicates.push({kind:'companies',ids:group.map(c=>c.id),names:group.map(c=>c.name),reason:'Одинаковое название; идентичность юридического лица требует подтверждения по ИНН.'});

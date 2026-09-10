@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   BadgeCheck,
@@ -43,7 +43,7 @@ const fullPermissions: Permission[] = [
   { label: 'Финансы и отчёты', value: 'Все данные, отчёты и экспорт', allowed: true },
   { label: 'Импорт и распределение', value: 'Загрузка данных и назначение владельцев', allowed: true },
   { label: 'Команда и роли', value: 'Управление пользователями и доступом', allowed: true },
-  { label: 'История изменений', value: 'Все события', allowed: true },
+  { label: 'Изменения в Работе', value: 'Автор и время изменений в Работе', allowed: true },
 ];
 
 const roles: Role[] = [
@@ -51,25 +51,25 @@ const roles: Role[] = [
     id: 'director', name: 'Директор', caption: 'Полный обзор бизнеса', icon: ShieldCheck,
     summary: 'Все направления бизнеса в одном пространстве.',
     scope: 'Все компании, отгрузки и финансовые данные, включая записи без владельца.',
-    note: 'Директор сможет управлять ролями, распределять записи и видеть всю историю изменений.',
+    note: 'Директор управляет пользователями, справочниками, отгрузками и рабочими записями. Последнего директора нельзя отключить.',
     permissions: fullPermissions,
   },
   {
     id: 'admin', name: 'Администратор', caption: 'Данные и управление доступом', icon: Settings2,
     summary: 'Подготовка данных и организация работы команды.',
     scope: 'Все записи, включая нераспределённые компании и отгрузки.',
-    note: 'Полный доступ к бизнес-данным — рабочее допущение для импорта, проверки и распределения записей.',
+    note: 'Администратор управляет пользователями, справочниками и рабочими данными.',
     permissions: fullPermissions,
   },
   {
-    id: 'manager', name: 'Менеджер', caption: 'Свои компании и отгрузки', icon: UserRound,
+    id: 'manager', name: 'Менеджер', caption: 'Задачи и свои отгрузки', icon: UserRound,
     summary: 'Работа со своим портфелем клиентов.',
-    scope: 'Свои компании и только свои отгрузки, покупатель которых также закреплён за этим менеджером.',
-    note: 'Владельцы компании и отгрузки назначаются отдельно. Название поставщика или перевозчика в отгрузке не открывает доступ к его карточке.',
+    scope: 'Назначенные рабочие записи и отгрузки, связанные с сотрудником учётной записи. Общие справочники доступны для чтения.',
+    note: 'Задачу можно передать другому сотруднику. После передачи она доступна новому исполнителю; директор и администратор видят все задачи.',
     permissions: [
-      { label: 'Свои компании', value: 'Просмотр, создание, изменение и экспорт', allowed: true },
-      { label: 'Свои отгрузки своих компаний', value: 'Просмотр, создание, изменение и экспорт', allowed: true },
-      { label: 'Отчёты', value: 'Только данные из своей области доступа', allowed: true },
+      { label: 'Общие справочники', value: 'Только просмотр', allowed: true },
+      { label: 'Свои отгрузки', value: 'Просмотр, создание, изменение и экспорт', allowed: true },
+      { label: 'Работа', value: 'Назначенные задачи, компании и заметки', allowed: true },
       { label: 'Финансовая выписка и общие сводки', value: 'Доступ не предусмотрен', allowed: false },
       { label: 'Удаление, импорт и управление ролями', value: 'Доступ не предусмотрен', allowed: false },
     ],
@@ -104,6 +104,8 @@ const roles: Role[] = [
 
 export default function TeamPage({ managerLabels }: TeamPageProps) {
   const [selectedId, setSelectedId] = useState('director');
+  const [activeUsers,setActiveUsers]=useState<number|null>(null);
+  useEffect(()=>{fetch('/api/auth/users').then(async r=>{if(r.ok){const data=await r.json();setActiveUsers(data.users.filter((u:{active:boolean})=>u.active).length);}}).catch(()=>{});},[]);
   const [query, setQuery] = useState('');
   const [showAllLabels, setShowAllLabels] = useState(false);
   const selected = roles.find((role) => role.id === selectedId) ?? roles[0];
@@ -119,18 +121,18 @@ export default function TeamPage({ managerLabels }: TeamPageProps) {
       <div className="team-stats">
         <div className="team-stat">
           <div className="team-stat-label"><UsersRound size={17} /> Действующие пользователи</div>
-          <strong>0 <span>пользователей</span></strong>
-          <p>Учётные записи ещё не созданы</p>
+          <strong>{activeUsers??'—'} <span>пользователей</span></strong>
+          <p>Активные учётные записи</p>
         </div>
         <div className="team-stat">
           <div className="team-stat-label"><ShieldCheck size={17} /> Роли в структуре</div>
           <strong>5 <span>ролей</span></strong>
-          <p>3 описанные · 2 предложенные</p>
+          <p>3 действующие · 2 предложенные</p>
         </div>
         <div className="team-stat">
           <div className="team-stat-label"><Truck size={17} /> Распределение записей</div>
-          <strong className="team-stat-text">Не выполнено</strong>
-          <p>Компании и отгрузки без владельцев</p>
+          <strong className="team-stat-text">По сотруднику</strong>
+          <p>Связь учётной записи со справочником</p>
         </div>
       </div>
 
@@ -177,7 +179,7 @@ export default function TeamPage({ managerLabels }: TeamPageProps) {
           </div>
           <div className="team-permissions-heading">
             <h4>{selected.proposed ? 'Предлагаемые разрешения' : 'Разрешения по спецификации'}</h4>
-            <span>{selected.proposed ? 'Сейчас активных прав нет' : 'Будущая реализация'}</span>
+            <span>{selected.proposed ? 'Сейчас активных прав нет' : 'Проверяются сервером'}</span>
           </div>
           <dl className="team-permissions">
             {selected.permissions.map((permission) => (
@@ -231,7 +233,7 @@ export default function TeamPage({ managerLabels }: TeamPageProps) {
         )}
       </section>
 
-      <p className="team-prototype-note"><LockKeyhole size={14} />Локальный прототип: вход и ограничение доступа ещё не реализованы. Выбор карточки показывает только описание роли.</p>
+      <p className="team-prototype-note"><LockKeyhole size={14} />Вход и права проверяются сервером. Директор и администратор управляют данными; менеджер работает с назначенными задачами и своими отгрузками.</p>
     </div>
   );
 }
