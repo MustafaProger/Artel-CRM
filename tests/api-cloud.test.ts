@@ -19,6 +19,7 @@ function memoryBlob() {
   const client = {
     get: (async (_path, options) => {
       assert.equal(options.useCache, false);
+      assert.equal(options.headers?.['Accept-Encoding'], 'identity');
       return { statusCode: 200, stream: new Response(raw).body!, blob: { etag: String(version) } } as Awaited<ReturnType<typeof get>>;
     }) as typeof get,
     put: (async (_path, body, options) => {
@@ -69,4 +70,18 @@ test('missing cloud state never starts an empty CRM', async () => {
   const { client } = memoryBlob();
   client.get = (async () => null) as typeof get;
   await assert.rejects(new BlobOperationsStore('test', client).read('source'), StoreError);
+});
+
+test('weak compression ETags fail closed instead of issuing an invalid conditional write', async () => {
+  const { client } = memoryBlob();
+  const read = client.get;
+  let writes = 0;
+  client.get = (async (...args: Parameters<typeof get>) => {
+    const result = await read(...args);
+    if (result) result.blob.etag = 'W/"compressed"';
+    return result;
+  }) as typeof get;
+  client.put = (async () => { writes++; throw new Error('Unexpected write'); }) as typeof put;
+  await assert.rejects(new BlobOperationsStore('test', client).mutate('source', () => ({ changed: true, result: true })), StoreError);
+  assert.equal(writes, 0);
 });

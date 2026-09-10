@@ -6,9 +6,11 @@ export class BlobOperationsStore implements OperationsStorage {
   constructor(private readonly pathname = 'artel/operations.json', private readonly client = { get, put }) {}
 
   private async load(sourceSha256: string) {
-    const result = await this.client.get(this.pathname, { access: 'private', useCache: false });
+    // Compression can turn a strong storage ETag into W/"…", invalid for If-Match.
+    const result = await this.client.get(this.pathname, { access: 'private', useCache: false, headers: { 'Accept-Encoding': 'identity' } });
     // Missing remote data is a deployment error; never silently start an empty CRM.
     if (!result || result.statusCode !== 200 || !result.stream) throw new StoreError('Cloud operations store is missing');
+    if (!result.blob.etag || result.blob.etag.startsWith('W/')) throw new StoreError('Cloud storage did not return a strong ETag');
     const raw = await new Response(result.stream).text();
     if (Buffer.byteLength(raw) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
     return { data: decodeOperations(raw, sourceSha256), etag: result.blob.etag };
