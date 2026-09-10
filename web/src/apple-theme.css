@@ -211,6 +211,7 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
   .china-actions > .button:last-child { flex-basis: 100%; }
   .china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 10px 4px; font-size: 12px; }
   .china-table th { font-size: 10px; }
+  .china-table thead th, .china-table thead th:first-child, .china-table thead th:last-child { font-size: 10px; white-space: nowrap; }
   .china-table th:first-child { width: 47px; }
   .china-table th:nth-child(2) { width: 60px; }
   .china-date-year { display: block; font-size: 9px; color: var(--muted); }
