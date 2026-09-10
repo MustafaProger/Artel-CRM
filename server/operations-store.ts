@@ -30,11 +30,19 @@ const strings = (value: unknown): value is string[] => Array.isArray(value) && v
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
 /** Check both JSON syntax and structure: a broken store is never replaced with an empty one. */
-function validate(data: unknown, sourceSha256: string): asserts data is OperationsData {
+export function validate(data: unknown, sourceSha256: string): asserts data is OperationsData {
   if (!object(data) || (data.schemaVersion !== 1 && data.schemaVersion !== 2) || data.sourceSha256 !== sourceSha256 || !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 || !object(data.shipments) || !Array.isArray(data.companies)) throw new StoreError('Invalid operations store');
   if (data.schemaVersion === 2) {
     const directories = data.directories;
-    if (!object(directories) || !object(directories.defaults) || ![null,'simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
+    if (!object(directories) || !object(directories.defaults) || ![null,'template-payment-form','simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
+    if (directories.customerManagers !== undefined) {
+      if (!Array.isArray(directories.customerManagers)) throw new StoreError('Invalid customer managers');
+      const customers = new Set<string>();
+      for (const row of directories.customerManagers) {
+        if (!object(row) || typeof row.companyId !== 'string' || !row.companyId || typeof row.managerId !== 'string' || !row.managerId || customers.has(row.companyId)) throw new StoreError('Invalid customer manager');
+        customers.add(row.companyId);
+      }
+    }
     for (const key of ['managers','products','paymentForms','vehicles','drivers','addresses']) {
       const rows = directories[key];
       if (!Array.isArray(rows)) throw new StoreError('Invalid directory');
@@ -66,6 +74,23 @@ function validate(data: unknown, sourceSha256: string): asserts data is Operatio
   }
 }
 
+export function decodeOperations(raw: string, sourceSha256: string): OperationsData {
+  try {
+    const envelope = JSON.parse(raw) as { sha256?: unknown; data?: unknown };
+    if (!object(envelope) || envelope.sha256 !== hash(JSON.stringify(envelope.data))) throw new StoreError('Operations checksum mismatch');
+    validate(envelope.data, sourceSha256);
+    const data = migrateShipmentDirectories(envelope.data);
+    return { ...data, directories: withFleetDirectories(data.directories!) };
+  } catch { throw new StoreError('Operations store is damaged or belongs to another source'); }
+}
+
+export function encodeOperations(data: OperationsData): string {
+  validate(data, data.sourceSha256);
+  return JSON.stringify({ sha256: hash(JSON.stringify(data)), data });
+}
+
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'>;
+
 export class OperationsStore {
   readonly path: string;
   constructor(directory: string) { this.path = resolve(directory, 'operations.json'); }
@@ -85,13 +110,7 @@ export class OperationsStore {
       }
       throw new StoreError('Cannot read operations store');
     }
-    try {
-      const envelope = JSON.parse(raw) as { sha256?: unknown; data?: unknown };
-      if (!object(envelope) || envelope.sha256 !== hash(JSON.stringify(envelope.data))) throw new StoreError('Operations checksum mismatch');
-      validate(envelope.data, sourceSha256);
-      const data = migrateShipmentDirectories(envelope.data);
-      return { ...data, directories: withFleetDirectories(data.directories!) };
-    } catch { throw new StoreError('Operations store is damaged or belongs to another source'); }
+    return decodeOperations(raw, sourceSha256);
   }
 
   /** In-process serialization plus an exclusive file lock also protects dev/preview overlap. */

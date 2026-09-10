@@ -185,7 +185,7 @@ export interface NamedEntry { id: string; name: string }
 export interface Vehicle { id: string; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
 export interface Driver extends NamedEntry { vehicleId: string; phone?: string }
 export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery' }
-export type ProfitRule = 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
+export type ProfitRule = 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
 export interface CalculationRules {
   sale: 'litres' | 'tonnes' | null;
   purchase: 'litres' | 'tonnes' | null;
@@ -201,13 +201,14 @@ export interface Directories {
   vehicles: Vehicle[]; drivers: Driver[]; addresses: ShipmentAddress[];
   defaults: { profit: ProfitRule | null };
   duplicates: DuplicateCandidate[];
+  customerManagers?: { companyId: string; managerId: string }[];
 }
 
 /** A whole truck, represented by one accounting row per customer. */
 export interface ShipmentTrip {
   id: string;
   fields: Record<string, string | null>;
-  customers: { id: string; version: number; fields: Record<string, string | null> }[];
+  customers: { id: string; version: number; paidAmount: DecimalValue; fields: Record<string, string | null> }[];
 }
 export interface ShipmentTripResponse {
   trip: ShipmentTrip;

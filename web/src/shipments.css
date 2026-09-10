@@ -246,3 +246,10 @@
 .shipment-trip-editor input:disabled,.shipment-trip-editor .company-combobox:has(input:disabled){background:#edf2ee;opacity:.7}
 @media(max-width:760px){.shipment-trip-editor{width:calc(100vw - 20px)}.shipment-trip-editor .shipment-field-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.shipment-trip-editor .shipment-fieldset{padding:16px 14px}.shipment-trip-section-heading h3{font-size:18px}.shipment-trip-intro{font-size:13px}.shipment-trip-auto{margin-left:0}.shipment-trip-extras-body{grid-template-columns:1fr;gap:12px}.shipment-trip-extras-body .shipment-field{max-width:320px}}
 @media(max-width:540px){.shipment-trip-editor .shipment-field-grid{grid-template-columns:1fr}.shipment-trip-editor .shipment-editor-body{padding-inline:14px}.shipment-trip-editor .shipment-fieldset{padding-inline:13px}.shipment-trip-client-totals{gap:16px 22px}.shipment-trip-auto{flex-basis:100%}.shipment-trip-editor .shipment-calculated{min-width:100px}.shipment-trip-extras>summary{padding:16px 13px}.shipment-trip-extras-body{padding-inline:13px}.shipment-trip-editor .shipment-field>span,.shipment-trip-editor .company-picker>label{font-size:13px}.shipment-trip-section-heading p{font-size:12px}.shipment-trip-editor .shipment-editor-footer{padding:12px 14px}.shipment-trip-editor .shipment-editor-footer>.button{flex:1;min-width:0;font-size:12px;white-space:normal;justify-content:center;line-height:1.35}.shipment-trip-editor .shipment-editor-footer>.button.primary{flex:1.6}.shipment-trip-fleet>div{gap:14px}}
+
+.directory-assignment-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.directory-assignment-scroll { overflow-x:auto; }
+.directory-assignment-table { width:100%; border-collapse:collapse; text-align:left; }
+.directory-assignment-table th, .directory-assignment-table td { padding:12px; border-bottom:1px solid var(--border, #e5e7eb); }
+.directory-assignment-table th { font-size:13px; color:var(--muted, #64748b); }
+.directory-assignment-table small { display:block; margin-top:4px; color:var(--muted, #64748b); }

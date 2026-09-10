@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { CalculationRules, Company, Metric, Shipment, ShipmentsResponse, Snapshot } from '../web/src/model';
-import { calculateShipment } from '../web/src/shipment-calculations';
+import { calculateShipment, TEMPLATE_PROFIT_RULE } from '../web/src/shipment-calculations';
+import { settlementKind } from '../web/src/shipment-settlement';
+import { customerManagerId } from '../web/src/customer-manager';
 import { directoriesFor } from './directory-operations';
 import { parseFilters, matchesColumn, sortShipments } from './shipment-filtering';
 import { shipmentColumns, fieldValue } from '../web/src/shipment-templates';
@@ -19,7 +21,7 @@ export const SHIPMENT_FIELDS = [
   // Explicit picker identities, separate from the workbook's visible columns.
   'customer_id', 'supplier_id', 'carrier_id',
   'manager_id', 'product_id', 'payment_form_id', 'driver_id', 'vehicle_id', 'driver_name', 'vehicle_plate',
-  'trip_id', 'trip_total_tonnes', 'trip_additional_costs',
+  'trip_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
   'opening_payment_date', 'opening_paid_amount', 'loading_address_id', 'unloading_address_id', 'purchase_unit', 'payment_due_date', 'overdue_days', 'calculation_mode', 'profit_rule',
 ] as const;
 const allowedFields = new Set<string>(SHIPMENT_FIELDS);
@@ -160,11 +162,14 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
     } catch { throw new StoreError('Invalid stored company reference'); }
   }
   for (const address of directories.addresses) if (!companies.some(c => c.id === address.companyId)) throw new StoreError('Invalid address company');
+  for (const assignment of directories.customerManagers ?? []) {
+    if (!companies.some(c => c.id === assignment.companyId) || !directories.managers.some(m => m.id === assignment.managerId)) throw new StoreError('Invalid customer manager reference');
+  }
   for (const allocation of store.paymentAllocations ?? []) {
     if (!shipments.some(s => s.id === allocation.shipmentId) || !base.payments.some(p => p.id === allocation.paymentId)) throw new StoreError('Invalid payment allocation reference');
   }
   for (const row of shipments) {
-    const fields = row.fields;
+    const fields = { ...row.fields };
     for (const [key,entries] of [['manager_id',directories.managers],['product_id',directories.products],['payment_form_id',directories.paymentForms],['driver_id',directories.drivers],['vehicle_id',directories.vehicles]] as const) {
       if (fields[key] && !entries.some(entry => entry.id === fields[key])) throw new StoreError('Invalid shipment directory reference');
     }
@@ -172,6 +177,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
       if (fields[key] && !directories.addresses.some(a => a.id === fields[key] && a.companyId === row[`${role}Id`] && a.kind === kind)) throw new StoreError('Invalid shipment address');
     }
     const historical = fields.calculation_mode !== 'automatic';
+    if (!historical) fields.profit_rule = TEMPLATE_PROFIT_RULE;
     const rules: CalculationRules = { sale: historical ? row.calculationRules?.sale ?? null : 'litres', purchase: ['litres','tonnes'].includes(fields.purchase_unit ?? '') ? fields.purchase_unit as 'litres'|'tonnes' : row.calculationRules?.purchase ?? null, profit: (fields.profit_rule as CalculationRules['profit']) ?? row.calculationRules?.profit ?? directories.defaults.profit, debtSign: 'paid-minus-sale' };
     const calculated = calculateShipment(fields, rules, { historical, allocations: (store.paymentAllocations ?? []).filter(a => a.shipmentId === row.id) });
     row.fields = calculated.fields; row.fields.purchase_unit ??= rules.purchase;
@@ -247,11 +253,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
 }
 
 export function shipmentSettlement(row: Shipment): Exclude<import('../web/src/model').ShipmentSettlement, 'all'> {
-  const value = normalizeName(row.fields.payment_form ?? '').replace(/[\s./_-]/g, '');
-  if (['бнал', 'безнал', 'безналичный', 'cashless'].includes(value)) return 'cashless';
-  if (['нал', 'наличный', 'наличные', 'cash'].includes(value)) return 'cash';
-  if (['ф2', 'f2'].includes(value)) return 'f2';
-  return 'unspecified';
+  return settlementKind(row.fields.payment_form);
 }
 
 export function shipmentPage(snapshot: Snapshot, params: URLSearchParams): ShipmentsResponse & { facetValues?: string[] } {
@@ -315,8 +317,13 @@ export function inferCalculationRules(cells: Record<string, { formula?: string |
 export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot) {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400,'Укажите поля операции.');
   const data = { ...input }, catalog = snapshot.directories!;
-  const automatic = ['opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
+  const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
   for (const key of automatic) if (Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
+  if (typeof data.customer_id === 'string' && !data.manager_id) {
+    const managerId = customerManagerId(catalog, data.customer_id);
+    if (managerId && (!previous || data.customer_id !== previous.customerId || Object.hasOwn(data, 'manager_id'))) data.manager_id = managerId;
+    else if (previous && data.customer_id !== previous.customerId) throw new ApiError(400, 'Для выбранного клиента укажите менеджера или заполните справочник «Клиенты и менеджеры».');
+  }
   for (const role of ['customer','supplier'] as const) {
     const idKey = `${role}_id`, nameKey = `${role}_name`;
     if (Object.hasOwn(data, idKey)) {
@@ -360,7 +367,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   if (!previous || previous.fields.calculation_mode === 'automatic') {
     for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit']) if (!fields[key]) throw new ApiError(400,`Заполните обязательное поле: ${key}.`);
     fields.calculation_mode = 'automatic';
-    fields.profit_rule = previous?.fields.profit_rule ?? catalog.defaults.profit;
+    fields.profit_rule = TEMPLATE_PROFIT_RULE;
     fields.transport_amount ??= '0'; fields.additional_costs ??= '0';
   }
   if (fields.purchase_unit && !['litres','tonnes'].includes(fields.purchase_unit)) throw new ApiError(400,'Выберите закупочную цену за тонну или за литр.');
@@ -369,10 +376,14 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
     if ((!previous || previous.fields.calculation_mode === 'automatic') && ['quantity_litres','quantity_tonnes'].includes(key) && !new Exact(fields[key]!).gt(0)) throw new ApiError(400,'Количество должно быть больше нуля.');
   }
   const historical = !!previous && previous.fields.calculation_mode !== 'automatic';
-  const rules: CalculationRules = { sale: historical ? previous.calculationRules?.sale ?? null : 'litres', purchase: fields.purchase_unit as 'litres'|'tonnes' || previous?.calculationRules?.purchase || null, profit: fields.profit_rule as CalculationRules['profit'] || previous?.calculationRules?.profit || catalog.defaults.profit, debtSign:'paid-minus-sale' };
   const saleChanged = ['quantity_litres','quantity_tonnes','sale_price_per_litre'].some(k => Object.hasOwn(data,k));
   const purchaseChanged = ['quantity_litres','quantity_tonnes','purchase_price_unspecified_unit','purchase_unit'].some(k => Object.hasOwn(data,k));
-  const profitChanged = saleChanged || purchaseChanged || ['transport_amount','additional_costs'].some(k => Object.hasOwn(data,k));
+  const profitChanged = saleChanged || purchaseChanged || ['transport_amount','additional_costs','payment_form_id'].some(k => Object.hasOwn(data,k));
+  if (historical && profitChanged) {
+    fields.profit_rule = TEMPLATE_PROFIT_RULE;
+    fields.additional_costs ??= fields.kvp_source ?? '0';
+  }
+  const rules: CalculationRules = { sale: historical ? previous.calculationRules?.sale ?? null : 'litres', purchase: fields.purchase_unit as 'litres'|'tonnes' || previous?.calculationRules?.purchase || null, profit: fields.profit_rule as CalculationRules['profit'] || previous?.calculationRules?.profit || catalog.defaults.profit, debtSign:'paid-minus-sale' };
   if (historical && saleChanged && !rules.sale) throw new ApiError(400,'В исходной строке особая формула продажи. Сначала необходимо уточнить её правило.');
   if (historical && purchaseChanged && !rules.purchase) throw new ApiError(400,'Укажите единицу цены закупки для пересчёта этой операции.');
   const result = calculateShipment(fields,rules,{historical,recalculate:!historical || profitChanged,changedFields:Object.keys(data)}).fields;

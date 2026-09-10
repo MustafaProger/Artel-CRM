@@ -3,13 +3,15 @@ import Decimal from 'decimal.js'
 import { ChevronDown, LoaderCircle, Plus, Save, Trash2, Truck, X } from 'lucide-react'
 import DirectorySelect, { type SelectEntry } from './DirectorySelect'
 import type { ShipmentEditorProps } from './ShipmentEditor'
-import { today } from './shipment-calculations'
+import { calculateShipment, daysSinceShipment, today, unpaidShipmentDays } from './shipment-calculations'
+import { customerManagerId } from './customer-manager'
 import { allocateTrip } from './trip-calculations'
 import { number } from './utils'
 
 interface CustomerDraft {
   key: string
   id?: string
+  paidAmount?: string | null
   fields: Record<string, string>
 }
 interface TripDraft {
@@ -19,7 +21,7 @@ interface TripDraft {
 interface LoadedTrip {
   id: string
   fields: Record<string, string | null>
-  customers: { id: string; version: number; fields: Record<string, string | null> }[]
+  customers: { id: string; version: number; paidAmount: string | null; fields: Record<string, string | null> }[]
 }
 
 const normalizedFields = (fields: Record<string, string | null>) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value ?? '']))
@@ -39,7 +41,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const defaultPaymentId = directories.paymentForms.find(p => p.name === defaultPaymentForm)?.id ?? ''
   const newCustomer = (): CustomerDraft => ({
     key: crypto.randomUUID(),
-    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', payment_due_date: '' },
+    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '' },
   })
   const [draft, setDraft] = useState<TripDraft>(() => ({
     fields: { date: today(), supplier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0' },
@@ -78,7 +80,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
         if (!response.ok) throw new Error(result.error || 'Не удалось загрузить отгрузку')
         const trip: LoadedTrip = result.trip
         if (!trip?.customers?.length) throw new Error('В отгрузке не найдены клиенты')
-        const loaded = { fields: normalizedFields(trip.fields), customers: trip.customers.map(customer => ({ key: customer.id, id: customer.id, fields: normalizedFields(customer.fields) })) }
+        const loaded = { fields: normalizedFields(trip.fields), customers: trip.customers.map(customer => ({ key: customer.id, id: customer.id, paidAmount: customer.paidAmount, fields: normalizedFields(customer.fields) })) }
         setDraft(loaded)
         setInitial(serialize(loaded))
         setVersions(Object.fromEntries(trip.customers.map(customer => [customer.id, customer.version])))
@@ -115,6 +117,10 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     catch { return null }
   }, [fields.quantity_tonnes, fields.additional_costs, draft.customers])
   const totalLitres = draft.customers.reduce((total, customer) => total.plus(numericValue(customer.fields.quantity_litres) ?? 0), new Decimal(0))
+  const unpaidDays = draft.customers.some(customer => {
+    const litres = numericValue(customer.fields.quantity_litres), price = numericValue(customer.fields.sale_price_per_litre)
+    return unpaidShipmentDays(fields.date, litres && price ? litres.times(price).toFixed() : null, customer.paidAmount ?? '0') !== null
+  }) ? daysSinceShipment(fields.date) : null
   const driver = directories.drivers.find(entry => entry.id === fields.driver_id)
   const vehicle = directories.vehicles.find(entry => entry.id === fields.vehicle_id)
   const capacity = vehicle?.capacityLitres == null ? null : numericValue(String(vehicle.capacityLitres))
@@ -128,9 +134,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     changed()
   }
   const updateCustomer = (customerKey: string, key: string, value: string) => {
-    const company = key === 'customer_id' ? companies.find(entry => entry.id === value) : undefined
-    const managers = company ? directories.managers.filter(manager => company.managerLabels.some(label => label.trim().toLocaleLowerCase('ru') === manager.name.trim().toLocaleLowerCase('ru'))) : []
-    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'customer_id' ? { unloading_address_id: '', manager_id: managers.length === 1 ? managers[0].id : '' } : {}) } }) }))
+    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'customer_id' ? { unloading_address_id: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
     changed()
   }
   const addCustomer = () => {
@@ -222,6 +226,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
             {draft.customers.map((customer, index) => {
               const litres = numericValue(customer.fields.quantity_litres)
               const price = numericValue(customer.fields.sale_price_per_litre)
+              const calculation = allocation ? calculateShipment({ ...fields, ...customer.fields, payment_form: directories.paymentForms.find(p => p.id === customer.fields.payment_form_id)?.name ?? null, quantity_tonnes: allocation.tonnes[index], additional_costs: allocation.additionalCosts[index] }, { sale: 'litres', purchase: 'tonnes', profit: directories.defaults.profit, debtSign: 'paid-minus-sale' }) : null
               return <fieldset key={customer.key} className="shipment-fieldset group-sale shipment-trip-customer" data-testid="trip-customer" data-customer-key={customer.key}>
                 <legend>Клиент {index + 1}</legend>
                 {draft.customers.length > 1 && <div className="shipment-trip-customer-actions"><button type="button" className="button shipment-trip-remove" aria-label={`Удалить клиента ${index + 1}`} disabled={disabled} onClick={() => removeCustomer(customer.key)}><Trash2 size={15}/>Удалить клиента {index + 1}</button></div>}
@@ -233,17 +238,17 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                   {input('Сумма перевозки, ₽', 'transport_amount', { customer })}
                   {select('Место выгрузки', 'unloading_address_id', directories.addresses.filter(address => address.kind === 'delivery' && address.companyId === customer.fields.customer_id), { disabled: !customer.fields.customer_id, customer })}
                   {select('Менеджер', 'manager_id', directories.managers, { required: true, customer })}
-                  {input('Срок оплаты', 'payment_due_date', { type: 'date', customer })}
                 </div>
-                <div className="shipment-calculation-strip shipment-trip-client-totals">{output('Тоннаж клиента, т', allocation?.tonnes[index], 6)}{output('Сумма клиента, ₽', litres && price ? litres.times(price).toFixed(2) : null)}<span className="shipment-trip-auto">Тоннаж · автоматически</span></div>
+                <div className="shipment-calculation-strip shipment-trip-client-totals">{output('Тоннаж клиента, т', allocation?.tonnes[index], 6)}{output('Сумма клиента, ₽', litres && price ? litres.times(price).toFixed(2) : null)}{output('Прибыль, ₽', calculation?.fields.profit_source)}<span className="shipment-trip-auto">Тоннаж · автоматически</span></div>
+                {calculation?.warnings.map(w => <p key={w} className="shipment-calculation-warning">{w}</p>)}
               </fieldset>
             })}
             <button type="button" className="button shipment-trip-add" disabled={disabled || draft.customers.length >= 100} onClick={addCustomer}><Plus size={18}/>Добавить клиента</button>
-            <div className="shipment-trip-distribution"><div className="shipment-calculation-strip">{output('Литров по клиентам, л', totalLitres.toString(), 3)}{output('Тоннаж машины, т', numericValue(fields.quantity_tonnes)?.toString(), 6)}</div><p>{allocation ? 'Тоннаж клиента = тоннаж машины × литры клиента ÷ все литры.' : 'Заполните тоннаж машины и литры каждого клиента — распределение рассчитается автоматически.'}</p></div>
+            <div className="shipment-trip-distribution"><div className="shipment-calculation-strip">{output('Литров по клиентам, л', totalLitres.toString(), 3)}{output('Тоннаж машины, т', numericValue(fields.quantity_tonnes)?.toString(), 6)}{output('Дней с отгрузки', unpaidDays, 0)}</div><p>{allocation ? 'Тоннаж клиента = тоннаж машины × литры клиента ÷ все литры.' : 'Заполните тоннаж машины и литры каждого клиента — распределение рассчитается автоматически.'} Дни отображаются, пока есть неоплаченные отгрузки клиентов.</p></div>
           </section>
 
-          <fieldset className="shipment-fieldset group-delivery"><legend>Водитель и автомобиль</legend><div className="shipment-field-grid">
-            {select('Водитель', 'driver_id', directories.drivers.map(entry => ({ id: entry.id, name: entry.name, detail: [entry.phone, directories.vehicles.find(item => item.id === entry.vehicleId)?.name || directories.vehicles.find(item => item.id === entry.vehicleId)?.plate].filter(Boolean).join(' · ') })), { required: true })}
+          <fieldset className="shipment-fieldset group-delivery"><legend>Перевозчик и автомобиль</legend><div className="shipment-field-grid">
+            {select('Перевозчик / водитель', 'driver_id', directories.drivers.map(entry => ({ id: entry.id, name: entry.name, detail: [entry.phone, directories.vehicles.find(item => item.id === entry.vehicleId)?.name || directories.vehicles.find(item => item.id === entry.vehicleId)?.plate].filter(Boolean).join(' · ') })), { required: true })}
             {select('Автомобиль', 'vehicle_id', vehicleEntries, { required: true })}
           </div>
             {(driver || vehicle) && <div className="shipment-trip-fleet"><Truck size={20}/><div>{driver?.phone && <p><span>Телефон водителя</span><a href={`tel:${driver.phone.replace(/[^+\d]/g, '')}`}>{driver.phone}</a></p>}{vehicle && <p><span>Объём автомобиля</span><strong>{vehicle.capacityLitres == null ? 'Не указан' : `${number(vehicle.capacityLitres)} л`}</strong></p>}{!!vehicle?.compartmentsLitres?.length && <p><span>Разбивка по секциям</span><strong>{vehicle.compartmentsLitres.map(value => number(value)).join(' + ')} л</strong></p>}</div></div>}

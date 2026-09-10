@@ -122,6 +122,8 @@ test('trip updates retain payment allocations and reject removing a linked custo
     assert.equal(response.status, 200);
     const updated = await response.json() as ShipmentTripResponse;
     assert.equal(updated.shipments[0].fields.paid_amount_source, '100');
+    assert.equal(updated.trip.customers[0].paidAmount, '100');
+    assert.equal((await runtime.get<{ trip: ShipmentTrip }>(`/api/shipment-trips/${created.trip.id}`)).trip.customers[0].paidAmount, '100');
     assert.deepEqual((await store.read(source.provenance.sourceSha256)).paymentAllocations, [allocation]);
     const reassignment = edit(updated.trip); reassignment.customers[0].fields.customer_id = customerIds[2];
     const beforeReassignment = await readFile(store.path, 'utf8');

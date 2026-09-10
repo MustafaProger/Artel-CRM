@@ -3,10 +3,11 @@ import type { Directories, NamedEntry, Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 import { validPhone, validVehicleMetadata, withFleetDirectories } from './fleet-directory';
+import { TEMPLATE_PROFIT_RULE } from '../web/src/shipment-calculations';
 
 export const normalizeName = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
 export const normalizePlate = (value: string) => value.normalize('NFKC').toUpperCase().replace(/[\s-]/g, '').replace(/[ABCEHKMOPTXY]/g, c => ({ A:'А',B:'В',C:'С',E:'Е',H:'Н',K:'К',M:'М',O:'О',P:'Р',T:'Т',X:'Х',Y:'У' }[c]!));
-export const emptyDirectories = (): Directories => ({ managers: [], products: [], paymentForms: [], vehicles: [], drivers: [], addresses: [], defaults: { profit: null }, duplicates: [] });
+export const emptyDirectories = (): Directories => ({ managers: [], products: [], paymentForms: [], vehicles: [], drivers: [], addresses: [], defaults: { profit: TEMPLATE_PROFIT_RULE }, duplicates: [], customerManagers: [] });
 const stableId = (kind: string, name: string) => `${kind}-${createHash('sha256').update(normalizeName(name)).digest('hex').slice(0,16)}`;
 export function directoriesFor(base: Snapshot, store: OperationsData): Directories {
   const saved = withFleetDirectories(store.directories ?? emptyDirectories());
@@ -23,6 +24,8 @@ export function directoriesFor(base: Snapshot, store: OperationsData): Directori
   for (const company of companies) { const key = normalizeName(company.name); names.set(key, [...(names.get(key) ?? []),company]); }
   for (const group of names.values()) if (group.length > 1) duplicates.push({kind:'companies',ids:group.map(c=>c.id),names:group.map(c=>c.name),reason:'Одинаковое название; идентичность юридического лица требует подтверждения по ИНН.'});
   return { ...saved,
+    defaults: { profit: TEMPLATE_PROFIT_RULE },
+    customerManagers: saved.customerManagers ?? [],
     managers: named('managers', [...base.managers.map(m => m.label), ...local.flatMap(r => r.fields.manager_label ? [r.fields.manager_label] : [])]),
     products: named('products', [...base.shipments.flatMap(r => r.product ? [r.product] : []), ...local.flatMap(r => r.fields.product ? [r.fields.product] : [])]),
     paymentForms: named('paymentForms', ['б/нал', 'нал', 'ф2', ...base.shipments.flatMap(r => r.fields.payment_form ? [r.fields.payment_form] : [])]),
@@ -31,6 +34,18 @@ export function directoriesFor(base: Snapshot, store: OperationsData): Directori
 }
 export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
   const { kind } = input;
+  if (kind === 'customerManagers') {
+    if (Object.keys(input).some(key => !['kind','companyId','managerId'].includes(key))) throw new ApiError(400, 'Неизвестное поле связи клиента и менеджера.');
+    if (typeof input.companyId !== 'string' || !snapshot.companies.some(company => company.id === input.companyId)) throw new ApiError(400, 'Выберите клиента из справочника.');
+    if (input.managerId !== null && (typeof input.managerId !== 'string' || !snapshot.directories!.managers.some(manager => manager.id === input.managerId))) throw new ApiError(400, 'Выберите менеджера из справочника.');
+    const rows = data.directories!.customerManagers ??= [];
+    const index = rows.findIndex(row => row.companyId === input.companyId);
+    const entry = { companyId: input.companyId, managerId: input.managerId as string | null };
+    if (index < 0 && entry.managerId === null || index >= 0 && rows[index].managerId === entry.managerId) return { entry, created: false };
+    if (index >= 0) rows.splice(index, 1);
+    if (entry.managerId) rows.push({ companyId: entry.companyId, managerId: entry.managerId });
+    return { entry, created: true };
+  }
   if (!['managers','products','paymentForms','vehicles','drivers','addresses'].includes(String(kind))) throw new ApiError(400,'Неизвестный справочник.');
   const key = kind as 'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses';
   const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name'],paymentForms:['name'],vehicles:['plate','name','brand','model','trailer','capacityLitres','compartmentsLitres'],drivers:['name','vehicleId','phone'],addresses:['name','companyId','addressKind']};

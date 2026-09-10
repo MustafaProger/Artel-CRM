@@ -11,4 +11,8 @@ qa/
 node_modules/
 app-dist/
 *.log
+.vercel/
+server-render/
 .playwright/
+.vercel
+.env*

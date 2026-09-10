@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "npm run build && node scripts/prepare-vercel.mjs",
+  "outputDirectory": "app-dist",
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 60,
+      "includeFiles": "{data/local-xlsx-final/{manifest,companies,shipments,payments,stock_summaries,manager_labels,validation_report}.json,server-render/**}"
+    }
+  },
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/api/index" }
+  ]
+}

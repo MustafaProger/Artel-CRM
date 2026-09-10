@@ -26,8 +26,7 @@ export const shipmentColumns: ShipmentColumn[] = [
   column('purchase_unit', 'Единица закупки', 'purchase', 'text', 150),
   column('purchase_amount', 'Сумма закупки', 'purchase', 'number', 175),
   column('loading_address', 'Адрес загрузки', 'purchase', 'text', 260),
-  column('carrier_name', 'Перевозчик', 'delivery', 'company', 210),
-  column('driver_name', 'Водитель', 'delivery', 'text', 175),
+  column('carrier_name', 'Перевозчик / водитель', 'delivery', 'text', 210),
   column('vehicle_plate', 'Автомобиль / госномер', 'delivery', 'text', 180),
   column('transport_amount', 'Сумма перевозки', 'delivery', 'number', 175),
   column('kvp_source', 'КВП', 'delivery', 'number', 140),
@@ -36,13 +35,11 @@ export const shipmentColumns: ShipmentColumn[] = [
   column('paid_amount_source', 'Оплата', 'settlement', 'number', 170),
   column('payment_date', 'Дата оплаты', 'settlement', 'date', 145),
   column('debt_overpayment_source', 'Долг/Переплата', 'settlement', 'number', 180),
-  column('payment_due_date', 'Срок оплаты', 'settlement', 'date', 145),
-  column('term_source', 'Срок из Excel, дней', 'settlement', 'number', 175),
-  column('overdue_days', 'Просрочка, дней', 'settlement', 'number', 150),
+  column('days_since_shipment', 'Дней с отгрузки', 'settlement', 'number', 175),
   column('unlabelled_note', 'Дата из файла', 'settlement', 'date', 155),
 ]
-const standard = ['date','customer_name','manager_label','payment_form','product','quantity_tonnes','quantity_litres','sale_price_per_tonne','sale_price_per_litre','customer_amount','supplier_name','purchase_price_unspecified_unit','purchase_amount','carrier_name','driver_name','vehicle_plate','transport_amount','kvp_source','profit_source','paid_amount_source','debt_overpayment_source','term_source','overdue_days']
-const reduced = ['date','customer_name','manager_label','product','quantity_litres','customer_amount','supplier_name','purchase_amount','carrier_name','driver_name','vehicle_plate','profit_source']
+const standard = ['date','customer_name','manager_label','payment_form','product','quantity_tonnes','quantity_litres','sale_price_per_tonne','sale_price_per_litre','customer_amount','supplier_name','purchase_price_unspecified_unit','purchase_amount','carrier_name','vehicle_plate','transport_amount','kvp_source','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment']
+const reduced = ['date','customer_name','manager_label','product','quantity_litres','customer_amount','supplier_name','purchase_amount','carrier_name','profit_source','days_since_shipment']
 export const shipmentTemplates: Record<TemplateId, { title: string; columns: ShipmentColumn[] }> = {
   expanded: { title: 'Расширенный', columns: shipmentColumns },
   standard: { title: 'Стандарт', columns: standard.map(key => shipmentColumns.find(c => c.key === key)!) },
@@ -54,6 +51,7 @@ export function fieldValue(shipment: Shipment, key: string): string | null {
   if (key === 'product') return shipment.product
   if (key === 'manager_label') return shipment.manager
   if (key === 'driver_name') return shipment.fields.driver_name || null
+  if (key === 'carrier_name') return shipment.fields.driver_name || shipment.fields.carrier_name || shipment.carrier || null
   if (key === 'month') return shipment.date?.slice(0,7) ?? shipment.fields.month ?? null
   if (key === 'payment_date' && shipment.fields[key]) {
     const raw = shipment.fields[key]!

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { LoaderCircle, Save, X } from 'lucide-react'
 import type { Company, Directories, Shipment } from './model'
 import DirectorySelect from './DirectorySelect'
-import { calculateShipment, today } from './shipment-calculations'
+import { customerManagerId } from './customer-manager'
+import { calculateShipment, TEMPLATE_PROFIT_RULE, today } from './shipment-calculations'
 import { number, monthName, formatDate } from './utils'
 import ShipmentTripEditor from './ShipmentTripEditor'
 
@@ -13,7 +14,7 @@ export default function ShipmentEditor(props: ShipmentEditorProps) {
   return !props.shipment || props.shipment.fields.trip_id ? <ShipmentTripEditor {...props}/> : <LegacyShipmentEditor {...props}/>
 }
 
-const manualKeys = ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_tonnes','quantity_litres','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','loading_address_id','unloading_address_id','driver_id','vehicle_id','transport_amount','additional_costs','payment_due_date']
+const manualKeys = ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_tonnes','quantity_litres','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','loading_address_id','unloading_address_id','driver_id','vehicle_id','transport_amount','additional_costs']
 function LegacyShipmentEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved }: ShipmentEditorProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const initial = useMemo(() => {
@@ -24,7 +25,7 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
       payment_form_id:shipment?.fields.payment_form_id || directories.paymentForms.find(p => p.name === (shipment?.fields.payment_form ?? defaultPaymentForm))?.id || '',
       purchase_unit:shipment?.fields.purchase_unit || shipment?.calculationRules?.purchase || '',
       vehicle_id:shipment?.fields.vehicle_id || directories.drivers.find(d=>d.id===shipment?.fields.driver_id)?.vehicleId || '',
-      transport_amount:shipment?.fields.transport_amount ?? '0',additional_costs:shipment?.fields.additional_costs ?? '0',
+      transport_amount:shipment?.fields.transport_amount ?? '0',additional_costs:shipment?.fields.additional_costs ?? shipment?.fields.kvp_source ?? '0',
     } as Record<string,string>
   }, [shipment,directories,defaultPaymentForm])
   const [fields,setFields] = useState(initial), [saving,setSaving] = useState(false), [error,setError] = useState(''), [confirmClose,setConfirmClose] = useState(false)
@@ -34,13 +35,15 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
     element?.showModal();document.body.style.overflow='hidden'
     return () => {element?.close();document.body.style.overflow=old;focused?.focus()}
   },[])
-  const update = (key: string,value: string) => {setFields(previous => ({...previous,[key]:value,...(key==='customer_id'?{unloading_address_id:''}:key==='supplier_id'?{loading_address_id:''}:key==='driver_id'?{vehicle_id:directories.drivers.find(d=>d.id===value)?.vehicleId || ''}:{})}));setConfirmClose(false)}
+  const update = (key: string,value: string) => {setFields(previous => ({...previous,[key]:value,...(key==='customer_id'?{unloading_address_id:'',manager_id:customerManagerId(directories,value)}:key==='supplier_id'?{loading_address_id:''}:key==='driver_id'?{vehicle_id:directories.drivers.find(d=>d.id===value)?.vehicleId || ''}:{})}));setConfirmClose(false)}
   const close = () => {if(saving)return;if(dirty)setConfirmClose(true);else onClose()}
   const customer = companies.find(c=>c.id===fields.customer_id), supplier=companies.find(c=>c.id===fields.supplier_id)
   const vehicle=directories.vehicles.find(v=>v.id===fields.vehicle_id)
   const historical = !!shipment && shipment.fields.calculation_mode !== 'automatic'
-  const financialChange = ['quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','transport_amount','additional_costs'].some(k=>fields[k]!==initial[k])
-  const calculation = calculateShipment({...shipment?.fields,...fields},{sale:historical ? shipment.calculationRules?.sale ?? null : 'litres',purchase:fields.purchase_unit as 'litres'|'tonnes'||null,profit:shipment?.calculationRules?.profit ?? directories.defaults.profit,debtSign:'paid-minus-sale'},{historical,recalculate:financialChange,changedFields:manualKeys.filter(k=>fields[k]!==initial[k])})
+  const financialChange = ['quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','transport_amount','additional_costs','payment_form_id'].some(k=>fields[k]!==initial[k])
+  const paymentForm = directories.paymentForms.find(p=>p.id===fields.payment_form_id)?.name ?? shipment?.fields.payment_form ?? null
+  // Preview starts with the server's current paid total; bank allocations remain server-owned.
+  const calculation = calculateShipment({...shipment?.fields,...fields,payment_form:paymentForm,opening_paid_amount:shipment?.fields.paid_amount_source ?? null},{sale:historical ? shipment.calculationRules?.sale ?? null : 'litres',purchase:fields.purchase_unit as 'litres'|'tonnes'||null,profit:!historical || financialChange ? TEMPLATE_PROFIT_RULE : shipment?.calculationRules?.profit ?? null,debtSign:'paid-minus-sale'},{historical:!!shipment,recalculate:!historical || financialChange,changedFields:manualKeys.filter(k=>fields[k]!==initial[k])})
   const save = async (event: React.FormEvent) => {
     event.preventDefault();if(saving)return;setSaving(true);setError('')
     const changed = Object.fromEntries(manualKeys.filter(key=>shipment ? fields[key]!==initial[key] : fields[key] !== '').map(key=>[key,fields[key].trim() || null]))
@@ -62,18 +65,18 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
         {input('Дата операции','date','date',true)}{select('Менеджер','manager_id',directories.managers,{required:true,legacy:shipment?.manager})}{select('Форма оплаты','payment_form_id',directories.paymentForms,{required:true,legacy:shipment?.fields.payment_form})}{select('Товар','product_id',directories.products,{required:true,legacy:shipment?.product})}{input('Количество тонн','quantity_tonnes','text',true)}{input('Количество литров','quantity_litres','text',true)}
       </div><div className="shipment-calculation-strip">{output('Месяц',calculation.fields.month?monthName(calculation.fields.month):null)}</div></fieldset>
       <fieldset className="shipment-fieldset group-sale"><legend>Продажа</legend><div className="shipment-field-grid">
-        {select('Контрагент','customer_id',companyEntries,{required:true})}{select('Адрес выгрузки','unloading_address_id',directories.addresses.filter(a=>a.kind==='delivery'&&a.companyId===fields.customer_id),{disabled:!fields.customer_id,legacy:fields.customer_id===initial.customer_id?shipment?.fields.unloading_address:null})}{input(shipment?.calculationRules?.sale==='tonnes'?'Цена продажи за тонну, ₽ (исходник)':'Цена продажи за литр, ₽','sale_price_per_litre','text',true)}{input('Срок оплаты','payment_due_date','date')}
+        {select('Контрагент','customer_id',companyEntries,{required:true})}{select('Адрес выгрузки','unloading_address_id',directories.addresses.filter(a=>a.kind==='delivery'&&a.companyId===fields.customer_id),{disabled:!fields.customer_id,legacy:fields.customer_id===initial.customer_id?shipment?.fields.unloading_address:null})}{input(shipment?.calculationRules?.sale==='tonnes'?'Цена продажи за тонну, ₽ (исходник)':'Цена продажи за литр, ₽','sale_price_per_litre','text',true)}
       </div><div className="shipment-calculation-strip">{output('ИНН контрагента',customer?.inn??(fields.customer_id===initial.customer_id?shipment?.fields.customer_inn:null))}{output('Цена продажи за тонну, ₽',calculation.fields.sale_price_per_tonne,true)}{output('Сумма покупателя, ₽',calculation.fields.customer_amount,true)}</div></fieldset>
       <fieldset className="shipment-fieldset group-purchase"><legend>Закупка</legend><div className="shipment-field-grid">
         {select('Поставщик','supplier_id',companyEntries,{required:true})}{select('Адрес загрузки','loading_address_id',directories.addresses.filter(a=>a.kind==='loading'&&a.companyId===fields.supplier_id),{disabled:!fields.supplier_id,legacy:fields.supplier_id===initial.supplier_id?shipment?.fields.loading_address:null})}{input('Цена закупки, ₽','purchase_price_unspecified_unit','text',true)}<label className="shipment-field"><span>Единица цены закупки *</span><select aria-label="Единица цены закупки" value={fields.purchase_unit} required={!shipment} disabled={saving} onChange={e=>update('purchase_unit',e.target.value)}><option value="">Выберите единицу</option><option value="tonnes">₽ за тонну</option><option value="litres">₽ за литр</option></select></label>
       </div><div className="shipment-calculation-strip">{output('ИНН поставщика',supplier?.inn??(fields.supplier_id===initial.supplier_id?shipment?.fields.supplier_inn:null))}{output('Сумма закупки, ₽',calculation.fields.purchase_amount,true)}</div></fieldset>
       <fieldset className="shipment-fieldset group-delivery"><legend>Доставка</legend><div className="shipment-field-grid">
-        {select('Водитель','driver_id',directories.drivers.map(d=>({...d,detail:directories.vehicles.find(v=>v.id===d.vehicleId)?.plate})),{legacy:shipment?.carrier?`${shipment.carrier} (из исходника)`:null})}{select('Автомобиль','vehicle_id',directories.vehicles.map(v=>({id:v.id,name:v.name || v.plate,detail:v.name&&v.name!==v.plate?v.plate:undefined})))}{input('Сумма перевозки, ₽','transport_amount')}{input('Дополнительные затраты, ₽','additional_costs')}
+        {select('Перевозчик / водитель','driver_id',directories.drivers.map(d=>({...d,detail:directories.vehicles.find(v=>v.id===d.vehicleId)?.plate})),{legacy:shipment?.carrier?`${shipment.carrier} (из исходника)`:null})}{select('Автомобиль','vehicle_id',directories.vehicles.map(v=>({id:v.id,name:v.name || v.plate,detail:v.name&&v.name!==v.plate?v.plate:undefined})))}{input('Сумма перевозки, ₽','transport_amount')}{input('Дополнительные затраты, ₽','additional_costs')}
       </div><div className="shipment-calculation-strip">{output('Автомобиль / госномер',vehicle?.plate)}</div></fieldset>
       <fieldset className="shipment-fieldset group-settlement"><legend>Расчёты · автоматически</legend><div className="shipment-calculation-strip">
-        {output('Прибыль, ₽',calculation.fields.profit_source,true)}{output('Оплачено, ₽',calculation.fields.paid_amount_source,true)}{output('Дата оплаты',calculation.fields.payment_date)}{output('Долг / переплата, ₽',calculation.fields.debt_overpayment_source,true)}{output('Просрочка, дней',calculation.fields.overdue_days)}
-      </div><p className="shipment-editor-note">Минус — долг, плюс — переплата. Оплаты появятся после привязки банковских операций. Для просрочки укажите срок оплаты.</p>{calculation.warnings.map(w=><p key={w} className="shipment-calculation-warning">{w}</p>)}</fieldset>
-      {!!shipment?.sourceRow&&<fieldset className="shipment-fieldset"><legend>Данные из Excel</legend><div className="shipment-calculation-strip">{output('Перевозчик',shipment.fields.carrier_name)}{output('КВП, ₽',shipment.fields.kvp_source,true)}{output('Срок из Excel, дней',shipment.fields.term_source)}{output('Дата из файла',shipment.fields.unlabelled_note&&/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(shipment.fields.unlabelled_note)?formatDate(shipment.fields.unlabelled_note.slice(0,10)):shipment.fields.unlabelled_note)}</div><p className="shipment-editor-note">Сохранённые значения исходной строки. «Срок из Excel» рассчитан в файле и отличается от текущей просрочки. У столбца с датами в файле нет заголовка.</p></fieldset>}
+        {output('Прибыль, ₽',calculation.fields.profit_source,true)}{output('Оплачено, ₽',calculation.fields.paid_amount_source,true)}{output('Дата оплаты',calculation.fields.payment_date)}{output('Долг / переплата, ₽',calculation.fields.debt_overpayment_source,true)}{output('Дней с отгрузки',calculation.fields.days_since_shipment)}
+      </div><p className="shipment-editor-note">Минус — долг, плюс — переплата. Оплаты появятся после привязки банковских операций. Дни считаются до сегодня, пока отгрузка не оплачена полностью. Дополнительные затраты учитывают КВП одной суммой.</p>{calculation.warnings.map(w=><p key={w} className="shipment-calculation-warning">{w}</p>)}</fieldset>
+      {!!shipment?.sourceRow&&<fieldset className="shipment-fieldset"><legend>Данные из Excel</legend><div className="shipment-calculation-strip">{output('КВП, ₽',shipment.fields.kvp_source,true)}{output('Дата из файла',shipment.fields.unlabelled_note&&/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(shipment.fields.unlabelled_note)?formatDate(shipment.fields.unlabelled_note.slice(0,10)):shipment.fields.unlabelled_note)}</div><p className="shipment-editor-note">Сохранённые значения исходной строки. У столбца с датами в файле нет заголовка.</p></fieldset>}
       {error&&<div className="shipment-error" role="alert">{error}</div>}
     </div>
     <footer className="shipment-editor-footer">{confirmClose?<div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить</button><button type="button" className="button danger" onClick={onClose}>Закрыть без сохранения</button></div>:<><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={saving||!!shipment&&!dirty}>{saving?<LoaderCircle className="spin" size={17}/>:<Save size={17}/>}Сохранить отгрузку</button></>}</footer>

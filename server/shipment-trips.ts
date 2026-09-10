@@ -8,7 +8,7 @@ import { allocateShipmentNumber } from './shipment-numbering';
 import { currentSnapshot, prepareShipmentFields } from './shipment-operations';
 
 const sharedFields = ['date', 'supplier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs'] as const;
-const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'payment_due_date'] as const;
+const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'] as const;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const pick = (fields: Record<string, string | null>, keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, fields[key] ?? null]));
 
@@ -43,7 +43,7 @@ export function getShipmentTrip(snapshot: Snapshot, id: string): ShipmentTrip {
   fields.additional_costs = rows[0].fields.trip_additional_costs;
   return {
     id, fields,
-    customers: rows.map(row => ({ id: row.id, version: row.version ?? 0, fields: pick(row.fields, customerFields) })),
+    customers: rows.map(row => ({ id: row.id, version: row.version ?? 0, paidAmount: row.fields.paid_amount_source, fields: pick(row.fields, customerFields) })),
   };
 }
 

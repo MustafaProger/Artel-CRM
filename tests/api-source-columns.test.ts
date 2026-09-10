@@ -7,6 +7,7 @@ import { loadSnapshot } from '../server/local-api';
 import { currentSnapshot, prepareShipmentFields, shipmentPage } from '../server/shipment-operations';
 import type { OperationsData } from '../server/operations-store';
 import { fieldValue, shipmentColumns } from '../web/src/shipment-templates';
+import { unpaidShipmentDays } from '../web/src/shipment-calculations';
 import type { ColumnFilter } from '../web/src/shipment-filters';
 
 interface SourceRow {
@@ -26,12 +27,12 @@ const present = (key: string) => rawSource.data.filter(row => row.fields[key] !=
 
 // Use the verified export's field schema and original cell values as the oracle,
 // independent of the shared table configuration being checked.
-test('expanded shipment columns expose every A:W source field and preserve all original noncanonical values', () => {
+test('shipment columns hide legacy terms while preserving every original source value', () => {
   const keys = Object.keys(rawSource.data[0].fields);
   assert.equal(keys.length, 23);
   assert.equal(rawSource.data.length, 2092);
   const visible = new Set(shipmentColumns.map(column => column.key));
-  for (const key of keys) assert.ok(visible.has(key), `Source field is hidden: ${key}`);
+  for (const key of keys.filter(key => key !== 'term_source')) assert.ok(visible.has(key), `Source field is hidden: ${key}`);
   const canonical = new Set(['date', 'month', 'manager_label', 'product']);
   for (const raw of rawSource.data) {
     const row = byId.get(raw.id)!;
@@ -70,24 +71,20 @@ test('source KVP is visible for all 80 rows, totals 879340, and supports exact r
   assert.equal(range.items[0].fields.kvp_source, '10000');
 });
 
-test('saved source terms retain zero and all 1996 values while numeric ranges include the right rows', () => {
+test('saved terms remain in source data while elapsed shipment days filter and sort', () => {
   const rows = present('term_source');
   assert.equal(rows.length, 1996);
   for (const raw of rows) {
     assert.equal(raw.cells[`V${raw.source.row}`].value, raw.fields.term_source);
     assert.equal(fieldValue(byId.get(raw.id)!, 'term_source'), raw.fields.term_source);
   }
-  assert.equal(page({ term_source: { op: 'notEmpty' } }).total, 1996);
-  const zeros = page({ term_source: { op: 'values', values: ['0'] } }, { facet: 'term_source' });
-  assert.equal(zeros.total, 1954);
-  assert.ok(zeros.facetValues!.includes('0'));
-  assert.ok(zeros.facetValues!.includes(''));
-  const expected = rows.filter(row => new Decimal(row.fields.term_source!).gte(4) && new Decimal(row.fields.term_source!).lte(8));
-  assert.equal(expected.length, 19);
-  const result = page({ term_source: { op: 'range', value: '4', to: '8' } }, { sort: 'term_source', direction: 'asc' });
-  assert.deepEqual(sortedIds(result.items), sortedIds(expected));
-  assert.equal(result.items[0].fields.term_source, '4');
-  assert.equal(result.items.at(-1)!.fields.term_source, '8');
+  assert.ok(!shipmentColumns.some(column => ['term_source', 'payment_due_date', 'overdue_days'].includes(column.key)));
+  for (const row of snapshot.shipments) assert.equal(row.fields.days_since_shipment, unpaidShipmentDays(row.date, row.fields.customer_amount, row.fields.paid_amount_source));
+  const expected = snapshot.shipments.filter(row => Number(row.fields.days_since_shipment) >= 4 && Number(row.fields.days_since_shipment) <= 8);
+  const result = page({ days_since_shipment: { op: 'range', value: '4', to: '8' } }, { sort: 'days_since_shipment', direction: 'asc' });
+  assert.equal(result.total, expected.length);
+  const expectedIds = [...expected].sort((a, b) => Number(a.fields.days_since_shipment) - Number(b.fields.days_since_shipment) || a.id.localeCompare(b.id)).slice(0, 100).map(row => row.id);
+  assert.deepEqual(result.items.map(row => row.id), expectedIds);
 });
 
 test('Дата из файла preserves all 25 raw W dates and same-day range finds timestamps at both inclusive bounds', () => {
@@ -114,7 +111,7 @@ test('Дата из файла preserves all 25 raw W dates and same-day range f
   assert.deepEqual(sortedIds(oneValue.items), sortedIds(expected));
 });
 
-test('a newly selected driver never masks the original carrier and each column filters its own identity', () => {
+test('one carrier / driver column uses the selected driver while retaining the original carrier in source data', () => {
   const carriers = present('carrier_name');
   assert.equal(carriers.length, 1299);
   for (const raw of carriers) {
@@ -129,11 +126,16 @@ test('a newly selected driver never masks the original carrier and each column f
   const assigned = currentSnapshot(source, data);
   const row = assigned.shipments.find(row => row.id === previous.id)!;
   assert.equal(fieldValue(row, 'driver_name'), 'Вова');
-  assert.equal(fieldValue(row, 'carrier_name'), 'Олег');
-  const byDriver = shipmentPage(assigned, new URLSearchParams({ filters: JSON.stringify({ driver_name: { op: 'values', values: ['Вова'] } }) }));
-  assert.deepEqual(byDriver.items.map(row => row.id), [previous.id]);
+  assert.equal(fieldValue(row, 'carrier_name'), 'Вова');
+  assert.equal(row.fields.carrier_name, 'Олег');
+  assert.ok(!shipmentColumns.some(column => column.key === 'driver_name'));
+  const byDriver = shipmentPage(assigned, new URLSearchParams({ filters: JSON.stringify({ carrier_name: { op: 'values', values: ['Вова'] } }) }));
+  assert.equal(byDriver.total, assigned.shipments.filter(row => fieldValue(row, 'carrier_name') === 'Вова').length);
+  const selected = shipmentPage(assigned, new URLSearchParams({ query: previous.id, filters: JSON.stringify({ carrier_name: { op: 'values', values: ['Вова'] } }) }));
+  assert.deepEqual(selected.items.map(row => row.id), [previous.id]);
+  assert.ok(byDriver.items.every(row => fieldValue(row, 'carrier_name') === 'Вова'));
   const byCarrier = shipmentPage(assigned, new URLSearchParams({ filters: JSON.stringify({ carrier_name: { op: 'values', values: ['Олег'] } }), facet: 'carrier_name' }));
-  assert.equal(byCarrier.total, carriers.filter(row => row.fields.carrier_name === 'Олег').length);
+  assert.equal(byCarrier.total, carriers.filter(row => row.fields.carrier_name === 'Олег').length - 1);
   assert.ok(byCarrier.facetValues!.includes('Олег'));
   assert.equal(assigned.shipments.find(row => row.id === previous.id)!.fields.carrier_name, previous.fields.carrier_name);
 });

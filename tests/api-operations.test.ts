@@ -46,7 +46,7 @@ test('shipment CRUD persists, retains nulls/source references, and refreshes eve
     assert.equal(added.fields.additional_costs, '1000.12');
     assert.equal(added.fields.paid_amount_source, '0');
     assert.equal(added.fields.debt_overpayment_source, '-0.2');
-    assert.equal(added.fields.profit_source, null);
+    assert.equal(added.fields.profit_source, '-1000.02');
     const initial = await (await fetch(`${runtime.url}/api/snapshot?shipments=omit`)).json() as Snapshot;
     assert.deepEqual(initial.shipments, []);
     assert.equal(initial.overview.shipmentCount, source.shipments.length + 1);

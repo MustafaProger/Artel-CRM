@@ -7,7 +7,7 @@ import type { Plugin } from 'vite';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
 import { lookupCheckoCompany, validInn } from './checko';
-import { OperationsStore, StoreError } from './operations-store';
+import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
 import { currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { allocateShipmentNumber } from './shipment-numbering';
@@ -259,6 +259,9 @@ export function isLocalRequest(request: Pick<IncomingMessage, 'headers' | 'socke
 }
 
 export interface LocalApiOptions {
+  operationsStore?: OperationsStorage;
+  /** Cloud entry point supplies authentication and same-origin validation. Local default stays closed. */
+  authorizeRequest?: (request: IncomingMessage) => boolean;
   operationsDirectory?: string;
   checkoApiKey?: string;
   /** Injectable only on the server, for provider integration tests. */
@@ -292,7 +295,7 @@ function checkVersion(value: unknown, shipment: Shipment) {
 }
 
 export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, options: LocalApiOptions = {}) {
-  const operations = new OperationsStore(options.operationsDirectory ?? resolve(dataDirectory, '../local-operations'));
+  const operations = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(dataDirectory, '../local-operations'));
   let cache: { signature: string; snapshot: Promise<Snapshot> } | undefined;
   async function baseSnapshot() {
     const names = ['manifest', 'companies', 'shipments', 'payments', 'stock_summaries', 'manager_labels', 'validation_report'];
@@ -312,7 +315,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
   return (request: IncomingMessage, response: ServerResponse, next: () => void) => {
     const pathname = request.url?.split('?')[0];
     if (!pathname?.startsWith('/api/')) return next();
-    if (!isLocalRequest(request)) return write(response, 403, '{"error":"Локальный API доступен только с этого компьютера."}');
+    if (!(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
     void (async () => {
       const url = new URL(request.url!, 'http://localhost');
       const shipmentIdMatch = pathname.match(/^\/api\/shipments\/([^/]+)$/);

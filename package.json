@@ -14,6 +14,7 @@
     "test:shipments-ui": "node scripts/verify_shipments_excel.mjs"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
     "decimal.js": "^10.6.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
@@ -26,6 +27,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
     "globals": "^17.12.0",
     "tsx": "^4.20.0",

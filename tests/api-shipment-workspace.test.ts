@@ -13,6 +13,8 @@ import { emptyDirectories } from '../server/directory-operations';
 import { calculateShipment, overdueDays } from '../web/src/shipment-calculations';
 import { allocatePayment } from '../server/payment-allocations';
 import type { CalculationRules, Snapshot } from '../web/src/model';
+import Decimal from 'decimal.js';
+import { settlementKind } from '../web/src/shipment-settlement';
 const base = await loadSnapshot();
 const empty = (): OperationsData => ({schemaVersion:2,sourceSha256:base.provenance.sourceSha256,revision:0,shipments:{},companies:[],directories:emptyDirectories(),paymentAllocations:[]});
 const sample=(snapshot: Snapshot, overrides:Record<string,string|null>={})=>({date:'2026-09-15',customer_id:snapshot.companies[0].id,supplier_id:snapshot.companies[1].id,manager_id:snapshot.directories!.managers[0].id,product_id:snapshot.directories!.products[0].id,payment_form_id:snapshot.directories!.paymentForms[0].id,quantity_tonnes:'10',quantity_litres:'12500',sale_price_per_litre:'72',purchase_price_unspecified_unit:'65000',purchase_unit:'tonnes',transport_amount:'30000',additional_costs:'5000',...overrides});
@@ -39,7 +41,10 @@ test('recognized Excel profit branches and rounding remain distinct',()=>{
   const changed=prepareShipmentFields({payment_due_date:'2026-10-01'},previous,snapshot);
   for(const key of ['customer_amount','purchase_amount','profit_source','kvp_source','unlabelled_note','paid_amount_source','debt_overpayment_source','term_source'])assert.equal(changed[key],old.fields[key],key);
   const expenseOnly=prepareShipmentFields({additional_costs:'10'},previous,snapshot);
-  assert.equal(expenseOnly.customer_amount,old.fields.customer_amount);assert.equal(expenseOnly.purchase_amount,old.fields.purchase_amount);assert.equal(expenseOnly.profit_source,null);
+  assert.equal(expenseOnly.customer_amount,old.fields.customer_amount);assert.equal(expenseOnly.purchase_amount,old.fields.purchase_amount);
+  const purchase = new Decimal(old.fields.purchase_amount!).times(settlementKind(old.fields.payment_form) === 'cash' ? '0.83' : '1');
+  assert.equal(expenseOnly.profit_source,new Decimal(old.fields.customer_amount!).minus(purchase).minus(old.fields.transport_amount || '0').minus(10).toFixed());
+  assert.equal(expenseOnly.profit_rule,'template-payment-form');
 });
 
 test('partial payments, overpayment, settlement date and overdue use linked operations only',()=>{
