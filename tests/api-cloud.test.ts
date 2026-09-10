@@ -1,17 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { get, put, BlobPreconditionFailedError } from '@vercel/blob';
-import { authenticated, sameOrigin } from '../server/cloud-auth';
+import { sameOrigin } from '../server/cloud-auth';
 import { BlobOperationsStore } from '../server/blob-operations-store';
 import { encodeOperations, StoreError, type OperationsData } from '../server/operations-store';
 import { ApiError } from '../server/api-error';
 
-test('cloud access fails closed and rejects cross-origin mutations', () => {
-  const authorization = `Basic ${Buffer.from('owner:example-password').toString('base64')}`;
-  assert.equal(authenticated({ headers: { authorization } }, 'owner', 'example-password'), true);
-  assert.equal(authenticated({ headers: { authorization } }, 'owner', 'wrong'), false);
-  assert.equal(authenticated({ headers: {} }, 'owner', 'example-password'), false);
-  assert.equal(authenticated({ headers: { authorization } }, '', ''), false);
+test('cloud API accepts same-origin requests and rejects cross-origin mutations', () => {
   assert.equal(sameOrigin({ method: 'POST', headers: { host: 'crm.example', origin: 'https://crm.example' } }), true);
   for (const headers of [{ host: 'crm.example' }, { host: 'crm.example', origin: 'https://other.example' }, { host: 'crm.example', origin: 'http://crm.example' }, { host: 'crm.example', origin: 'https://crm.example', 'sec-fetch-site': 'cross-site' }]) {
     assert.equal(sameOrigin({ method: 'POST', headers }), false);

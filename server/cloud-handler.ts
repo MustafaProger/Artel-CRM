@@ -3,11 +3,11 @@ import { resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSnapshotMiddleware } from './local-api';
 import { BlobOperationsStore } from './blob-operations-store';
-import { authenticated, sameOrigin } from './cloud-auth';
+import { sameOrigin } from './cloud-auth';
 
 const middleware = createSnapshotMiddleware(resolve(process.cwd(), 'data/local-xlsx-final'), {
   operationsStore: new BlobOperationsStore(),
-  authorizeRequest: request => authenticated(request) && sameOrigin(request),
+  authorizeRequest: sameOrigin,
   checkoApiKey: process.env.CHECKO_API_KEY,
 });
 
@@ -15,13 +15,6 @@ export default async function handler(request: IncomingMessage, response: Server
   response.setHeader('Cache-Control', 'private, no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
-  if (!process.env.ARTEL_AUTH_USER || !process.env.ARTEL_AUTH_PASSWORD) {
-    response.writeHead(503); response.end('Access is not configured'); return;
-  }
-  if (!authenticated(request)) {
-    response.setHeader('WWW-Authenticate', 'Basic realm="Artel CRM", charset="UTF-8"');
-    response.writeHead(401); response.end('Authentication required'); return;
-  }
   const path = request.url?.split('?')[0];
   if (path?.startsWith('/api/') && path !== '/api/index') {
     await new Promise<void>(done => {
