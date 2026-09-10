@@ -158,6 +158,7 @@ test('scheduler verifies signed GitHub identity, audience, repository, branch an
     return validPushWorkflow({ headers: { authorization: `Bearer ${token}` } } as IncomingMessage, async () => publicKey);
   }
   assert.equal(await check(), true);
+  assert.equal(await check({ event_name: 'push' }), true);
   for (const override of [{ repository_id: '999' }, { ref: 'refs/heads/evil' }, { workflow_ref: 'MustafaProger/Artel-CRM/.github/workflows/other.yml@refs/heads/main' }, { event_name: 'pull_request' }, { repository_owner_id: '999' }]) assert.equal(await check(override), false);
   assert.equal(await check({}, 'https://evil.example'), false);
   assert.equal(await validPushWorkflow({ headers: { authorization: 'Bearer forged.jwt.token' } } as IncomingMessage, async () => publicKey), false);

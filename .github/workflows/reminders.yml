@@ -1,7 +1,10 @@
 name: Send CRM reminders
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/reminders.yml']
   schedule:
-    - cron: '2-57/5 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 permissions:
   id-token: write
@@ -11,7 +14,7 @@ concurrency:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - name: Check due reminders
         shell: bash
@@ -28,10 +31,16 @@ jobs:
           const { value } = await identity.json();
           if (!value) throw new Error('GitHub identity missing');
           console.log(`::add-mask::${value}`);
-          const response = await fetch(endpoint, {
-            headers: { Authorization: `Bearer ${value}` },
-            signal: AbortSignal.timeout(65000),
-          });
+          let response;
+          // A workflow update can arrive before its Vercel deployment is ready.
+          for (let attempt = 0; attempt < 6; attempt++) {
+            response = await fetch(endpoint, {
+              headers: { Authorization: `Bearer ${value}` },
+              signal: AbortSignal.timeout(65000),
+            });
+            if (response.ok || ![403, 404, 503].includes(response.status)) break;
+            await new Promise(resolve => setTimeout(resolve, 10000));
+          }
           if (!response.ok) throw new Error(`Reminder dispatch: ${response.status}`);
           const result = await response.json();
           console.log(JSON.stringify(result));
