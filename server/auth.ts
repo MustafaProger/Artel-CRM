@@ -67,6 +67,7 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   const user:StoredUser={...(previous??await passwordFields(input.password)),...(previous && input.password?await passwordFields(input.password):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);
+  if (previous && !active && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
   return publicUser(user);
 }
 export async function login(data:OperationsData,input:Record<string,unknown>) {

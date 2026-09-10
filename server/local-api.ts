@@ -21,6 +21,8 @@ import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
+import { dispatchReminders, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+import { validPushWorkflow } from './push-cron-auth';
 
 // Sum saved decimal strings exactly, including the source workbook's precision.
 const ExactDecimal = Decimal.clone({ precision: 80 });
@@ -268,6 +270,10 @@ export function isLocalRequest(request: Pick<IncomingMessage, 'headers' | 'socke
 }
 
 export interface LocalApiOptions {
+  pushConfig?: PushConfig;
+  pushSender?: PushSender;
+  cronSecret?: string;
+  pushIntervalSeconds?: number;
   /** Only isolated domain tests may disable authentication. Runtime always requires it. */
   requireAuthentication?: boolean;
   setupToken?: string;
@@ -328,11 +334,19 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
   return (request: IncomingMessage, response: ServerResponse, next: () => void) => {
     const pathname = request.url?.split('?')[0];
     if (!pathname?.startsWith('/api/')) return next();
-    if (!(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
+    const cronRequest = pathname === '/api/push/dispatch';
+    if (!cronRequest && !(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
     void (async () => {
+      if (cronRequest && !validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validPushWorkflow(request)) throw new ApiError(403, 'Доступ к планировщику запрещён.');
       const url = new URL(request.url!, 'http://localhost');
       const authEnabled = options.requireAuthentication !== false;
       const base = await baseSnapshot();
+      const config = options.pushConfig ?? pushConfig();
+      if (cronRequest) {
+        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+        const result = await dispatchReminders(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush);
+        return write(response, 200, JSON.stringify(result));
+      }
       const secure = options.secureCookies ?? !isLocalHost(request.headers.host);
       if (pathname.startsWith('/api/auth/')) {
         const userId = pathname.match(/^\/api\/auth\/users\/([^/]+)$/)?.[1];
@@ -359,7 +373,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { result:await login(data,body),changed:true };
           }
           const actor=requireUser(data,request);
-          if(pathname === '/api/auth/logout'){logout(data,request);return {result:{status:200,token:''},changed:true};}
+          if(pathname === '/api/auth/logout'){
+            if (data.push) data.push.devices = data.push.devices.filter(device => device.sessionHash !== pushSessionHash(request) && !(device.userId === actor.id && device.endpoint === body.pushEndpoint));
+            logout(data,request);return {result:{status:200,token:''},changed:true};
+          }
           requireManage(actor);
           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined)},changed:true};
         });
@@ -369,6 +386,43 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return write(response,result.status,JSON.stringify(safeResult));
       }
       const actor = authEnabled ? requireUser(await operations.read(base.provenance.sourceSha256),request) : null;
+      if (pathname.startsWith('/api/push/')) {
+        if (!actor) throw new ApiError(401, 'Войдите в приложение.');
+        if (pathname === '/api/push/config' && request.method === 'GET') {
+          const data = await operations.read(base.provenance.sourceSha256);
+          return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300 }));
+        }
+        if (pathname !== '/api/push/subscription' && pathname !== '/api/push/test') throw new ApiError(404, 'Маршрут не найден.');
+        if (request.method !== 'POST' && !(pathname === '/api/push/subscription' && request.method === 'DELETE')) throw new ApiError(405, 'Метод не поддерживается.');
+        if (request.method !== 'DELETE' && !pushReady(config)) throw new ApiError(503, 'Отправка уведомлений ещё не настроена.');
+        const body = await jsonBody(request, false, 8192);
+        if (pathname === '/api/push/test') {
+          const device = await operations.mutate(base.provenance.sourceSha256, data => {
+            const user = requireUser(data, request);
+            const device = data.push?.devices.find(device => device.userId === user.id && device.endpoint === body.endpoint);
+            if (!device) throw new ApiError(404, 'Сначала включите уведомления на этом устройстве.');
+            if (device.testAt && Date.now() - device.testAt < 30000) throw new ApiError(429, 'Повторную проверку можно отправить через 30 секунд.');
+            device.testAt = Date.now();
+            return { result: { ...device }, changed: true };
+          });
+          try {
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артель CRM', body: 'Уведомления включены. Здесь будут приходить ваши напоминания.', tag: 'artel-push-test', url: '/#work' }), config);
+          } catch (error) {
+            if ([404, 410].includes((error as {statusCode: number}).statusCode)) {
+              await operations.mutate(base.provenance.sourceSha256, data => ({ result: null, changed: unsubscribe(data, device.endpoint, device.userId) }));
+              throw new ApiError(410, 'Подписка истекла. Выключите и снова включите уведомления.');
+            }
+            throw new ApiError(502, 'Сервис уведомлений недоступен. Повторите проверку позже.');
+          }
+        } else {
+          await operations.mutate(base.provenance.sourceSha256, data => {
+            const user = requireUser(data, request);
+            const changed = request.method === 'DELETE' ? unsubscribe(data, body.endpoint, user.id) : subscribe(data, body.subscription, user.id, pushSessionHash(request));
+            return { result: null, changed };
+          });
+        }
+        return write(response, 200, '{"ok":true}');
+      }
       if (pathname === '/api/directories/cleanup') {
         const stored = await operations.read(base.provenance.sourceSha256);
         requireManage(requireUser(stored, request));
@@ -548,10 +602,26 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
 
 /** The source directory remains outside Vite's web root and is never a static asset. */
 export default function localApi(options: LocalApiOptions = {}): Plugin {
-  const middleware = createSnapshotMiddleware(defaultDataDirectory, options);
+  const middleware = createSnapshotMiddleware(defaultDataDirectory, { ...options, pushIntervalSeconds: 30 });
+  function startReminders(server: { httpServer: import('node:events').EventEmitter | null }) {
+    const config = options.pushConfig ?? pushConfig();
+    if (!pushReady(config)) return;
+    const store = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(defaultDataDirectory, '../local-operations'));
+    let running = false;
+    const check = async () => {
+      if (running) return;
+      running = true;
+      try { await dispatchReminders(store, (await loadSnapshot()).provenance.sourceSha256, config, options.pushSender ?? sendPush); }
+      catch { console.error('Не удалось проверить push-напоминания. Следующая попытка через 30 секунд.'); }
+      finally { running = false; }
+    };
+    const timer = setInterval(() => { void check(); }, 30000);
+    timer.unref();
+    server.httpServer?.once('close', () => clearInterval(timer));
+  }
   return {
     name: 'artel-local-operations-api',
-    configureServer(server) { server.middlewares.use(middleware); },
-    configurePreviewServer(server) { server.middlewares.use(middleware); },
+    configureServer(server) { server.middlewares.use(middleware); startReminders(server); },
+    configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); },
   };
 }

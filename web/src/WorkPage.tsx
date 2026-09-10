@@ -5,6 +5,7 @@ import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
 import { workStatuses, workFileLimit, workFilesTotalLimit, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from './work-model';
 import './work.css';
+import PushSettings from './PushSettings';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry };
 type CalendarEvent = { id: string; day: string; title: string; reminder: boolean; editor: Editor };
@@ -48,6 +49,17 @@ export default function WorkPage() {
     document.addEventListener('visibilitychange', onVisible);
     return () => { active.current = false; request.current?.abort(); window.clearInterval(timer); window.removeEventListener('focus', onVisible); document.removeEventListener('visibilitychange', onVisible); };
   }, [refresh]);
+  useEffect(() => {
+    if (!data) return;
+    const params = new URLSearchParams(location.search);
+    const id = params.get('workId'), kind = params.get('workKind');
+    if (!id || (kind !== 'tasks' && kind !== 'companies')) return;
+    const entry = (kind === 'tasks' ? data.work.tasks : data.work.companyRecords).find(row => row.id === id);
+    if (entry) setEditor({ kind, entry });
+    else setNotice('Запись из уведомления больше недоступна.');
+    params.delete('workId'); params.delete('workKind');
+    history.replaceState(null, '', `${location.pathname}${params.size ? `?${params}` : ''}#work`);
+  }, [data]);
   const userName = (id: string) => data?.users.find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
   const isManager = data?.currentUser.role === 'manager';
@@ -91,7 +103,7 @@ export default function WorkPage() {
 
         </section>
         <aside className="work-side">
-          <section className="panel work-reminders"><header className="work-section-heading"><h2><Bell size={17}/>Напоминания</h2><span>{reminders.length}</span></header><p className="work-hint">Показываются в приложении. Для выполненных задач напоминания отключены.</p>{reminders.length ? <div className="work-reminder-list">{reminders.map(reminder => <button key={reminder.editor.entry!.id} className="work-reminder" onClick={() => setEditor(reminder.editor)}><strong>{reminder.title}</strong><small className={reminder.at <= new Date().toISOString() ? 'work-overdue' : ''}>{dateLabel(reminder.at)}{reminder.at <= new Date().toISOString() ? ' · наступило' : ''}</small></button>)}</div> : <p className="work-empty">Напоминаний пока нет.</p>}</section>
+          <section className="panel work-reminders"><header className="work-section-heading"><h2><Bell size={17}/>Напоминания</h2><span>{reminders.length}</span></header>{data && <PushSettings key={data.currentUser.id} userId={data.currentUser.id}/>}<p className="work-hint">Для выполненных и архивных задач напоминания отключены.</p>{reminders.length ? <div className="work-reminder-list">{reminders.map(reminder => <button key={reminder.editor.entry!.id} className="work-reminder" onClick={() => setEditor(reminder.editor)}><strong>{reminder.title}</strong><small className={reminder.at <= new Date().toISOString() ? 'work-overdue' : ''}>{dateLabel(reminder.at)}{reminder.at <= new Date().toISOString() ? ' · наступило' : ''}</small></button>)}</div> : <p className="work-empty">Напоминаний пока нет.</p>}</section>
           <section className="panel work-notes"><header className="work-section-heading"><h2>Заметки</h2><button className="icon-button" aria-label="Добавить заметку" onClick={() => setEditor({ kind: 'notes' })}><Plus size={18}/></button></header>{data.work.notes.length ? <div className="work-note-list">{data.work.notes.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(note => <button className="work-note" key={note.id} onClick={() => setEditor({ kind: 'notes', entry: note })} aria-label={`Заметка: ${note.title}`}><strong>{note.title}</strong><p>{note.content}</p><small>{userName(note.assigneeId)}</small></button>)}</div> : <p className="work-empty">Короткие рабочие записи.</p>}</section>
         </aside>
       </div>

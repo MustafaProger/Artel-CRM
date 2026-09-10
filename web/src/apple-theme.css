@@ -13,6 +13,34 @@
 }
 body { background: #F5F5F7; color: #1D1D1F; }
 button, input, select, textarea { font-family: inherit; }
+/* Safari gives date controls an intrinsic width and extra native vertical padding. */
+input:is([type="date"], [type="datetime-local"], [type="time"], [type="month"]) {
+  -webkit-appearance: none; appearance: none; box-sizing: border-box;
+  display: block; width: 100%; min-width: 0; max-width: 100%; height: 42px;
+  text-align: left;
+}
+input:is([type="date"], [type="datetime-local"], [type="time"], [type="month"])::-webkit-date-and-time-value { text-align: left; min-height: 1.2em; }
+input:is([type="date"], [type="datetime-local"], [type="time"], [type="month"])::-webkit-datetime-edit { padding: 0; min-width: 0; }
+.work-field input:not([type="file"]), .work-field select { height: 42px; }
+.work-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.work-push-settings { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.work-push-settings p { font-size: 12px; line-height: 1.6; color: var(--muted); margin: 0 0 10px; overflow-wrap: anywhere; }
+.work-push-settings p:last-child { margin-bottom: 0; }
+.work-push-settings [role="alert"] { color: #B54837; }
+.work-push-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.work-push-actions .button { white-space: normal; text-align: left; }
+.work-company-search { margin-top: 16px; }
+@media (max-width: 650px) {
+  .work-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 42px; padding: 12px; }
+  .work-views { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .work-views > :first-child { grid-column: 1 / -1; }
+  .work-toolbar .filter-select { width: 100%; min-width: 0; max-width: none; }
+  .work-toolbar .work-refresh { margin: 0; padding: 0; width: 42px; justify-content: center; }
+  .work-toolbar > .primary { grid-column: 1 / -1; margin: 0; justify-content: center; }
+  .work-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .work-field input:not([type="file"]), .work-field select { height: 44px; }
+  input:is([type="date"], [type="datetime-local"], [type="time"], [type="month"]) { height: 44px; }
+}
 button, a, summary { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 button, a { transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease; }
 button:active:not(:disabled) { filter: brightness(.94); }

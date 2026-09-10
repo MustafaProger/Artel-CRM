@@ -1,0 +1,39 @@
+name: Send CRM reminders
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+permissions:
+  id-token: write
+concurrency:
+  group: crm-reminders
+  cancel-in-progress: false
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check due reminders
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const endpoint = 'https://artel-crm.vercel.app/api/push/dispatch';
+          const tokenUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          tokenUrl.searchParams.set('audience', endpoint);
+          const identity = await fetch(tokenUrl, {
+            headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!identity.ok) throw new Error(`GitHub identity: ${identity.status}`);
+          const { value } = await identity.json();
+          if (!value) throw new Error('GitHub identity missing');
+          console.log(`::add-mask::${value}`);
+          const response = await fetch(endpoint, {
+            headers: { Authorization: `Bearer ${value}` },
+            signal: AbortSignal.timeout(65000),
+          });
+          if (!response.ok) throw new Error(`Reminder dispatch: ${response.status}`);
+          const result = await response.json();
+          console.log(JSON.stringify(result));
+          if (result.failed) throw new Error('Some notifications failed; pending deliveries will retry.');
+          JS

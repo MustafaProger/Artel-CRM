@@ -17,14 +17,17 @@
     "test:work-ui": "node scripts/verify_work.mjs",
     "test:auth-ui": "node scripts/verify_navigation_auth.mjs",
     "test:requirements-ui": "node --import tsx scripts/verify_requirements.mjs",
-    "test:design-ui": "node scripts/verify_apple.mjs"
+    "test:design-ui": "node scripts/verify_apple.mjs",
+    "test:push-ui": "node scripts/verify_push.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",
     "decimal.js": "^10.6.0",
+    "jose": "^6.2.12",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
@@ -33,6 +36,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^4.7.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
