@@ -106,7 +106,7 @@ export function validateShipmentFields(input: unknown, previous: Shipment | unde
 }
 
 function composeShipment(id: string, fields: Record<string, string | null>, companies: Company[], original?: Shipment): Shipment {
-  const companyId = (role: 'customer' | 'supplier' | 'carrier') => original && fields[`${role}_name`] === original.fields[`${role}_name`] && fields[`${role}_inn`] === original.fields[`${role}_inn`] && fields[`${role}_id`] === original.fields[`${role}_id`] ? original[`${role}Id`] : findCompany(fields[`${role}_name`], companies, fields[`${role}_inn`], fields[`${role}_id`])?.id ?? null;
+  const companyId = (role: 'customer' | 'supplier' | 'carrier') => original && fields[`${role}_name`] === original.fields[`${role}_name`] && fields[`${role}_inn`] === original.fields[`${role}_inn`] && fields[`${role}_id`] === original.fields[`${role}_id`] ? original[`${role}Id`] : fields[`${role}_id`] && companies.some(company => company.id === fields[`${role}_id`]) ? fields[`${role}_id`] : findCompany(fields[`${role}_name`], companies, fields[`${role}_inn`], fields[`${role}_id`])?.id ?? null;
   return {
     calculationRules: original?.calculationRules,
     id, date: day(fields.date), customerId: companyId('customer'), customer: fields.customer_name,
@@ -144,6 +144,12 @@ function validateStoredTrips(shipments: Shipment[]) {
 
 export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot {
   const directories = directoriesFor(base, store);
+  if (store.sourceOperationsCleared) base = {
+    ...base, shipments: [], payments: [], stocks: [],
+    quality: { status: 'cleared', issueCounts: {}, issues: [], recordFlagCounts: { shipments: {}, payments: {} }, flaggedShipmentCount: 0, flaggedPaymentCount: 0, duplicateCandidates: [], aliasCandidates: [], multipleManagerCompanyIds: [], limitations: [] },
+    overview: { ...base.overview, paymentCount: 0, incoming: metric([]), outgoing: metric([]), missingPaymentDates: 0 },
+    provenance: { ...base.provenance, counts: { counterparties: base.companies.length, manager_labels: directories.managers.length, shipment_rows: 0, payment_rows: 0, payments_with_amount: 0, incomplete_payment_rows: 0, stock_monthly_rows: 0, company_summary_rows: 0 } },
+  };
   const companies = base.companies.map(company => ({ ...company }));
   for (const metadata of store.companies) {
     const index = companies.findIndex(company => company.id === metadata.id);
@@ -205,7 +211,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
   }
   const companyMap = new Map(companies.map(company => [company.id, company]));
   for (const company of companies) {
-    company.roles = company.roles.filter(role => !['customer', 'supplier', 'carrier', 'payment_counterparty'].includes(role));
+    company.roles = [...company.roles];
     company.shipmentIds = []; company.paymentIds = []; company.managerLabels = [];
   }
   for (const row of shipments) {

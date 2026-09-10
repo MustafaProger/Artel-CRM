@@ -10,6 +10,7 @@ import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
 import { currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
+import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
 
@@ -319,9 +320,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
     void (async () => {
       const url = new URL(request.url!, 'http://localhost');
       const shipmentIdMatch = pathname.match(/^\/api\/shipments\/([^/]+)$/);
+      const directoryMatch = pathname.match(/^\/api\/directories\/([^/]+)\/([^/]+)$/);
       const tripIdMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)$/);
-      if (!['/api/snapshot', '/api/shipments', '/api/shipment-trips', '/api/directories', '/api/companies/from-inn'].includes(pathname) && !shipmentIdMatch && !tripIdMatch) throw new ApiError(404, 'Маршрут не найден.');
-      const allowed = pathname === '/api/snapshot' ? ['GET'] : tripIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['/api/companies/from-inn', '/api/shipment-trips'].includes(pathname) ? ['POST'] : shipmentIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['GET', 'POST'];
+      if (!['/api/snapshot', '/api/shipments', '/api/shipment-trips', '/api/directories', '/api/companies/from-inn', '/api/companies/lookup'].includes(pathname) && !shipmentIdMatch && !tripIdMatch && !directoryMatch) throw new ApiError(404, 'Маршрут не найден.');
+      const allowed = directoryMatch ? ['PATCH'] : pathname === '/api/snapshot' ? ['GET'] : tripIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['/api/companies/from-inn', '/api/companies/lookup', '/api/shipment-trips'].includes(pathname) ? ['POST'] : shipmentIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['GET', 'POST'];
       if (!allowed.includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается для этого маршрута.');
       const base = await baseSnapshot();
       if (request.method === 'GET') {
@@ -340,12 +342,23 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return write(response, 200, JSON.stringify(shipmentPage(snapshot, url.searchParams)));
       }
       const body = await jsonBody(request, request.method === 'DELETE');
-      if (pathname === '/api/directories') {
+      if (pathname === '/api/directories' || directoryMatch) {
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          const result = addDirectoryEntry(body, currentSnapshot(base, data), data);
-          return { result, changed: result.created };
+          const snapshot = currentSnapshot(base, data);
+          const result = directoryMatch
+            ? directoryMatch[1] === 'companies'
+              ? saveCompany(body, snapshot, data, decodeURIComponent(directoryMatch[2]))
+              : updateDirectoryEntry(directoryMatch[1], decodeURIComponent(directoryMatch[2]), body, snapshot, data)
+            : body.kind === 'companies' ? saveCompany(body, snapshot, data) : addDirectoryEntry(body, snapshot, data);
+          currentSnapshot(base, data);
+          return { result, changed: !!directoryMatch || result.created };
         });
         return write(response, result.created ? 201 : 200, JSON.stringify(result));
+      }
+      if (pathname === '/api/companies/lookup') {
+        if (Object.keys(body).some(key=>key!=='inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН.');
+        const company = await lookupCheckoCompany(body.inn.trim(), options.checkoApiKey ?? process.env.CHECKO_API_KEY, options.fetcher);
+        return write(response, 200, JSON.stringify({ company }));
       }
       if (pathname === '/api/companies/from-inn') {
         if (Object.keys(body).some(key => key !== 'inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр с верными контрольными цифрами.');

@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint web/src server tests vite.config.ts",
     "test": "npm run test:api",
-    "test:shipments-ui": "node scripts/verify_shipments_excel.mjs"
+    "test:shipments-ui": "node scripts/verify_shipments_excel.mjs",
+    "test:directories-ui": "node scripts/verify_directories.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

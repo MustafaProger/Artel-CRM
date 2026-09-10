@@ -14,10 +14,10 @@ export default function CompanySearchDialog({companies,initialQuery,onClose,onOp
   const found = companies.filter(company => [company.name, company.inn].some(value => value?.toLocaleLowerCase('ru').includes(normalized)))
   return <dialog ref={dialog} className="detail-dialog company-search-dialog" onCancel={onClose} aria-labelledby="company-search-title">
     <div className="dialog-inner">
-      <div className="dialog-heading"><span className="eyebrow">КОМПАНИИ В ОПЕРАЦИЯХ</span><button className="icon-button" aria-label="Закрыть поиск" onClick={onClose}><X size={20}/></button></div>
+      <div className="dialog-heading"><span className="eyebrow">СПРАВОЧНИК КОМПАНИЙ</span><button className="icon-button" aria-label="Закрыть поиск" onClick={onClose}><X size={20}/></button></div>
       <h2 id="company-search-title">Найти контрагента</h2>
       <label className="table-search company-search-field"><Search size={18}/><input autoFocus aria-label="Название или ИНН контрагента" placeholder="Название или ИНН" value={query} onChange={event => {setQuery(event.target.value);setLimit(50)}}/></label>
-      <p className="section-note">Найдено {number(found.length)}. Добавить фирму по ИНН можно при создании или редактировании отгрузки.</p>
+      <p className="section-note">Найдено {number(found.length)}. Добавить компанию и назначить менеджера можно в справочнике.</p>
       <div className="company-search-results">{found.slice(0,limit).map(company => <button key={company.id} className="company-search-result" onClick={() => onOpen(company)}>
         <span className="company-avatar">{initial(company.name) || <Building2 size={18}/>}</span>
         <span><strong>{company.name}</strong><small>{company.inn ? `ИНН ${company.inn}` : [...new Set(company.roles.map(roleName))].join(' · ')}</small></span>

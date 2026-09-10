@@ -1,3 +1,4 @@
+import type { CompanyDetails, DriverDetails, VehicleDetails } from './directory-fields';
 /** Money and quantities retain the exported decimal precision. Null is never zero. */
 export type DecimalValue = string | null;
 
@@ -7,8 +8,9 @@ export interface Metric {
   missingCount: number;
 }
 
-export interface Company {
+export interface Company extends CompanyDetails {
   id: string;
+  version?: number;
   name: string;
   roles: string[];
   managerLabels: string[];
@@ -181,9 +183,9 @@ export interface Snapshot {
   monthly: MonthlyAggregate[];
 }
 
-export interface NamedEntry { id: string; name: string }
-export interface Vehicle { id: string; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
-export interface Driver extends NamedEntry { vehicleId: string; phone?: string }
+export interface NamedEntry { id: string; name: string; version?: number }
+export interface Vehicle extends VehicleDetails { id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
+export interface Driver extends NamedEntry, DriverDetails { vehicleId: string; phone?: string }
 export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery' }
 export type ProfitRule = 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
 export interface CalculationRules {

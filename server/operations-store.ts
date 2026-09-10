@@ -1,3 +1,4 @@
+import { companyFields, driverFields } from '../web/src/directory-fields';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, rename, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -21,6 +22,8 @@ export interface OperationsData {
   companies: Company[];
   directories?: Directories;
   paymentAllocations?: PaymentAllocation[];
+  /** Explicit reset: source operations must never be imported again. */
+  sourceOperationsCleared?: boolean;
 }
 
 export class StoreError extends Error {}
@@ -32,6 +35,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 /** Check both JSON syntax and structure: a broken store is never replaced with an empty one. */
 export function validate(data: unknown, sourceSha256: string): asserts data is OperationsData {
   if (!object(data) || (data.schemaVersion !== 1 && data.schemaVersion !== 2) || data.sourceSha256 !== sourceSha256 || !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 || !object(data.shipments) || !Array.isArray(data.companies)) throw new StoreError('Invalid operations store');
+  if (data.sourceOperationsCleared !== undefined && typeof data.sourceOperationsCleared !== 'boolean') throw new StoreError('Invalid operations reset');
   if (data.schemaVersion === 2) {
     const directories = data.directories;
     if (!object(directories) || !object(directories.defaults) || ![null,'template-payment-form','simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
@@ -51,6 +55,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
         if (!object(row) || typeof row.id !== 'string' || !row.id || seen.has(row.id) || typeof row[key === 'vehicles' ? 'plate' : 'name'] !== 'string' || !(row[key === 'vehicles' ? 'plate' : 'name'] as string).trim()) throw new StoreError('Invalid directory entry');
         seen.add(row.id);
         if (key === 'vehicles' && !validVehicleMetadata(row)) throw new StoreError('Invalid vehicle metadata');
+        if (key === 'drivers' && driverFields.some(([key])=>row[key] !== undefined && (typeof row[key] !== 'string' || (row[key] as string).length > 500))) throw new StoreError('Invalid driver details');
         if (key === 'drivers' && row.phone !== undefined && !validPhone(row.phone)) throw new StoreError('Invalid driver phone');
         if (key === 'drivers' && (typeof row.vehicleId !== 'string' || !(directories.vehicles as {id:string}[]).some(v => v.id === row.vehicleId))) throw new StoreError('Invalid driver vehicle');
         if (key === 'addresses' && (typeof row.companyId !== 'string' || !['loading','delivery'].includes(String(row.kind)))) throw new StoreError('Invalid address');
@@ -69,8 +74,9 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   const ids = new Set<string>();
   const inns = new Set<string>();
   for (const company of data.companies) {
-    if (!object(company) || typeof company.id !== 'string' || !company.id || typeof company.name !== 'string' || !company.name || !strings(company.roles) || !strings(company.managerLabels) || !strings(company.shipmentIds) || !strings(company.paymentIds) || !strings(company.flags) || typeof company.inn !== 'string' || !/^\d{10}(?:\d{2})?$/.test(company.inn) || company.registrySource !== 'checko' || typeof company.registryCheckedAt !== 'string' || ids.has(company.id) || inns.has(company.inn)) throw new StoreError('Invalid company metadata');
-    ids.add(company.id); inns.add(company.inn);
+    if (!object(company) || typeof company.id !== 'string' || !company.id || typeof company.name !== 'string' || !company.name || !strings(company.roles) || !strings(company.managerLabels) || !strings(company.shipmentIds) || !strings(company.paymentIds) || !strings(company.flags) || (company.inn !== undefined && (typeof company.inn !== 'string' || !/^\d{10}(?:\d{2})?$/.test(company.inn) || inns.has(company.inn))) || (company.registrySource !== undefined && (company.registrySource !== 'checko' || typeof company.registryCheckedAt !== 'string')) || ids.has(company.id)) throw new StoreError('Invalid company metadata');
+    if (companyFields.some(([key])=>company[key] !== undefined && company[key] !== null && (typeof company[key] !== 'string' || (company[key] as string).length > 500))) throw new StoreError('Invalid company details');
+    ids.add(company.id); if (typeof company.inn === 'string') inns.add(company.inn);
   }
 }
 

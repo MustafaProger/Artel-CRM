@@ -55,6 +55,7 @@ export async function lookupCheckoCompany(inn: string, apiKey: string | undefine
   const location = record(data['ЮрАдрес']) ?? record(data['Адрес']);
   return {
     id: `company-inn-${inn}`, name, fullName, inn,
+    director: Array.isArray(data['Руковод']) ? data['Руковод'].map(row=>text(record(row)?.['ФИО'])).filter(Boolean).join(', ') || null : null,
     kpp: text(data['КПП']), ogrn: text(data[inn.length === 12 ? 'ОГРНИП' : 'ОГРН']),
     address: text(location?.['АдресРФ']) ?? text(location?.['НасПункт']) ?? text(data['Адрес']) ?? text(data['НасПункт']),
     status: text(record(data['Статус'])?.['Наим']), registrySource: 'checko', registryCheckedAt: new Date().toISOString(),

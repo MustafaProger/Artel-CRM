@@ -63,7 +63,7 @@ const roles: Role[] = [
   },
   {
     id: 'manager', name: 'Менеджер', caption: 'Свои компании и отгрузки', icon: UserRound,
-    summary: 'Рабочее пространство для собственного портфеля клиентов.',
+    summary: 'Работа со своим портфелем клиентов.',
     scope: 'Свои компании и только свои отгрузки, покупатель которых также закреплён за этим менеджером.',
     note: 'Владельцы компании и отгрузки назначаются отдельно. Название поставщика или перевозчика в отгрузке не открывает доступ к его карточке.',
     permissions: [
@@ -200,33 +200,32 @@ export default function TeamPage({ managerLabels }: TeamPageProps) {
         <div className="team-source-header">
           <div className="team-source-title">
             <span className="team-source-icon"><FileSpreadsheet size={20} strokeWidth={1.6} /></span>
-            <div><h3 id="team-source-title">Подписи в исходном Excel</h3><p>Метки из отгрузок для будущей сверки и распределения.</p></div>
+            <div><h3 id="team-source-title">Менеджеры из справочника</h3><p>Менеджеры и количество их отгрузок.</p></div>
           </div>
           <label className="team-search">
             <Search size={16} />
-            <input aria-label="Поиск подписи в Excel" placeholder="Найти подпись" value={query}
+            <input aria-label="Поиск менеджера" placeholder="Найти менеджера" value={query}
               onChange={(event) => { setQuery(event.target.value); setShowAllLabels(false); }} />
           </label>
         </div>
-        <div className="team-source-notice">Подписи не подтверждают наличие сотрудников или принадлежность записей. Назначений пользователям пока нет.</div>
+        <div className="team-source-notice">Карточки менеджеров и назначения компаниям редактируются в справочнике.</div>
         <div className="team-source-table-wrap">
           <table className="team-source-table">
-            <thead><tr><th scope="col">Подпись в файле</th><th scope="col">Отгрузок с подписью</th><th scope="col">Назначение в CRM</th></tr></thead>
+            <thead><tr><th scope="col">Менеджер</th><th scope="col">Отгрузок</th></tr></thead>
             <tbody>
               {visibleLabels.map((label, index) => (
                 <tr key={`${label.name}-${index}`}>
-                  <td><span className="team-source-mark"><FileSpreadsheet size={14} /></span>{label.name || 'Без подписи'}</td>
+                  <td><span className="team-source-mark"><FileSpreadsheet size={14} /></span>{label.name || 'Имя не указано'}</td>
                   <td>{label.shipmentCount.toLocaleString('ru-RU')}</td>
-                  <td><span className="team-unassigned"><span />Не назначено</span></td>
                 </tr>
               ))}
-              {visibleLabels.length === 0 && <tr><td colSpan={3} className="team-empty">{query ? 'Подписей по этому запросу не найдено' : 'В исходных данных нет подписей для отображения'}</td></tr>}
+              {visibleLabels.length === 0 && <tr><td colSpan={2} className="team-empty">{query ? 'Менеджеров по этому запросу не найдено' : 'Менеджеров пока нет'}</td></tr>}
             </tbody>
           </table>
         </div>
         {filteredLabels.length > 6 && (
           <button className="team-show-more" type="button" onClick={() => setShowAllLabels((value) => !value)}>
-            {showAllLabels ? 'Свернуть список' : `Все подписи · ${filteredLabels.length}`}
+            {showAllLabels ? 'Свернуть список' : `Все менеджеры · ${filteredLabels.length}`}
             <ChevronDown size={15} className={showAllLabels ? 'is-open' : ''} />
           </button>
         )}

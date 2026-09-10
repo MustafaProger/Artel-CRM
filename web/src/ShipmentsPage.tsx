@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { ArrowDownToLine, ArrowUp, ArrowDown, Filter, Menu, BookOpen, Maximize2, Minimize2, Check, ChevronDown, LoaderCircle, Pencil, Plus, Search, Trash2, Truck, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUp, ArrowDown, Filter, BookOpen, Check, ChevronDown, LoaderCircle, Pencil, Plus, Menu, Search, Trash2, Truck, X } from 'lucide-react'
 import type { Company, Metric, Shipment, ShipmentTrip, Snapshot } from './model'
 import { downloadCsv, formatDate, number } from './utils'
 import ShipmentEditor from './ShipmentEditor'
@@ -18,13 +18,13 @@ const settlementOptions = [{id:'cashless',label:'Бензовозы · безн�
 const templatePreference = () => {try {const saved = localStorage.getItem('artel:shipment-template'); return saved && Object.hasOwn(shipmentTemplates,saved) ? saved as TemplateId : 'expanded'} catch {return 'expanded'}}
 const apiError = async (response: Response) => {const body = await response.json().catch(() => ({}));return new Error(body.error || body.message || `Не удалось выполнить запрос (${response.status})`)}
 
-export default function ShipmentsPage({data,period,onPeriodChange,onMenu,onChanged,onOpenCompany,initialQuery = ''}: {
-  data: Snapshot; period: string; onPeriodChange: (period:string)=>void; onMenu: ()=>void; onChanged: () => void; onOpenCompany: (company: Company) => void; initialQuery?: string
+export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodChange,onChanged,onOpenCompany,initialQuery = ''}: {
+  onOpenMenu: () => void; menuOpen: boolean; data: Snapshot; period: string; onPeriodChange: (period:string)=>void; onChanged: () => void; onOpenCompany: (company: Company) => void; initialQuery?: string
 }) {
   const [query,setQuery] = useState(initialQuery), [debouncedQuery,setDebouncedQuery] = useState(initialQuery)
   const [manager,setManager] = useState('all'), [settlement,setSettlement] = useState('all')
   const [filters,setFilters] = useState<Record<string,ColumnFilter>>({}), [filterColumn,setFilterColumn] = useState<ShipmentColumn|null>(null)
-  const [sort,setSort] = useState('date'), [direction,setDirection] = useState('desc'), [full,setFull] = useState(false)
+  const [sort,setSort] = useState('date'), [direction,setDirection] = useState('desc')
   const [template,setTemplate] = useState<TemplateId>(templatePreference)
   const [items,setItems] = useState<Shipment[]>([]), [total,setTotal] = useState(0), [hasMore,setHasMore] = useState(false), [nextOffset,setNextOffset] = useState(0)
   const [summary,setSummary] = useState<ShipmentPageResult['summary'] | null>(null)
@@ -39,7 +39,6 @@ export default function ShipmentsPage({data,period,onPeriodChange,onMenu,onChang
   useEffect(() => {try {localStorage.setItem('artel:shipment-template',template)} catch {/* The view also works without persistent browser storage. */}}, [template])
   useEffect(() => {if(!notice) return;const timer = setTimeout(() => setNotice(''),4500);return () => clearTimeout(timer)}, [notice])
   const params = useMemo(() => new URLSearchParams({period,query:debouncedQuery,manager,settlement,sort,direction,filters:JSON.stringify(filters)}).toString(), [period,debouncedQuery,manager,settlement,sort,direction,filters])
-  useEffect(()=>{if(!full)return;const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]'))setFull(false)};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape)},[full])
   const loadPage = useCallback(async (offset: number, replace: boolean, currentGeneration: number) => {
     if(busy.current) return
     const controller = new AbortController();request.current = controller;busy.current = true;setLoading(true);setError('')
@@ -96,15 +95,15 @@ export default function ShipmentsPage({data,period,onPeriodChange,onMenu,onChang
         if(more && result.nextOffset <= offset) throw new Error('Сервер не вернул следующую часть выгрузки')
         offset = result.nextOffset
       }
-      downloadCsv(`Артэль-отгрузки-${chosen.title}.csv`,chosen.columns.map(c => c.title),all.map(item => chosen.columns.map(c => fieldValue(item,c.key))))
+      downloadCsv(`Артель-отгрузки-${chosen.title}.csv`,chosen.columns.map(c => c.title),all.map(item => chosen.columns.map(c => fieldValue(item,c.key))))
       setNotice(`Экспортировано операций: ${number(all.length)}`)
     } catch(e) {if(!controller.signal.aborted) setExportError(e instanceof Error ? e.message : 'Не удалось подготовить экспорт')}
     finally {setExporting(false)}
   }
   const companyFor = (shipment:Shipment,key:string) => data.companies.find(company => company.id === (key === 'customer_name' ? shipment.customerId : key === 'supplier_name' ? shipment.supplierId : shipment.carrierId))
-  return <div className={`shipments-workspace ${full?'shipment-immersive':''}`}>
+  return <div className="shipments-workspace">
     <section className="panel shipment-panel" aria-label="Операции отгрузки">
-      <div className="shipment-toolbar"><button className="icon-button" aria-label="Открыть меню" onClick={onMenu}><Menu size={20}/></button><h1>Отгрузки</h1><label className="shipment-search"><Search size={17}/><input aria-label="Поиск отгрузок" placeholder="Поиск по всем колонкам…" value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button className="icon-button" aria-label="Очистить поиск" onClick={()=>setQuery('')}><X size={16}/></button>}</label><button className="button primary" onClick={()=>setEditor({shipment:null})}><Plus size={17}/>Добавить отгрузку</button><a className="button" href="#directories"><BookOpen size={17}/>Справочники</a><button className="icon-button" aria-label={full?'Выйти из полноэкранного режима':'Полноэкранный режим'} onClick={()=>setFull(v=>!v)}>{full?<Minimize2 size={18}/>:<Maximize2 size={18}/>}</button></div>
+      <div className="shipment-toolbar"><div className="shipment-title"><button className="icon-button shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menuOpen} onClick={onOpenMenu}><Menu size={21}/></button><h1>Отгрузки</h1></div><label className="shipment-search"><Search size={17}/><input aria-label="Поиск отгрузок" placeholder="Поиск по всем колонкам…" value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button className="icon-button" aria-label="Очистить поиск" onClick={()=>setQuery('')}><X size={16}/></button>}</label><button className="button primary" onClick={()=>setEditor({shipment:null})}><Plus size={17}/>Добавить отгрузку</button><a className="button" href="#directories"><BookOpen size={17}/>Справочники</a></div>
       <div className="shipment-template-row"><div className="shipment-view-controls"><select aria-label="Период отгрузок" value={period} onChange={e=>onPeriodChange(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m=><option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><select aria-label="Форма расчёта" value={settlement} onChange={e=>setSettlement(e.target.value)}>{settlementOptions.map(o=><option key={o.id} value={o.id}>{o.label}</option>)}</select><select aria-label="Фильтр менеджера" value={manager} onChange={e=>setManager(e.target.value)}><option value="all">Все менеджеры</option><option value="none">Без менеджера</option>{data.managers.map(m=><option key={m.id} value={m.label}>{m.label}</option>)}</select><select aria-label="Вид таблицы" value={template} onChange={e=>setTemplate(e.target.value as TemplateId)}>{(Object.keys(shipmentTemplates) as TemplateId[]).map(id=><option key={id} value={id}>{shipmentTemplates[id].title} · {shipmentTemplates[id].columns.length}</option>)}</select></div><div className="shipment-view-actions">{(Object.keys(filters).length>0||query||manager!=='all'||settlement!=='all'||period!=='all')&&<button className="button" onClick={()=>{setFilters({});setQuery('');setManager('all');setSettlement('all');onPeriodChange('all')}}>Сбросить фильтры{Object.keys(filters).length?` · ${Object.keys(filters).length}`:''}</button>}<button className="button" onClick={exportRows} disabled={exporting||loading&&!items.length}>{exporting?<LoaderCircle className="spin" size={16}/>:<ArrowDownToLine size={16}/>}CSV</button></div></div>
       {exportError && <div className="shipment-error" role="alert">{exportError}</div>}
       <div ref={scroller} className="shipment-grid-scroll" data-testid="shipments-scroll" tabIndex={0} aria-label="Таблица отгрузок с горизонтальной и вертикальной прокруткой" onScroll={event => {

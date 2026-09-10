@@ -1,35 +1,107 @@
-import { useState } from 'react'
-import { LoaderCircle, Plus, Search } from 'lucide-react'
-import type { Snapshot, Vehicle } from './model'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
+import type { Company, ShipmentAddress, Snapshot, Vehicle } from './model'
 import DirectorySelect from './DirectorySelect'
-import CustomerManagersDirectory from './CustomerManagersDirectory'
-const tabs = [{id:'companies',name:'Компании'},{id:'customerManagers',name:'Клиенты и менеджеры'},{id:'managers',name:'Менеджеры'},{id:'products',name:'Товары'},{id:'paymentForms',name:'Формы оплаты'},{id:'vehicles',name:'Автомобили'},{id:'drivers',name:'Водители'},{id:'addresses',name:'Адреса'},{id:'duplicates',name:'Возможные дубли'}] as const
-const litres = (value: string) => `${Number(value).toLocaleString('ru-RU')} л`
+import { companyFields, driverFields, vehicleFields, stsFields, ptsFields, allVehicleFields } from './directory-fields'
+import { customerManagerId } from './customer-manager'
+import './directories.css'
+
+const tabs = [{id:'companies',name:'Компании'}, {id:'managers',name:'Менеджеры'}, {id:'products',name:'Товары'}, {id:'vehicles',name:'Автомобили'}, {id:'drivers',name:'Водители'}] as const
+ type Tab = (typeof tabs)[number]['id']
+const titles: Record<Tab, string> = { companies: 'компании', managers: 'менеджера', products: 'товара', vehicles: 'автомобиля', drivers: 'водителя' }
+const roleLabels = { customer: 'Клиент', supplier: 'Поставщик', carrier: 'Перевозчик' }
 const vehicleName = (vehicle: Vehicle) => vehicle.name || vehicle.plate
-const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== vehicle.plate ? vehicle.plate : '', ...(!vehicle.name ? [vehicle.brand, vehicle.model] : []), vehicle.trailer, vehicle.capacityLitres ? `Объём: ${litres(vehicle.capacityLitres)}` : 'Объём не указан', vehicle.compartmentsLitres?.length ? `Секции: ${vehicle.compartmentsLitres.map(value => Number(value).toLocaleString('ru-RU')).join(' + ')} л` : ''].filter(Boolean).join(' · ')
+const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== vehicle.plate ? vehicle.plate : '', vehicle.capacityLitres ? `${Number(vehicle.capacityLitres).toLocaleString('ru-RU')} л` : '', vehicle.compartmentsLitres?.length ? `Секции: ${vehicle.compartmentsLitres.join(' + ')} л` : ''].filter(Boolean).join(' · ')
+
 export default function DirectoriesPage({data,onChanged}:{data:Snapshot;onChanged:()=>void}) {
-  const [tab,setTab]=useState<(typeof tabs)[number]['id']>('companies'),[query,setQuery]=useState(''),[fields,setFields]=useState<Record<string,string>>({addressKind:'delivery'}),[error,setError]=useState(''),[notice,setNotice]=useState(''),[saving,setSaving]=useState(false)
-  const catalog=data.directories!
-  const update=(key:string,value:string)=>setFields(old=>({...old,[key]:value}))
-  const save=async(e:React.FormEvent)=>{e.preventDefault();if(saving)return;setSaving(true);setError('');setNotice('');try{
-    const payload: Record<string, unknown> = tab==='companies'?{inn:fields.inn}:{kind:tab,...fields}
-    if(tab==='vehicles') {
-      if(fields.compartmentsLitres?.trim()) payload.compartmentsLitres=fields.compartmentsLitres.split(/[+;]/).map(value=>value.trim())
-      else delete payload.compartmentsLitres
-    }
-    const response=await fetch(tab==='companies'?'/api/companies/from-inn':'/api/directories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить запись');setNotice(result.created?'Запись добавлена':'Такая запись уже есть — дубль не создан');setFields(tab==='addresses'?{addressKind:fields.addressKind,companyId:fields.companyId}:{});onChanged()
-  }catch(e){setError(e instanceof Error?e.message:'Нет связи с сервером')}finally{setSaving(false)}}
-  const input=(label:string,key:string,required=true)=><label className="shipment-field"><span>{label}</span><input aria-label={label} value={fields[key]??''} required={required} disabled={saving} onChange={e=>update(key,e.target.value)}/></label>
-  const navigation = <div className="directory-tabs" role="group" aria-label="Справочники">{tabs.map(t=><button className={`button ${t.id===tab?'primary':''}`} aria-pressed={t.id===tab} key={t.id} onClick={()=>{setTab(t.id);setFields(t.id==='addresses'?{addressKind:'delivery'}:{});setError('');setNotice('');setQuery('')}}>{t.name}{t.id==='duplicates'&&` · ${catalog.duplicates.length}`}</button>)}</div>
-  if (tab === 'customerManagers') return <div className="directories-page">{navigation}<CustomerManagersDirectory data={data} onChanged={onChanged}/></div>
-  const rows=tab==='companies'?data.companies.map(c=>({id:c.id,name:c.name,detail:c.inn?`ИНН ${c.inn}`:'ИНН не указан'})):tab==='vehicles'?catalog.vehicles.map(v=>({id:v.id,name:vehicleName(v),detail:vehicleDetail(v)})):tab==='drivers'?catalog.drivers.map(d=>({id:d.id,name:d.name,detail:[d.phone,catalog.vehicles.find(v=>v.id===d.vehicleId)].map(value=>typeof value==='object'?vehicleName(value):value).filter(Boolean).join(' · ')})):tab==='addresses'?catalog.addresses.map(a=>({id:a.id,name:a.name,detail:`${a.kind==='loading'?'Загрузка':'Выгрузка'} · ${data.companies.find(c=>c.id===a.companyId)?.name}`})):tab==='duplicates'?catalog.duplicates.map((g,i)=>({id:String(i),name:g.names.join(' / '),detail:g.reason})):catalog[tab]
-  const visible=rows.filter(r=>`${r.name} ${'detail'in r?r.detail:''}`.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')))
-  return <div className="directories-page">{navigation}
-    {tab!=='duplicates'&&<form className="panel directory-create" onSubmit={save}><h2>Добавить: {tabs.find(t=>t.id===tab)?.name.toLocaleLowerCase('ru')}</h2><div className="shipment-field-grid">
-      {tab==='companies'?input('ИНН компании','inn'):tab==='vehicles'?<>{input('Автомобиль / номер','plate')}{input('Название для выбора','name',false)}{input('Марка','brand',false)}{input('Модель','model',false)}{input('Прицеп','trailer',false)}{input('Объём автомобиля, л','capacityLitres',false)}{input('Секции, л (через +)','compartmentsLitres',false)}</>:<>{input(tab==='drivers'?'ФИО водителя':tab==='addresses'?'Адрес / название точки':'Название','name')}{tab==='drivers'&&<>{input('Телефон водителя','phone',false)}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(v=>({id:v.id,name:vehicleName(v),detail:vehicleDetail(v)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving}/></>} {tab==='addresses'&&<><DirectorySelect label="Компания" entries={data.companies.map(c=>({id:c.id,name:c.name,detail:c.inn}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving}/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind} disabled={saving} onChange={e=>update('addressKind',e.target.value)}><option value="delivery">Выгрузка у покупателя</option><option value="loading">Загрузка у поставщика</option></select></label></>}</>}
-      </div><button className="button primary" type="submit" disabled={saving}>{saving?<LoaderCircle className="spin" size={16}/>:<Plus size={16}/>}Добавить в справочник</button>{tab==='companies'&&<p className="shipment-editor-note">Реквизиты поступают из Чекко. Совпадение ИНН возвращает существующую фирму; одинаковые названия без ИНН требуют проверки.</p>}</form>}
-    {error&&<p className="shipment-error" role="alert">{error}</p>}{notice&&<p className="soft-notice" role="status">{notice}</p>}
-    {tab==='duplicates'&&<p className="soft-notice">Ниже — кандидаты на объединение. Без подтверждения ИНН одинаковое название не доказывает, что это одна фирма. Исходные записи и связи отгрузок сохранены.</p>}
-    <section className="panel directory-list"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder="Найти запись…" value={query} onChange={e=>setQuery(e.target.value)}/></label><p className="shipment-editor-note">Записей: {visible.length}</p><div className="directory-rows">{visible.map(r=><div key={r.id}><strong>{r.name}</strong>{'detail'in r&&<span>{String(r.detail??'')}</span>}</div>)}{!visible.length&&<p>Записей пока нет.</p>}</div></section>
+  const [tab,setTab] = useState<Tab>('companies'), [query,setQuery] = useState(''), [role,setRole] = useState('all'), [page,setPage] = useState(0)
+  const [editor,setEditor] = useState<{id?:string} | null>(null), [notice,setNotice] = useState('')
+  const catalog = data.directories!
+  const rows: {id:string;name:string;detail:string;manager?:string;addresses?:string}[] = tab === 'companies' ? data.companies.filter(company => role === 'all' || company.roles.includes(role)).map(company => ({
+    id: company.id, name: company.name,
+    detail: [company.inn ? `ИНН ${company.inn}` : 'ИНН не указан', ...company.roles.filter(r => r in roleLabels).map(r => roleLabels[r as keyof typeof roleLabels])].join(' · '),
+    manager: catalog.managers.find(manager => manager.id === customerManagerId(catalog, company.id))?.name || 'Не назначен',
+    addresses: catalog.addresses.filter(address => address.companyId === company.id).map(address => address.name).join('; '),
+  })) : tab === 'vehicles' ? catalog.vehicles.map(vehicle => ({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))
+    : tab === 'drivers' ? catalog.drivers.map(driver => ({ id: driver.id, name: driver.name, detail: [driver.phone, catalog.vehicles.find(vehicle => vehicle.id === driver.vehicleId)].map(value => typeof value === 'object' ? vehicleName(value) : value).filter(Boolean).join(' · ') })) : catalog[tab].map(row => ({...row,detail:''}))
+  const visible = rows.filter(row => [row.name, row.detail, 'manager' in row ? row.manager : '', 'addresses' in row ? row.addresses : ''].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
+  const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
+  return <div className="directories-page">
+    <div className="directory-tabs" role="group" aria-label="Справочники">{tabs.map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setNotice('')}}>{item.name}</button>)}</div>
+    {notice && <p className="directory-notice" role="status">{notice}</p>}
+    <section className="panel directory-list">
+      <div className="directory-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={tab === 'companies' ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/></label>
+        {tab === 'companies' && <select className="filter-select" aria-label="Тип компании" value={role} onChange={event=>{setRole(event.target.value);setPage(0)}}><option value="all">Все компании</option>{Object.entries(roleLabels).map(([id,name])=><option value={id} key={id}>{name === 'Клиент' ? 'Клиенты' : name === 'Поставщик' ? 'Поставщики' : 'Перевозчики'}</option>)}</select>}
+        <button className="button primary" onClick={()=>setEditor({})}><Plus size={17}/>Добавить</button>
+      </div>
+      <div className="directory-record-count">Записей: {visible.length}</div>
+      <div className="directory-records">{visible.slice(currentPage*30,(currentPage+1)*30).map(row=><button className="directory-record" key={row.id} onClick={()=>setEditor({id:row.id})} aria-label={`Редактировать: ${row.name}`}>
+        <span className="directory-record-main"><strong>{row.name}</strong>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
+        {row.manager !== undefined && <span className="directory-record-manager"><small>Менеджер</small><span>{row.manager}</span></span>}
+        <Pencil size={17}/>
+      </button>)}</div>
+      {!visible.length && <p className="directory-empty">{query ? 'По вашему запросу ничего не найдено.' : 'Записей пока нет. Нажмите «Добавить», чтобы создать первую.'}</p>}
+      <div className="directory-pagination"><span>{visible.length ? `${currentPage*30+1}–${Math.min((currentPage+1)*30,visible.length)} из ${visible.length}` : '0 записей'}</span><div><button className="icon-button" aria-label="Предыдущая страница справочника" disabled={!currentPage} onClick={()=>setPage(currentPage-1)}><ChevronLeft size={18}/></button><span>{currentPage+1} / {lastPage+1}</span><button className="icon-button" aria-label="Следующая страница справочника" disabled={currentPage===lastPage} onClick={()=>setPage(currentPage+1)}><ChevronRight size={18}/></button></div></div>
+    </section>
+    {editor && <DirectoryEditor tab={tab} id={editor.id} initialRole={role} data={data} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice(editor.id ? 'Изменения сохранены' : 'Запись добавлена');onChanged()}}/>}
   </div>
+}
+
+function DirectoryEditor({tab,id,initialRole,data,onClose,onSaved}:{tab:Tab;id?:string;initialRole:string;data:Snapshot;onClose:()=>void;onSaved:()=>void}) {
+  const catalog = data.directories!, dialog = useRef<HTMLDialogElement>(null)
+  const entry = tab === 'companies' ? data.companies.find(row=>row.id===id) : catalog[tab].find(row=>row.id===id)
+  const company = tab === 'companies' ? entry as Company | undefined : undefined
+  const [fields,setFields] = useState<Record<string,string>>(()=>Object.fromEntries(Object.entries(entry ?? {}).filter(([,value])=>typeof value==='string').map(([key,value])=>[key,String(value)])))
+  const [sections,setSections] = useState(()=>tab==='vehicles' ? (entry as Vehicle | undefined)?.compartmentsLitres?.join(' + ') ?? '' : '')
+  const [roles,setRoles] = useState<string[]>(()=>company ? company.roles.filter(role=>role in roleLabels) : [initialRole in roleLabels ? initialRole : 'customer'])
+  const [managerId,setManagerId] = useState(()=>customerManagerId(catalog,id??''))
+  const [addresses,setAddresses] = useState<Pick<ShipmentAddress,'id'|'name'|'kind'>[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind})=>({id,name,kind})))
+  const [lookupBusy,setLookupBusy] = useState(false), [lookupNotice,setLookupNotice] = useState('')
+  const [saving,setSaving] = useState(false), [error,setError] = useState(''), [dirty,setDirty] = useState(false), [confirmClose,setConfirmClose] = useState(false)
+  useEffect(()=>{const element=dialog.current;element?.showModal();return()=>element?.close()},[])
+  useEffect(()=>{if(!dirty)return;const handler=(event:BeforeUnloadEvent)=>{event.preventDefault()};window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler)},[dirty])
+  const close = ()=>{if(saving||lookupBusy)return;if(dirty)setConfirmClose(true);else onClose()}
+  const update = (key:string,value:string)=>{setFields(old=>({...old,[key]:value}));setDirty(true)}
+  const input = (label:string,key:string,required=false)=><label className="shipment-field"><span>{label}{required?' *':''}</span><input aria-label={label} value={fields[key]??''} required={required} maxLength={500} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/></label>
+  const save = async(event:React.FormEvent)=>{
+    event.preventDefault();if(saving||lookupBusy)return;setSaving(true);setError('')
+    try {
+      const payload:Record<string,unknown> = tab === 'companies' ? {...Object.fromEntries(companyFields.map(([key])=>[key,fields[key]??''])),name:fields.name,inn:fields.inn??'',roles,managerId:managerId||null,addresses:addresses.map(({id,name,kind})=>({...(id?{id}:{}),name,kind}))}
+        : tab === 'vehicles' ? Object.fromEntries(['plate','name','brand','model','trailer','capacityLitres',...allVehicleFields.map(([key])=>key)].map(key=>[key,fields[key]??'']))
+        : tab === 'drivers' ? {...Object.fromEntries(driverFields.map(([key])=>[key,fields[key]??''])),name:fields.name,phone:fields.phone??'',vehicleId:fields.vehicleId??''} : {name:fields.name}
+      if(tab==='vehicles' && sections.trim())payload.compartmentsLitres=sections.split(/[+;]/).map(value=>value.trim())
+      if(id)payload.version=entry?.version??0;else payload.kind=tab
+      const response=await fetch(id?`/api/directories/${tab}/${encodeURIComponent(id)}`:'/api/directories',{method:id?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить запись')
+      if(!id && !result.created)throw new Error('Такая запись уже есть. Найдите её в списке для редактирования.')
+      onSaved()
+    }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{setSaving(false)}
+  }
+  const lookup = async()=>{
+    if(saving||lookupBusy)return;setLookupBusy(true);setError('');setLookupNotice('')
+    try{
+      const response=await fetch('/api/companies/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inn:fields.inn??''})})
+      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось получить реквизиты')
+      const company=result.company as Company
+      setFields(old=>({...old,...Object.fromEntries(['name','inn','fullName','kpp','ogrn','director','address'].map(key=>[key,String(company[key as keyof Company]??'')]))}))
+      setDirty(true);setLookupNotice('Реквизиты заполнены из Чекко. Проверьте данные и сохраните карточку.')
+    }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{setLookupBusy(false)}
+  }
+  const extraGroup = (title:string,fields:readonly (readonly [string,string])[],open=false)=><details className="directory-extra-fields" open={open||undefined}><summary>{title}</summary><div className="shipment-field-grid">{fields.map(([key,label])=><div key={key}>{input(label,key)}</div>)}</div></details>
+  const addressGroup = (kind:'loading'|'delivery',label:string)=><section className="company-address-group"><div><h3>{label}</h3><button type="button" className="button" disabled={saving||lookupBusy} onClick={()=>{setAddresses(old=>[...old,{id:'',name:'',kind}]);setDirty(true)}}><Plus size={15}/>Добавить адрес</button></div>{addresses.map((address,index)=>address.kind!==kind?null:<div className="company-address-row" key={index}><label className="shipment-field"><span>{kind==='loading'?'Адрес загрузки':'Адрес отгрузки клиента'}</span><input aria-label={`${kind==='loading'?'Адрес загрузки':'Адрес отгрузки клиента'} ${addresses.slice(0,index+1).filter(row=>row.kind===kind).length}`} value={address.name} required maxLength={500} disabled={saving||lookupBusy} onChange={event=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,name:event.target.value}:row));setDirty(true)}}/></label><button type="button" className="icon-button" aria-label={`Удалить адрес ${address.name||index+1}`} disabled={saving||lookupBusy} onClick={()=>{setAddresses(old=>old.filter((_,i)=>i!==index));setDirty(true)}}><Trash2 size={17}/></button></div>)}</section>
+  return <dialog ref={dialog} className="detail-dialog directory-editor" aria-labelledby="directory-editor-title" onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
+    <div className="directory-editor-heading"><h2 id="directory-editor-title">{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy} onClick={close}><X size={20}/></button></div>
+    <div className="directory-editor-body"><div className="shipment-field-grid">
+      {tab==='companies'?<>{input('Наименование','name',true)}{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} disabled={saving||lookupBusy}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role));setDirty(true)}}/>{label}</label>)}</fieldset></>
+      :tab==='vehicles'?<>{input('Автомобиль / номер','plate',true)}{input('Название для выбора','name')}{input('Марка','brand')}{input('Модель','model')}{input('Прицеп','trailer')}{input('Объём автомобиля, л','capacityLitres')}<label className="shipment-field"><span>Секции, л (через +)</span><input aria-label="Секции, л (через +)" value={sections} disabled={saving||lookupBusy} onChange={event=>{setSections(event.target.value);setDirty(true)}}/></label></>
+      :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя менеджера':'Название товара','name',true)}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
+    </div>
+    {lookupNotice&&<p className="directory-notice" role="status">{lookupNotice}</p>}
+    {tab==='companies'&&<>{extraGroup('Реквизиты организации',companyFields.slice(0,5),true)}{extraGroup('Контакты и банковские реквизиты',companyFields.slice(5))}{(roles.includes('supplier')||addresses.some(address=>address.kind==='loading'))&&addressGroup('loading','Фактические адреса загрузки поставщика')}{(roles.includes('customer')||addresses.some(address=>address.kind==='delivery'))&&addressGroup('delivery','Фактические адреса отгрузки клиента')}</>}
+    {tab==='drivers'&&extraGroup('Паспортные данные водителя',driverFields)}
+    {tab==='vehicles'&&<>{extraGroup('Данные транспортного средства',vehicleFields)}{extraGroup('Свидетельство о регистрации (СТС)',stsFields)}{extraGroup('Паспорт транспортного средства (ПТС / ЭПТС)',ptsFields)}</>}
+    {error&&<p className="shipment-error" role="alert">{error}</p>}
+    {confirmClose&&<div className="directory-close-confirm" role="alert"><p>Закрыть карточку без сохранения изменений?</p><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
+    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
+  </form></dialog>
 }

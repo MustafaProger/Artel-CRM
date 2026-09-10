@@ -1,3 +1,4 @@
+import { allVehicleFields } from '../web/src/directory-fields';
 import Decimal from 'decimal.js';
 import type { Directories, Driver, Vehicle } from '../web/src/model';
 
@@ -31,7 +32,7 @@ export function withFleetDirectories(saved: Directories): Directories {
   const vehicleIds = new Map<string, string>();
   for (const seed of vehicles) {
     const key = vehicleKey(seed.name!);
-    const existing = result.vehicles.find(row => [row.name, row.plate, [row.brand, row.model, row.plate].filter(Boolean).join(' ')].some(label => label && vehicleKey(label) === key));
+    const existing = result.vehicles.find(row => row.id === seed.id) ?? result.vehicles.find(row => [row.name, row.plate, [row.brand, row.model, row.plate].filter(Boolean).join(' ')].some(label => label && vehicleKey(label) === key));
     if (existing) vehicleIds.set(seed.id, existing.id);
     else {
       const vehicle = { ...seed, id: unusedId(seed.id, result.vehicles), ...(seed.compartmentsLitres ? { compartmentsLitres: [...seed.compartmentsLitres] } : {}) };
@@ -40,7 +41,7 @@ export function withFleetDirectories(saved: Directories): Directories {
     }
   }
   for (const seed of drivers) {
-    if (result.drivers.some(row => nameKey(row.name) === nameKey(seed.name))) continue;
+    if (result.drivers.some(row => row.id === seed.id || nameKey(row.name) === nameKey(seed.name))) continue;
     result.drivers.push({ ...seed, id: unusedId(seed.id, result.drivers), vehicleId: vehicleIds.get(seed.vehicleId)! });
   }
   return result;
@@ -49,7 +50,7 @@ export function withFleetDirectories(saved: Directories): Directories {
 export const validLitres = (value: unknown): value is string => typeof value === 'string' && /^\d{1,9}(?:\.\d{1,6})?$/.test(value) && new Decimal(value).gt(0);
 export const validPhone = (value: unknown): value is string => typeof value === 'string' && /^[+\d\s()-]+$/.test(value) && /^\d{7,15}$/.test(value.replace(/\D/g, ''));
 export function validVehicleMetadata(row: Record<string, unknown>): boolean {
-  for (const key of ['name', 'brand', 'model', 'trailer']) if (row[key] !== undefined && (typeof row[key] !== 'string' || (row[key] as string).length > 500)) return false;
+  for (const key of ['name', 'brand', 'model', 'trailer', ...allVehicleFields.map(([key])=>key)]) if (row[key] !== undefined && (typeof row[key] !== 'string' || (row[key] as string).length > 500)) return false;
   if (row.capacityLitres !== undefined && !validLitres(row.capacityLitres)) return false;
   if (row.compartmentsLitres !== undefined) {
     if (!Array.isArray(row.compartmentsLitres) || !row.compartmentsLitres.length || row.compartmentsLitres.length > 20 || !row.compartmentsLitres.every(validLitres)) return false;

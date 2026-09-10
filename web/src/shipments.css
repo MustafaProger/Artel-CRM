@@ -134,14 +134,9 @@
 
 /* Shipment workspace occupies the viewport; navigation is an on-demand drawer. */
 .shipments-focus .topbar,.shipments-focus .page-heading,.shipments-focus .page-footer{display:none}
-.shipments-focus .workspace-main{margin:0;width:100%;min-width:0}
 .shipments-focus #main-content{margin:0;padding:0;max-width:none;height:100dvh;min-height:0;overflow:hidden}
 .shipments-focus .page-content{height:100%;animation:none}
-.shipments-focus .sidebar{transform:translateX(-100%);width:250px;z-index:201;transition:transform .15s}
-.shipments-focus .sidebar.is-open{transform:translateX(0);box-shadow:10px 0 40px #14362730}
-.shipments-focus .sidebar-scrim{display:block;position:fixed;inset:0;z-index:200;border:0;background:#20392c66}
 .shipments-workspace{height:100%;display:flex;flex-direction:column;background:#fff}
-.shipment-immersive{position:fixed;inset:0;z-index:100;height:100dvh}
 .shipment-panel{flex:1;display:flex;flex-direction:column;min-height:0;border:0;border-radius:0;overflow:hidden}
 .shipment-toolbar{padding:9px 12px;gap:10px;flex-wrap:nowrap;flex-shrink:0;border-bottom:1px solid #dce5df}
 .shipment-toolbar h1{font-size:20px;letter-spacing:-.4px;line-height:1;margin:0 8px 0 0;flex-shrink:0}
@@ -253,3 +248,17 @@
 .directory-assignment-table th, .directory-assignment-table td { padding:12px; border-bottom:1px solid var(--border, #e5e7eb); }
 .directory-assignment-table th { font-size:13px; color:var(--muted, #64748b); }
 .directory-assignment-table small { display:block; margin-top:4px; color:var(--muted, #64748b); }
+
+/* Full-screen shipments with the shared navigation in an overlay. */
+.shipments-focus .workspace-main{margin-left:0}
+.shipments-focus .sidebar{width:260px;max-width:calc(100vw - 32px);transform:translateX(-100%);visibility:hidden;transition:transform .22s ease,visibility .22s ease}
+.shipments-focus .sidebar.is-open{transform:translateX(0);visibility:visible;box-shadow:10px 0 45px #203c3020}
+.shipments-focus .sidebar-scrim{display:block;position:fixed;inset:0;border:0;background:#263a335c;backdrop-filter:blur(2px);z-index:39}
+.shipments-focus .sidebar-toggle{display:none!important}
+.shipments-focus .sidebar-mobile-close{display:inline-grid!important}
+.shipments-focus .toast{left:50%}
+.shipment-title{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.shipment-toolbar .shipment-menu{width:36px;height:36px;flex-shrink:0;border:1px solid #cbd9d1;border-radius:7px;color:#365545}
+@media(max-width:800px){.shipment-title{margin-right:auto}}
+@media(prefers-reduced-motion:reduce){.shipments-focus .sidebar{transition:none}}
+@media(max-width:360px){.shipment-title{flex-basis:100%}.shipment-toolbar>.primary{flex:1;justify-content:center}}
