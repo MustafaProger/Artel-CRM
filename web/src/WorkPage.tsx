@@ -8,6 +8,7 @@ import './work.css';
 import PushSettings from './PushSettings';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry };
+type SavedAction = 'saved' | 'archived' | 'restored' | 'deleted';
 type CalendarEvent = { id: string; day: string; title: string; reminder: boolean; editor: Editor };
 const localDay = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 const dateLabel = (date: string | null) => date ? new Date(date.length === 10 ? `${date}T12:00:00` : date).toLocaleString('ru-RU', date.length === 10 ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -107,34 +108,51 @@ export default function WorkPage() {
           <section className="panel work-notes"><header className="work-section-heading"><h2>Заметки</h2><button className="icon-button" aria-label="Добавить заметку" onClick={() => setEditor({ kind: 'notes' })}><Plus size={18}/></button></header>{data.work.notes.length ? <div className="work-note-list">{data.work.notes.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(note => <button className="work-note" key={note.id} onClick={() => setEditor({ kind: 'notes', entry: note })} aria-label={`Заметка: ${note.title}`}><strong>{note.title}</strong><p>{note.content}</p><small>{userName(note.assigneeId)}</small></button>)}</div> : <p className="work-empty">Короткие рабочие записи.</p>}</section>
         </aside>
       </div>
-      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} companies={data.companies} actor={data.currentUser} onClose={() => setEditor(null)} onSaved={deleted => { setEditor(null); setNotice(deleted ? 'Запись удалена.' : 'Сохранено. Назначение доступно сотруднику в разделе «Работа».'); void refresh(); }}/>}
+      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} companies={data.companies} actor={data.currentUser} onClose={() => setEditor(null)} onSaved={(action, entry) => {
+        request.current?.abort();
+        const key = editor.kind === 'companies' ? 'companyRecords' : editor.kind;
+        setData(previous => {
+          if (!previous) return previous;
+          const remaining = previous.work[key].filter(row => row.id !== editor.entry?.id && row.id !== entry?.id);
+          return { ...previous, work: { ...previous.work, [key]: entry ? [...remaining, entry] : remaining } };
+        });
+        setEditor(null);
+        setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : 'Сохранено. Назначение доступно сотруднику в разделе «Работа».');
+        void refresh();
+      }}/>}
     </>}
   </div>;
 }
 
-function WorkEditor({ editor, users, companies, actor, onClose, onSaved }: { editor: Editor; users: AccountUser[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (deleted?: boolean) => void }) {
+function WorkEditor({ editor, users, companies, actor, onClose, onSaved }: { editor: Editor; users: AccountUser[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const [requestId] = useState(() => crypto.randomUUID());
   const entry = editor.entry, task = entry as WorkTask | undefined, record = entry as WorkCompanyRecord | undefined, note = entry as WorkNote | undefined;
   const [fields, setFields] = useState(() => ({ title: task?.title ?? '', description: task?.description ?? '', status: task?.status ?? 'todo', companyId: task?.companyId ?? '', assigneeId: entry?.assigneeId ?? actor.id, dueDate: task?.dueDate ?? '', reminderAt: localInputTime(task?.reminderAt), question: record?.question ?? '', comment: '', content: note?.content ?? '' }));
   const [files, setFiles] = useState<File[]>([]);
-  const [archived, setArchived] = useState(!!task?.archivedAt);
+  const archived = !!task?.archivedAt;
+  const deleteCancel = useRef<HTMLButtonElement>(null);
   const [saving, setSaving] = useState(false), [error, setError] = useState(''), [confirmDelete, setConfirmDelete] = useState(false), [dirty, setDirty] = useState(false), [confirmClose, setConfirmClose] = useState(false);
   useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close(); }, []);
+  useEffect(() => { if (confirmDelete) deleteCancel.current?.focus(); }, [confirmDelete]);
   useEffect(() => { if (!dirty) return; const prevent = (event: BeforeUnloadEvent) => event.preventDefault(); window.addEventListener('beforeunload', prevent); return () => window.removeEventListener('beforeunload', prevent); }, [dirty]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })); setDirty(true); };
   const close = () => { if (inFlight.current) return; if (dirty) setConfirmClose(true); else onClose(); };
-  const save = async (method: 'POST' | 'PATCH' | 'DELETE') => {
+  const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
     if (inFlight.current) return;
+    if (method !== 'DELETE' && !dialog.current?.querySelector('form')?.reportValidity()) return;
     inFlight.current = true; setSaving(true); setError('');
     try {
-      const reminderAt = fields.reminderAt ? new Date(fields.reminderAt).toISOString() : null;
-      const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
-      const body = method === 'DELETE' ? { version: entry!.version } : { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, dueDate: fields.dueDate || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
+      let body: Record<string, unknown> = { version: entry?.version };
+      if (method !== 'DELETE') {
+        const reminderAt = fields.reminderAt ? new Date(fields.reminderAt).toISOString() : null;
+        const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
+        body = { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived: nextArchived ?? archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, dueDate: fields.dueDate || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
+      }
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить запись.');
-      onSaved(method === 'DELETE');
+      onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
     finally { inFlight.current = false; setSaving(false); }
   };
@@ -158,9 +176,12 @@ function WorkEditor({ editor, users, companies, actor, onClose, onSaved }: { edi
       {editor.kind !== 'notes' && <section className="work-files"><h3>Файлы</h3><p className="work-hint">До 1 МБ на файл, до 2 МБ и 20 файлов в карточке. Доступны сотруднику, которому назначена запись.</p>{record?.attachments?.map(file => <a key={file.id} className="work-file" href={`/api/work/${editor.kind}/${encodeURIComponent(entry!.id)}/files/${encodeURIComponent(file.id)}`} download={file.name}>{file.name} · {Math.ceil(file.size / 1024)} КБ</a>)}<label className="work-field"><span>Прикрепить файлы</span><input type="file" multiple aria-label="Прикрепить файлы" disabled={saving} onChange={event => { const selected = [...files, ...Array.from(event.target.files ?? [])]; event.target.value = ''; if (selected.some(file => file.size > workFileLimit) || selected.reduce((sum, file) => sum + file.size, 0) + (record?.attachments ?? []).reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit || selected.length + (record?.attachments?.length ?? 0) > 20) { setError('Превышен предел файлов: 1 МБ на файл, 2 МБ и 20 файлов в карточке.'); return; } setFiles(selected); setDirty(true); setError(''); }}/></label>{files.map((file, index) => <div className="work-file" key={index}>{file.name}<button type="button" className="icon-button" aria-label={`Убрать файл ${file.name}`} disabled={saving} onClick={() => setFiles(files.filter((_, i) => i !== index))}><X size={15}/></button></div>)}</section>}
       {entry && <p className="work-hint">Изменено: {dateLabel(entry.updatedAt)} · {users.find(user => user.id === entry.updatedBy)?.name ?? 'Сотрудник недоступен'}</p>}
       {error && <p className="shipment-error" role="alert">{error}</p>}
-      {confirmDelete && <div className="work-confirm" role="alert"><p>Удалить «{titleFor(editor)}»?{editor.kind === 'companies' ? ' Комментарии этой рабочей записи также будут удалены. Компания останется в справочнике.' : ''}</p><button type="button" className="button" disabled={saving} onClick={() => setConfirmDelete(false)}>Отмена</button><button type="button" className="button danger" disabled={saving} onClick={() => void save('DELETE')}>Удалить запись</button></div>}
       {confirmClose && <div className="work-confirm" role="alert"><p>Закрыть без сохранения изменений?</p><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
     </div>
-    <footer className="work-editor-footer">{entry && editor.kind !== 'notes' && <button type="button" className="button" disabled={saving} onClick={() => { setArchived(!archived); setDirty(true); }}>{archived ? 'Вернуть в работу' : 'В архив задач'}</button>}{archived && editor.kind !== 'notes' && <small>Архив · сохраните изменение</small>}{entry && editor.kind === 'notes' && <button type="button" className="button work-delete" disabled={saving} onClick={() => setConfirmDelete(true)}><Trash2 size={16}/>Удалить</button>}<button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving || confirmDelete}><Save size={16}/>{saving ? 'Сохранение…' : 'Сохранить'}</button></footer>
+    <footer className="work-editor-footer">{confirmDelete ? <div className="work-confirm" role="alert"><p>Удалить «{titleFor(editor)}»? {editor.kind === 'notes' ? 'Заметку нельзя будет восстановить.' : 'Комментарии и файлы тоже будут удалены. Восстановить запись будет нельзя.'}{editor.kind === 'companies' ? ' Компания останется в справочнике.' : ''}</p><button ref={deleteCancel} type="button" className="button" disabled={saving} onClick={() => setConfirmDelete(false)}>Отмена</button><button type="button" className="button danger" disabled={saving} onClick={() => void save('DELETE')}>{saving ? 'Удаление…' : 'Удалить запись'}</button></div> : <>
+      {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => setConfirmDelete(true)}><Trash2 size={16}/>Удалить</button>}
+      {entry && editor.kind !== 'notes' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', !archived)}>{archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
+      <button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving}><Save size={16}/>{saving ? 'Сохранение…' : 'Сохранить'}</button>
+    </>}</footer>
   </form></dialog>;
 }

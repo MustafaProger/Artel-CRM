@@ -95,11 +95,35 @@ test('work versions, server validation and idempotency prevent lost edits, inval
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'doing' })).status, 409);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 1 })).status, 409);
     assert.equal(await readFile(runtime.store.path, 'utf8'), changed);
-    assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 2 })).status, 405);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 2, archived: true })).status, 200);
     const archived = (await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).work!.tasks[0];
     assert.ok(archived.archivedAt);
     assert.equal(archived.title, payload.title);
+    assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 3 })).status, 200);
+    assert.equal((await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).work!.tasks.length, 0);
+  } finally { await runtime.close(); }
+});
+
+test('active tasks and notes can be deleted only with access and a current version, without affecting other records', async () => {
+  const runtime = await setup();
+  try {
+    for (const kind of ['tasks', 'notes'] as const) {
+      const created = await runtime.alice(`/api/work/${kind}`, 'POST', { title: 'Удалить свою запись' });
+      const other = await runtime.bob(`/api/work/${kind}`, 'POST', { title: 'Сохранить чужую запись' });
+      const { id, version } = created.body.entry;
+      const path = `/api/work/${kind}/${id}`;
+      assert.equal((await runtime.bob(path, 'DELETE', { version })).status, 404);
+      assert.equal((await runtime.anonymous(path, 'DELETE', { version })).status, 401);
+      assert.equal((await runtime.alice(path, 'DELETE', {})).status, 400);
+      assert.equal((await runtime.alice(path, 'DELETE', { version, title: 'Неожиданное поле' })).status, 400);
+      assert.equal((await runtime.alice(path, 'PATCH', { version, title: 'Обновлённая запись' })).status, 200);
+      assert.equal((await runtime.alice(path, 'DELETE', { version })).status, 409);
+      assert.equal((await runtime.alice(path, 'DELETE', { version: version + 1 })).status, 200);
+      assert.equal((await runtime.alice(path, 'DELETE', { version: version + 1 })).status, 404);
+      const stored = await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256);
+      assert.deepEqual(stored.work![kind].map(row => row.id), [other.body.entry.id]);
+      assert.equal((await runtime.director(`/api/work/${kind}/${other.body.entry.id}`, 'DELETE', { version: other.body.entry.version })).status, 200);
+    }
   } finally { await runtime.close(); }
 });
 

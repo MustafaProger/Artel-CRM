@@ -107,7 +107,12 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .stat-label, .stat-bottom { color: var(--muted); }
 .stat-value, .stat-value > span { color: #1D1D1F; }
 .directory-tabs { gap: 6px; }
-.directory-list { padding: 8px 22px 0; }
+.directory-list { padding: 24px; }
+.directory-toolbar { gap: 16px; align-items: center; }
+.directory-toolbar .shipment-search { min-width: 0; min-height: 44px; }
+.directory-toolbar .shipment-search input { min-width: 0; }
+.directory-toolbar > .button { flex: 0 0 auto; min-height: 44px; padding-inline: 20px; }
+.directory-toolbar .shipment-search:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .directory-record { border-color: #E8E8ED; }
 .directory-record-open { color: #1D1D1F; }
 .directory-record-open:hover { background: #F5F5F7; }
@@ -117,6 +122,19 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .directory-danger, .button.directory-danger { color: #A32F30; border-color: #E2C9C9; }
 .work-page, .work-card, .work-note, .work-column h2 { color: #1D1D1F; }
 .work-toolbar, .work-column, .work-calendar { background: #FFF; border-color: var(--border); border-radius: 14px; }
+.work-page { container-type: inline-size; }
+.work-editor-footer > .work-confirm { width: 100%; }
+@media (min-width: 651px) {
+  .work-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; padding: 20px; gap: 16px 12px; border: 1px solid var(--border); }
+  .work-views { grid-column: 1 / -1; gap: 8px; }
+  .work-toolbar .filter-select { max-width: 280px; width: 100%; min-width: 0; }
+  .work-toolbar .button { min-height: 42px; white-space: nowrap; }
+  .work-toolbar .work-refresh { margin: 0; }
+}
+@container (min-width: 1160px) {
+  .work-toolbar { grid-template-columns: minmax(0, 1fr) 200px auto auto; }
+  .work-views { grid-column: auto; }
+}
 .work-column { background: #EDEDF1; }
 .work-card { border-radius: 12px; }
 .work-card:hover, .work-note:hover { border-color: #8DB29E; box-shadow: 0 3px 12px #1D1D1F0A; }
@@ -126,7 +144,7 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .page-footer { font-size: 11px; }
 .toast { background: #234E3B; border-radius: 12px; }
 
-/* Every shipment width is defined in shipment-templates.ts; prevent automatic stretching. */
+/* Template defaults and saved desktop widths stay exact, without automatic stretching. */
 .shipments-workspace { color: #1D1D1F; }
 .shipment-panel { border: 0; border-radius: 0; box-shadow: none; }
 .shipment-toolbar { padding: 10px 14px; gap: 10px; background: #FFF; }
@@ -163,27 +181,27 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .shipment-grid .shipment-actions-heading { background: #F0F0F3; color: #55555D !important; }
 .shipment-grid .shipment-row-actions .icon-button { width: 30px; min-width: 30px; height: 32px; min-height: 32px; padding: 6px; }
 
-/* All-time China ledger. Date and volume have a deliberately small footprint. */
+/* Equal ledger columns; below a 425px viewport only the ledger scrolls. */
 .china-page { padding: 26px; }
 .china-heading { justify-content: space-between; gap: 12px; }
 .china-heading h2 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
 .china-period { color: var(--muted); font-size: 12px; }
-.china-totals { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 22px; padding: 26px 0; margin-top: 12px; border-bottom: 1px solid var(--border); }
+.china-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; padding: 26px 0; margin-top: 12px; border-bottom: 1px solid var(--border); }
 .china-totals > div { min-width: 0; display: flex; flex-direction: column; gap: 9px; }
 .china-totals span, .china-totals small { color: var(--muted); font-size: 12px; }
 .china-totals strong { font-size: clamp(1.3rem, 2.4vw, 2rem); font-weight: 650; letter-spacing: -.035em; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .china-totals .china-balance { background: none; padding: 0; border-radius: 0; color: var(--accent); }
 .china-actions { margin-block: 22px; }
-.china-table { table-layout: fixed; width: 100%; min-width: 0; white-space: normal; font-variant-numeric: tabular-nums; }
-.china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 12px 8px; height: auto; overflow-wrap: anywhere; }
-.china-table th { font-size: 12px; color: var(--muted); background: #F5F5F7; font-weight: 550; }
-.china-table th:first-child { width: 100px; border-radius: 8px 0 0 8px; }
-.china-table th:nth-child(2) { width: 90px; }
+.china-table-scroll { max-width: 100%; overscroll-behavior-x: contain; }
+.china-table { table-layout: fixed; width: 100%; min-width: 375px; white-space: normal; font-variant-numeric: tabular-nums; }
+.china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 18px 14px; height: auto; overflow-wrap: anywhere; font-size: 16px; line-height: 1.5; }
+.china-table th { width: 25%; color: var(--muted); background: #F5F5F7; font-weight: 550; }
+.china-table th:first-child { border-radius: 8px 0 0 8px; }
 .china-table th:last-child { border-radius: 0 8px 8px 0; }
 .china-table td { color: #343439; border-color: #E8E8ED; }
 .china-table .china-incoming { color: var(--accent); }
-.china-day-link { color: var(--accent); min-height: 32px; }
-.china-details { color: var(--muted); font-size: 11px; margin-top: 6px; }
+.china-day-link { color: var(--accent); min-height: 0; font-weight: 600; line-height: inherit; }
+.china-details { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .china-details summary { min-height: 28px; padding-block: 6px; }
 .china-details div { max-width: 100%; }
 .china-hint { color: var(--muted); }
@@ -222,7 +240,10 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
   .shipment-toolbar h1 { font-size: 19px; }
   .shipment-type-tabs { padding: 6px 8px; }
   .shipment-grid .shipment-row-actions .icon-button { min-height: 32px; }
-  .directory-list { padding: 6px 12px 0; }
+  .directory-list { padding: 16px; }
+  .directory-toolbar { gap: 12px; }
+  .directory-toolbar .shipment-search { flex-basis: 100%; }
+  .directory-toolbar > .button { width: 100%; justify-content: center; }
   .directory-tabs .button { min-height: 38px; }
   .china-page { padding: 16px 10px; }
   .china-heading { padding-inline: 4px; }
@@ -237,14 +258,10 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
   .china-actions { gap: 7px; margin-block: 16px; }
   .china-actions .button { padding: 8px 5px; font-size: 11px; gap: 4px; flex: 1 1 0; min-width: 0; }
   .china-actions > .button:last-child { flex-basis: 100%; }
-  .china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 10px 4px; font-size: 12px; }
-  .china-table th { font-size: 10px; }
-  .china-table thead th, .china-table thead th:first-child, .china-table thead th:last-child { font-size: 10px; white-space: nowrap; }
-  .china-table th:first-child { width: 47px; }
-  .china-table th:nth-child(2) { width: 60px; }
-  .china-date-year { display: block; font-size: 9px; color: var(--muted); }
-  .china-date-year::first-letter { font-size: 0; }
-  .china-details { font-size: 10px; }
+  .china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 14px 4px; font-size: 13px; }
+  .china-table thead th { white-space: nowrap; }
+  .china-date-year { display: inline; font-size: inherit; }
+  .china-details { font-size: 11px; }
   .china-details summary { min-height: 32px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -266,10 +283,8 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .shipment-grid tbody td:first-child, .shipment-grid tbody td:last-child { padding-block: 2px; }
 .shipment-grid tbody .shipment-row-actions { padding-block: 0; line-height: 0; }
 .shipment-grid .shipment-row-actions .icon-button { vertical-align: middle; }
-.shipment-grid th[data-field="product"] .column-controls { flex-wrap: wrap; justify-content: space-between; }
-.shipment-grid th[data-field="product"] .column-sort { flex-basis: 100%; overflow-wrap: normal; }
-
-.china-table td:nth-child(2) { font-size: 11px; }
+.shipment-grid:not(.shipment-grid-resizable) th[data-field="product"] .column-controls { flex-wrap: wrap; justify-content: space-between; }
+.shipment-grid:not(.shipment-grid-resizable) th[data-field="product"] .column-sort { flex-basis: 100%; overflow-wrap: normal; }
 
 .work-section-heading > div > p { color: #626269; }
 

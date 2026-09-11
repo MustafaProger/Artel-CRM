@@ -6,7 +6,7 @@ self.addEventListener('push', event => {
   try { payload = event.data?.json() ?? {}; } catch { /* Still show a visible notification. */ }
   event.waitUntil(self.registration.showNotification(payload.title || 'Артель CRM', {
     body: payload.body || 'У вас новое напоминание. Откройте CRM.',
-    icon: '/icons/icon-192.png', badge: '/icons/icon-192.png',
+    icon: '/icons/icon-192.png?v=20260911', badge: '/icons/icon-192.png?v=20260911',
     tag: payload.tag || 'artel-reminder', data: { url: payload.url || '/#work' },
   }));
 });

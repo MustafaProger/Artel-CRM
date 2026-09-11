@@ -45,8 +45,8 @@ try {
   await visit('china');
   await expect(page.getByTestId('china-balance')).toHaveText('1\u00a0000,25');
   const widths = await page.locator('.china-table th').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width));
-  assert.ok(widths[0] <= 50 && widths[1] <= 62);
-  assert.ok(await page.locator('.china-table-scroll').evaluate(el => el.scrollWidth <= el.clientWidth + 1));
+  assert.ok(Math.max(...widths) - Math.min(...widths) < 1);
+  assert.ok(await page.locator('.china-table-scroll').evaluate(el => el.scrollWidth > el.clientWidth));
   await page.locator('.china-details summary').first().click(); await screenshot('china-details-320');
   await page.getByRole('button', { name: 'Добавить платёж', exact: true }).click();
   let dialog = page.getByRole('dialog'); await dialog.getByLabel('Сумма платежа').fill('1000.25'); await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
@@ -55,7 +55,7 @@ try {
   await page.getByRole('button', { name: 'Открыть день 2026-09-10' }).click(); dialog = page.getByRole('dialog');
   await dialog.getByLabel('Сумма 1', { exact: true }).fill('86400.75'); await audit('china-editor-320'); await screenshot('china-editor-320');
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click(); await expect(dialog).toHaveCount(0); await expect(page.getByTestId('china-balance')).toHaveText('1\u00a0000,5');
-  check('China all-time balance updates after receipts, edits and reload; compact mobile columns and details');
+  check('China all-time balance updates after receipts, edits and reload; equal columns scroll on narrow mobile screens');
   await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
   const menu = page.getByRole('dialog', { name: 'Меню разделов' }); await expect(menu).toBeVisible();
   await expect(menu.getByRole('button', { name: 'Выйти', exact: true })).toBeVisible();
@@ -68,7 +68,7 @@ try {
   check('Two-line menu, logout inside, keyboard focus trap, Escape and focus restoration; removed team/search');
   await visit('shipments'); await page.getByRole('button', { name: 'Добавить отгрузку', exact: true }).click(); dialog = page.getByRole('dialog'); await audit('shipment-editor-320'); await screenshot('shipment-editor-320'); await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 960 }); await page.getByLabel('Вид таблицы', { exact: true }).selectOption('reduced');
-  const productWidth = await page.locator('th[data-field="product"]').evaluate(el => el.getBoundingClientRect().width); assert.ok(productWidth <= 66);
+  const productWidth = await page.locator('th[data-field="product"]').evaluate(el => el.getBoundingClientRect().width); assert.ok(productWidth >= 88);
   await page.getByRole('button', { name: 'Фильтр: Товар', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape');
   await page.locator('.shipment-grid tbody tr:not(.shipment-spacer) td').first().focus(); await page.keyboard.press('Enter'); await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape');
   check('Shipment compact column widths, filtering and keyboard editor');

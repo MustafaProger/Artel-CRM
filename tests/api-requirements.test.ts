@@ -99,7 +99,9 @@ test('task comments, private downloadable files, handoff, archive and restoratio
     const previous=encodeOperations(await r.store.read(base.provenance.sourceSha256));
     for (const fields of [{comments:[]},{addAttachments:[{name:'../bad.txt',data:'YQ=='}]},{addAttachments:[{name:'bad.txt',data:'invalid'}]},{addAttachments:[{name:'large.txt',data:Buffer.alloc(1024*1024+1).toString('base64')}]}]) assert.equal((await employeeApi(`/api/work/tasks/${task.id}`,'PATCH',{version:3,...fields})).status,400);
     assert.equal(encodeOperations(await r.store.read(base.provenance.sourceSha256)),previous);
-    assert.equal((await employeeApi(`/api/work/tasks/${task.id}`,'DELETE',{version:3})).status,405);
+    assert.equal((await employeeApi(`/api/work/tasks/${task.id}`,'DELETE',{version:3})).status,200);
+    assert.equal((await employeeApi(path)).status,404);
+    assert.equal((await new OperationsStore(r.directory).read(base.provenance.sourceSha256)).work!.tasks.length,0);
   } finally { await r.close(); }
 });
 

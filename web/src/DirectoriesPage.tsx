@@ -37,7 +37,7 @@ export default function DirectoriesPage({data,onChanged,canManage=true}:{data:Sn
     <div className="directory-tabs" role="group" aria-label="Справочники">{tabs.filter(item => !['paymentForms','addresses','customerManagers'].includes(item.id)).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setNotice('')}}>{item.name}</button>)}</div>
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     <section className="panel directory-list">
-      <div className="directory-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/></label>
+      <div className="directory-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск в справочнике" onClick={()=>{setQuery('');setPage(0)}}><X size={16}/></button>}</label>
         {canManage&&<button className="button primary" onClick={()=>setEditor({})}><Plus size={17}/>Добавить</button>}
       </div>
       <div className="directory-record-count">Записей: {visible.length}</div>

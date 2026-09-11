@@ -103,7 +103,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   if (previous && body.version !== previous.version) throw new ApiError(409, 'Запись изменена другим сотрудником. Закройте карточку, обновите список и повторите изменение.');
   if (method === 'DELETE') {
     if (Object.keys(body).some(key => key !== 'version')) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
-    if (key === 'tasks') throw new ApiError(405, 'Задачи сохраняются в архиве. Используйте архивирование.');
+    if (key === 'tasks') work.tasks = work.tasks.filter(row => row.id !== id);
     else if (key === 'companyRecords') work.companyRecords = work.companyRecords.filter(row => row.id !== id);
     else work.notes = work.notes.filter(row => row.id !== id);
     data.work = work;
