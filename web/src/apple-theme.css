@@ -48,9 +48,45 @@ button:active:not(:disabled) { filter: brightness(.94); }
 input::placeholder, textarea::placeholder { color: #74747B; opacity: 1; }
 .skip-link { position: fixed; top: 8px; left: 12px; z-index: 200; padding: 12px 18px; background: white; color: var(--accent); border-radius: 10px; transform: translateY(-180%); }
 .skip-link:focus { transform: none; }
-.sidebar { width: 234px; background: rgba(250,250,252,.94); border-color: var(--border); padding: 28px 16px 0; backdrop-filter: blur(20px); }
-.workspace-main { margin-left: 234px; }
-.sidebar-heading { margin-bottom: 30px; }
+.app-shell { --sidebar-motion: 320ms; --sidebar-ease: cubic-bezier(.22, 1, .36, 1); }
+.sidebar {
+  width: 234px; background: rgba(250,250,252,.94); border-color: var(--border);
+  padding: 16px 16px 0; backdrop-filter: blur(20px); overflow-x: hidden;
+  transition: width var(--sidebar-motion) var(--sidebar-ease);
+}
+.workspace-main { margin-left: 234px; transition: margin-left var(--sidebar-motion) var(--sidebar-ease); }
+.sidebar-heading { flex-direction: column; align-items: flex-start; flex-shrink: 0; gap: 12px; margin-bottom: 22px; }
+.sidebar-controls { display: flex; align-items: center; height: 44px; }
+.sidebar-controls .icon-button { width: 44px; height: 44px; flex-shrink: 0; }
+.sidebar-heading .brand { flex: none; width: 100%; height: 42px; padding-left: 4px; white-space: nowrap; }
+.sidebar .brand-name, .sidebar .nav-item > span, .sidebar .nav-item > small, .sidebar .nav-label {
+  transition: opacity 180ms ease, transform var(--sidebar-motion) var(--sidebar-ease);
+}
+.sidebar nav, .sidebar .nav-label, .sidebar-bottom { flex-shrink: 0; }
+.sidebar .nav-item { padding-inline: 12px; }
+.sidebar .nav-item > svg, .sidebar .nav-item > span, .sidebar .nav-item > small { flex-shrink: 0; }
+.sidebar .nav-item > span, .sidebar .nav-label { white-space: nowrap; }
+.sidebar-scrim, .shipments-focus .sidebar-scrim {
+  display: block; position: fixed; inset: 0; border: 0; z-index: 39;
+  background: #263a335c; backdrop-filter: blur(2px); opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity var(--sidebar-motion) ease, visibility 0s linear var(--sidebar-motion);
+}
+.sidebar-scrim.is-open { opacity: 1; visibility: visible; pointer-events: auto; transition-delay: 0s; }
+/* Keep the drawer mounted until its slide and scrim fade have finished. */
+.shipments-focus .sidebar {
+  transition: transform var(--sidebar-motion) var(--sidebar-ease), visibility 0s linear var(--sidebar-motion);
+}
+.shipments-focus .sidebar.is-open { transition-delay: 0s; }
+.shipments-focus .workspace-main { transition: none; }
+@media (min-width: 761px) {
+  .sidebar-collapsed .sidebar { padding-inline: 16px; }
+  .sidebar-collapsed .sidebar-heading { flex-direction: column; gap: 12px; }
+  .sidebar-collapsed .sidebar-heading .brand-name,
+  .sidebar-collapsed .nav-label, .sidebar-collapsed .nav-item > span, .sidebar-collapsed .nav-item > small {
+    display: block; opacity: 0; transform: translateX(-6px); pointer-events: none;
+  }
+  .sidebar-collapsed .nav-item { justify-content: flex-start; padding: 12px; }
+}
 .brand, .sidebar-heading .brand { color: #1D1D1F; font-size: 25px; font-weight: 700; letter-spacing: -.8px; text-decoration: none; }
 .brand-mark { color: var(--accent); }
 .nav-item { color: #4F4F56; border-radius: 10px; min-height: 44px; font-size: 14px; font-weight: 500; margin-block: 3px; }
@@ -214,8 +250,9 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 }
 @media (max-width: 760px) {
   .workspace-main { margin-left: 0; }
-  .sidebar { width: min(320px, calc(100vw - 24px)); visibility: hidden; }
-  .sidebar.is-open { visibility: visible; }
+  .sidebar { width: min(320px, calc(100vw - 24px)); visibility: hidden; transition: transform var(--sidebar-motion) var(--sidebar-ease), visibility 0s linear var(--sidebar-motion); }
+  .sidebar.is-open { visibility: visible; transition-delay: 0s; }
+  .workspace-main { transition: none; }
   .sidebar-account { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 8px 22px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
   .sidebar-account > span { flex: 1; overflow-wrap: anywhere; }
   .topbar, .shipments-focus .topbar { display: flex; height: 60px; min-height: 60px; flex-wrap: nowrap; padding: 0 14px; position: sticky; top: 0; z-index: 25; }

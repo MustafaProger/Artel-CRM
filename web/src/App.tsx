@@ -66,9 +66,15 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
   return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={event => {event.preventDefault();document.getElementById('main-content')?.focus()}}>К содержимому</a>
-    {menu && <button className="sidebar-scrim" aria-label="Закрыть меню" onClick={() => setMenu(false)}/>}
+    <button className={`sidebar-scrim ${menu ? 'is-open' : ''}`} aria-label="Закрыть меню" aria-hidden={!menu} tabIndex={-1} onClick={() => setMenu(false)}/>
     <aside id="app-navigation" ref={sidebarRef} inert={(mobile || page === 'shipments') && !menu} role={menu ? 'dialog' : undefined} aria-modal={menu ? true : undefined} aria-label={menu ? 'Меню разделов' : undefined} className={`sidebar ${menu ? 'is-open' : ''}`}>
-      <div className="sidebar-heading"><a className="brand" href="#overview" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артель</span></a><button className="icon-button sidebar-toggle" aria-label={collapsed?'Развернуть панель':'Свернуть панель'} title={collapsed?'Развернуть панель':'Свернуть панель'} aria-expanded={!collapsed} onClick={toggleSidebar}>{collapsed?<PanelLeftOpen size={20}/>:<PanelLeftClose size={20}/>}</button><button className="icon-button sidebar-mobile-close" aria-label="Закрыть меню" onClick={()=>setMenu(false)}><X size={20}/></button></div>
+      <div className="sidebar-heading">
+        <div className="sidebar-controls">
+          <button className="icon-button sidebar-toggle" aria-label={collapsed?'Развернуть панель':'Свернуть панель'} title={collapsed?'Развернуть панель':'Свернуть панель'} aria-controls="app-navigation" aria-expanded={!collapsed} onClick={toggleSidebar}>{collapsed?<PanelLeftOpen size={20}/>:<PanelLeftClose size={20}/>}</button>
+          <button className="icon-button sidebar-mobile-close" aria-label="Закрыть меню" title="Закрыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(false)}><PanelLeftClose size={20}/></button>
+        </div>
+        <a className="brand" href="#overview" aria-label="Артель — обзор" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артель</span></a>
+      </div>
       <nav aria-label="Основная навигация">{pages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={data && p.id === 'shipments' ? data.overview.shipmentCount : undefined}/>)}</nav>
       <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
       <nav aria-label="Управление">{pages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
