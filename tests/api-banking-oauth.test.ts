@@ -165,6 +165,13 @@ test('Sber public issuer identifiers are diagnostic metadata and are never autom
   }
 });
 
+test('Production Sber bare-host issuer is compared exactly, without URL normalization', () => {
+  const env = {...environment,ARTEL_BANK_SBER_NK_OAUTH_ISSUER:'sbi.sberbank.ru'};
+  const config = new BankingService({} as OperationsStore,'fixture',env).config('sber-nk-artel');
+  assert.equal(validateSberTokens(token('nonce',{iss:'sbi.sberbank.ru'}),config,'nonce').access_token,'fixture-access');
+  for (const iss of ['https://fintech.sberbank.ru:9443','https://sbi.sberbank.ru','sbi.sberbank.ru.evil.example']) assert.throws(()=>validateSberTokens(token('nonce',{iss}),config,'nonce'));
+});
+
 test('Sber UserInfo supplies company claims only after identity verification and binds the subject', async () => {
   const config = new BankingService({} as OperationsStore,'fixture',environment).config('sber-nk-artel');
   const identity = token('nonce',{inn:undefined,orgFullName:undefined,accounts:undefined});
