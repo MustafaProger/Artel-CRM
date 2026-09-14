@@ -68,9 +68,9 @@ try {
       }
       if (route === 'china') {
         const measurement = await page.locator('.china-table').evaluate(table => ({ widths: [...table.querySelectorAll('th')].map(node => node.getBoundingClientRect().width), fonts: [...table.querySelectorAll('tbody tr:first-child td')].map(node => getComputedStyle(node).fontSize), tableWidth: table.getBoundingClientRect().width, scrollerWidth: table.parentElement.clientWidth }));
-        assert.ok(Math.max(...measurement.widths) - Math.min(...measurement.widths) < 1, JSON.stringify(measurement));
+        assert.ok(measurement.widths[0] < Math.min(...measurement.widths.slice(1)), JSON.stringify(measurement));
         assert.equal(new Set(measurement.fonts).size, 1);
-        assert.ok(width < 425 ? measurement.tableWidth > measurement.scrollerWidth : measurement.tableWidth <= measurement.scrollerWidth + 1, `China scroll ${width}: ${JSON.stringify(measurement)}`);
+        assert.ok(width < 375 ? measurement.tableWidth > measurement.scrollerWidth : measurement.tableWidth <= measurement.scrollerWidth + 1, `China scroll ${width}: ${JSON.stringify(measurement)}`);
         report.measurements.push({ width, route, ...measurement });
       }
       if (route === 'directories') {
@@ -81,9 +81,9 @@ try {
         assert.ok(Object.values(measurements).every(value => value >= 11), JSON.stringify(measurements));
       }
       if (route === 'shipments') await expect(page.getByRole('separator')).toHaveCount(width >= 1100 ? await page.locator('.shipment-column-headings th').count() : 0);
-      if ([1440, 425, 390, 320].includes(width)) await page.screenshot({ path: resolve(output, `${route}-${width}.png`), fullPage: true });
+      if ([1440, 425, 390, 375, 320].includes(width)) await page.screenshot({ path: resolve(output, `${route}-${width}.png`), fullPage: true });
     }
-    check(`Four changed pages fit ${width}px; Work/Directories spacing, China equal type and 425px scroll threshold`);
+    check(`Four changed pages fit ${width}px; Work/Directories spacing, compact China date and 375px scroll threshold`);
   }
 
   await page.setViewportSize({ width: 1440, height: 1000 }); await visit(page, 'shipments');

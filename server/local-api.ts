@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { BankingService } from './banking/service';
+import { bankingRoutes } from './banking/routes';
+import { validBankWorkflow } from './banking/cron-auth';
+import type { BankRequest } from './banking/transport';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
@@ -276,6 +280,8 @@ export interface LocalApiOptions {
   pushIntervalSeconds?: number;
   /** Only isolated domain tests may disable authentication. Runtime always requires it. */
   requireAuthentication?: boolean;
+  bankEnvironment?: Record<string, string | undefined>;
+  bankRequest?: BankRequest;
   setupToken?: string;
   secureCookies?: boolean;
   operationsStore?: OperationsStorage;
@@ -335,12 +341,26 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
     const pathname = request.url?.split('?')[0];
     if (!pathname?.startsWith('/api/')) return next();
     const cronRequest = pathname === '/api/push/dispatch';
-    if (!cronRequest && !(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
+    const bankCron = pathname === '/api/banking/dispatch';
+    const bankWebhook = pathname === '/api/banking/webhooks/tbank-nk-artel';
+    if (!cronRequest && !bankCron && !bankWebhook && !(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
     void (async () => {
       if (cronRequest && !validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validPushWorkflow(request)) throw new ApiError(403, 'Доступ к планировщику запрещён.');
       const url = new URL(request.url!, 'http://localhost');
       const authEnabled = options.requireAuthentication !== false;
       const base = await baseSnapshot();
+      const banking = new BankingService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.bankRequest);
+      if (bankCron) {
+        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+        if (!validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validBankWorkflow(request)) throw new ApiError(403, 'Доступ к банковскому планировщику запрещён.');
+        return write(response, 200, JSON.stringify(await banking.dispatch()));
+      }
+      if (bankWebhook) {
+        if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+        await banking.webhook('tbank-nk-artel', request.headers.authorization, await jsonBody(request, false, 65536));
+        return write(response, 200, '{"received":true}');
+      }
+      if (pathname === '/api/banking' || pathname.startsWith('/api/banking/')) return bankingRoutes(banking, request, response, url, () => jsonBody(request));
       const config = options.pushConfig ?? pushConfig();
       if (cronRequest) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
@@ -619,9 +639,22 @@ export default function localApi(options: LocalApiOptions = {}): Plugin {
     timer.unref();
     server.httpServer?.once('close', () => clearInterval(timer));
   }
+  function startBanking(server: { httpServer: import('node:events').EventEmitter | null }) {
+    if ((options.bankEnvironment ?? process.env).ARTEL_BANK_SYNC_ENABLED !== 'true') return;
+    const store = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(defaultDataDirectory, '../local-operations'));
+    let running = false;
+    const timer = setInterval(async () => {
+      if (running) return;
+      running = true;
+      try { await new BankingService(store, (await loadSnapshot()).provenance.sourceSha256, options.bankEnvironment, options.bankRequest).dispatch(); }
+      catch { /* Errors stay in connection state; never log bank responses or credentials. */ }
+      finally { running = false; }
+    }, 30000);
+    timer.unref(); server.httpServer?.once('close', () => clearInterval(timer));
+  }
   return {
     name: 'artel-local-operations-api',
-    configureServer(server) { server.middlewares.use(middleware); startReminders(server); },
-    configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); },
+    configureServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); },
+    configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); },
   };
 }

@@ -11,6 +11,8 @@ import type { WorkData } from '../web/src/work-model';
 import { validateWorkData } from './work-operations';
 import { validateAccounts, type AccountsData } from './auth';
 import { validatePush, type PushData } from './push';
+import type { BankingData } from '../web/src/banking-model';
+import { validateBanking } from './banking/domain';
 
 export interface ShipmentOverride {
   fields: Record<string, string | null>;
@@ -34,6 +36,7 @@ export interface OperationsData {
   china?: ChinaData;
   accounts?: AccountsData;
   push?: PushData;
+  banking?: BankingData;
 }
 
 export class StoreError extends Error {}
@@ -47,6 +50,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   if (!object(data) || (data.schemaVersion !== 1 && data.schemaVersion !== 2) || data.sourceSha256 !== sourceSha256 || !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 || !object(data.shipments) || !Array.isArray(data.companies)) throw new StoreError('Invalid operations store');
   if (data.sourceOperationsCleared !== undefined && typeof data.sourceOperationsCleared !== 'boolean') throw new StoreError('Invalid operations reset');
   validateChina(data.china);
+  try { validateBanking(data.banking as BankingData | undefined); } catch { throw new StoreError('Invalid banking storage'); }
   try { validatePush(data.push as PushData | undefined); } catch { throw new StoreError('Invalid push storage'); }
   if (data.work !== undefined) validateWorkData(data.work);
   if (data.accounts !== undefined) { try { validateAccounts(data.accounts as AccountsData); } catch { throw new StoreError('Invalid accounts'); } }

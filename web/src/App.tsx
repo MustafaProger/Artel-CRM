@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, Menu, PackageCheck, Search, PanelLeftClose, PanelLeftOpen, Truck, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
 import ChinaPage from './ChinaPage'
+import BankingPage from './BankingPage'
 import ShipmentsPage from './ShipmentsPage'
 import DirectoriesPage from './DirectoriesPage'
 import WorkPage from './WorkPage'
@@ -82,7 +83,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     </aside>
     <div className="workspace-main" inert={menu}>
       <header className="topbar"><a className="brand mobile-brand" href="#overview" aria-label="Артель — обзор"><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span>Артель</span></a><div className="breadcrumb"><strong>{active.title}</strong></div><div className="topbar-actions"><div className="auth-user"><span title={user.name}>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div></div><button className="icon-button mobile-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><span className="two-line-menu" aria-hidden="true"><i/><i/></span></button></header>
-      <main id="main-content" tabIndex={-1}><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments' || page === 'payments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
+      <main id="main-content" tabIndex={-1}><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
       {page === 'shipments' && (!data || error) && <button className="button" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={20}/>Меню</button>}
       {error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
       {['overview','stock'].includes(page) && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
@@ -92,7 +93,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
-      {page === 'payments' && <Payments data={data} period={period} open={setDetail} notify={notifyExport}/>}
+      {page === 'payments' && (canManage ? <BankingPage legacy={<><label className="period-control"><CalendarDays size={16}/><select aria-label="Период архива" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select></label><Payments data={data} period={period} open={setDetail} notify={notifyExport}/></>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div>}
       <footer className="page-footer"><span><span className="tiny-mark">а</span> Артель CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>
       </main>

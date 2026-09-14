@@ -1,0 +1,40 @@
+name: Reconcile bank statements
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  id-token: write
+concurrency:
+  group: crm-bank-statements
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Continue durable statement jobs
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const endpoint = 'https://artel-crm.vercel.app/api/banking/dispatch';
+          const identityUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          identityUrl.searchParams.set('audience', endpoint);
+          const identity = await fetch(identityUrl, {
+            headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!identity.ok) throw new Error(`Identity HTTP ${identity.status}`);
+          const { value } = await identity.json();
+          if (!value) throw new Error('Identity missing');
+          console.log(`::add-mask::${value}`);
+          for (let page = 0; page < 6; page++) {
+            const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${value}` }, signal: AbortSignal.timeout(55000) });
+            if (!response.ok) throw new Error(`Bank scheduler HTTP ${response.status}`);
+            const result = await response.json();
+            // Deliberately log no bank payloads or account details.
+            if (result.failed) throw new Error('Bank synchronization needs retry; see the connection in CRM.');
+            if (!result.enabled || !result.pending) break;
+            await new Promise(resolve => setTimeout(resolve, 1500));
+          }
+          JS

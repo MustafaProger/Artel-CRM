@@ -217,7 +217,7 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .shipment-grid .shipment-actions-heading { background: #F0F0F3; color: #55555D !important; }
 .shipment-grid .shipment-row-actions .icon-button { width: 30px; min-width: 30px; height: 32px; min-height: 32px; padding: 6px; }
 
-/* Equal ledger columns; below a 425px viewport only the ledger scrolls. */
+/* Compact date column; below a 375px viewport only the ledger scrolls. */
 .china-page { padding: 26px; }
 .china-heading { justify-content: space-between; gap: 12px; }
 .china-heading h2 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
@@ -229,9 +229,10 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 .china-totals .china-balance { background: none; padding: 0; border-radius: 0; color: var(--accent); }
 .china-actions { margin-block: 22px; }
 .china-table-scroll { max-width: 100%; overscroll-behavior-x: contain; }
-.china-table { table-layout: fixed; width: 100%; min-width: 375px; white-space: normal; font-variant-numeric: tabular-nums; }
+.china-table { table-layout: fixed; width: 100%; min-width: 325px; white-space: normal; font-variant-numeric: tabular-nums; }
 .china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 18px 14px; height: auto; overflow-wrap: anywhere; font-size: 16px; line-height: 1.5; }
-.china-table th { width: 25%; color: var(--muted); background: #F5F5F7; font-weight: 550; }
+.china-table th { width: 26.666%; color: var(--muted); background: #F5F5F7; font-weight: 550; }
+.china-table th:first-child { width: 20%; }
 .china-table th:first-child { border-radius: 8px 0 0 8px; }
 .china-table th:last-child { border-radius: 0 8px 8px 0; }
 .china-table td { color: #343439; border-color: #E8E8ED; }
@@ -297,7 +298,7 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
   .china-actions > .button:last-child { flex-basis: 100%; }
   .china-table th, .china-table td, .china-table th:first-child, .china-table td:first-child, .china-table th:last-child, .china-table td:last-child { padding: 14px 4px; font-size: 13px; }
   .china-table thead th { white-space: nowrap; }
-  .china-date-year { display: inline; font-size: inherit; }
+  .china-date-year { display: block; font-size: 11px; line-height: 1.25; }
   .china-details { font-size: 11px; }
   .china-details summary { min-height: 32px; }
 }
