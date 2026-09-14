@@ -7,7 +7,7 @@ import { emptyBanking, object, str } from './domain';
 import { decryptTokens, encryptTokens, type BankConfig } from './transport';
 import type { BankingService } from './service';
 
-export const sberReadScope = 'openid GET_STATEMENT_ACCOUNT inn orgFullName accounts';
+export const sberReadScope = 'openid GET_STATEMENT_ACCOUNT inn orgFullName accounts iss aud sub';
 export const sberCallbackPath = '/api/banking/oauth/sber/callback';
 const cookieName = 'artel_sber_oauth';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -18,6 +18,36 @@ export class SberOAuthError extends ApiError {
   constructor(readonly reason: string, message: string) { super(400, message); }
 }
 const rejectToken = (reason: string, message: string): never => { throw new SberOAuthError(reason, message + ' Токены не сохранены.'); };
+
+/** Safe metadata for all checks, so one failed login can diagnose the whole response.
+ * No raw tokens, personal identifiers, account numbers, nonce or audience values.
+ */
+export function sberTokenDiagnostics(token: Record<string, unknown>, config: BankConfig, nonce: string) {
+  let claims: Record<string, unknown> = {};
+  try { claims = object(JSON.parse(Buffer.from(String(token.id_token).split('.')[1], 'base64url').toString('utf8'))); } catch { /* Format is reported by validation. */ }
+  const settings = oauthSettings(config);
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
+  let issuer: string | undefined;
+  try {
+    const value = str(claims.iss), candidate = new URL(value!);
+    // Exact public endpoint, including its path. Do not save arbitrary text/URLs.
+    if (value && value.length <= 256 && candidate.protocol === 'https:' && /^(?:[a-z0-9-]+\.)*sberbank\.ru$/.test(candidate.hostname) && !candidate.username && !candidate.password && !candidate.search && !candidate.hash && /^\/[a-zA-Z0-9_./-]*$/.test(candidate.pathname)) issuer = value;
+  } catch { /* Missing/malformed issuer is recorded only as a boolean. */ }
+  return { ...(issuer ? { issuer } : {}), checks: {
+    issuerPresent: typeof claims.iss === 'string' && !!claims.iss,
+    issuerMatches: claims.iss === settings.issuer,
+    audienceMatches: audiences.length === 1 && String(audiences[0]) === settings.clientId,
+    authorizedPartyMatches: claims.azp === undefined || String(claims.azp) === settings.clientId,
+    nonceMatches: claims.nonce === nonce,
+    subjectPresent: !!str(claims.sub),
+    notExpired: Number(claims.exp) * 1000 > Date.now(),
+    issuedRecently: Number(claims.iat) * 1000 <= Date.now() + 60000 && Number(claims.iat) * 1000 > Date.now() - ttl,
+    companyMatches: String(claims.inn) === settings.inn,
+    companyNamePresent: !!str(claims.orgFullName),
+    accountsMatch: !!config.accounts.length && config.accounts.every(account => accounts.includes(account.number)),
+  } };
+}
 
 export function sberOAuthAvailability(config: BankConfig, request: IncomingMessage) {
   try {
@@ -104,6 +134,7 @@ export function validateSberTokens(token: Record<string, unknown>, config: BankC
   let claims: Record<string, unknown>;
   try { claims = object(JSON.parse(Buffer.from(parts![1], 'base64url').toString('utf8'))); } catch { return rejectToken('id_token_format', 'Не удалось прочитать подтверждение личности Сбера.'); }
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!str(claims.iss)) rejectToken('issuer_missing', 'Сбер не передал эмитента токена. Требуется проверить запрошенные поля авторизации.');
   if (claims.iss !== settings.issuer) rejectToken('issuer_mismatch', 'Эмитент токена Сбера не совпадает с настройками CRM. Требуется сверить настройку эмитента на сервере.');
   if (audiences.length !== 1 || String(audiences[0]) !== settings.clientId || claims.azp !== undefined && String(claims.azp) !== settings.clientId) rejectToken('audience_mismatch', 'Подтверждение Сбера выдано для другого сервиса.');
   if (claims.nonce !== nonce) rejectToken('nonce_mismatch', 'Ответ Сбера не соответствует начатой попытке входа.');
@@ -148,17 +179,11 @@ export async function finishSberOAuth(service: BankingService, request: Incoming
   let tokens: ReturnType<typeof validateSberTokens>;
   try { tokens = validateSberTokens(token, config, String(pending.nonce)); }
   catch (error) {
-    // Persist only authored errors and a public Sber issuer, never token/claim values.
-    let issuer: string | undefined;
-    try {
-      const claims = object(JSON.parse(Buffer.from(String(token.id_token).split('.')[1], 'base64url').toString('utf8')));
-      const candidate = new URL(String(claims.iss));
-      if (candidate.protocol === 'https:' && /^(?:[a-z0-9-]+\.)*sberbank\.ru$/.test(candidate.hostname) && !candidate.username && !candidate.password && !candidate.search && !candidate.hash && candidate.pathname === '/') issuer = candidate.origin;
-    } catch { /* No untrusted response details in diagnostics. */ }
+    const diagnostics = sberTokenDiagnostics(token, config, String(pending.nonce));
     await service.mutate(data => {
       const connection = data.banking!.connections[id];
       if (connection.oauthAttemptHash !== pending.stateHash) return { result: null, changed: false };
-      connection.lastOAuthError = { message: error instanceof ApiError ? error.message : 'Не удалось проверить ответ Сбера.', reason: error instanceof SberOAuthError ? error.reason : 'token_validation', at: new Date().toISOString(), ...(issuer ? { issuer } : {}) };
+      connection.lastOAuthError = { message: error instanceof ApiError ? error.message : 'Не удалось проверить ответ Сбера.', reason: error instanceof SberOAuthError ? error.reason : 'token_validation', at: new Date().toISOString(), ...diagnostics };
       return { result: null, changed: true };
     });
     throw error;

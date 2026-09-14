@@ -10,7 +10,7 @@ import { OperationsStore } from '../server/operations-store';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { sameOrigin } from '../server/cloud-auth';
 import { BankingService } from '../server/banking/service';
-import { sberCallbackPath, sberReadScope, validateSberTokens, SberOAuthError, sberOAuthAvailability } from '../server/banking/oauth';
+import { sberCallbackPath, sberReadScope, validateSberTokens, SberOAuthError, sberOAuthAvailability, sberTokenDiagnostics } from '../server/banking/oauth';
 import { decryptTokens, type BankRequest } from '../server/banking/transport';
 import { accountNumber, fixtureEnvironment } from './banking-fixtures';
 
@@ -130,4 +130,28 @@ test('Local OAuth cannot create a cloud callback attempt; missing configuration 
   assert.match(unavailable.message!,/другой адрес CRM/);
   assert.equal(sberOAuthAvailability(config,{headers:{host:'crm.example'}} as IncomingMessage).available,true);
   assert.equal(sberOAuthAvailability({...config,env:{}},local).available,false);
+});
+
+
+test('Sber requests issuer, audience and subject claims explicitly and distinguishes a missing issuer', () => {
+  for (const claim of ['iss','aud','sub']) assert.ok(sberReadScope.split(' ').includes(claim));
+  assert.deepEqual(sberReadScope.split(' ').filter(scope => scope === scope.toUpperCase()), ['GET_STATEMENT_ACCOUNT']);
+  const config = new BankingService({} as OperationsStore, 'fixture', environment).config('sber-nk-artel');
+  assert.throws(() => validateSberTokens(token('nonce',{iss:undefined}),config,'nonce'), error => error instanceof SberOAuthError && error.reason === 'issuer_missing');
+});
+
+test('Sber diagnostic accepts exact public issuer paths and only boolean verification results', () => {
+  const config = new BankingService({} as OperationsStore, 'fixture', environment).config('sber-nk-artel');
+  const issuer = 'https://sbi.sberbank.ru:9443/ic/sbbid';
+  const result = sberTokenDiagnostics(token('private-nonce',{iss:issuer}),config,'private-nonce');
+  assert.equal(result.issuer,issuer);
+  assert.equal(result.checks.issuerMatches,false);
+  assert.equal(result.checks.issuerPresent,true);
+  assert.equal(result.checks.nonceMatches,true);
+  assert.equal(result.checks.companyMatches,true);
+  assert.equal(result.checks.accountsMatch,true);
+  assert.ok(Object.values(result.checks).every(value => typeof value === 'boolean'));
+  assert.ok(!JSON.stringify(result).includes('private-nonce'));
+  assert.ok(!JSON.stringify(result).includes(accountNumber));
+  for (const iss of [undefined,'https://evil.example/private','https://sbi.sberbank.ru.evil.example/','https://sbi.sberbank.ru/?secret=private','https://secret@sbi.sberbank.ru/']) assert.equal(sberTokenDiagnostics(token('nonce',{iss}),config,'nonce').issuer,undefined);
 });
