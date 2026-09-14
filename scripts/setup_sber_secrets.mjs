@@ -32,7 +32,11 @@ const server = createServer(async (req, res) => {
     const passphrase = form.get('password') || prior.ARTEL_BANK_SBER_NK_TLS_PASSPHRASE;
     if (!passphrase) throw new Error();
     createSecureContext({ pfx, passphrase, minVersion: 'TLSv1.2' });
-    const settings = { ...prior, ARTEL_BANK_SBER_NK_CLIENT_ID: '88091', ARTEL_BANK_SBER_NK_TLS_PFX_BASE64: pfx.toString('base64'), ARTEL_BANK_SBER_NK_TLS_PASSPHRASE: passphrase };
+    // Re-read at submission: another setup step may have added CA/configuration
+    // while the operator had this form open. Never overwrite that newer state.
+    let current = {};
+    try { current = JSON.parse(await readFile(resolve(directory, 'credentials.json'), 'utf8')); } catch {}
+    const settings = { ...current, ARTEL_BANK_SBER_NK_CLIENT_ID: '88091', ARTEL_BANK_SBER_NK_TLS_PFX_BASE64: pfx.toString('base64'), ARTEL_BANK_SBER_NK_TLS_PASSPHRASE: passphrase };
     if (form.get('settings')) await writeFile(resolve(directory, 'copied-settings.txt'), form.get('settings'), { mode: 0o600 });
     await writeFile(resolve(directory, 'credentials.json'), JSON.stringify(settings), { mode: 0o600 });
     await chmod(resolve(directory, 'credentials.json'), 0o600);
