@@ -55,13 +55,14 @@ export async function bankTlsMaterial(config: BankConfig) {
 export type BankRequest = (config: BankConfig, path: string, token: string, form?: URLSearchParams) => Promise<unknown>;
 export const bankRequest: BankRequest = async (config, path, token, form) => {
   const sber = config.definition.provider === 'sber';
+  const userInfo = sber && path === '/ic/sso/api/v2/oauth/user-info';
   // No bank-supplied URL is followed; credentials can only go to these official origins.
-  if (!path.startsWith(sber ? '/fintech/api/' : '/openapi/api/') && !(sber && path === '/ic/sso/api/v2/oauth/token')) throw new ApiError(500, 'Недопустимый банковский метод.');
+  if (!path.startsWith(sber ? '/fintech/api/' : '/openapi/api/') && !(sber && path === '/ic/sso/api/v2/oauth/token') && !userInfo) throw new ApiError(500, 'Недопустимый банковский метод.');
   const url = new URL(path, sber ? 'https://fintech.sberbank.ru:9443' : 'https://business.tbank.ru');
   const tls = sber ? await bankTlsMaterial(config) : {};
   const body = form?.toString();
   const raw = await new Promise<string>((resolve, reject) => {
-    const req = request(url, { method: form ? 'POST' : 'GET', ...tls, minVersion: 'TLSv1.2', rejectUnauthorized: true, headers: { Accept: 'application/json', 'X-Request-Id': randomUUID(), ...(token ? { Authorization: sber ? token : `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}) } }, res => {
+    const req = request(url, { method: form ? 'POST' : 'GET', ...tls, minVersion: 'TLSv1.2', rejectUnauthorized: true, headers: { Accept: userInfo ? 'application/jwt' : 'application/json', 'X-Request-Id': randomUUID(), ...(token ? { Authorization: sber && !userInfo ? token : `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}) } }, res => {
       const status = res.statusCode ?? 502;
       if (status !== 200) { res.resume(); const retry = res.headers['retry-after']; reject(new BankHttpError(status, Math.min(3600, Math.max(status === 202 ? 60 : 0, Number(retry) || (Date.parse(String(retry)) - Date.now()) / 1000 || 0)))); return; }
       const chunks: Buffer[] = []; let size = 0;
@@ -74,6 +75,7 @@ export const bankRequest: BankRequest = async (config, path, token, form) => {
     req.on('error', () => reject(new BankHttpError(503)));
     req.end(body);
   });
+  if (userInfo) return raw.trim();
   try { return parseBankJson(raw); } catch { throw new ApiError(502, 'Неизвестный формат ответа банка. Выписка не изменена.'); }
 };
 

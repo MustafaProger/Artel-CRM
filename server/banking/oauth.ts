@@ -28,12 +28,11 @@ export function sberTokenDiagnostics(token: Record<string, unknown>, config: Ban
   const settings = oauthSettings(config);
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
-  let issuer: string | undefined;
-  try {
-    const value = str(claims.iss), candidate = new URL(value!);
-    // Exact public endpoint, including its path. Do not save arbitrary text/URLs.
-    if (value && value.length <= 256 && candidate.protocol === 'https:' && /^(?:[a-z0-9-]+\.)*sberbank\.ru$/.test(candidate.hostname) && !candidate.username && !candidate.password && !candidate.search && !candidate.hash && /^\/[a-zA-Z0-9_./-]*$/.test(candidate.pathname)) issuer = value;
-  } catch { /* Missing/malformed issuer is recorded only as a boolean. */ }
+  // iss is a public provider identifier, not necessarily an HTTPS URL in Sber's
+  // implementation. Keep its exact bounded value for operator review only.
+  // It is never followed as a URL or automatically trusted as configuration.
+  const value = str(claims.iss);
+  const issuer = value && /^[A-Za-z0-9:/._-]{1,256}$/.test(value) ? value : undefined;
   return { ...(issuer ? { issuer } : {}), checks: {
     issuerPresent: typeof claims.iss === 'string' && !!claims.iss,
     issuerMatches: claims.iss === settings.issuer,
@@ -124,7 +123,7 @@ export async function startSberOAuth(service: BankingService, id: string, reques
  * for this back-channel response. Browser-supplied ID/access tokens are never accepted.
  * Sber's GOST/CMS signature is not represented as an independently verified JWS.
  */
-export function validateSberTokens(token: Record<string, unknown>, config: BankConfig, nonce: string) {
+function validateSberTokenIdentity(token: Record<string, unknown>, config: BankConfig, nonce: string) {
   const settings = oauthSettings(config);
   if (!str(token.access_token) || !str(token.refresh_token) || !(Number(token.expires_in) > 0) || Number(token.expires_in) > 86400 || String(token.token_type).toLowerCase() !== 'bearer') rejectToken('token_response', 'Сбер вернул неполный или неподдерживаемый ответ авторизации.');
   const scopes = (str(token.scope) ?? '').split(/\s+/).filter(Boolean);
@@ -140,10 +139,40 @@ export function validateSberTokens(token: Record<string, unknown>, config: BankC
   if (claims.nonce !== nonce) rejectToken('nonce_mismatch', 'Ответ Сбера не соответствует начатой попытке входа.');
   if (!str(claims.sub)) rejectToken('subject_missing', 'Сбер не передал идентификатор пользователя.');
   if (!(Number(claims.exp) * 1000 > Date.now()) || !(Number(claims.iat) * 1000 <= Date.now() + 60000) || !(Number(claims.iat) * 1000 > Date.now() - ttl)) rejectToken('token_expired', 'Истёк срок подтверждения личности Сбера или не совпадает время сервера.');
-  if (String(claims.inn) !== settings.inn || !str(claims.orgFullName)) throw new ApiError(403, 'ИНН организации в ответе СберБизнеса не совпадает с подключением.');
+  return { claims, tokens: { access_token: token.access_token as string, refresh_token: token.refresh_token, expiresAt: Date.now() + Number(token.expires_in) * 1000, scope: scopes.join(' ') } };
+}
+
+function validateSberCompany(claims: Record<string, unknown>, config: BankConfig) {
+  if (String(claims.inn) !== oauthSettings(config).inn || !str(claims.orgFullName)) throw new ApiError(403, 'ИНН организации в ответе СберБизнеса не совпадает с подключением.');
   const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
   if (!config.accounts.length || config.accounts.some(account => !accounts.includes(account.number))) throw new ApiError(403, 'Банк не подтвердил доступ ко всем разрешённым счетам.');
-  return { access_token: token.access_token, refresh_token: token.refresh_token, expiresAt: Date.now() + Number(token.expires_in) * 1000, scope: scopes.join(' ') };
+}
+
+export function validateSberTokens(token: Record<string, unknown>, config: BankConfig, nonce: string) {
+  const verified = validateSberTokenIdentity(token, config, nonce);
+  validateSberCompany(verified.claims, config);
+  return verified.tokens;
+}
+
+export async function completeSberTokens(token: Record<string, unknown>, config: BankConfig, nonce: string, http: BankingService['http']) {
+  const verified = validateSberTokenIdentity(token, config, nonce);
+  let company = verified.claims;
+  if (company.inn === undefined || company.orgFullName === undefined || company.accounts === undefined) {
+    // Sber's ID token identifies the login; company claims come from UserInfo v2.
+    // Only the fixed mTLS back channel is used; browser tokens are never accepted.
+    const raw = await http(config, '/ic/sso/api/v2/oauth/user-info', verified.tokens.access_token);
+    const parts = typeof raw === 'string' ? raw.split('.') : [];
+    if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) rejectToken('userinfo_format', 'Не удалось прочитать сведения об организации из Сбера.');
+    let info: Record<string, unknown>;
+    try { info = object(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))); } catch { return rejectToken('userinfo_format', 'Не удалось прочитать сведения об организации из Сбера.'); }
+    if (info.sub !== verified.claims.sub) rejectToken('userinfo_subject', 'Сведения об организации относятся к другому пользователю Сбера.');
+    if (info.iss !== undefined && info.iss !== verified.claims.iss || info.aud !== undefined && String(info.aud) !== oauthSettings(config).clientId) rejectToken('userinfo_identity', 'Сведения об организации выданы для другого сервиса или эмитента.');
+    if (info.exp !== undefined && !(Number(info.exp) * 1000 > Date.now())) rejectToken('userinfo_expired', 'Истёк срок подтверждения сведений об организации.');
+    // Present claims must not be replaced to hide a mismatch in the ID token.
+    company = { ...info, ...verified.claims };
+  }
+  validateSberCompany(company, config);
+  return verified.tokens;
 }
 
 export async function finishSberOAuth(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL) {
@@ -177,7 +206,7 @@ export async function finishSberOAuth(service: BankingService, request: Incoming
   if (url.searchParams.has('error') || !code || code.length > 4096) throw fail();
   const token = object(await service.http(config, '/ic/sso/api/v2/oauth/token', '', new URLSearchParams({ grant_type: 'authorization_code', code, client_id: settings.clientId, client_secret: config.env[`${config.definition.envPrefix}_CLIENT_SECRET`]!, redirect_uri: settings.redirect, code_verifier: String(pending.verifier) })));
   let tokens: ReturnType<typeof validateSberTokens>;
-  try { tokens = validateSberTokens(token, config, String(pending.nonce)); }
+  try { tokens = await completeSberTokens(token, config, String(pending.nonce), service.http); }
   catch (error) {
     const diagnostics = sberTokenDiagnostics(token, config, String(pending.nonce));
     await service.mutate(data => {

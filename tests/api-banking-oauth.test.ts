@@ -10,7 +10,7 @@ import { OperationsStore } from '../server/operations-store';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { sameOrigin } from '../server/cloud-auth';
 import { BankingService } from '../server/banking/service';
-import { sberCallbackPath, sberReadScope, validateSberTokens, SberOAuthError, sberOAuthAvailability, sberTokenDiagnostics } from '../server/banking/oauth';
+import { sberCallbackPath, sberReadScope, validateSberTokens, SberOAuthError, sberOAuthAvailability, sberTokenDiagnostics, completeSberTokens } from '../server/banking/oauth';
 import { decryptTokens, type BankRequest } from '../server/banking/transport';
 import { accountNumber, fixtureEnvironment } from './banking-fixtures';
 
@@ -153,5 +153,29 @@ test('Sber diagnostic accepts exact public issuer paths and only boolean verific
   assert.ok(Object.values(result.checks).every(value => typeof value === 'boolean'));
   assert.ok(!JSON.stringify(result).includes('private-nonce'));
   assert.ok(!JSON.stringify(result).includes(accountNumber));
-  for (const iss of [undefined,'https://evil.example/private','https://sbi.sberbank.ru.evil.example/','https://sbi.sberbank.ru/?secret=private','https://secret@sbi.sberbank.ru/']) assert.equal(sberTokenDiagnostics(token('nonce',{iss}),config,'nonce').issuer,undefined);
+  for (const iss of [undefined,'https://sbi.sberbank.ru/?secret=private','https://secret@sbi.sberbank.ru/']) assert.equal(sberTokenDiagnostics(token('nonce',{iss}),config,'nonce').issuer,undefined);
+});
+
+
+test('Sber public issuer identifiers are diagnostic metadata and are never automatically trusted', () => {
+  const config = new BankingService({} as OperationsStore,'fixture',environment).config('sber-nk-artel');
+  for (const iss of ['sberbank','http://sberbank.ru','https://id.sber.ru/auth/realms/sbbid']) {
+    assert.equal(sberTokenDiagnostics(token('nonce',{iss}),config,'nonce').issuer,iss);
+    assert.throws(()=>validateSberTokens(token('nonce',{iss}),config,'nonce'),error=>error instanceof SberOAuthError && error.reason==='issuer_mismatch');
+  }
+});
+
+test('Sber UserInfo supplies company claims only after identity verification and binds the subject', async () => {
+  const config = new BankingService({} as OperationsStore,'fixture',environment).config('sber-nk-artel');
+  const identity = token('nonce',{inn:undefined,orgFullName:undefined,accounts:undefined});
+  let calls=0;
+  const info = {sub:'fixture-user',iss:environment.ARTEL_BANK_SBER_NK_OAUTH_ISSUER,aud:environment.ARTEL_BANK_SBER_NK_CLIENT_ID,inn:'7700000000',orgFullName:'Fixture Company',accounts:[{accountNumber}]};
+  const http: BankRequest = async (_config,path,accessToken) => {calls++; assert.equal(path,'/ic/sso/api/v2/oauth/user-info');assert.equal(accessToken,'fixture-access');return jwt(info);};
+  assert.equal((await completeSberTokens(identity,config,'nonce',http)).refresh_token,'fixture-refresh');
+  assert.equal(calls,1);
+  await assert.rejects(()=>completeSberTokens(identity,config,'wrong-nonce',http));assert.equal(calls,1);
+  for (const changes of [{sub:'other-user'},{inn:'9999999999'},{accounts:[]},{iss:'wrong-issuer'},{aud:'wrong-service'},{exp:1}]) await assert.rejects(()=>completeSberTokens(identity,config,'nonce',async()=>jwt({...info,...changes})));
+  await assert.rejects(()=>completeSberTokens(token('nonce',{inn:'9999999999',accounts:undefined}),config,'nonce',http));
+  await assert.rejects(()=>completeSberTokens(identity,config,'nonce',async()=>'<html>error</html>'));
+  assert.equal((await completeSberTokens(token('nonce'),config,'nonce',async()=>{throw new Error('Unnecessary UserInfo call')})).refresh_token,'fixture-refresh');
 });
