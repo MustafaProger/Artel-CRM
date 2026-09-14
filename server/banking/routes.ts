@@ -4,13 +4,17 @@ import { ApiError } from '../api-error';
 import { csv } from './domain';
 import { BankingService } from './service';
 import { sberNetworkCheck } from './diagnostics';
-import { startSberOAuth } from './oauth';
+import { startSberOAuth, sberOAuthAvailability } from './oauth';
 
 export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
   requireManage(requireUser(await service.store.read(service.source), request));
   const method = request.method, path = url.pathname;
   const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
-  if (path === '/api/banking' && method === 'GET') return send(await service.list(url.searchParams));
+  if (path === '/api/banking' && method === 'GET') {
+    const result = await service.list(url.searchParams);
+    for (const card of result.connections) if (card.provider === 'sber') card.authorization = sberOAuthAvailability(service.config(card.id), request);
+    return send(result);
+  }
   if (path === '/api/banking/network-check' && method === 'GET') return send(await sberNetworkCheck(service.config(url.searchParams.get('connection') ?? 'sber-nk-artel')));
   const oauth = path.match(/^\/api\/banking\/connections\/([a-z-]+)\/authorize$/);
   if (oauth && method === 'POST') { await readBody(); return send(await startSberOAuth(service, oauth[1], request, response)); }

@@ -3,7 +3,7 @@ import { BankingService } from './banking/service';
 import { bankingRoutes } from './banking/routes';
 import { validBankWorkflow } from './banking/cron-auth';
 import { sberNetworkCheck } from './banking/diagnostics';
-import { finishSberOAuth, sberCallbackPath } from './banking/oauth';
+import { finishSberOAuth, sberCallbackPath, sberOAuthErrorPage } from './banking/oauth';
 import type { BankRequest } from './banking/transport';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -617,6 +617,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       });
       write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
     })().catch((error: unknown) => {
+      if (bankCallback) return sberOAuthErrorPage(response, error);
       if (error instanceof ApiError) return write(response, error.status, JSON.stringify({ error: error.message }));
       if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось проверить хранилище операций. Данные не изменены; проверьте data/local-operations/operations.json и файл блокировки."}');
       cache = undefined;

@@ -14,6 +14,33 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const ttl = 10 * 60 * 1000;
 const fail = () => new ApiError(400, 'Подключение не подтверждено. Вернитесь в «Платежи» и начните авторизацию заново.');
 
+export class SberOAuthError extends ApiError {
+  constructor(readonly reason: string, message: string) { super(400, message); }
+}
+const rejectToken = (reason: string, message: string): never => { throw new SberOAuthError(reason, message + ' Токены не сохранены.'); };
+
+export function sberOAuthAvailability(config: BankConfig, request: IncomingMessage) {
+  try {
+    const settings = oauthSettings(config);
+    if (request.headers.host !== new URL(settings.redirect).host) return { available: false, message: 'Возврат из Сбера настроен на другой адрес CRM. Для этой версии нужен собственный HTTPS-адрес, зарегистрированный в СберБизнесе. Локальная и опубликованная версии подключаются отдельно.' };
+    return { available: true };
+  } catch (error) {
+    return { available: false, message: error instanceof ApiError ? error.message : 'Настройки подключения недоступны.' };
+  }
+}
+
+/** Never echo the callback URL, bank response, credentials or arbitrary exception text. */
+export function sberOAuthErrorPage(response: ServerResponse, error: unknown) {
+  const message = error instanceof ApiError ? error.message : 'Не удалось завершить подключение. Повторите попытку из CRM.';
+  const escaped = message.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+  response.writeHead(error instanceof ApiError ? error.status : 500, {
+    'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+  });
+  response.end(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение СберБизнеса</title><style>body{font:18px/1.6 system-ui;background:#f5f7f6;color:#24342d;margin:0;padding:24px}main{max-width:620px;margin:12vh auto;background:white;padding:32px;border-radius:20px}h1{font-size:28px;line-height:1.2}a{display:inline-block;background:#216c50;color:white;padding:12px 20px;border-radius:10px;text-decoration:none}</style><main><h1>СберБизнес пока не подключён</h1><p>${escaped}</p><p>Старая ссылка возврата не подходит для повторного входа. Начните новую попытку в том же браузере.</p><a href="/#payments">Вернуться в «Платежи»</a></main></html>`);
+}
+
 export function oauthSettings(config: BankConfig) {
   const prefix = config.definition.envPrefix;
   const redirect = config.env[`${prefix}_REDIRECT_URI`];
@@ -40,7 +67,9 @@ export async function startSberOAuth(service: BankingService, id: string, reques
   const settings = oauthSettings(config);
   const data = await service.store.read(service.source), user = requireUser(data, request);
   requireManage(user);
-  if (request.headers.origin !== new URL(settings.redirect).origin || request.headers.host !== new URL(settings.redirect).host) throw fail();
+  const availability = sberOAuthAvailability(config, request);
+  if (!availability.available) throw new ApiError(409, availability.message!);
+  if (request.headers.origin !== new URL(settings.redirect).origin) throw fail();
   const state = randomBytes(32).toString('hex'), browser = randomBytes(32).toString('hex');
   const nonce = randomBytes(32).toString('hex'), verifier = randomBytes(48).toString('base64url');
   const sessionHash = hash(sessionToken(request)!);
@@ -67,15 +96,19 @@ export async function startSberOAuth(service: BankingService, id: string, reques
  */
 export function validateSberTokens(token: Record<string, unknown>, config: BankConfig, nonce: string) {
   const settings = oauthSettings(config);
-  if (!str(token.access_token) || !str(token.refresh_token) || !(Number(token.expires_in) > 0) || Number(token.expires_in) > 86400 || token.token_type !== 'Bearer') throw fail();
+  if (!str(token.access_token) || !str(token.refresh_token) || !(Number(token.expires_in) > 0) || Number(token.expires_in) > 86400 || String(token.token_type).toLowerCase() !== 'bearer') rejectToken('token_response', 'Сбер вернул неполный или неподдерживаемый ответ авторизации.');
   const scopes = (str(token.scope) ?? '').split(/\s+/).filter(Boolean);
   if (!scopes.includes('GET_STATEMENT_ACCOUNT') || scopes.some(scope => !sberReadScope.split(' ').includes(scope))) throw new ApiError(403, 'Банк вернул неподтверждённый набор прав. Токены не сохранены.');
   const parts = str(token.id_token)?.split('.');
-  if (!parts || parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) throw fail();
+  if (!parts || parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) rejectToken('id_token_format', 'Формат подтверждения личности Сбера не поддерживается.');
   let claims: Record<string, unknown>;
-  try { claims = object(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))); } catch { throw fail(); }
+  try { claims = object(JSON.parse(Buffer.from(parts![1], 'base64url').toString('utf8'))); } catch { return rejectToken('id_token_format', 'Не удалось прочитать подтверждение личности Сбера.'); }
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  if (claims.iss !== settings.issuer || audiences.length !== 1 || String(audiences[0]) !== settings.clientId || claims.azp !== undefined && String(claims.azp) !== settings.clientId || claims.nonce !== nonce || !str(claims.sub) || !(Number(claims.exp) * 1000 > Date.now()) || !(Number(claims.iat) * 1000 <= Date.now() + 60000) || !(Number(claims.iat) * 1000 > Date.now() - ttl)) throw fail();
+  if (claims.iss !== settings.issuer) rejectToken('issuer_mismatch', 'Эмитент токена Сбера не совпадает с настройками CRM. Требуется сверить настройку эмитента на сервере.');
+  if (audiences.length !== 1 || String(audiences[0]) !== settings.clientId || claims.azp !== undefined && String(claims.azp) !== settings.clientId) rejectToken('audience_mismatch', 'Подтверждение Сбера выдано для другого сервиса.');
+  if (claims.nonce !== nonce) rejectToken('nonce_mismatch', 'Ответ Сбера не соответствует начатой попытке входа.');
+  if (!str(claims.sub)) rejectToken('subject_missing', 'Сбер не передал идентификатор пользователя.');
+  if (!(Number(claims.exp) * 1000 > Date.now()) || !(Number(claims.iat) * 1000 <= Date.now() + 60000) || !(Number(claims.iat) * 1000 > Date.now() - ttl)) rejectToken('token_expired', 'Истёк срок подтверждения личности Сбера или не совпадает время сервера.');
   if (String(claims.inn) !== settings.inn || !str(claims.orgFullName)) throw new ApiError(403, 'ИНН организации в ответе СберБизнеса не совпадает с подключением.');
   const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
   if (!config.accounts.length || config.accounts.some(account => !accounts.includes(account.number))) throw new ApiError(403, 'Банк не подтвердил доступ ко всем разрешённым счетам.');
@@ -97,9 +130,10 @@ export async function finishSberOAuth(service: BankingService, request: Incoming
     const pending = decryptTokens(connection.encryptedOAuth!, settings.key, id + ':oauth');
     if (pending.stateHash === hash(state) && pending.browserHash === hash(browser)) matched = { id, pending, encrypted: connection.encryptedOAuth! };
   }
-  if (!matched) throw fail();
+  if (!matched) throw new SberOAuthError('attempt_missing', 'Эта попытка подключения уже использована или заменена новой. Начните авторизацию заново из «Платежей».');
   const { id, pending, encrypted } = matched, config = service.config(id), settings = oauthSettings(config);
-  if (Number(pending.expiresAt) <= Date.now() || pending.redirect !== settings.redirect || pending.inn !== settings.inn || pending.issuer !== settings.issuer || JSON.stringify(pending.accounts) !== JSON.stringify(config.accounts) || request.headers.host !== new URL(settings.redirect).host) throw fail();
+  if (Number(pending.expiresAt) <= Date.now()) throw new SberOAuthError('attempt_expired', 'Истекли 10 минут, отведённые на вход в СберБизнес. Начните авторизацию заново из «Платежей».');
+  if (pending.redirect !== settings.redirect || pending.inn !== settings.inn || pending.issuer !== settings.issuer || JSON.stringify(pending.accounts) !== JSON.stringify(config.accounts) || request.headers.host !== new URL(settings.redirect).host) throw fail();
   await service.mutate(data => {
     validInitiator(data, String(pending.sessionHash), String(pending.userId));
     const connection = data.banking!.connections[id];
@@ -111,7 +145,24 @@ export async function finishSberOAuth(service: BankingService, request: Incoming
   const code = url.searchParams.get('code');
   if (url.searchParams.has('error') || !code || code.length > 4096) throw fail();
   const token = object(await service.http(config, '/ic/sso/api/v2/oauth/token', '', new URLSearchParams({ grant_type: 'authorization_code', code, client_id: settings.clientId, client_secret: config.env[`${config.definition.envPrefix}_CLIENT_SECRET`]!, redirect_uri: settings.redirect, code_verifier: String(pending.verifier) })));
-  const tokens = validateSberTokens(token, config, String(pending.nonce));
+  let tokens: ReturnType<typeof validateSberTokens>;
+  try { tokens = validateSberTokens(token, config, String(pending.nonce)); }
+  catch (error) {
+    // Persist only authored errors and a public Sber issuer, never token/claim values.
+    let issuer: string | undefined;
+    try {
+      const claims = object(JSON.parse(Buffer.from(String(token.id_token).split('.')[1], 'base64url').toString('utf8')));
+      const candidate = new URL(String(claims.iss));
+      if (candidate.protocol === 'https:' && /^(?:[a-z0-9-]+\.)*sberbank\.ru$/.test(candidate.hostname) && !candidate.username && !candidate.password && !candidate.search && !candidate.hash && candidate.pathname === '/') issuer = candidate.origin;
+    } catch { /* No untrusted response details in diagnostics. */ }
+    await service.mutate(data => {
+      const connection = data.banking!.connections[id];
+      if (connection.oauthAttemptHash !== pending.stateHash) return { result: null, changed: false };
+      connection.lastOAuthError = { message: error instanceof ApiError ? error.message : 'Не удалось проверить ответ Сбера.', reason: error instanceof SberOAuthError ? error.reason : 'token_validation', at: new Date().toISOString(), ...(issuer ? { issuer } : {}) };
+      return { result: null, changed: true };
+    });
+    throw error;
+  }
   await service.mutate(data => {
     validInitiator(data, String(pending.sessionHash), String(pending.userId));
     const connection = data.banking!.connections[id];
@@ -119,6 +170,7 @@ export async function finishSberOAuth(service: BankingService, request: Incoming
     connection.encryptedTokens = encryptTokens(tokens, settings.key, id);
     connection.accounts = config.accounts;
     delete connection.lastError;
+    delete connection.lastOAuthError;
     return { result: null, changed: true };
   });
   response.writeHead(303, { Location: '/#payments' });

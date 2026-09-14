@@ -3,14 +3,14 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomBytes, createHash } from 'node:crypto';
 import { OperationsStore } from '../server/operations-store';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { sameOrigin } from '../server/cloud-auth';
 import { BankingService } from '../server/banking/service';
-import { sberCallbackPath, sberReadScope, validateSberTokens } from '../server/banking/oauth';
+import { sberCallbackPath, sberReadScope, validateSberTokens, SberOAuthError, sberOAuthAvailability } from '../server/banking/oauth';
 import { decryptTokens, type BankRequest } from '../server/banking/transport';
 import { accountNumber, fixtureEnvironment } from './banking-fixtures';
 
@@ -24,11 +24,12 @@ test('OAuth callback binds browser and live CRM session; PKCE, single use and en
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-oauth-'));
   const store = new OperationsStore(directory), base = await loadSnapshot();
   let nonce = '', calls = 0, challenge = '';
+  let claimsOverride = {};
   const http: BankRequest = async (_config, path, _token, form) => {
     assert.equal(path, '/ic/sso/api/v2/oauth/token'); calls++;
     assert.equal(form?.get('grant_type'), 'authorization_code');
     assert.equal(createHash('sha256').update(form!.get('code_verifier')!).digest('base64url'), challenge);
-    return token(nonce);
+    return token(nonce, claimsOverride);
   };
   const middleware = createSnapshotMiddleware(undefined, { operationsStore:store, bankEnvironment:environment, bankRequest:http, authorizeRequest:sameOrigin, setupToken:'fixture-setup', secureCookies:true });
   const server = createServer((req,res)=>{req.headers.host='crm.example';middleware(req,res,()=>{res.writeHead(404);res.end();});});
@@ -50,7 +51,13 @@ test('OAuth callback binds browser and live CRM session; PKCE, single use and en
     assert.match(start.headers.get('set-cookie')!,/HttpOnly; Secure; SameSite=Lax/);
     const callback=sberCallbackPath+'?'+new URLSearchParams({state:url.searchParams.get('state')!,code:'fixture-code'});
     assert.equal((await req('/api/banking',cookie,undefined,true)).status,403);
-    assert.equal((await req(callback,'',undefined,true)).status,400);
+    const missingBrowser = await req(callback,'',undefined,true);
+    assert.equal(missingBrowser.status,400);
+    assert.match(missingBrowser.headers.get('content-type')!,/text\/html/);
+    assert.match(missingBrowser.headers.get('content-security-policy')!,/default-src 'none'/);
+    const failurePage = await missingBrowser.text();
+    assert.match(failurePage,/Вернуться в «Платежи»/);
+    assert.ok(!failurePage.includes('fixture-code') && !failurePage.includes(url.searchParams.get('state')!));
     assert.equal(calls,0);
     const before=await store.read(base.provenance.sourceSha256);
     const accepted=await req(callback,callbackCookie,undefined,true);
@@ -65,12 +72,26 @@ test('OAuth callback binds browser and live CRM session; PKCE, single use and en
     assert.equal(decryptTokens(saved.encryptedTokens!,environment.ARTEL_BANK_ENCRYPTION_KEY,'sber-nk-artel').scope,sberReadScope);
     const service=new BankingService(store,base.provenance.sourceSha256,environment,http);
     assert.equal((await service.list(new URLSearchParams())).connections[0].state,'ready');
+    // A rejected bank reply leaves existing tokens intact and stores only safe diagnostics.
+    const failedStart = await req('/api/banking/connections/sber-nk-artel/authorize',cookie,{});
+    const failedUrl = new URL((await failedStart.json()).authorizationUrl);
+    nonce = failedUrl.searchParams.get('nonce')!; challenge = failedUrl.searchParams.get('code_challenge')!;
+    claimsOverride = {iss:'https://sbi.sberbank.ru:9443'};
+    const rejected = await req(sberCallbackPath+'?'+new URLSearchParams({state:failedUrl.searchParams.get('state')!,code:'fixture-code'}),failedStart.headers.get('set-cookie')!.split(';')[0],undefined,true);
+    assert.equal(rejected.status,400);
+    assert.match(await rejected.text(),/Эмитент токена/);
+    const failedState = (await store.read(base.provenance.sourceSha256)).banking!.connections['sber-nk-artel'];
+    assert.equal(failedState.encryptedTokens,saved.encryptedTokens);
+    assert.equal(failedState.encryptedOAuth,undefined);
+    assert.equal(failedState.lastOAuthError?.reason,'issuer_mismatch');
+    assert.equal(failedState.lastOAuthError?.issuer,'https://sbi.sberbank.ru:9443');
+    assert.ok(!JSON.stringify(failedState.lastOAuthError).includes('fixture-refresh'));
     // Revoking the initiating CRM session also revokes an unfinished authorization.
     const second=await req('/api/banking/connections/sber-nk-artel/authorize',cookie,{});
     const secondUrl=new URL((await second.json()).authorizationUrl);
     await req('/api/auth/logout',cookie,{});
     assert.equal((await req(sberCallbackPath+'?'+new URLSearchParams({state:secondUrl.searchParams.get('state')!,code:'fixture-code'}),second.headers.get('set-cookie')!.split(';')[0],undefined,true)).status,400);
-    assert.equal(calls,1);
+    assert.equal(calls,2);
   } finally { await new Promise<void>(done=>server.close(()=>done())); await rm(directory,{recursive:true,force:true}); }
 });
 
@@ -80,4 +101,33 @@ test('OAuth rejects broader rights, wrong company/account, issuer, audience, non
   assert.equal(validateSberTokens(token('nonce'),config,'nonce').refresh_token,'fixture-refresh');
   assert.throws(()=>validateSberTokens({...token('nonce'),scope:sberReadScope+' PAY_DOC_RU'},config,'nonce'));
   for (const claims of [{inn:'9999999999'},{accounts:[]},{iss:'https://evil.example'},{aud:'wrong'},{nonce:'wrong'},{exp:1},{iat:1},{aud:[environment.ARTEL_BANK_SBER_NK_CLIENT_ID,'other']}]) assert.throws(()=>validateSberTokens(token('nonce',claims),config,'nonce'));
+});
+
+
+test('OAuth identifies token validation failures without exposing bank response values', () => {
+  const config = new BankingService({} as OperationsStore, 'fixture', environment).config('sber-nk-artel');
+  assert.equal(validateSberTokens({...token('nonce'), token_type:'bearer'},config,'nonce').refresh_token,'fixture-refresh');
+  for (const [claims, reason] of [
+    [{iss:'https://untrusted.example/private-secret'},'issuer_mismatch'],
+    [{aud:'private-client-id'},'audience_mismatch'],
+    [{nonce:'private-nonce'},'nonce_mismatch'],
+    [{sub:''},'subject_missing'],
+    [{exp:1},'token_expired'],
+  ] as const) assert.throws(() => validateSberTokens(token('nonce',claims),config,'nonce'), error => {
+    assert.ok(error instanceof SberOAuthError);
+    assert.equal(error.reason, reason);
+    assert.ok(!error.message.includes('private-'));
+    return true;
+  });
+});
+
+
+test('Local OAuth cannot create a cloud callback attempt; missing configuration is explicit', () => {
+  const config = new BankingService({} as OperationsStore, 'fixture', environment).config('sber-nk-artel');
+  const local = {headers:{host:'127.0.0.1:5173'}} as IncomingMessage;
+  const unavailable = sberOAuthAvailability(config,local);
+  assert.equal(unavailable.available,false);
+  assert.match(unavailable.message!,/другой адрес CRM/);
+  assert.equal(sberOAuthAvailability(config,{headers:{host:'crm.example'}} as IncomingMessage).available,true);
+  assert.equal(sberOAuthAvailability({...config,env:{}},local).available,false);
 });

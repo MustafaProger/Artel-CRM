@@ -38,7 +38,7 @@ export class BankingService {
       return { id: definition.id, provider: definition.provider, bankName: definition.bankName, company: definition.company,
         accounts: state?.accounts.length ? state.accounts : config.accounts,
         state: config.missing.length ? 'not_configured' : state?.lastError ? 'error' : state?.job ? 'syncing' : state?.lastSuccessAt ? 'connected' : 'ready',
-        missing: config.missing, lastSuccessAt: state?.lastSuccessAt, lastError: state?.lastError, lastCompletedPeriod: state?.lastCompletedPeriod,
+        missing: config.missing, lastSuccessAt: state?.lastSuccessAt, lastError: state?.lastOAuthError?.message ?? state?.lastError, lastCompletedPeriod: state?.lastCompletedPeriod,
         progress: state?.job ? { from: state.job.from, to: state.job.to, day: state.job.day, pages: state.job.pages, attempts: state.job.attempts, nextAttemptAt: state.job.nextAttemptAt } : undefined,
         totals: totals(allCardsRows.filter(row => row.connectionId === definition.id)), limitations: limitations[definition.provider],
       };

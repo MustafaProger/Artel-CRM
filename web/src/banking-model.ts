@@ -58,12 +58,14 @@ export interface BankConnectionState {
   encryptedTokens?: string
   encryptedOAuth?: string
   oauthAttemptHash?: string
+  lastOAuthError?: { message: string; reason: string; at: string; issuer?: string }
 }
 export interface BankingData { version: 1; connections: Record<string, BankConnectionState>; operations: BankOperation[]; archivedOperations?: BankOperation[] }
 export interface BankCard {
   id: string; provider: BankProvider; bankName: string; company: string; accounts: BankAccount[]
   state: 'not_configured' | 'ready' | 'syncing' | 'error' | 'connected'
   missing: string[]; lastSuccessAt?: string; lastError?: string
+  authorization?: { available: boolean; message?: string }
   lastCompletedPeriod?: { from: string; to: string }
   progress?: { from: string; to: string; day: string; pages: number; attempts: number; nextAttemptAt?: string }
   totals: BankTotals[]; limitations: string[]
