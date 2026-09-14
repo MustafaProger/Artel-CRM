@@ -186,3 +186,17 @@ test('Sber UserInfo supplies company claims only after identity verification and
   await assert.rejects(()=>completeSberTokens(identity,config,'nonce',async()=>'<html>error</html>'));
   assert.equal((await completeSberTokens(token('nonce'),config,'nonce',async()=>{throw new Error('Unnecessary UserInfo call')})).refresh_token,'fixture-refresh');
 });
+
+
+test('Sber JWT numeric account numbers retain every digit before company checks', async () => {
+  const config = new BankingService({} as OperationsStore,'fixture',environment).config('sber-nk-artel');
+  const identity = token('nonce',{inn:undefined,orgFullName:undefined,accounts:undefined});
+  const info = {sub:'fixture-user',inn:'7700000000',orgFullName:'Fixture Company',accounts:[{accountNumber}]};
+  const numericJson = JSON.stringify(info).replace('"accountNumber":"'+accountNumber+'"','"accountNumber":'+accountNumber);
+  const response = Buffer.from('{"alg":"gost34.10-2012"}').toString('base64url')+'.'+Buffer.from(numericJson).toString('base64url')+'.Zml4dHVyZQ';
+  assert.equal((await completeSberTokens(identity,config,'nonce',async()=>response)).access_token,'fixture-access');
+  await assert.rejects(()=>completeSberTokens(identity,config,'nonce',async()=>jwt({...info,accounts:[{accountNumber:'40702810000000000099'}]})),error=>{
+    const diagnostic = (error as {accountCheck:unknown}).accountCheck;
+    assert.ok(diagnostic);assert.ok(!JSON.stringify(diagnostic).includes('40702810000000000099'));assert.match(JSON.stringify(diagnostic),/0099/);return true;
+  });
+});

@@ -4,7 +4,7 @@ import { ApiError } from '../api-error';
 import { canManage, requireManage, requireUser, sessionToken } from '../auth';
 import type { OperationsData } from '../operations-store';
 import { emptyBanking, object, str } from './domain';
-import { decryptTokens, encryptTokens, type BankConfig } from './transport';
+import { decryptTokens, encryptTokens, parseBankJson, type BankConfig } from './transport';
 import type { BankingService } from './service';
 
 export const sberReadScope = 'openid GET_STATEMENT_ACCOUNT inn orgFullName accounts iss aud sub';
@@ -17,6 +17,24 @@ const fail = () => new ApiError(400, 'Подключение не подтвер
 export class SberOAuthError extends ApiError {
   constructor(readonly reason: string, message: string) { super(400, message); }
 }
+class SberAccountError extends ApiError {
+  readonly accountCheck;
+  constructor(claims: Record<string, unknown>, config: BankConfig) {
+    super(403, 'Банк не подтвердил доступ ко всем разрешённым счетам.');
+    const rows = Array.isArray(claims.accounts) ? claims.accounts : [];
+    this.accountCheck = {
+      kind: Array.isArray(claims.accounts) ? 'array' : typeof claims.accounts,
+      count: rows.length,
+      entries: rows.slice(0, 10).map(row => {
+        const value = object(row).accountNumber;
+        const number = str(value);
+        return { kind: typeof row, fields: Object.keys(object(row)).filter(key => /^[a-zA-Z_]{1,40}$/.test(key)).slice(0, 15), numberType: typeof value, numberLength: number?.length ?? 0,
+          ...(number && /^\d{20}$/.test(number) ? { last4: number.slice(-4) } : {}),
+          matchesConfigured: config.accounts.some(account => account.number === number) };
+      }),
+    };
+  }
+}
 const rejectToken = (reason: string, message: string): never => { throw new SberOAuthError(reason, message + ' Токены не сохранены.'); };
 
 /** Safe metadata for all checks, so one failed login can diagnose the whole response.
@@ -24,7 +42,7 @@ const rejectToken = (reason: string, message: string): never => { throw new Sber
  */
 export function sberTokenDiagnostics(token: Record<string, unknown>, config: BankConfig, nonce: string) {
   let claims: Record<string, unknown> = {};
-  try { claims = object(JSON.parse(Buffer.from(String(token.id_token).split('.')[1], 'base64url').toString('utf8'))); } catch { /* Format is reported by validation. */ }
+  try { claims = object(parseBankJson(Buffer.from(String(token.id_token).split('.')[1], 'base64url').toString('utf8'))); } catch { /* Format is reported by validation. */ }
   const settings = oauthSettings(config);
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
@@ -131,7 +149,7 @@ function validateSberTokenIdentity(token: Record<string, unknown>, config: BankC
   const parts = str(token.id_token)?.split('.');
   if (!parts || parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) rejectToken('id_token_format', 'Формат подтверждения личности Сбера не поддерживается.');
   let claims: Record<string, unknown>;
-  try { claims = object(JSON.parse(Buffer.from(parts![1], 'base64url').toString('utf8'))); } catch { return rejectToken('id_token_format', 'Не удалось прочитать подтверждение личности Сбера.'); }
+  try { claims = object(parseBankJson(Buffer.from(parts![1], 'base64url').toString('utf8'))); } catch { return rejectToken('id_token_format', 'Не удалось прочитать подтверждение личности Сбера.'); }
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!str(claims.iss)) rejectToken('issuer_missing', 'Сбер не передал эмитента токена. Требуется проверить запрошенные поля авторизации.');
   if (claims.iss !== settings.issuer) rejectToken('issuer_mismatch', 'Эмитент токена Сбера не совпадает с настройками CRM. Требуется сверить настройку эмитента на сервере.');
@@ -145,7 +163,7 @@ function validateSberTokenIdentity(token: Record<string, unknown>, config: BankC
 function validateSberCompany(claims: Record<string, unknown>, config: BankConfig) {
   if (String(claims.inn) !== oauthSettings(config).inn || !str(claims.orgFullName)) throw new ApiError(403, 'ИНН организации в ответе СберБизнеса не совпадает с подключением.');
   const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
-  if (!config.accounts.length || config.accounts.some(account => !accounts.includes(account.number))) throw new ApiError(403, 'Банк не подтвердил доступ ко всем разрешённым счетам.');
+  if (!config.accounts.length || config.accounts.some(account => !accounts.includes(account.number))) throw new SberAccountError(claims, config);
 }
 
 export function validateSberTokens(token: Record<string, unknown>, config: BankConfig, nonce: string) {
@@ -164,7 +182,7 @@ export async function completeSberTokens(token: Record<string, unknown>, config:
     const parts = typeof raw === 'string' ? raw.split('.') : [];
     if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) rejectToken('userinfo_format', 'Не удалось прочитать сведения об организации из Сбера.');
     let info: Record<string, unknown>;
-    try { info = object(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))); } catch { return rejectToken('userinfo_format', 'Не удалось прочитать сведения об организации из Сбера.'); }
+    try { info = object(parseBankJson(Buffer.from(parts[1], 'base64url').toString('utf8'))); } catch { return rejectToken('userinfo_format', 'Не удалось прочитать сведения об организации из Сбера.'); }
     if (info.sub !== verified.claims.sub) rejectToken('userinfo_subject', 'Сведения об организации относятся к другому пользователю Сбера.');
     if (info.iss !== undefined && info.iss !== verified.claims.iss || info.aud !== undefined && String(info.aud) !== oauthSettings(config).clientId) rejectToken('userinfo_identity', 'Сведения об организации выданы для другого сервиса или эмитента.');
     if (info.exp !== undefined && !(Number(info.exp) * 1000 > Date.now())) rejectToken('userinfo_expired', 'Истёк срок подтверждения сведений об организации.');
@@ -212,7 +230,7 @@ export async function finishSberOAuth(service: BankingService, request: Incoming
     await service.mutate(data => {
       const connection = data.banking!.connections[id];
       if (connection.oauthAttemptHash !== pending.stateHash) return { result: null, changed: false };
-      connection.lastOAuthError = { message: error instanceof ApiError ? error.message : 'Не удалось проверить ответ Сбера.', reason: error instanceof SberOAuthError ? error.reason : 'token_validation', at: new Date().toISOString(), ...diagnostics };
+      connection.lastOAuthError = { message: error instanceof ApiError ? error.message : 'Не удалось проверить ответ Сбера.', reason: error instanceof SberOAuthError ? error.reason : error instanceof SberAccountError ? 'accounts_mismatch' : 'token_validation', at: new Date().toISOString(), ...diagnostics, ...(error instanceof SberAccountError ? { accountCheck: error.accountCheck } : {}) };
       return { result: null, changed: true };
     });
     throw error;

@@ -58,7 +58,7 @@ export interface BankConnectionState {
   encryptedTokens?: string
   encryptedOAuth?: string
   oauthAttemptHash?: string
-  lastOAuthError?: { message: string; reason: string; at: string; issuer?: string; checks?: Record<string, boolean> }
+  lastOAuthError?: { message: string; reason: string; at: string; issuer?: string; checks?: Record<string, boolean>; accountCheck?: { kind: string; count: number; entries: { kind: string; fields: string[]; numberType: string; numberLength: number; last4?: string; matchesConfigured: boolean }[] } }
 }
 export interface BankingData { version: 1; connections: Record<string, BankConnectionState>; operations: BankOperation[]; archivedOperations?: BankOperation[] }
 export interface BankCard {
