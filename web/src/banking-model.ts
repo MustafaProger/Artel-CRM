@@ -56,6 +56,8 @@ export interface BankConnectionState {
   webhookPending?: boolean
   webhookHashes?: string[]
   encryptedTokens?: string
+  encryptedOAuth?: string
+  oauthAttemptHash?: string
 }
 export interface BankingData { version: 1; connections: Record<string, BankConnectionState>; operations: BankOperation[]; archivedOperations?: BankOperation[] }
 export interface BankCard {

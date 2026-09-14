@@ -12,7 +12,13 @@ const limitations = {
 };
 export class BankingService {
   constructor(readonly store: OperationsStorage, readonly source: string, readonly env: Record<string, string | undefined> = process.env, readonly http: BankRequest = bankRequest) {}
-  config(id: string) { const definition = bankConnections.find(row => row.id === id); if (!definition) throw new ApiError(404, 'Подключение не найдено.'); return bankConfig(definition, this.env); }
+  config(id: string, state?: BankConnectionState) {
+    const definition = bankConnections.find(row => row.id === id);
+    if (!definition) throw new ApiError(404, 'Подключение не найдено.');
+    const config = bankConfig(definition, this.env);
+    if (state?.encryptedTokens) config.missing = config.missing.filter(label => label !== 'Первичная авторизация и refresh token');
+    return config;
+  }
   async mutate<T>(update: (data: OperationsData) => { result: T; changed: boolean }) {
     // Retry CAS conflicts only; the callback is pure and never calls a bank.
     for (let attempt = 0; ; attempt++) {
@@ -28,7 +34,7 @@ export class BankingService {
     if (![10,25,50,100].includes(size) || !Number.isSafeInteger(requested) || requested < 1) throw new ApiError(400, 'Некорректная страница.');
     const page = Math.min(requested, Math.max(1, Math.ceil(rows.length / size)));
     const connections: BankCard[] = bankConnections.map(definition => {
-      const config = this.config(definition.id), state = data.connections[definition.id];
+      const state = data.connections[definition.id], config = this.config(definition.id, state);
       return { id: definition.id, provider: definition.provider, bankName: definition.bankName, company: definition.company,
         accounts: state?.accounts.length ? state.accounts : config.accounts,
         state: config.missing.length ? 'not_configured' : state?.lastError ? 'error' : state?.job ? 'syncing' : state?.lastSuccessAt ? 'connected' : 'ready',
@@ -47,7 +53,7 @@ export class BankingService {
     return row;
   }
   async start(id: string, from: unknown, to: unknown) {
-    const config = this.config(id);
+    const config = this.config(id, (await this.store.read(this.source)).banking?.connections[id]);
     if (config.missing.length) throw new ApiError(409, 'Подключение не настроено. Требуются: ' + config.missing.join(', ') + '.');
     const earliest = config.definition.provider === 'sber' ? `${Number(today().slice(0, 4)) - 5}-01-01` : '2023-06-01';
     if (!validDate(from) || !validDate(to) || from > to || to > today() || from < earliest) throw new ApiError(400, `Укажите период с ${earliest} до сегодняшнего дня.`);
@@ -65,7 +71,7 @@ export class BankingService {
     });
   }
   async locked<T>(id: string, work: (config: BankConfig, state: BankConnectionState, fence: string) => Promise<T>): Promise<T | null> {
-    const config = this.config(id);
+    const config = this.config(id, (await this.store.read(this.source)).banking?.connections[id]);
     if (config.missing.length) throw new ApiError(409, 'Сначала настройте серверный доступ к банку.');
     const fence = randomUUID();
     const state = await this.mutate(data => {
@@ -179,7 +185,7 @@ export class BankingService {
   async dispatch() {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
     const data = (await this.store.read(this.source)).banking ?? emptyBanking();
-    const due = bankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= Date.now()) : state?.lastSuccessAt && (state.webhookPending || Date.now() - Date.parse(state.lastSuccessAt) >= 15 * 60000)).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
+    const due = bankConnections.filter(def => !this.config(def.id, data.connections[def.id]).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= Date.now()) : state?.lastSuccessAt && (state.webhookPending || Date.now() - Date.parse(state.lastSuccessAt) >= 15 * 60000)).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
     if (!due) return { enabled: true, pending: false };
     if (!due.state?.job) await this.start(due.def.id, nextDay((due.state?.lastSuccessAt ?? today()).slice(0, 10), -7), today());
     return { enabled: true, ...await this.tick(due.def.id) };

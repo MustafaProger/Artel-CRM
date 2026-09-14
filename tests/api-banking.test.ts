@@ -111,6 +111,30 @@ test('search, statuses, accounts, periods, pagination, per-currency summaries an
   } finally { await r.close(); }
 });
 
+test('Sber statement processing (202) retains the previous complete day and resumes automatically', async () => {
+  let processing = false;
+  const r = await runtime(async (...args) => {
+    if (processing && !args[1].includes('/oauth/token')) throw new BankHttpError(202);
+    return simpleHttp(...args);
+  });
+  try {
+    await r.service.start('sber-nk-artel', fixtureDay, fixtureDay); await r.service.tick('sber-nk-artel');
+    const before = await r.service.rows(new URLSearchParams());
+    processing = true;
+    await r.service.start('sber-nk-artel', fixtureDay, fixtureDay); await r.service.tick('sber-nk-artel');
+    const state = (await r.store.read(r.base.provenance.sourceSha256)).banking!.connections['sber-nk-artel'];
+    assert.equal(state.job!.attempts, 1);
+    assert.ok(Date.parse(state.job!.nextAttemptAt!) >= Date.now() + 55000);
+    assert.deepEqual(await r.service.rows(new URLSearchParams()), before);
+    // Advance only the durable retry clock; do not manually restart the job.
+    await r.store.mutate(r.base.provenance.sourceSha256, data => { data.banking!.connections['sber-nk-artel'].job!.nextAttemptAt = new Date(0).toISOString(); return { result: null, changed: true }; });
+    processing = false; await r.service.dispatch();
+    const recovered = (await r.service.list(new URLSearchParams())).connections[0];
+    assert.equal(recovered.progress, undefined); assert.equal(recovered.lastError, undefined);
+    assert.equal((await r.service.rows(new URLSearchParams())).length, before.length);
+  } finally { await r.close(); }
+});
+
 test('bank tokens are authenticated encrypted and bound to each connection; raw secret keys are redacted', () => {
   const encrypted = encryptTokens({ access_token: 'sample-access', refresh_token: 'sample-refresh' }, '1'.repeat(64), 'sber-artel');
   assert.equal(decryptTokens(encrypted, '1'.repeat(64), 'sber-artel').refresh_token, 'sample-refresh'); assert.throws(() => decryptTokens(encrypted, '1'.repeat(64), 'sber-nk-artel'));
@@ -189,6 +213,9 @@ test('financial endpoints require CRM login and management role, including detai
     const login = await request('/api/auth/login', '', {login:'manager',password}), managerCookie = login.headers.get('set-cookie')!.split(';')[0];
     for (const [path, body] of [['/api/banking', undefined], ['/api/banking/export', undefined], [`/api/banking/operations/${'0'.repeat(64)}`, undefined], [`/api/banking/operations/${'0'.repeat(64)}/print`, undefined], ['/api/banking/connections/sber-artel/sync', {from:fixtureDay,to:fixtureDay}], [`/api/banking/operations/${'0'.repeat(64)}/refresh`, {}]] as const) assert.equal((await request(path, managerCookie, body)).status, 403, path);
     assert.equal((await request('/api/banking/dispatch')).status, 403);
+    assert.equal((await request('/api/banking/dispatch?check=sber-network')).status, 403);
+    assert.equal((await request('/api/banking/network-check', managerCookie)).status, 403);
+    assert.equal((await request('/api/banking/network-check')).status, 401);
     assert.equal((await request('/api/banking/webhooks/tbank-nk-artel', '', {accountNumber})).status, 403);
     assert.equal((await request('/api/banking/connections/sber-artel/sync', cookie, {from:'2010-01-01',to:fixtureDay})).status, 400);
   } finally { await new Promise<void>(done => server.close(() => done())); await r.close(); }

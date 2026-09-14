@@ -40,6 +40,7 @@ export function validateBanking(value: BankingData | undefined) {
   for (const [id, state] of Object.entries(value.connections)) {
     if (!bankConnections.some(c => c.id === id) || !state || !Array.isArray(state.accounts) || state.accounts.some(a => !/^\d{20}$/.test(a.number) || !/^(?:[A-Z]{3}|\d{3})$/.test(a.currency)) || state.encryptedTokens !== undefined && typeof state.encryptedTokens !== 'string') throw new Error('Invalid bank connection');
     if (state.lease && (typeof state.lease.id !== 'string' || !Number.isFinite(state.lease.until))) throw new Error('Invalid bank lease');
+    if (state.encryptedOAuth !== undefined && typeof state.encryptedOAuth !== 'string') throw new Error('Invalid bank OAuth state');
     if (state.requestNotBefore !== undefined && !Number.isFinite(state.requestNotBefore)) throw new Error('Invalid bank pacing');
     if (state.job) {
       const job = state.job;
