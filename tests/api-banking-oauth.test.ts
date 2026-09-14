@@ -200,3 +200,15 @@ test('Sber JWT numeric account numbers retain every digit before company checks'
     assert.ok(diagnostic);assert.ok(!JSON.stringify(diagnostic).includes('40702810000000000099'));assert.match(JSON.stringify(diagnostic),/0099/);return true;
   });
 });
+
+
+test('Omitted optional UserInfo accounts allows only configured statement requests; explicit denial still fails', async () => {
+  const config = new BankingService({} as OperationsStore,'fixture',environment).config('sber-nk-artel');
+  const identity = token('nonce',{inn:undefined,orgFullName:undefined,accounts:undefined});
+  const info = {sub:'fixture-user',inn:'7700000000',orgFullName:'Fixture Company'};
+  const result = await completeSberTokens(identity,config,'nonce',async()=>jwt(info));
+  assert.equal(result.access_token,'fixture-access');assert.equal(result.scope,sberReadScope);
+  await assert.rejects(()=>completeSberTokens(identity,{...config,accounts:[]},'nonce',async()=>jwt(info)));
+  for (const accounts of [[],null,'invalid',[{accountNumber:'40702810000000000099'}]]) await assert.rejects(()=>completeSberTokens(identity,config,'nonce',async()=>jwt({...info,accounts})));
+  await assert.rejects(()=>completeSberTokens(identity,config,'nonce',async()=>jwt({...info,inn:'9999999999'})));
+});

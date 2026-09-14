@@ -160,8 +160,12 @@ function validateSberTokenIdentity(token: Record<string, unknown>, config: BankC
   return { claims, tokens: { access_token: token.access_token as string, refresh_token: token.refresh_token, expiresAt: Date.now() + Number(token.expires_in) * 1000, scope: scopes.join(' ') } };
 }
 
-function validateSberCompany(claims: Record<string, unknown>, config: BankConfig) {
+function validateSberCompany(claims: Record<string, unknown>, config: BankConfig, allowMissingAccounts = false) {
   if (String(claims.inn) !== oauthSettings(config).inn || !str(claims.orgFullName)) throw new ApiError(403, 'ИНН организации в ответе СберБизнеса не совпадает с подключением.');
+  // UserInfo claims depend on the Sber service. Omission is not an account grant.
+  // Only the server's approved accounts can be requested; the bank authorizes
+  // each statement request. UI stays 'ready' until the first successful sync.
+  if (allowMissingAccounts && claims.accounts === undefined && config.accounts.length) return;
   const accounts = Array.isArray(claims.accounts) ? claims.accounts.map(value => str(object(value).accountNumber)) : [];
   if (!config.accounts.length || config.accounts.some(account => !accounts.includes(account.number))) throw new SberAccountError(claims, config);
 }
@@ -189,7 +193,7 @@ export async function completeSberTokens(token: Record<string, unknown>, config:
     // Present claims must not be replaced to hide a mismatch in the ID token.
     company = { ...info, ...verified.claims };
   }
-  validateSberCompany(company, config);
+  validateSberCompany(company, config, true);
   return verified.tokens;
 }
 
