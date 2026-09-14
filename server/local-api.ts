@@ -2,8 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { BankingService } from './banking/service';
 import { bankingRoutes } from './banking/routes';
 import { validBankWorkflow } from './banking/cron-auth';
-import { sberNetworkCheck } from './banking/diagnostics';
-import { finishSberOAuth, sberCallbackPath, sberOAuthErrorPage } from './banking/oauth';
 import type { BankRequest } from './banking/transport';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -345,19 +343,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
     const cronRequest = pathname === '/api/push/dispatch';
     const bankCron = pathname === '/api/banking/dispatch';
     const bankWebhook = pathname === '/api/banking/webhooks/tbank-nk-artel';
-    const bankCallback = pathname === sberCallbackPath && request.method === 'GET';
-    if (!cronRequest && !bankCron && !bankWebhook && !bankCallback && !(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
+    if (!cronRequest && !bankCron && !bankWebhook && !(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
     void (async () => {
       if (cronRequest && !validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validPushWorkflow(request)) throw new ApiError(403, 'Доступ к планировщику запрещён.');
       const url = new URL(request.url!, 'http://localhost');
       const authEnabled = options.requireAuthentication !== false;
       const base = await baseSnapshot();
       const banking = new BankingService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.bankRequest);
-      if (bankCallback) return finishSberOAuth(banking, request, response, url);
       if (bankCron) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         if (!validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validBankWorkflow(request)) throw new ApiError(403, 'Доступ к банковскому планировщику запрещён.');
-        if (url.searchParams.get('check') === 'sber-network') return write(response, 200, JSON.stringify(await sberNetworkCheck(banking.config('sber-nk-artel'))));
+        if (url.searchParams.has('check')) throw new ApiError(404, 'Банковский маршрут не найден.');
         return write(response, 200, JSON.stringify(await banking.dispatch()));
       }
       if (bankWebhook) {
@@ -617,7 +613,6 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       });
       write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
     })().catch((error: unknown) => {
-      if (bankCallback) return sberOAuthErrorPage(response, error);
       if (error instanceof ApiError) return write(response, error.status, JSON.stringify({ error: error.message }));
       if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось проверить хранилище операций. Данные не изменены; проверьте data/local-operations/operations.json и файл блокировки."}');
       cache = undefined;

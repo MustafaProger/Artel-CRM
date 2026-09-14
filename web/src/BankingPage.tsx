@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowLeft, ArrowUpRight, Building2, Check, ChevronLeft, ChevronRight, Copy, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
 import { bankConnections, type BankCard, type BankListResult, type BankOperation, type BankParty, type BankTotals } from './banking-model'
+import SberLayout from './SberLayout'
 import './banking.css'
 
 const currentDay = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date())
@@ -32,6 +33,7 @@ function Totals({ values, compact = false }: { values: BankTotals[]; compact?: b
 export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const [source, setSource] = useState<'api' | 'legacy'>('api')
   const [connection, setConnection] = useState(''), [account, setAccount] = useState('')
+  const sber = bankConnections.find(item => item.id === connection && item.provider === 'sber')
   const [from, setFrom] = useState(() => `${currentDay().slice(0, 7)}-01`), [to, setTo] = useState(currentDay)
   const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [direction, setDirection] = useState(''), [status, setStatus] = useState('')
   const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [revision, setRevision] = useState(0)
@@ -41,15 +43,15 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   useEffect(() => { const timer = setTimeout(() => { setSearch(query); setPage(1) }, 250); return () => clearTimeout(timer) }, [query])
   const params = new URLSearchParams({ from, to, q: search, direction, account, status, connection, page: String(page), pageSize: String(pageSize) }).toString()
   useEffect(() => {
-    if (source !== 'api') return
+    if (source !== 'api' || sber) return
     const controller = new AbortController()
     setLoading(true); setError('')
     api<BankListResult>(`/api/banking?${params}`, undefined, controller.signal).then(setData).catch(e => { if (e.name !== 'AbortError') setError(e.message) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [params, revision, source])
+  }, [params, revision, source, sber])
   const ongoing = data?.connections.filter(card => card.progress && card.progress.attempts < 5 && card.state !== 'not_configured').map(card => card.id).join(',') ?? ''
   useEffect(() => {
-    if (!ongoing || busy || source !== 'api') return
+    if (!ongoing || busy || source !== 'api' || sber) return
     let stopped = false
     const timer = setTimeout(async () => {
       try { for (const id of ongoing.split(',')) { if (stopped) break; await api(`/api/banking/connections/${id}/continue`, {}) } }
@@ -57,13 +59,13 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
       finally { if (!stopped) setRevision(v => v + 1) }
     }, 1500)
     return () => { stopped = true; clearTimeout(timer) }
-  }, [ongoing, busy, revision, source])
+  }, [ongoing, busy, revision, source, sber])
   // Poll durable state, including retry backoff, without needing an open page for the scheduler.
   useEffect(() => {
-    if (source !== 'api') return
+    if (source !== 'api' || sber) return
     const timer = setInterval(() => setRevision(v => v + 1), 30000)
     return () => clearInterval(timer)
-  }, [source])
+  }, [source, sber])
   const selectBank = (id: string) => { setConnection(id); setAccount(''); setStatus(''); setPage(1); setSettings(false); setActionError('') }
   const card = data?.connections.find(card => card.id === connection)
   const accounts = [...new Map((card ? card.accounts : data?.connections.flatMap(card => card.accounts) ?? []).map(account => [account.number, account])).values()]
@@ -75,21 +77,16 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
     } catch (e) { setActionError((e as Error).message) }
     finally { setBusy(false); setRevision(v => v + 1) }
   }
-  const authorize = async (id: string) => {
-    setBusy(true); setActionError('')
-    try { const result = await api<{authorizationUrl: string}>(`/api/banking/connections/${id}/authorize`, {}); window.location.assign(result.authorizationUrl) }
-    catch (e) { setActionError((e as Error).message); setBusy(false) }
-  }
   const reset = () => { setQuery(''); setSearch(''); setDirection(''); setStatus(''); setAccount(''); setPage(1) }
   const filtered = !!(search || direction || status || account)
   return <section className="banking-page">
     <div className="bank-source-tabs" role="tablist" aria-label="Источник платежей"><button role="tab" aria-selected={source === 'api'} onClick={() => setSource('api')}>Банковские подключения</button><button role="tab" aria-selected={source === 'legacy'} onClick={() => setSource('legacy')}>Архив из файла</button></div>
-    {source === 'legacy' ? <><p className="bank-notice">Сохранённая XLSX-выписка. Её суммы показаны отдельно: в исходном файле нет достаточных реквизитов для достоверного сопоставления с API. Данные и прежний экспорт сохранены.</p>{legacy}</> : <>
+    {source === 'legacy' ? <><p className="bank-notice">Сохранённая XLSX-выписка. Её суммы показаны отдельно: в исходном файле нет достаточных реквизитов для достоверного сопоставления с API. Данные и прежний экспорт сохранены.</p>{legacy}</> : sber ? <SberLayout bank={sber} onBack={() => selectBank('')}/> : <>
       <div className="bank-section-heading"><div>{connection ? <button className="bank-back" onClick={() => selectBank('')}><ArrowLeft size={16}/>Все подключения</button> : <span className="bank-overline">СЧЕТА КОМПАНИЙ</span>}<h2>{card ? `${card.bankName} · ${card.company}` : 'Банки и операции'}</h2><p>Выписки по счетам · только просмотр</p></div><div className="bank-heading-actions"><button className="button" onClick={() => setSettings(v => !v)}><Unplug size={16}/>Подключение</button><button className="button primary" onClick={() => void synchronize()} disabled={busy || loading || !!error || !(card ? !card.missing.length : data?.connections.some(card => !card.missing.length))}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем…' : card?.progress ? 'Продолжить загрузку' : 'Синхронизировать'}</button></div></div>
       <div className="bank-period"><label>Период с<input aria-label="Период с" type="date" value={from} max={to || currentDay()} onChange={e => { setFrom(e.target.value); setPage(1) }}/></label><span>—</span><label>по<input aria-label="Период по" type="date" value={to} min={from} max={currentDay()} onChange={e => { setTo(e.target.value); setPage(1) }}/></label><small>Итоги и экспорт учитывают все фильтры</small></div>
-      {settings && <div className="bank-settings panel"><h3>Настройка доступа к выпискам</h3><p>Доступ настраивается на сервере для каждого юридического лица. После настройки выберите период и запустите первую синхронизацию.</p>{(card ? [card] : data?.connections ?? []).map(item => <div key={item.id}><strong>{item.bankName} · {item.company}</strong><p>{item.missing.length ? `Требуются: ${item.missing.join(', ')}.` : 'Настройки доступа сохранены на сервере. Подключение подтверждается успешной загрузкой выписки.'}</p>{item.provider === 'sber' && <>{item.authorization?.message && <p>{item.authorization.message}</p>}<button className="button" disabled={busy || item.authorization?.available === false} onClick={() => void authorize(item.id)}>Разрешить чтение выписок в СберБизнесе</button></>}{item.limitations.map(text => <p className="bank-muted" key={text}>{text}</p>)}</div>)}<p>Автоматическая сверка: {data?.scheduleEnabled ? 'включена на сервере' : 'ожидает включения на сервере'}. Для первого получения истории нужен ручной запуск.</p></div>}
+      {settings && <div className="bank-settings panel"><h3>Настройка доступа к выпискам</h3><p>Доступ настраивается на сервере для каждого юридического лица. После настройки выберите период и запустите первую синхронизацию.</p>{(card ? [card] : data?.connections ?? []).map(item => <div key={item.id}><strong>{item.bankName} · {item.company}</strong><p>{item.missing.length ? `Требуются: ${item.missing.join(', ')}.` : 'Настройки доступа сохранены на сервере. Подключение подтверждается успешной загрузкой выписки.'}</p>{item.limitations.map(text => <p className="bank-muted" key={text}>{text}</p>)}</div>)}<p>Автоматическая сверка: {data?.scheduleEnabled ? 'включена на сервере' : 'ожидает включения на сервере'}. Для первого получения истории нужен ручной запуск.</p></div>}
       {loading && !data ? <div className="bank-empty" role="status"><LoaderCircle className="spin"/><h3>Загружаем подключения…</h3></div> : <>
-        {!connection && <div className="bank-cards">{data?.connections.map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}><div className="bank-card-top"><span className="bank-emblem"><Building2 size={22}/></span><span className={`bank-state ${item.state}`}>{stateName[item.state]}</span></div><h3>{item.bankName}<ChevronRight size={18}/></h3><p className="bank-company">{item.company}</p><div className="bank-accounts">{item.accounts.length ? item.accounts.map(account => <span key={account.number}>{account.number}<small>{account.currency}</small></span>) : <span>Счета ещё не подключены</span>}</div><Totals values={item.totals} compact/><div className="bank-last-sync">Успешная синхронизация<strong>{time(item.lastSuccessAt)}</strong></div></button>)}</div>}
+        {!connection && <div className="bank-cards">{[...bankConnections.filter(item => item.provider === 'sber').map(item => ({ ...item, accounts: [], state: 'not_configured' as const, totals: [], lastSuccessAt: undefined })), ...(data?.connections ?? [])].map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}><div className="bank-card-top"><span className="bank-emblem"><Building2 size={22}/></span><span className={`bank-state ${item.state}`}>{item.provider === 'sber' ? 'Макет' : stateName[item.state]}</span></div><h3>{item.bankName}<ChevronRight size={18}/></h3><p className="bank-company">{item.company}</p><div className="bank-accounts">{item.accounts.length ? item.accounts.map(account => <span key={account.number}>{account.number}<small>{account.currency}</small></span>) : <span>Счета ещё не подключены</span>}</div><Totals values={item.totals} compact/><div className="bank-last-sync">Успешная синхронизация<strong>{time(item.lastSuccessAt)}</strong></div></button>)}</div>}
         {card && <div className="bank-connection-line"><span className={`bank-state ${card.state}`}>{stateName[card.state]}</span><span>Последняя успешная: <strong>{time(card.lastSuccessAt)}</strong></span>{card.lastCompletedPeriod && <span>Загружен период: {date(card.lastCompletedPeriod.from)} — {date(card.lastCompletedPeriod.to)}</span>}</div>}
         {(card ? [card] : data?.connections ?? []).filter(card => card.lastError || card.progress).map(item => <div key={item.id} className={`bank-notice ${item.lastError ? 'bank-error' : ''}`} role={item.lastError ? 'alert' : 'status'}><strong>{item.bankName} · {item.company}</strong>{item.lastError && <p>{item.lastError}</p>}{item.progress && <p>История {date(item.progress.from)} — {date(item.progress.to)} · загружается {date(item.progress.day)} · страниц: {item.progress.pages}{item.progress.nextAttemptAt ? ` · повтор не ранее ${time(item.progress.nextAttemptAt)}` : ''}</p>}</div>)}
         {(error || actionError) && <div className="bank-notice bank-error" role="alert">{error || actionError}{error && <button className="button" onClick={() => setRevision(v => v + 1)}>Повторить загрузку</button>}</div>}
@@ -112,10 +109,7 @@ function PaymentPanel({ id, onClose }: { id: string; onClose: () => void }) {
     const controller = new AbortController()
     api<{ operation: BankOperation }>(`/api/banking/operations/${id}`, undefined, controller.signal).then(({operation}) => {
       setRow(operation)
-      if (operation.provider === 'sber') {
-        setBusy(true)
-        api<{ operation: BankOperation }>(`/api/banking/operations/${id}/refresh`, {}, controller.signal).then(result => setRow(result.operation)).catch(e => { if (e.name !== 'AbortError') setError(e.message) }).finally(() => { if (!controller.signal.aborted) setBusy(false) })
-      }
+
     }).catch(e => { if (e.name !== 'AbortError') setError(e.message) })
     return () => controller.abort()
   }, [id])
@@ -131,7 +125,7 @@ function PaymentPanel({ id, onClose }: { id: string; onClose: () => void }) {
       <div className="bank-parties">{([['payer','Плательщик'],['payee','Получатель']] as const).map(([key, title]) => <section key={key}><div className="bank-party-title"><h3>{title}</h3><button className="icon-button" aria-label={`Копировать реквизиты: ${title}`} onClick={() => void copy(partyFields.filter(([field]) => row[key][field]).map(([field, label]) => `${label}: ${row[key][field]}`).join('\n'), title)}><Copy size={15}/></button></div><dl>{partyFields.map(([keyName, label]) => field(`${title} · ${label}`, row[key][keyName]))}</dl></section>)}</div>
       {(row.vat || row.commission) && <dl className="bank-details-grid">{row.vat && field('НДС от банка', row.vat)}{row.commission && field('Комиссия от банка', row.commission)}</dl>}
       <details className="bank-raw-details"><summary>Все доступные поля банковского ответа</summary><p>Исходные сведения из API. Данные из назначения не интерпретируются как подтверждённые реквизиты.</p><dl>{rawFields(row.bankData).map(([key, value]) => field(key, value))}</dl></details>
-      <div className="bank-panel-actions"><button className="button primary" disabled={busy} onClick={() => { setBusy(true); setError(''); void download(`/api/banking/operations/${id}/print`, `Платёж-${row.documentNumber ?? id.slice(0, 8)}.pdf`).catch(e => setError(e.message)).finally(() => setBusy(false)) }}><FileText size={16}/>{busy ? 'Получаем данные банка…' : 'Печатная форма банка'}</button>{row.provider === 'sber' && <button className="button" disabled={busy} onClick={() => { setBusy(true); setError(''); void api<{operation: BankOperation}>(`/api/banking/operations/${id}/refresh`, {}).then(result => setRow(result.operation)).catch(e => setError(e.message)).finally(() => setBusy(false)) }}><RefreshCw size={15}/>Обновить реквизиты</button>}</div><p className="bank-footnote">Сохранено {time(row.updatedAt)}. Печатная форма предоставляется банком при наличии доступа и поддержке документа.</p>{copied && <p role="status" className="bank-copy-status">Скопировано: {copied}</p>}
+      <div className="bank-panel-actions"><button className="button primary" disabled={busy} onClick={() => { setBusy(true); setError(''); void download(`/api/banking/operations/${id}/print`, `Платёж-${row.documentNumber ?? id.slice(0, 8)}.pdf`).catch(e => setError(e.message)).finally(() => setBusy(false)) }}><FileText size={16}/>{busy ? 'Получаем данные банка…' : 'Печатная форма банка'}</button></div><p className="bank-footnote">Сохранено {time(row.updatedAt)}. Печатная форма предоставляется банком при наличии доступа и поддержке документа.</p>{copied && <p role="status" className="bank-copy-status">Скопировано: {copied}</p>}
     </div>}
   </dialog>
 }

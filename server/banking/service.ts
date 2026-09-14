@@ -1,22 +1,20 @@
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { bankConnections, type BankCard, type BankConnectionState, type BankListResult, type BankOperation } from '../../web/src/banking-model';
+import { type BankCard, type BankConnectionState, type BankListResult, type BankOperation } from '../../web/src/banking-model';
 import type { OperationsData, OperationsStorage } from '../operations-store';
 import { ApiError } from '../api-error';
-import { bankConfig, bankRequest, bankToken, BankHttpError, type BankConfig, type BankRequest, decryptTokens, encryptTokens } from './transport';
-import { sberAdapter, tbankAdapter } from './adapters';
+import { activeBankConnections, bankConfig, bankRequest, BankHttpError, type BankConfig, type BankRequest } from './transport';
+import { tbankAdapter } from './adapters';
 import { emptyBanking, filterOperations, nextDay, object, str, today, totals, upsertOperations, validDate } from './domain';
 
 const limitations = {
-  sber: ['Выписка доступна за предыдущие 5 лет и текущий год. Статусы платёжных поручений в выписке отсутствуют.', 'Вебхуки Сбера требуют отдельного шлюза mTLS и проверки ГОСТ-подписи; здесь используется сверка выписки.'],
   tbank: ['История API доступна с июня 2023 года. Загружаются подтверждённые транзакции; авторизации не входят в фактические обороты.', 'Смена ID и удаление операций учитываются при полной повторной сверке дня. Печатная форма доступна для поддерживаемых исполненных документов.'],
 };
 export class BankingService {
   constructor(readonly store: OperationsStorage, readonly source: string, readonly env: Record<string, string | undefined> = process.env, readonly http: BankRequest = bankRequest) {}
-  config(id: string, state?: BankConnectionState) {
-    const definition = bankConnections.find(row => row.id === id);
+  config(id: string) {
+    const definition = activeBankConnections.find(row => row.id === id);
     if (!definition) throw new ApiError(404, 'Подключение не найдено.');
     const config = bankConfig(definition, this.env);
-    if (state?.encryptedTokens) config.missing = config.missing.filter(label => label !== 'Первичная авторизация и refresh token');
     return config;
   }
   async mutate<T>(update: (data: OperationsData) => { result: T; changed: boolean }) {
@@ -28,34 +26,35 @@ export class BankingService {
   }
   async list(query: URLSearchParams): Promise<BankListResult> {
     const data = (await this.store.read(this.source)).banking ?? emptyBanking();
-    const rows = filterOperations(data.operations, query);
-    const allCardsRows = filterOperations(data.operations, query, true);
+    const activeRows = data.operations.filter(row => row.provider === 'tbank');
+    const rows = filterOperations(activeRows, query);
+    const allCardsRows = filterOperations(activeRows, query, true);
     const size = Number(query.get('pageSize') ?? 25), requested = Number(query.get('page') ?? 1);
     if (![10,25,50,100].includes(size) || !Number.isSafeInteger(requested) || requested < 1) throw new ApiError(400, 'Некорректная страница.');
     const page = Math.min(requested, Math.max(1, Math.ceil(rows.length / size)));
-    const connections: BankCard[] = bankConnections.map(definition => {
-      const state = data.connections[definition.id], config = this.config(definition.id, state);
+    const connections: BankCard[] = activeBankConnections.map(definition => {
+      const state = data.connections[definition.id], config = this.config(definition.id);
       return { id: definition.id, provider: definition.provider, bankName: definition.bankName, company: definition.company,
         accounts: state?.accounts.length ? state.accounts : config.accounts,
         state: config.missing.length ? 'not_configured' : state?.lastError ? 'error' : state?.job ? 'syncing' : state?.lastSuccessAt ? 'connected' : 'ready',
-        missing: config.missing, lastSuccessAt: state?.lastSuccessAt, lastError: state?.lastOAuthError?.message ?? state?.lastError, lastCompletedPeriod: state?.lastCompletedPeriod,
+        missing: config.missing, lastSuccessAt: state?.lastSuccessAt, lastError: state?.lastError, lastCompletedPeriod: state?.lastCompletedPeriod,
         progress: state?.job ? { from: state.job.from, to: state.job.to, day: state.job.day, pages: state.job.pages, attempts: state.job.attempts, nextAttemptAt: state.job.nextAttemptAt } : undefined,
         totals: totals(allCardsRows.filter(row => row.connectionId === definition.id)), limitations: limitations[definition.provider],
       };
     });
-    const scope = data.operations.filter(row => !query.get('connection') || row.connectionId === query.get('connection'));
+    const scope = activeRows.filter(row => !query.get('connection') || row.connectionId === query.get('connection'));
     return { connections, items: rows.slice((page - 1) * size, page * size).map(row => ({ ...row, bankData: {} })), total: rows.length, page, pageSize: size, totals: totals(rows), statuses: [...new Set(scope.map(row => row.status ?? '__missing__'))].sort(), storedCount: scope.length, scheduleEnabled: this.env.ARTEL_BANK_SYNC_ENABLED === 'true' };
   }
-  async rows(query: URLSearchParams) { return filterOperations((await this.store.read(this.source)).banking?.operations ?? [], query); }
+  async rows(query: URLSearchParams) { return filterOperations(((await this.store.read(this.source)).banking?.operations ?? []).filter(row => row.provider === 'tbank'), query); }
   async operation(id: string) {
     const row = (await this.store.read(this.source)).banking?.operations.find(row => row.id === id);
-    if (!row) throw new ApiError(404, 'Банковская операция не найдена.');
+    if (!row || row.provider !== 'tbank') throw new ApiError(404, 'Банковская операция не найдена.');
     return row;
   }
   async start(id: string, from: unknown, to: unknown) {
-    const config = this.config(id, (await this.store.read(this.source)).banking?.connections[id]);
+    const config = this.config(id);
     if (config.missing.length) throw new ApiError(409, 'Подключение не настроено. Требуются: ' + config.missing.join(', ') + '.');
-    const earliest = config.definition.provider === 'sber' ? `${Number(today().slice(0, 4)) - 5}-01-01` : '2023-06-01';
+    const earliest = '2023-06-01';
     if (!validDate(from) || !validDate(to) || from > to || to > today() || from < earliest) throw new ApiError(400, `Укажите период с ${earliest} до сегодняшнего дня.`);
     await this.mutate(data => {
       const banking = data.banking ??= emptyBanking(), state = banking.connections[id] ??= { accounts: [] };
@@ -71,7 +70,7 @@ export class BankingService {
     });
   }
   async locked<T>(id: string, work: (config: BankConfig, state: BankConnectionState, fence: string) => Promise<T>): Promise<T | null> {
-    const config = this.config(id, (await this.store.read(this.source)).banking?.connections[id]);
+    const config = this.config(id);
     if (config.missing.length) throw new ApiError(409, 'Сначала настройте серверный доступ к банку.');
     const fence = randomUUID();
     const state = await this.mutate(data => {
@@ -90,25 +89,19 @@ export class BankingService {
     }
     finally { await this.mutate(data => { const state = data.banking!.connections[id]; if (state.lease?.id !== fence) return { result: null, changed: false }; delete state.lease; return { result: null, changed: true }; }); }
   }
-  async token(config: BankConfig, state: BankConnectionState, fence: string) {
-    return bankToken(config, state.encryptedTokens, encrypted => this.mutate(data => {
-      const stored = data.banking!.connections[config.definition.id];
-      if (stored.lease?.id !== fence) throw new ApiError(423, 'Загрузка была продолжена другим процессом. Повторите запрос.');
-      stored.encryptedTokens = encrypted; state.encryptedTokens = encrypted;
-      return { result: undefined, changed: true };
-    }), this.http);
-  }
-  adapter(config: BankConfig) { return config.definition.provider === 'sber' ? sberAdapter(this.http) : tbankAdapter(this.http); }
+  token(config: BankConfig) { return config.env[`${config.definition.envPrefix}_TOKEN`]!; }
+  adapter() { return tbankAdapter(this.http); }
   async tick(id: string) {
+    this.config(id);
     const queued = (await this.store.read(this.source)).banking?.connections[id]?.job;
     if (!queued || queued.attempts >= 5 || queued.nextAttemptAt && Date.parse(queued.nextAttemptAt) > Date.now()) return { pending: !!queued };
     return this.locked(id, async (config, state, fence) => {
       const job = state.job;
       if (!job || job.attempts >= 5 || job.nextAttemptAt && Date.parse(job.nextAttemptAt) > Date.now()) return { pending: !!job };
       try {
-        const token = await this.token(config, state, fence);
+        const token = this.token(config);
         const account = job.accounts[job.accountIndex];
-        const result = await this.adapter(config).page(config, token, account, job.day, job.cursor);
+        const result = await this.adapter().page(config, token, account, job.day, job.cursor);
         if (result.nextCursor && (job.seenCursors?.includes(result.nextCursor) || (job.seenCursors?.length ?? 0) >= 10000)) throw new ApiError(502, 'Банк повторил указатель страницы или превысил предел страниц. Незавершённая выписка не заменяет сохранённую.');
         await this.mutate(data => {
           const banking = data.banking!, current = banking.connections[id];
@@ -144,12 +137,7 @@ export class BankingService {
           current.lastAttemptAt = new Date().toISOString();
           current.lastError = error instanceof ApiError ? error.message : 'Не удалось сохранить страницу выписки. Предыдущие данные доступны.';
           current.job.attempts++;
-          if (error instanceof BankHttpError && error.bankStatus === 401 && config.definition.provider === 'sber' && current.encryptedTokens) {
-            const key = config.env.ARTEL_BANK_ENCRYPTION_KEY!;
-            const tokens = decryptTokens(current.encryptedTokens, key, id);
-            current.encryptedTokens = encryptTokens({ ...tokens, expiresAt: 0 }, key, id);
-          }
-          if (error instanceof BankHttpError && !error.transient && !(error.bankStatus === 401 && config.definition.provider === 'sber')) current.job.attempts = 5;
+          if (error instanceof BankHttpError && !error.transient) current.job.attempts = 5;
           if (current.job.attempts >= 5) {
             delete current.job.nextAttemptAt;
             current.lastError += ' Автоматические попытки остановлены. Проверьте доступ и нажмите «Продолжить загрузку».';
@@ -160,32 +148,17 @@ export class BankingService {
       }
     });
   }
-  async enrich(id: string) {
-    const row = await this.operation(id);
-    if (row.provider === 'tbank') return row;
-    const result = await this.locked(row.connectionId, async (config, state, fence) => {
-      const token = await this.token(config, state, fence), enriched = await this.adapter(config).detail(config, token, row);
-      await this.mutate(data => {
-        if (data.banking!.connections[row.connectionId].lease?.id !== fence) throw new ApiError(423, 'Загрузка продолжается в другом процессе.');
-        // A detail lookup cannot add a removed statement movement.
-        if (!data.banking!.operations.some(item => item.id === row.id)) throw new ApiError(409, 'Операция изменилась. Обновите выписку.');
-        upsertOperations(data.banking!, [enriched]); return { result: null, changed: true };
-      });
-      return this.operation(id);
-    });
-    if (!result) throw new ApiError(423, 'Сейчас идёт синхронизация этого банка. Сохранённые реквизиты доступны.');
-    return result;
-  }
+  async enrich(id: string) { return this.operation(id); }
   async print(id: string) {
     const row = await this.operation(id);
-    const result = await this.locked(row.connectionId, async (config, state, fence) => this.adapter(config).print(config, await this.token(config, state, fence), row));
+    const result = await this.locked(row.connectionId, async (config) => this.adapter().print(config, this.token(config), row));
     if (!result) throw new ApiError(423, 'Банк занят синхронизацией. Повторите получение формы позже.');
     return result;
   }
   async dispatch() {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
     const data = (await this.store.read(this.source)).banking ?? emptyBanking();
-    const due = bankConnections.filter(def => !this.config(def.id, data.connections[def.id]).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= Date.now()) : state?.lastSuccessAt && (state.webhookPending || Date.now() - Date.parse(state.lastSuccessAt) >= 15 * 60000)).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
+    const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= Date.now()) : state?.lastSuccessAt && (state.webhookPending || Date.now() - Date.parse(state.lastSuccessAt) >= 15 * 60000)).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
     if (!due) return { enabled: true, pending: false };
     if (!due.state?.job) await this.start(due.def.id, nextDay((due.state?.lastSuccessAt ?? today()).slice(0, 10), -7), today());
     return { enabled: true, ...await this.tick(due.def.id) };

@@ -1,7 +1,7 @@
 export type BankProvider = 'sber' | 'tbank'
 export const bankConnections = [
-  { id: 'sber-nk-artel', provider: 'sber', bankName: 'СберБизнес', company: 'НК АРТЕЛЬ', envPrefix: 'ARTEL_BANK_SBER_NK' },
-  { id: 'sber-artel', provider: 'sber', bankName: 'СберБизнес', company: 'АРТЕЛЬ', envPrefix: 'ARTEL_BANK_SBER_ARTEL' },
+  { id: 'sber-nk-artel', provider: 'sber', bankName: 'СберБизнес', company: 'НК АРТЕЛЬ' },
+  { id: 'sber-artel', provider: 'sber', bankName: 'СберБизнес', company: 'АРТЕЛЬ' },
   { id: 'tbank-nk-artel', provider: 'tbank', bankName: 'Т-Банк', company: 'НК АРТЕЛЬ', envPrefix: 'ARTEL_BANK_TBANK_NK' },
 ] as const
 export interface BankAccount { number: string; currency: string; name?: string; status?: string; bankBic?: string }
@@ -65,7 +65,6 @@ export interface BankCard {
   id: string; provider: BankProvider; bankName: string; company: string; accounts: BankAccount[]
   state: 'not_configured' | 'ready' | 'syncing' | 'error' | 'connected'
   missing: string[]; lastSuccessAt?: string; lastError?: string
-  authorization?: { available: boolean; message?: string }
   lastCompletedPeriod?: { from: string; to: string }
   progress?: { from: string; to: string; day: string; pages: number; attempts: number; nextAttemptAt?: string }
   totals: BankTotals[]; limitations: string[]
