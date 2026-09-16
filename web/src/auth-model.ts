@@ -2,6 +2,7 @@ export type AccountRole = 'director' | 'admin' | 'manager';
 export const sections = [
   { id: 'overview', title: 'Обзор' }, { id: 'work', title: 'Работа' },
   { id: 'shipments', title: 'Отгрузки' }, { id: 'china', title: 'Китай' },
+  { id: 'settlements', title: 'Взаиморасчёты' },
   { id: 'stock', title: 'Склад' }, { id: 'payments', title: 'Платежи' },
   { id: 'operator', title: 'Операторская' }, { id: 'payroll', title: 'ЗП' },
   { id: 'directories', title: 'Справочники' },

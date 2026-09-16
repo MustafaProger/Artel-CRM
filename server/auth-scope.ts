@@ -4,7 +4,8 @@ import type { Company, Shipment, Snapshot } from '../web/src/model';
 import { canManage } from './auth';
 import { ApiError } from './api-error';
 import { shipmentOwnership } from './shipment-ownership';
-const Exact = Decimal.clone({ precision: 80 });
+import { SHIPMENT_DECIMAL_PRECISION } from '../web/src/shipment-calculations';
+const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 
 export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
   return canManage(actor) || !!actor.managerId && snapshot.directories?.managers.some(employee => employee.id === actor.managerId) && shipmentOwnership(snapshot, row).employeeId === actor.managerId;

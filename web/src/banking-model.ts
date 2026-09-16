@@ -46,6 +46,8 @@ export interface BankSyncJob {
 }
 export interface BankConnectionState {
   accounts: BankAccount[]
+  /** Only a complete, validated replacement may admit this exact account/day to settlements. */
+  settlementVerifiedDays?: { account: string; date: string; syncedAt: string }[]
   lastSuccessAt?: string
   lastAttemptAt?: string
   lastError?: string

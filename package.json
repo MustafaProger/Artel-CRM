@@ -20,6 +20,7 @@
     "test:design-ui": "node scripts/verify_apple.mjs",
     "test:push-ui": "node scripts/verify_push.mjs",
     "test:employee-access-ui": "node --import tsx scripts/verify_employee_access.mjs",
+    "test:settlements-ui": "node --import tsx scripts/verify_settlements.mjs",
     "test:customer-reconciliation": "tsx scripts/verify-customer-reconciliation.ts"
   },
   "dependencies": {

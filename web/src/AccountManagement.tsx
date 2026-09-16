@@ -25,7 +25,7 @@ export default function AccountManagement({ directories, onChanged }: { director
   const toggle = (id: SectionId, enabled: boolean) => setForm(previous => ({ ...previous, sections: enabled ? [...previous.sections, id] : previous.sections.filter(value => value !== id) }));
   const privileged = form.role !== 'manager';
   return <section className="panel account-panel">
-    <div className="panel-heading"><div><h2>Учётные записи</h2><p>Сотрудник, вход и доступ к разделам</p></div><button className="button primary" disabled={busy} onClick={() => edit(null)}><Plus size={16} aria-hidden="true" />Добавить пользователя</button></div>
+    <div className="panel-heading"><div><h2>Учётные записи</h2></div><button className="button primary" disabled={busy} onClick={() => edit(null)}><Plus size={16} aria-hidden="true" />Добавить пользователя</button></div>
     {error && <p className="soft-notice" role="alert">{error}</p>}{notice && <p className="soft-notice" role="status">{notice}</p>}
     {editing !== undefined && <form className="account-form" onSubmit={async event => {
       event.preventDefault(); if (busy) return; setBusy(true); setError('');
@@ -35,7 +35,7 @@ export default function AccountManagement({ directories, onChanged }: { director
       } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
     }}><fieldset disabled={busy}>
       <legend>{editing ? 'Изменить учётную запись' : 'Новая учётная запись'}</legend>
-      <div className="account-editor-grid"><div className="account-details-card"><div className="account-group-heading"><span className="account-group-icon"><UserRound size={19} aria-hidden="true" /></span><div><h3>Данные сотрудника</h3><p>Профиль и вход в приложение</p></div></div><div className="account-fields">
+      <div className="account-editor-grid"><div className="account-details-card"><div className="account-group-heading"><span className="account-group-icon"><UserRound size={19} aria-hidden="true" /></span><div><h3>Данные сотрудника</h3></div></div><div className="account-fields">
       <label className="account-full-field">Сотрудник справочника<select aria-label="Сотрудник справочника" required={!editing || form.role === 'manager' && form.active} value={form.managerId} onChange={event => { const id = event.target.value; setForm({ ...form, managerId: id, name: employees.find(employee => employee.id === id)?.name ?? form.name }); }}>
         <option value="">Выберите сотрудника</option>{employees.map(employee => <option key={employee.id} value={employee.id}>{employee.name} {users.some(user => user.active && user.managerId === employee.id && user.id !== editing?.id) ? '· аккаунт уже есть' : ''}</option>)}
       </select></label>
@@ -51,7 +51,7 @@ export default function AccountManagement({ directories, onChanged }: { director
       <label>Имя в приложении<input required maxLength={120} value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
       <label>Логин<input required maxLength={64} autoComplete="off" autoCapitalize="none" value={form.login} onChange={event => setForm({ ...form, login: event.target.value })} /></label>
       <label>{editing ? 'Новый пароль (если нужно)' : 'Пароль'}<input required={!editing} type="password" minLength={12} maxLength={256} autoComplete="new-password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label>
-      </div></div><div className="account-access-card"><div className="account-group-heading"><span className="account-group-icon"><ShieldCheck size={19} aria-hidden="true" /></span><div><h3>Права доступа</h3><p>Роль и доступные разделы</p></div></div>
+      </div></div><div className="account-access-card"><div className="account-group-heading"><span className="account-group-icon"><ShieldCheck size={19} aria-hidden="true" /></span><div><h3>Права доступа</h3></div></div>
       <label>Полномочия<select aria-label="Полномочия" value={form.role} onChange={event => setForm({ ...form, role: event.target.value as AccountRole, sections: [] })}>{Object.entries(roleNames).map(([id, title]) => <option value={id} key={id}>{title}</option>)}</select></label>
       <div className="account-permissions"><div className="account-permissions-heading"><strong>Доступные разделы</strong><span>{privileged ? sections.length : sections.filter(section => form.sections.includes(section.id)).length} из {sections.length}</span></div><div className="account-section-grid">{sections.map(section => <label key={section.id}><input className="account-toggle" type="checkbox" checked={privileged || form.sections.includes(section.id)} disabled={privileged} onChange={event => toggle(section.id, event.target.checked)} /><span>{section.title}</span></label>)}</div></div>
       <p className="work-hint">{privileged ? 'Директор и администратор имеют полный доступ, включая все отгрузки и управление аккаунтами.' : 'Отгрузки — только назначенные выбранному сотруднику. Доступ к клиенту не открывает чужие отгрузки. Китай и банковские платежи сохраняют ограничения для директора и администратора.'}</p>

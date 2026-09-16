@@ -50,7 +50,8 @@ export function getShipmentTrip(snapshot: Snapshot, id: string): ShipmentTrip {
 /** Called inside OperationsStore.mutate; no row is persisted until the complete truck validates. */
 export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, existingId?: string): ShipmentTripResponse {
   if (Object.keys(body).some(key => !['fields', 'customers', ...(existingId ? ['versions'] : [])].includes(key))) throw new ApiError(400, 'В запросе отгрузки есть неизвестные параметры.');
-  const snapshot = currentSnapshot(base, data);
+  // Save only baseline inputs; the response below adds the current bank projection.
+  const snapshot = currentSnapshot(base, data, false);
   const id = existingId ?? `shipment-trip-${randomUUID()}`;
   const previousRows = existingId ? snapshot.shipments.filter(row => row.fields.trip_id === id) : [];
   if (existingId && !previousRows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
@@ -104,7 +105,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
 /** Remove the whole truck under the same lock and full customer-version guard as editing. */
 export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, id: string): { deleted: true; id: string; deletedCount: number } {
   if (Object.keys(body).some(key => key !== 'versions')) throw new ApiError(400, 'В запросе удаления есть неизвестные параметры.');
-  const rows = currentSnapshot(base, data).shipments.filter(row => row.fields.trip_id === id);
+  const rows = currentSnapshot(base, data, false).shipments.filter(row => row.fields.trip_id === id);
   if (!rows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
   checkTripVersions(body.versions, rows);
   if (rows.some(row => data.paymentAllocations?.some(allocation => allocation.shipmentId === row.id))) throw new ApiError(409, 'Нельзя удалить отгрузку с привязанными банковскими платежами. Сначала отмените привязку платежей у всех клиентов.');

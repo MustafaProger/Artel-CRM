@@ -26,6 +26,7 @@ import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
 import { currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
+import { buildSettlements } from './settlements';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
@@ -436,6 +437,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return user;
       };
       const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
+      if (pathname === '/api/settlements') {
+        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+        const stored = await operations.read(base.provenance.sourceSha256);
+        if (actor) requireManage(authorized(stored));
+        const snapshot = currentSnapshot(base, stored, false);
+        return write(response, 200, JSON.stringify(buildSettlements(snapshot.shipments, snapshot.companies, stored).report));
+      }
       if (pathname.startsWith('/api/push/')) {
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
         if (pathname === '/api/push/config' && request.method === 'GET') {
@@ -658,7 +666,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       const result = await operations.mutate<{ shipment: Shipment } | { deleted: boolean; id: string }>(base.provenance.sourceSha256, data => {
         const currentActor=actor?authorized(data):null;
         if(currentActor && request.method==='DELETE')requireManage(currentActor);
-        const snapshot = currentSnapshot(base, data);
+        // Persist the original/manual baseline, never the derived bank-paid total.
+        const snapshot = currentSnapshot(base, data, false);
         const id = shipmentIdMatch ? decodeURIComponent(shipmentIdMatch[1]) : `shipment-local-${randomUUID()}`;
         const previous = shipmentIdMatch ? snapshot.shipments.find(row => row.id === id) : undefined;
         if (shipmentIdMatch && !previous) throw new ApiError(404, 'Операция не найдена.');

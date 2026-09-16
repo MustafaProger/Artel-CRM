@@ -1,10 +1,11 @@
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { type BankCard, type BankConnectionState, type BankListResult, type BankOperation } from '../../web/src/banking-model';
+import { type BankCard, type BankConnectionState, type BankListResult } from '../../web/src/banking-model';
 import type { OperationsData, OperationsStorage } from '../operations-store';
 import { ApiError } from '../api-error';
 import { activeBankConnections, bankConfig, bankRequest, BankHttpError, type BankConfig, type BankRequest } from './transport';
 import { tbankAdapter } from './adapters';
 import { emptyBanking, filterOperations, nextDay, object, str, today, totals, upsertOperations, validDate } from './domain';
+import { replaceStatementDay } from './statement-publication';
 
 const limitations = {
   tbank: ['История API доступна с июня 2023 года. Загружаются подтверждённые транзакции; авторизации не входят в фактические обороты.', 'Смена ID и удаление операций учитываются при полной повторной сверке дня. Печатная форма доступна для поддерживаемых исполненных документов.'],
@@ -112,15 +113,7 @@ export class BankingService {
           current.lastAttemptAt = new Date().toISOString();
           if (result.nextCursor) { updated.cursor = result.nextCursor; updated.seenCursors = [...(updated.seenCursors ?? []), result.nextCursor]; return { result: null, changed: true }; }
           // Replace only a fully downloaded account/day, preserving previous data on partial failures.
-          const partition = (row: BankOperation) => row.connectionId === id && row.account === account.number && row.statementDate === job.day;
-          const incoming = new Set(stage.operations.map(row => row.id));
-          const removed = banking.operations.filter(row => partition(row) && !incoming.has(row.id));
-          if (removed.length) {
-            const archive = new Map((banking.archivedOperations ?? []).map(row => [row.id, row]));
-            removed.forEach(row => archive.set(row.id, row)); banking.archivedOperations = [...archive.values()];
-          }
-          banking.operations = banking.operations.filter(row => !partition(row) || incoming.has(row.id));
-          upsertOperations(banking, stage.operations);
+          replaceStatementDay(banking, id, account, job.day, stage.operations);
           updated.staged = []; delete updated.cursor; delete updated.seenCursors;
           if (job.day < job.to) updated.day = nextDay(job.day);
           else if (job.accountIndex + 1 < job.accounts.length) { updated.accountIndex++; updated.day = job.from; }

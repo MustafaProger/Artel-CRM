@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { CalculationRules, Company, Metric, Shipment, ShipmentsResponse, Snapshot } from '../web/src/model';
-import { calculateShipment, TEMPLATE_PROFIT_RULE, AZS_PROFIT_RULE } from '../web/src/shipment-calculations';
+import { calculateShipment, TEMPLATE_PROFIT_RULE, AZS_PROFIT_RULE, SHIPMENT_DECIMAL_PRECISION } from '../web/src/shipment-calculations';
 import { settlementKind } from '../web/src/shipment-settlement';
 import { customerManagerId } from '../web/src/customer-manager';
 import { directoriesFor } from './directory-operations';
@@ -10,8 +10,9 @@ import { shipmentColumns, fieldValue } from '../web/src/shipment-templates';
 import { ApiError } from './api-error';
 import { validInn } from './checko';
 import { StoreError, type OperationsData } from './operations-store';
+import { buildSettlements } from './settlements';
 
-const Exact = Decimal.clone({ precision: 80 });
+const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 export const SHIPMENT_FIELDS = [
   'shipment_type', 'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
   'quantity_tonnes', 'quantity_litres', 'sale_price_per_tonne', 'sale_price_per_litre', 'customer_amount',
@@ -142,7 +143,7 @@ function validateStoredTrips(shipments: Shipment[]) {
   }
 }
 
-export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot {
+export function currentSnapshot(base: Snapshot, store: OperationsData, includeBankSettlements = true): Snapshot {
   const directories = directoriesFor(base, store);
   if (store.sourceOperationsCleared) base = {
     ...base, shipments: [], payments: [], stocks: [],
@@ -207,6 +208,23 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
     row.liters = numeric(row.fields.quantity_litres); row.revenue = numeric(row.fields.customer_amount); row.cost = numeric(row.fields.purchase_amount);
   }
   validateStoredTrips(shipments);
+  // Derive from complete, unfiltered records before applying employee scopes or pagination.
+  // Bank allocations never enter stored shipment fields or the legacy XLSX allocation list.
+  if (includeBankSettlements) {
+    const { allocations } = buildSettlements(shipments, companies, store);
+    const byShipment = new Map<string, typeof allocations>();
+    for (const allocation of [...(store.paymentAllocations ?? []), ...allocations]) {
+      const rows = byShipment.get(allocation.shipmentId) ?? [];
+      rows.push(allocation); byShipment.set(allocation.shipmentId, rows);
+    }
+    const affected = new Set(allocations.map(allocation => allocation.shipmentId));
+    for (const row of shipments) if (affected.has(row.id)) {
+      row.fields = calculateShipment(row.fields, row.calculationRules!, {
+        historical: row.fields.calculation_mode !== 'automatic',
+        allocations: byShipment.get(row.id),
+      }).fields;
+    }
+  }
   // The export groups case/spacing variants of a manager under one source label.
   // Keep the original cell text in fields while using that canonical group in the application.
   const canonicalManagers = new Map(base.managers.map(manager => [normalizeName(manager.label), manager.label]));
@@ -251,7 +269,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
     ...base, companies, shipments, managers, directories,
     provenance: {
       ...base.provenance, dateRange: { from: dates[0] ?? null, to: dates.at(-1) ?? null },
-      valueBasis: 'Исторические значения XLSX сохранены. Новые операции рассчитываются автоматически по указанным единицам и подтверждённым правилам. Платежи выписки учитываются только после привязки к операции.',
+      valueBasis: 'Исторические значения XLSX сохранены. Поступления из подключённых банков распределяются по ИНН на самые ранние неоплаченные отгрузки; остаток сохраняется как аванс во взаиморасчётах.',
     },
     overview: { ...base.overview, shipmentCount: shipments.length, companyCount: companies.length, ...totals(shipments), missingShipmentDates: shipments.filter(row => !row.date).length },
     monthly: months.map(month => {

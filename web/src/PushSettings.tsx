@@ -123,16 +123,14 @@ export default function PushSettings({ userId }: { userId: string }) {
     }
     finally { setBusy(false); }
   }
-  const intervalSeconds = config?.intervalSeconds ?? 300;
-  const intervalLabel = intervalSeconds === 30 ? 'каждые 30 секунд, пока сервер CRM запущен' : intervalSeconds === 60 ? 'каждую минуту' : intervalSeconds === 300 ? 'каждые 5 минут' : `каждые ${intervalSeconds} секунд`;
   return <div className="work-push-settings">
     {ios && !installed ? <p>На iPhone/iPad откройте меню «Поделиться» → «На экран Домой», запустите CRM с её значка и включите уведомления здесь.</p> : !supported ? <p>Этот браузер не поддерживает Web Push. Откройте CRM в браузере с поддержкой уведомлений.</p> : <>
-      <p>{subscription ? 'Уведомления на этом устройстве включены.' : 'Получайте уведомления о назначении задач и напоминания, даже когда CRM закрыта.'}</p>
+
       {config && !config.enabled && <p>Серверная отправка ещё не настроена.</p>}
       {config?.enabled && config.lastRunAt && Date.now() - config.lastRunAt > 20 * 60000 && <p role="status">Проверка напоминаний задерживается. Последняя проверка: {new Date(config.lastRunAt).toLocaleString('ru-RU')}.</p>}
       {permission === 'denied' && <p>Разрешите уведомления для CRM в настройках браузера или устройства.</p>}
       <div className="work-push-actions">{subscription ? <><button className="button" disabled={busy || !!probeId || !config?.enabled} onClick={() => void action('test')}>Проверить уведомление</button><button className="button" disabled={busy} onClick={() => void action('disable')}>Выключить</button></> : <button className="button" disabled={busy || !config?.enabled || permission === 'denied'} onClick={() => void action('enable')}>{busy ? 'Подключение…' : 'Включить уведомления'}</button>}</div>
-      <p>Когда другой сотрудник назначает вам задачу, уведомление отправляется сразу после сохранения. Для задач себе уведомление приходит по времени напоминания. Проверка напоминаний — {intervalLabel}; возможна задержка доставки.</p>
+
     </>}
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
   </div>;

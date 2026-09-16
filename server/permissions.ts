@@ -6,6 +6,7 @@ export function requireSection(actor: AccountUser, section: SectionId) {
   return actor;
 }
 export function apiSection(path: string): SectionId | null {
+  if (/^\/api\/settlements(\/|$)/.test(path)) return 'settlements';
   if (/^\/api\/(shipments|shipment-trips)(\/|$)/.test(path)) return 'shipments';
   if (/^\/api\/(directories|companies)(\/|$)/.test(path)) return 'directories';
   if (/^\/api\/(work|push)(\/|$)/.test(path)) return 'work';

@@ -1,0 +1,143 @@
+.settlements-page { min-width: 0; max-width: 100%; color: #25252a; }
+.settlements-page *, .settlements-page *::before, .settlements-page *::after { box-sizing: border-box; }
+.settlements-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 23px; }
+.settlements-heading h2 { margin: 0; font-size: 21px; line-height: 1.3; letter-spacing: -.4px; }
+.settlements-heading p { margin: 7px 0 0; color: var(--muted); line-height: 1.6; font-size: 14px; max-width: 620px; }
+.settlements-heading .button { flex-shrink: 0; }
+.settlements-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.settlements-total { min-width: 0; padding: 19px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface, #fff); }
+.settlements-total > span { display: block; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.settlements-total > strong { display: block; margin-top: 14px; font-size: clamp(19px, 1.8vw, 26px); line-height: 1.35; letter-spacing: -.6px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.settlements-total-debt > strong, .settlements-page .settlements-debt { color: #a1382f; }
+.settlements-total-advance > strong, .settlements-page .settlements-advance { color: #21714d; }
+.settlements-freshness { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px 18px; margin: 13px 1px 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.settlements-freshness > span { display: inline-flex; align-items: center; gap: 6px; }
+.settlements-sources { border: 1px solid var(--border); border-radius: 11px; margin-bottom: 24px; padding: 13px 16px; color: var(--muted); background: #fafafb; font-size: 13px; line-height: 1.6; }
+.settlements-sources summary { cursor: pointer; color: #343439; font-weight: 550; }
+.settlements-sources p { margin: 9px 0 0; }
+.settlements-sources ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 16px; list-style: none; padding: 0; margin: 13px 0 0; }
+.settlements-sources li > * { display: block; overflow-wrap: anywhere; }
+.settlements-sources li > strong { color: #343439; font-weight: 550; }
+.settlements-sources .settlements-source-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; margin: 7px 0; border-radius: 5px; font-size: 11px; background: #ececf0; color: #626269; }
+.settlements-sources .settlements-source-ready { color: #21714d; background: #eaf5ed; }
+.settlements-sources .settlements-source-syncing { color: #86530a; background: #fff3dc; }
+.settlements-sources .settlements-source-error { color: #9b352d; }
+.settlements-sources span.settlements-source-error { background: #fff0ee; }
+.settlements-sources li p { margin-top: 7px; font-size: 12px; }
+.settlements-ledger-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 21px 22px 15px; }
+.settlements-ledger-heading h3 { font-size: 16px; margin: 0; line-height: 1.4; }
+.settlements-ledger-heading h3 > span { margin-left: 5px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.settlements-ledger-heading p { color: var(--muted); line-height: 1.6; margin: 7px 0 0; font-size: 13px; }
+.settlements-review-shortcut { border: none; background: #fff6e7; color: #86530a; padding: 7px 10px; border-radius: 7px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.4; text-align: left; }
+.settlements-toolbar { display: flex; align-items: flex-end; gap: 16px; padding: 0 22px 19px; }
+.settlements-search { border: 1px solid var(--border); border-radius: 9px; display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 420px; flex: 1; min-height: 42px; padding: 9px 11px; color: var(--muted); }
+.settlements-search input { border: none; background: none; outline: none; font-size: 14px; min-width: 0; width: 100%; color: inherit; }
+.settlements-search svg { flex-shrink: 0; }
+.settlements-search button { display: grid; place-items: center; border: none; background: none; color: inherit; padding: 2px; }
+.settlements-search:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settlements-filter { display: flex; gap: 9px; align-items: center; font-size: 12px; color: var(--muted); min-width: 0; }
+.settlements-filter select { border: 1px solid var(--border); border-radius: 9px; background: #fff; color: #343439; min-height: 42px; padding: 8px 30px 8px 10px; font: inherit; font-size: 13px; max-width: 100%; }
+.settlements-table-wrap { max-width: 100%; overflow: auto; }
+.settlements-company-table { width: 100%; white-space: normal; }
+.settlements-company-table > thead th { padding: 13px 18px; color: var(--muted); font-weight: 550; text-align: right; }
+.settlements-company-table > thead th:first-child { text-align: left; padding-left: 22px; }
+.settlements-company-row > td { height: auto; color: #343439; padding: 17px 18px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; border-color: #ececf0; }
+.settlements-company-row > td:first-child { text-align: left; padding-left: 22px; min-width: 210px; white-space: normal; }
+.settlements-company-button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 0; background: none; padding: 0; text-align: left; color: #25252a; font: inherit; }
+.settlements-company-button > span { min-width: 0; }
+.settlements-company-button strong { display: block; font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.settlements-company-button small { display: block; font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 4px; }
+.settlements-company-button > svg { flex-shrink: 0; color: var(--muted); transition: transform .15s; }
+.settlements-company-button[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.settlements-company-row.is-expanded, .settlements-company-table .settlements-details-row:hover { background: #fafafb; }
+.settlements-issue-badge { display: inline-block; font-size: 11px; padding: 3px 7px; border-radius: 5px; margin-top: 6px; color: #86530a; background: #fff3dc; }
+.settlements-unknown { display: block; margin-top: 5px; color: #86530a; font-size: 11px; line-height: 1.5; white-space: normal; }
+.settlements-company-table .settlements-details-row > td { height: auto; padding: 0; border-bottom: 1px solid var(--border); white-space: normal; }
+.settlements-company-details { max-width: 100%; min-width: 0; padding: 7px 22px 23px; }
+.settlements-details-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 20px 0 12px; }
+.settlements-details-heading h4 { font-size: 14px; margin: 0; color: #343439; }
+.settlements-details-heading > span { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.settlements-detail-scroll { width: 100%; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #fff; }
+.settlements-detail-table { min-width: 710px; white-space: nowrap; }
+.settlements-detail-table th { padding: 11px 13px; color: var(--muted); text-align: right; font-size: 11px; }
+.settlements-detail-table td { padding: 13px; height: auto; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: #343439; }
+.settlements-detail-table th:first-child, .settlements-detail-table td:first-child { text-align: left; padding-left: 15px; max-width: 330px; }
+.settlements-detail-table td > strong { font-weight: 500; }
+.settlements-detail-table .settlements-shipment-issue { display: block; color: #86530a; white-space: normal; line-height: 1.5; margin-top: 7px; }
+.settlements-details-empty { color: var(--muted); margin: 0; font-size: 13px; line-height: 1.6; }
+.settlements-receipts { display: grid; gap: 11px; }
+.settlements-receipt { min-width: 0; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 15px 16px; }
+.settlements-receipt-heading { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+.settlements-receipt-heading > div { min-width: 0; }
+.settlements-receipt-heading strong { color: #343439; font-size: 13px; line-height: 1.6; font-weight: 600; font-variant-numeric: tabular-nums; }
+.settlements-receipt-heading > div > strong { display: flex; align-items: flex-start; gap: 6px; }
+.settlements-receipt-heading > div > strong > span { min-width: 0; overflow-wrap: anywhere; }
+.settlements-receipt-heading svg { color: #21714d; flex-shrink: 0; margin-top: 3px; }
+.settlements-receipt-heading small { display: block; font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+.settlements-purpose { color: var(--muted); font-size: 12px; line-height: 1.65; margin: 11px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.settlements-receipt-balances { display: flex; flex-wrap: wrap; gap: 12px 35px; margin: 12px 0 0; }
+.settlements-receipt-balances dt { font-size: 11px; color: var(--muted); }
+.settlements-receipt-balances dd { margin: 4px 0 0; font-size: 13px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.settlements-allocations { list-style: none; padding: 9px 0 0; margin: 13px 0 0; border-top: 1px solid #ececf0; }
+.settlements-allocations li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 12px; line-height: 1.6; }
+.settlements-allocations a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.settlements-allocations strong { color: #343439; font-weight: 500; font-variant-numeric: tabular-nums; }
+.settlements-notice { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; margin: 15px 0; background: #fff6e7; border: 1px solid #ecd9b7; border-radius: 9px; color: #795017; font-size: 13px; line-height: 1.6; }
+.settlements-notice > svg { flex-shrink: 0; margin-top: 2px; }
+.settlements-notice p { margin: 5px 0 0; }
+.settlements-notice ul { margin: 5px 0 0; padding-left: 17px; }
+.settlements-error { color: #9b352d; border-color: #eed1cf; background: #fff4f3; }
+.settlements-notice > div { min-width: 0; overflow-wrap: anywhere; }
+.settlements-review { margin-top: 21px; }
+.settlements-review .settlements-ledger-heading > svg { flex-shrink: 0; color: #86530a; }
+.settlements-review-list { padding: 0 22px 8px; }
+.settlements-review-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; border-top: 1px solid #ececf0; padding: 16px 0; }
+.settlements-review-item h4 { font-size: 14px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.settlements-review-item > div p { font-size: 12px; line-height: 1.6; color: var(--muted); margin: 4px 0 0; overflow-wrap: anywhere; }
+.settlements-review-item > strong { font-size: 13px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.settlements-review-reason { grid-column: 1 / -1; color: #86530a; font-size: 12px; line-height: 1.6; margin: 0; overflow-wrap: anywhere; }
+.settlements-empty { display: flex; flex-direction: column; align-items: center; gap: 11px; padding: 42px 22px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.settlements-empty h4, .settlements-empty p { margin: 0; }
+.settlements-page :focus-visible, .settlements-detail-table tr:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settlements-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 1100px) {
+  .settlements-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settlements-company-row > td, .settlements-company-table > thead th { padding-inline: 13px; }
+}
+@media (max-width: 700px) {
+  .settlements-heading { gap: 12px; }
+  .settlements-heading h2 { font-size: 19px; }
+  .settlements-heading p { font-size: 13px; }
+  .settlements-heading .button { padding-inline: 10px; }
+  .settlements-totals { gap: 10px; }
+  .settlements-total { padding: 15px 13px; }
+  .settlements-total > strong { font-size: 20px; margin-top: 10px; }
+  .settlements-ledger-heading { padding: 17px 16px 14px; align-items: flex-start; flex-wrap: wrap; }
+  .settlements-toolbar { padding: 0 16px 16px; flex-direction: column; align-items: stretch; gap: 11px; }
+  .settlements-search { max-width: none; }
+  .settlements-search input, .settlements-filter select { font-size: 16px; }
+  .settlements-filter select { flex: 1; }
+  .settlements-company-table, .settlements-company-table > tbody { display: block; }
+  .settlements-company-table > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+  .settlements-company-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; gap: 13px 14px; border-top: 1px solid var(--border); }
+  .settlements-company-row > td { display: block; padding: 0 !important; border: none; min-width: 0; text-align: left; font-size: 13px; white-space: normal; overflow-wrap: anywhere; }
+  .settlements-company-row > td::before { content: attr(data-label); display: block; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.5; margin-bottom: 4px; }
+  .settlements-company-row > td:first-child { grid-column: 1 / -1; min-width: 0; margin-bottom: 2px; }
+  .settlements-company-row > td:first-child::before { display: none; }
+  .settlements-company-table .settlements-details-row, .settlements-company-table .settlements-details-row > td { display: block; width: 100%; }
+  .settlements-company-details { padding: 1px 16px 18px; }
+  .settlements-details-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .settlements-receipt { padding: 13px; }
+  .settlements-receipt-heading { flex-wrap: wrap; gap: 6px; }
+  .settlements-receipt-heading > div { flex-basis: 100%; }
+  .settlements-allocations li { flex-direction: column; gap: 1px; padding: 6px 0; }
+  .settlements-review-list { padding-inline: 16px; }
+  .settlements-review-item { grid-template-columns: minmax(0, 1fr); }
+  .settlements-review-item > strong { overflow-wrap: anywhere; }
+}
+@media (max-width: 390px) {
+  .settlements-heading { flex-direction: column; }
+  .settlements-total > strong { font-size: 17px; letter-spacing: -.25px; }
+  .settlements-total > span { font-size: 12px; }
+  .settlements-total { padding: 13px 11px; }
+}

@@ -2,7 +2,10 @@ import Decimal from 'decimal.js'
 import type { CalculationRules, PaymentAllocation } from './model'
 import { settlementKind } from './shipment-settlement'
 
-const Exact = Decimal.clone({ precision: 80 })
+// decimal() accepts up to 200 characters and exponents in [-100, 100]. Keep
+// enough significant digits for their sums/differences, including tiny receipts.
+export const SHIPMENT_DECIMAL_PRECISION = 512
+const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION })
 export const AZS_PROFIT_RULE = 'azs-payment-form' as const
 export const TEMPLATE_PROFIT_RULE = 'template-payment-form' as const
 export const decimal = (value: string | null | undefined) => {
