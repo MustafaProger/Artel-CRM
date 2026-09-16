@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireManage, requireUser } from '../auth';
+import { requireSection } from '../permissions';
 import { ApiError } from '../api-error';
 import { csv } from './domain';
 import { BankingService } from './service';
 
 export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
-  requireManage(requireUser(await service.store.read(service.source), request));
+  requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
   const method = request.method, path = url.pathname;
   const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
   if (path === '/api/banking' && method === 'GET') return send(await service.list(url.searchParams));

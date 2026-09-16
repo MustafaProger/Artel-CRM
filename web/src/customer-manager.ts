@@ -2,6 +2,7 @@ import type { Directories } from './model'
 
 /** Explicit customer assignments are independent of historical shipment labels. */
 export function customerManagerId(directories: Directories, companyId: string): string {
+  if (directories.currentEmployeeId !== undefined) return directories.currentEmployeeId ?? ''
   return directories.customerManagers?.find(row => row.companyId === companyId)?.managerId ?? ''
 }
 

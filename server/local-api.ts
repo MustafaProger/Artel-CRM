@@ -11,8 +11,10 @@ import type { Plugin } from 'vite';
 import type { AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
-import { activeUsers, authenticate, canManage, login, logout, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
-import { scopeSnapshot, checkShipmentWrite } from './auth-scope';
+import { activeUsers, authenticate, login, logout, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
+import { apiSection, requireSection } from './permissions';
+import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
 import { readWork, mutateWork, workFile } from './work-operations';
@@ -378,7 +380,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (request.method === 'GET' && pathname === '/api/auth/users') {
           const data = await operations.read(base.provenance.sourceSha256);
           const actor = requireUser(data, request);
-          const users = canManage(actor) ? (data.accounts?.users ?? []).map(publicUser) : activeUsers(data).map(u=>({...u,login:''}));
+          requireManage(actor);
+          const users = (data.accounts?.users ?? []).map(publicUser);
           return write(response, 200, JSON.stringify({users}));
         }
         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || request.method === 'PATCH' && !!userId;
@@ -406,7 +409,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         void _token;
         return write(response,result.status,JSON.stringify(safeResult));
       }
-      const actor = authEnabled ? requireUser(await operations.read(base.provenance.sourceSha256),request) : null;
+      const authorized = (data: import('./operations-store').OperationsData) => {
+        const user = requireUser(data, request);
+        const section = apiSection(pathname);
+        if (section) requireSection(user, section);
+        return user;
+      };
+      const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
       if (pathname.startsWith('/api/push/')) {
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
         if (pathname === '/api/push/config' && request.method === 'GET') {
@@ -419,7 +428,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const body = await jsonBody(request, false, 8192);
         if (pathname === '/api/push/test') {
           const device = await operations.mutate(base.provenance.sourceSha256, data => {
-            const user = requireUser(data, request);
+            const user = authorized(data);
             const device = data.push?.devices.find(device => device.userId === user.id && device.endpoint === body.endpoint);
             if (!device) throw new ApiError(404, 'Сначала включите уведомления на этом устройстве.');
             if (device.testAt && Date.now() - device.testAt < 30000) throw new ApiError(429, 'Повторную проверку можно отправить через 30 секунд.');
@@ -437,16 +446,26 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           }
         } else {
           await operations.mutate(base.provenance.sourceSha256, data => {
-            const user = requireUser(data, request);
+            const user = authorized(data);
             const changed = request.method === 'DELETE' ? unsubscribe(data, body.endpoint, user.id) : subscribe(data, body.subscription, user.id, pushSessionHash(request));
             return { result: null, changed };
           });
         }
         return write(response, 200, '{"ok":true}');
       }
+      if (pathname === '/api/directories/reconcile-customers') {
+        const data = await operations.read(base.provenance.sourceSha256);
+        requireManage(authorized(data));
+        if (request.method === 'GET') return write(response, 200, JSON.stringify(planCustomerReconciliation(base, data)));
+        if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+        const body = await jsonBody(request);
+        if (Object.keys(body).some(key => !['revision', 'fingerprint'].includes(key)) || !Number.isSafeInteger(body.revision) || typeof body.fingerprint !== 'string') throw new ApiError(400, 'Сначала выполните предварительную сверку.');
+        const result = await reconcileCustomers(operations, base, { revision: body.revision as number, fingerprint: body.fingerprint }, current => requireManage(authorized(current)));
+        return write(response, 200, JSON.stringify(result));
+      }
       if (pathname === '/api/directories/cleanup') {
         const stored = await operations.read(base.provenance.sourceSha256);
-        requireManage(requireUser(stored, request));
+        requireManage(authorized(stored));
         if (request.method === 'GET') {
           try {
             const preview = url.searchParams.get('scope') === 'companies' ? prepareCompanyCleanup(base, stored) : prepareDirectoryCleanup(base, stored);
@@ -461,7 +480,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (body.confirm !== 'clear-directories' || body.scope !== undefined && body.scope !== 'companies' || Object.keys(body).some(key => !['confirm','revision','scope'].includes(key))) throw new ApiError(400, 'Подтвердите очистку справочников.');
         if (!operations.backup) throw new ApiError(503, 'Резервное копирование недоступно. Очистка запрещена.');
         const result = await operations.mutate(base.provenance.sourceSha256, async data => {
-          requireManage(requireUser(data, request));
+          requireManage(authorized(data));
           if (body.revision !== data.revision) throw new ApiError(409, 'Данные изменены. Откройте предварительную проверку заново.');
           const prepared = body.scope === 'companies' ? prepareCompanyCleanup(base, data) : prepareDirectoryCleanup(base, data);
           const backup = await operations.backup!(data);
@@ -476,13 +495,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
         if (pathname === '/api/china' && request.method === 'GET') {
           const data = await operations.read(base.provenance.sourceSha256);
-          requireManage(requireUser(data, request));
+          requireManage(authorized(data));
           return write(response, 200, JSON.stringify({ china: data.china ?? emptyChina(), suppliers: currentSnapshot(base, data).companies.filter(company => company.roles.includes('supplier')) }));
         }
         if (!chinaMatch || (chinaMatch[2] ? request.method !== 'PATCH' : request.method !== 'POST')) throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request);
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          const result = mutateChina(data, currentSnapshot(base, data), requireUser(data, request), chinaMatch[1], body, chinaMatch[2] ? decodeURIComponent(chinaMatch[2]) : undefined);
+          const result = mutateChina(data, currentSnapshot(base, data), authorized(data), chinaMatch[1], body, chinaMatch[2] ? decodeURIComponent(chinaMatch[2]) : undefined);
           return { result, changed: result.changed };
         });
         return write(response, result.created ? 201 : 200, JSON.stringify(result));
@@ -491,7 +510,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (fileMatch) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const data = await operations.read(base.provenance.sourceSha256);
-        const file = workFile(data, fileMatch[1], decodeURIComponent(fileMatch[2]), decodeURIComponent(fileMatch[3]), requireUser(data, request));
+        const file = workFile(data, fileMatch[1], decodeURIComponent(fileMatch[2]), decodeURIComponent(fileMatch[3]), authorized(data));
         response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
         response.end(Buffer.from(file.data!, 'base64')); return;
       }
@@ -500,13 +519,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if(!actor)throw new ApiError(401,'Войдите в приложение.');
         if(pathname === '/api/work' && request.method === 'GET'){
           const data=await operations.read(base.provenance.sourceSha256);
-          return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentSnapshot(base,data),requireUser(data,request)),url.searchParams,requireUser(data,request),activeUsers(data))));
+          return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentSnapshot(base,data),authorized(data),'work'),url.searchParams,authorized(data),activeUsers(data))));
         }
         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
         const body=await jsonBody(request, false, 3 * 1024 * 1024);
         const result=await operations.mutate(base.provenance.sourceSha256,data=>{
-          const currentActor=requireUser(data,request);
-          const result=mutateWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
+          const currentActor=authorized(data);
+          const result=mutateWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work'),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
           return {result,changed:result.changed};
         });
         return write(response,result.created?201:200,JSON.stringify(result));
@@ -520,13 +539,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (request.method === 'GET') {
         const stored = await operations.read(base.provenance.sourceSha256);
         const fullSnapshot = currentSnapshot(base, stored);
-        const snapshot = actor ? scopeSnapshot(fullSnapshot, requireUser(stored, request)) : fullSnapshot;
+        const snapshot = actor ? scopeSnapshot(fullSnapshot, authorized(stored)) : fullSnapshot;
         if (pathname === '/api/directories') return write(response, 200, JSON.stringify({ directories: snapshot.directories, companies: snapshot.companies }));
         if (pathname === '/api/snapshot') {
           if (url.searchParams.get('shipments') === 'omit') snapshot.shipments = [];
           return write(response, 200, JSON.stringify(snapshot));
         }
-        if (tripIdMatch) return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, decodeURIComponent(tripIdMatch[1])) }));
+        if (tripIdMatch) {
+          const id = decodeURIComponent(tripIdMatch[1]);
+          if (actor) requireWholeTrip(authorized(stored), fullSnapshot, id);
+          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id) }));
+        }
         if (shipmentIdMatch) {
           const shipment = snapshot.shipments.find(row => row.id === decodeURIComponent(shipmentIdMatch[1]));
           if (!shipment) throw new ApiError(404, 'Операция не найдена.');
@@ -538,7 +561,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if(actor && (pathname.startsWith('/api/directories') || pathname.startsWith('/api/companies') || request.method==='DELETE'))requireManage(actor);
       if (pathname === '/api/directories' || directoryMatch) {
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          if(actor)requireManage(requireUser(data,request));
+          if(actor)requireManage(authorized(data));
           const snapshot = currentSnapshot(base, data);
           const result = directoryMatch && request.method === 'DELETE' ? deleteDirectoryEntry(directoryMatch[1],decodeURIComponent(directoryMatch[2]),body,snapshot,data) : directoryMatch
             ? directoryMatch[1] === 'companies'
@@ -562,7 +585,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (existing) return write(response, 200, JSON.stringify({ company: existing, created: false }));
         const found = await lookupCheckoCompany(inn, options.checkoApiKey ?? process.env.CHECKO_API_KEY, options.fetcher);
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          if(actor)requireManage(requireUser(data,request));
+          if(actor)requireManage(authorized(data));
           const snapshot = currentSnapshot(base, data);
           const duplicate = snapshot.companies.find(company => company.inn === inn);
           if (duplicate) return { result: { company: duplicate, created: false }, changed: false };
@@ -576,24 +599,30 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (pathname === '/api/shipment-trips' || tripIdMatch) {
         const id = tripIdMatch ? decodeURIComponent(tripIdMatch[1]) : undefined;
         const result = request.method === 'DELETE'
-          ? await operations.mutate(base.provenance.sourceSha256, data => {if(actor)requireManage(requireUser(data,request));return { result: deleteShipmentTrip(base, data, body, id!), changed: true };})
+          ? await operations.mutate(base.provenance.sourceSha256, data => {if(actor)requireManage(authorized(data));return { result: deleteShipmentTrip(base, data, body, id!), changed: true };})
           : await operations.mutate(base.provenance.sourceSha256, data => {
-            const currentActor=actor?requireUser(data,request):null;
-            if(currentActor && id){for(const row of currentSnapshot(base,data).shipments.filter(s=>s.fields.trip_id===id))checkShipmentWrite(currentActor,row.fields,row);}
+            const currentActor=actor?authorized(data):null;
+            const snapshot = currentSnapshot(base, data);
+            if (currentActor && id) requireWholeTrip(currentActor, snapshot, id);
+            if (currentActor && Array.isArray(body.customers)) body.customers = body.customers.map(customer => {
+              if (!customer || typeof customer !== 'object' || Array.isArray(customer)) return customer;
+              return { ...customer, fields: ownShipmentInput(currentActor, customer.fields, snapshot) };
+            });
             const result=saveShipmentTrip(base,data,body,id);
-            if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields);
+            if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
             return {result,changed:true};
           });
         return write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
       }
       if (Object.keys(body).some(key => !['fields', 'version'].includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
       const result = await operations.mutate<{ shipment: Shipment } | { deleted: boolean; id: string }>(base.provenance.sourceSha256, data => {
-        const currentActor=actor?requireUser(data,request):null;
+        const currentActor=actor?authorized(data):null;
         if(currentActor && request.method==='DELETE')requireManage(currentActor);
         const snapshot = currentSnapshot(base, data);
         const id = shipmentIdMatch ? decodeURIComponent(shipmentIdMatch[1]) : `shipment-local-${randomUUID()}`;
         const previous = shipmentIdMatch ? snapshot.shipments.find(row => row.id === id) : undefined;
         if (shipmentIdMatch && !previous) throw new ApiError(404, 'Операция не найдена.');
+        if (currentActor && previous) requireOwnedShipment(currentActor, previous, snapshot);
         if (previous?.fields.trip_id) throw new ApiError(409, 'Эта строка входит в отгрузку машины. Измените состав клиентов и данные через общую форму отгрузки.');
         if (previous) checkVersion(body.version, previous);
         const now = new Date().toISOString();
@@ -604,8 +633,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           data.shipments[id] = { fields, version: (previous!.version ?? 0) + 1, createdAt: previous!.createdAt ?? now, updatedAt: now, deleted: true };
           return { result: { deleted: true, id }, changed: true };
         }
-        const fields = prepareShipmentFields(body.fields, previous, snapshot);
-        if(currentActor)checkShipmentWrite(currentActor,fields,previous);
+        const fields = prepareShipmentFields(currentActor ? ownShipmentInput(currentActor, body.fields, snapshot, previous) : body.fields, previous, snapshot);
+        if(currentActor)checkShipmentWrite(currentActor,fields,snapshot,previous);
         if (!previous && fields.shipment_type !== 'azs') fields.document_number = allocateShipmentNumber(data, fields.date!);
         data.shipments[id] = { fields, version: (previous?.version ?? 0) + 1, createdAt: previous?.createdAt ?? now, updatedAt: now };
         const shipment = currentSnapshot(base, data).shipments.find(row => row.id === id)!;

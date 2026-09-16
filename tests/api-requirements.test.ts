@@ -81,7 +81,7 @@ test('task comments, private downloadable files, handoff, archive and restoratio
   const r = await setup();
   try {
     const companyId = (await r.snapshot()).companies[0].id;
-    const employee = (await r.director('/api/auth/users','POST',{ name:'Получатель', login:'req-recipient', password:r.password, role:'manager', managerId:null })).body.user;
+    const employee = (await r.director('/api/auth/users','POST',{ name:'Получатель', login:'req-recipient', password:r.password, role:'manager', managerId:(await r.snapshot()).directories!.managers[0].id })).body.user;
     const employeeApi = r.client(); await employeeApi('/api/auth/login','POST',{login:employee.login,password:r.password});
     const payload = { requestId:randomUUID(), title:'Договор', description:'Проверить договор', companyId, dueDate:'2026-09-11', reminderAt:'2026-09-10T12:00:00.000Z', comment:'Первый комментарий', addAttachments:[{name:'договор.txt',data:Buffer.from('Договор для сотрудника').toString('base64')}] };
     const created = await r.director('/api/work/tasks','POST',payload); assert.equal(created.status,201); const task=created.body.entry;

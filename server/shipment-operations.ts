@@ -179,7 +179,8 @@ export function currentSnapshot(base: Snapshot, store: OperationsData): Snapshot
   for (const row of shipments) {
     const fields = { ...row.fields };
     for (const [key,entries] of [['manager_id',directories.managers],['product_id',directories.products],['payment_form_id',directories.paymentForms],['driver_id',directories.drivers],['vehicle_id',directories.vehicles]] as const) {
-      if (fields[key] && !entries.some(entry => entry.id === fields[key])) throw new StoreError('Invalid shipment directory reference');
+      // Unresolved historical ownership stays inaccessible to employees, not guessed.
+      if (key !== 'manager_id' && fields[key] && !entries.some(entry => entry.id === fields[key])) throw new StoreError('Invalid shipment directory reference');
     }
     for (const [key,role,kind] of [['loading_address_id','supplier','loading'],['unloading_address_id','customer','delivery']] as const) {
       if (fields[key] && !directories.addresses.some(a => a.id === fields[key] && a.companyId === row[`${role}Id`] && a.kind === kind)) throw new StoreError('Invalid shipment address');

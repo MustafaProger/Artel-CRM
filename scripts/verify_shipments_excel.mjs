@@ -2,7 +2,7 @@ import { chromium, expect } from '@playwright/test';
 import { bootstrapQaAuth, installQaFetchAuth, authenticateContext } from './qa-auth.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -11,7 +11,16 @@ import { tsImport } from 'tsx/esm/api';
 const root=resolve(import.meta.dirname,'..'),port=5186,base=`http://127.0.0.1:${port}`;
 const output=process.env.ARTEL_QA_OUTPUT||resolve(root,'qa/shipments-excel');await mkdir(output,{recursive:true});
 const store=await mkdtemp(resolve(tmpdir(),'artel-excel-ui-'));
-const original=resolve(root,'data/local-operations/operations.json');const hash=async p=>existsSync(p)?createHash('sha256').update(await readFile(p)).digest('hex'):null;const before=await hash(original);
+const original=resolve(root,'data/local-operations/operations.json');
+// A separately running dev scheduler updates only revision/lastRunAt every 30 seconds.
+// Keep the guard on all business records, accounts, sessions and push deliveries.
+const hash=async path=>{
+  if(!existsSync(path))return null;
+  const {data}=JSON.parse(await readFile(path,'utf8'));
+  delete data.revision;if(data.push)delete data.push.lastRunAt;
+  return createHash('sha256').update(JSON.stringify(data)).digest('hex');
+};
+const before=await hash(original);
 const report={checks:[],screenshots:[],errors:[],measurements:[],store,productionPreview:true};const check=(name,details={})=>{report.checks.push({name,...details});console.log('PASS',name)};
 let server,browser,page;
 const post=async(path,body)=>{const r=await fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const v=await r.json();assert.ok(r.ok,JSON.stringify(v));return v};
@@ -150,11 +159,11 @@ try{
   await paidEditor.getByLabel('Цена продажи за литр, ₽',{exact:true}).fill('51');await expect(paidEditor.locator('output[aria-label="Долг / переплата, ₽"]')).toHaveText('-20 000'.replace(' ','\u00a0'));await expect(paidEditor.locator('output[aria-label="Дней с отгрузки"]')).not.toHaveText('—');
   await paidEditor.getByRole('button',{name:'Отмена',exact:true}).click();await paidEditor.getByRole('button',{name:'Закрыть без сохранения',exact:true}).click();check('single editor retains allocated payments and updates debt and elapsed days when revenue changes');
   await page.setViewportSize({width:320,height:900});await page.getByRole('button',{name:'Добавить отгрузку',exact:true}).click();editor=page.getByRole('dialog',{name:'Добавить отгрузку',exact:true});await editor.getByLabel('Тоннаж всей машины, т',{exact:false}).fill('1');await editor.getByRole('button',{name:'Отмена',exact:true}).click();await expect(editor.getByText('Есть несохранённые изменения.')).toBeVisible();await editor.getByRole('button',{name:'Продолжить',exact:true}).click();await expect(editor.getByLabel('Тоннаж всей машины, т',{exact:false})).toHaveValue('1');await editor.getByRole('button',{name:'Отмена',exact:true}).click();await editor.getByRole('button',{name:'Закрыть без сохранения',exact:true}).click();check('mobile unsaved changes preserve all form values');
-  await page.setViewportSize({width:1440,height:1000});await page.goto(base+'/#payments');await expect(page.getByRole('table',{name:'Платежи из выписки'})).toBeVisible();await page.getByLabel('Контрагент или назначение…').fill('2268');const paymentRow=page.locator('tr[data-source-row="2268"]');await expect(paymentRow).toBeVisible();await expect(paymentRow.locator('[data-field="unlabelled_extra"]')).toHaveText('СНТ ООО');const paymentSource=data.payments.find(row=>row.sourceRow===2268);await expect(paymentRow.locator('[data-field="month"]')).toHaveText(paymentSource.fields.month);
+  await page.setViewportSize({width:1440,height:1000});await page.goto(base+'/#payments');await page.getByRole('tab',{name:'Архив из файла',exact:true}).click();await expect(page.getByRole('table',{name:'Платежи из выписки'})).toBeVisible();await page.getByLabel('Контрагент или назначение…').fill('2268');const paymentRow=page.locator('tr[data-source-row="2268"]');await expect(paymentRow).toBeVisible();await expect(paymentRow.locator('[data-field="unlabelled_extra"]')).toHaveText('СНТ ООО');const paymentSource=data.payments.find(row=>row.sourceRow===2268);await expect(paymentRow.locator('[data-field="month"]')).toHaveText(paymentSource.fields.month);
   const paymentDownload=page.waitForEvent('download');await page.getByRole('button',{name:'Экспорт CSV',exact:true}).click();const paymentCsv=await readFile(await(await paymentDownload).path(),'utf8');assert.ok(paymentCsv.includes('Месяц из файла'));assert.ok(paymentCsv.includes('Доп. поле из файла'));assert.ok(paymentCsv.includes('СНТ ООО'));await expect(page.locator('.toast')).toHaveCount(0);await shot('payment-source-fields-1440');
   await page.getByRole('button',{name:'Открыть платёж 2268',exact:true}).click();const paymentDialog=page.getByRole('dialog',{name:'Платёж · строка 2268'});await expect(paymentDialog.getByText('Доп. поле из файла',{exact:true})).toBeVisible();await expect(paymentDialog.getByText('СНТ ООО',{exact:true})).toBeVisible();await paymentDialog.getByLabel('Закрыть карточку').click();
-  for(const width of [390,320]){await page.setViewportSize({width,height:900});await page.locator('.table-scroll').evaluate(e=>{e.scrollLeft=e.scrollWidth});await expect(paymentRow.locator('[data-field="unlabelled_extra"]')).toBeInViewport();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await shot('payment-source-fields-'+width)}check('payment source month and G2268 in table, detail and CSV, usable horizontal scrolling at 320/390 px');
+  for(const width of [390,320]){await page.setViewportSize({width,height:900});await paymentRow.scrollIntoViewIfNeeded();await page.locator('.table-scroll').evaluate(e=>{e.scrollLeft=e.scrollWidth});await expect(paymentRow.locator('[data-field="unlabelled_extra"]')).toBeInViewport();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await shot('payment-source-fields-'+width)}check('payment source month and G2268 in table, detail and CSV, usable horizontal scrolling at 320/390 px');
   await page.setViewportSize({width:1440,height:1000});await page.goto(base+'/#stock');await expect(page.getByRole('region',{name:'Склад: рабочее пространство'})).toBeVisible();await expect(page.locator('.sp-stock-table')).toHaveCount(0);await shot('stock-empty-1440');check('stock is an empty workspace; source records remain untouched');
-  assert.equal(await hash(original),before);assert.equal(report.errors.length,0,JSON.stringify(report.errors));report.status='passed';
+  assert.equal(await hash(original),before);assert.equal(report.errors.length,0,JSON.stringify(report.errors));report.workingStoreContentUnchangedIgnoringHeartbeat=true;report.status='passed';
 }catch(e){report.status='failed';report.error=String(e.stack||e);if(page)await page.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{});throw e}
-finally{await writeFile(resolve(output,'verification.json'),JSON.stringify(report,null,2));await browser?.close();server?.kill('SIGTERM')}
+finally{await writeFile(resolve(output,'verification.json'),JSON.stringify(report,null,2));await browser?.close();if(server&&server.exitCode===null){server.kill('SIGTERM');await new Promise(done=>server.once('exit',done))}await rm(store,{recursive:true,force:true})}

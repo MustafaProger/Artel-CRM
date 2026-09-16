@@ -7,10 +7,11 @@ import ShipmentsPage from './ShipmentsPage'
 import DirectoriesPage from './DirectoriesPage'
 import WorkPage from './WorkPage'
 import AuthGate from './AuthGate'
-import type { AccountUser } from './auth-model'
+import { hasSection, isAdministrator, type AccountUser, type SectionId } from './auth-model'
+import AccountManagement from './AccountManagement'
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
-type Page = 'overview' | 'work' | 'shipments' | 'payments' | 'stock' | 'china' | 'operator' | 'payroll' | 'directories'
+type Page = SectionId | 'accounts'
 const pages: {id: Page; title: string; icon: LucideIcon; section: number; description: string}[] = [
   {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:''},
   {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
@@ -20,17 +21,20 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'china',title:'Китай',icon:Globe,section:0,description:''},
   {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
   {id:'payroll',title:'ЗП',icon:Banknote,section:1,description:''},
+  {id:'accounts',title:'Сотрудники и доступ',icon:Building2,section:1,description:'Учётные записи и права сотрудников.'},
   {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Компании и менеджеры, товары, водители и автомобили.'},
 ]
+const allowedPage = (user: AccountUser, page: Page) => page === 'accounts' ? isAdministrator(user) : hasSection(user, page)
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
 export default function App(){return <AuthGate>{(user,onLogout)=><WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</AuthGate>}
 function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
-  const canManage=user.role!=='manager'
+  const canManage=isAdministrator(user)
+  const availablePages = pages.filter(item => allowedPage(user, item.id))
   const [data,setData] = useState<Snapshot | null>(null)
   const [error,setError] = useState('')
-  const [page,setPage] = useState<Page>(getPage)
+  const [page,setPage] = useState<Page>(() => location.hash ? getPage() : availablePages[0]?.id ?? 'overview')
   const [menu,setMenu] = useState(false)
   const [mobile,setMobile] = useState(() => matchMedia('(max-width: 760px)').matches)
   useEffect(() => { const media = matchMedia('(max-width: 760px)'); const change = () => {setMobile(media.matches);setMenu(false)}; media.addEventListener('change', change); return () => media.removeEventListener('change', change) }, [])
@@ -76,22 +80,23 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
         </div>
         <a className="brand" href="#overview" aria-label="Артель — обзор" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артель</span></a>
       </div>
-      <nav aria-label="Основная навигация">{pages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={data && p.id === 'shipments' ? data.overview.shipmentCount : undefined}/>)}</nav>
+      <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={data && p.id === 'shipments' ? data.overview.shipmentCount : undefined}/>)}</nav>
       <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
-      <nav aria-label="Управление">{pages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
+      <nav aria-label="Управление">{availablePages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
       <div className="sidebar-bottom"><div className="sidebar-account"><span>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div><button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button></div>
     </aside>
     <div className="workspace-main" inert={menu}>
       <header className="topbar"><a className="brand mobile-brand" href="#overview" aria-label="Артель — обзор"><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span>Артель</span></a><div className="breadcrumb"><strong>{active.title}</strong></div><div className="topbar-actions"><div className="auth-user"><span title={user.name}>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div></div><button className="icon-button mobile-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><span className="two-line-menu" aria-hidden="true"><i/><i/></span></button></header>
       <main id="main-content" tabIndex={-1}><div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {page === 'overview' ? 'РАБОЧИЙ СТОЛ' : active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>
       {page === 'shipments' && (!data || error) && <button className="button" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={20}/>Меню</button>}
-      {error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
+      {!allowedPage(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
       {['overview','stock'].includes(page) && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
-      {page === 'china' && <ChinaPage canManage={canManage}/>}
+      {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
       {page === 'operator' && <section className="blank-workspace" aria-label="Операторская: рабочее пространство"><p className="soft-notice">Excel-файл с системой учёта не предоставлен. Структура работы и расчёты пока не настроены.</p></section>}
+      {page === 'accounts' && data.directories && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'work' && <WorkPage/>}
       {page === 'payroll' && <PayrollPage/>}
-      {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+      {page === 'shipments' && <ShipmentsPage canReadDirectories={hasSection(user, 'directories')} canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
       {page === 'payments' && (canManage ? <BankingPage legacy={<><label className="period-control"><CalendarDays size={16}/><select aria-label="Период архива" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select></label><Payments data={data} period={period} open={setDetail} notify={notifyExport}/></>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div>}

@@ -205,3 +205,21 @@
   .auth-input-wrap { border-color: #62656b; }
   .auth-input-wrap:focus-within { outline: 2px solid var(--auth-accent); }
 }
+
+.account-panel { min-width: 0; }
+.account-form > fieldset { min-width: 0; }
+.account-form legend { font-weight: 650; padding: 0 0 16px; }
+.account-create-employee, .account-permissions, .account-form .work-hint { grid-column: 1 / -1; }
+.account-create-employee { display: flex; align-items: end; gap: 12px; }
+.account-create-employee > label { flex: 1; min-width: 0; }
+.account-section-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.account-section-grid label { display: flex; align-items: center; gap: 8px; }
+.account-section-grid input { width: 18px; height: 18px; }
+.account-row > div { min-width: 0; overflow-wrap: anywhere; }
+.account-row small { display: block; margin-top: 6px; }
+@media (max-width: 600px) {
+  .account-section-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .account-create-employee { flex-direction: column; align-items: stretch; }
+  .account-panel .panel-heading { align-items: stretch; flex-direction: column; gap: 12px; }
+  .account-form input, .account-form select { font-size: 16px; }
+}

@@ -2,6 +2,7 @@ import { createHash, ECDH, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import webPush from 'web-push';
 import { ApiError } from './api-error';
+import { hasSection } from '../web/src/auth-model';
 import { sessionToken } from './auth';
 import type { OperationsData, OperationsStorage } from './operations-store';
 
@@ -77,7 +78,7 @@ export const sendPush: PushSender = (device, payload, config) => webPush.sendNot
 });
 function candidates(data: OperationsData, now: number) {
   const rows = [...(data.work?.tasks ?? []).map(row => ({ ...row, kind: 'tasks' })), ...(data.work?.companyRecords ?? []).map(row => ({ ...row, kind: 'companies' }))];
-  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || row.status !== 'done') && data.accounts?.users.some(user => user.id === row.assigneeId && user.active));
+  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || row.status !== 'done') && data.accounts?.users.some(user => user.id === row.assigneeId && hasSection(user, 'work')));
 }
 const deliveryKey = (kind: string, id: string, reminderAt: string, deviceId: string) => hash(`${kind}:${id}:${reminderAt}:${deviceId}`);
 async function mutatePush<T>(store: OperationsStorage, source: string, update: (data: OperationsData) => { result: T; changed: boolean }) {

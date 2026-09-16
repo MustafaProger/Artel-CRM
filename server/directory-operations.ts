@@ -15,7 +15,7 @@ export function directoriesFor(base: Snapshot, store: OperationsData): Directori
   const named = (kind: 'managers' | 'products' | 'paymentForms', labels: string[]) => {
     const unique = new Map<string, NamedEntry>();
     for (const name of labels) if (name.trim() && name !== '0' && !saved.deletedEntries?.[kind]?.includes(directoryEntryId(kind, name)) && !saved[kind].some(row => row.id === directoryEntryId(kind, name))) unique.set(normalizeName(name), { id: directoryEntryId(kind, name), name: name.trim() });
-    for (const row of saved[kind]) if (!saved.deletedEntries?.[kind]?.includes(row.id)) unique.set(normalizeName(row.name), row);
+    for (const row of saved[kind]) if (!saved.deletedEntries?.[kind]?.includes(row.id)) unique.set(kind === 'managers' ? row.id : normalizeName(row.name), row);
     return [...unique.values()].sort((a,b) => a.name.localeCompare(b.name, 'ru'));
   };
   const local = Object.values(store.shipments).filter(row => !row.deleted);

@@ -40,7 +40,8 @@ async function fixture(sender: PushSender = async () => {}) {
   const password = randomUUID();
   const first = await director('/api/auth/setup', 'POST', { login: 'push-director', name: 'QA', password });
   assert.equal(first.status, 200);
-  const second = await director('/api/auth/users', 'POST', { login: 'push-manager', name: 'Manager QA', role: 'manager', managerId: null, password });
+  const employee = await director('/api/directories', 'POST', { kind: 'managers', name: 'Manager QA' });
+  const second = await director('/api/auth/users', 'POST', { login: 'push-manager', name: 'Manager QA', role: 'manager', managerId: employee.body.entry.id, password });
   assert.equal(second.status, 201);
   assert.equal((await manager('/api/auth/login', 'POST', { login: 'push-manager', password })).status, 200);
   return { store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,

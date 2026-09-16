@@ -74,7 +74,7 @@ test('manager financial scope does not leak global aggregates or other shipment 
     assert.equal((await r.request('/api/directories','POST',{kind:'products',name:'forbidden'},managerCookie)).status,403);
     assert.equal((await r.request('/api/shipments/'+base.shipments[0].id,'GET',undefined,managerCookie)).status,404);
     const record=structuredClone(base.shipments[0]);record.fields.manager_id=managerId;
-    const visible=scopeSnapshot({...base,shipments:[record]},account.body.user as AccountUser);
+    const visible=scopeSnapshot({...snap,shipments:[record]},account.body.user as AccountUser);
     assert.equal(visible.shipments.length,1);assert.equal(visible.overview.revenue.total,record.revenue);assert.equal(visible.overview.shipmentCount,1);
     const saved=await r.store.read(base.provenance.sourceSha256);
     const beforeAccounts=structuredClone(saved.accounts);

@@ -33,6 +33,8 @@ export type ShipmentType = 'tanker' | 'azs';
 
 export interface Shipment {
   id: string;
+  /** Other owners share this truck; only the administrator can edit the trip. */
+  tripReadOnly?: boolean;
   /** Source records start at zero; each saved edit increments the version. */
   version?: number;
   createdAt?: string;
@@ -203,6 +205,7 @@ export interface PaymentAllocation {
 }
 export interface DuplicateCandidate { kind: string; names: string[]; ids: string[]; reason: string }
 export interface Directories {
+  currentEmployeeId?: string | null;
   /** Derived per authenticated manager; never stored as role assignments. */
   assignedCustomerIds?: string[];
   fleetSeedApplied?: boolean;

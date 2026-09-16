@@ -1,0 +1,12 @@
+import { resolve } from 'node:path';
+import { loadSnapshot } from '../server/local-api';
+import { OperationsStore } from '../server/operations-store';
+import { BlobOperationsStore } from '../server/blob-operations-store';
+import { currentSnapshot } from '../server/shipment-operations';
+import { ownershipReport } from '../server/shipment-ownership';
+const target = process.argv[2];
+if (!target) throw new Error('Usage: npx tsx scripts/audit-shipment-ownership.ts <local-directory|blob:pathname>');
+const base = await loadSnapshot();
+const store = target.startsWith('blob:') ? new BlobOperationsStore(target.slice(5)) : new OperationsStore(resolve(target));
+const rows = ownershipReport(currentSnapshot(base, await store.read(base.provenance.sourceSha256)));
+console.log(JSON.stringify({ target, total: rows.length, resolved: rows.filter(row => row.employeeId).length, unresolved: rows.filter(row => !row.employeeId), changed: false }, null, 2));

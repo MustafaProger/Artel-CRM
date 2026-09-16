@@ -157,7 +157,7 @@ test('HTTP deletion requires a real session and director/admin role; dependencie
     assert.equal((await request(path, 'DELETE', { version: 0 }, director.cookie)).status, 200);
     assert.equal((await request(path, 'DELETE', { version: 0 }, director.cookie)).status, 404);
     assert.ok(!(await runtime.snapshot()).directories!.products.some(row => row.id === created.body.entry.id));
-    assert.equal((await request('/api/auth/users', 'POST', { name: 'Тестовый администратор', login: 'delete-admin', password, role: 'admin' }, director.cookie)).status, 201);
+    assert.equal((await request('/api/auth/users', 'POST', { name: 'Тестовый администратор', login: 'delete-admin', password, role: 'admin', managerId: (await request('/api/directories', 'POST', { kind: 'managers', name: 'Администратор QA' }, director.cookie)).body.entry.id }, director.cookie)).status, 201);
     const admin = await request('/api/auth/login', 'POST', { login: 'delete-admin', password });
     const forAdmin = await request('/api/directories', 'POST', { kind: 'paymentForms', name: 'Проверка прав администратора' }, director.cookie);
     assert.equal((await request(`/api/directories/paymentForms/${forAdmin.body.entry.id}`, 'DELETE', { version: 0 }, admin.cookie)).status, 200);

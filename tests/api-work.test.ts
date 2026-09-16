@@ -37,7 +37,8 @@ async function setup() {
   assert.equal(initial.status, 200);
   const users: AccountUser[] = [initial.body.user];
   for (const [name, login, request] of [['Сотрудник А', 'test-alice', alice], ['Сотрудник Б', 'test-bob', bob]] as const) {
-    const result = await director('/api/auth/users', 'POST', { name, login, password, role: 'manager', managerId: null });
+    const employee = await director('/api/directories', 'POST', { kind: 'managers', name });
+    const result = await director('/api/auth/users', 'POST', { name, login, password, role: 'manager', managerId: employee.body.entry.id });
     assert.equal(result.status, 201); users.push(result.body.user);
     assert.equal((await request('/api/auth/login', 'POST', { login, password })).status, 200);
   }

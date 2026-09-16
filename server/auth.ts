@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual 
 import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
+import { effectiveSections, isAdministrator, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
@@ -13,9 +14,9 @@ export interface AccountsData {
   sessions: { hash: string; userId: string; expiresAt: number }[];
   attempts: Record<string, { count: number; until: number }>;
 }
-export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, active:user.active, version:user.version });
+export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, active:user.active, version:user.version, sections:effectiveSections(user) });
 export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active).map(publicUser);
-export const canManage = (user: AccountUser) => user.role === 'director' || user.role === 'admin';
+export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 export const cookieName = 'artel_session';
 export function sessionToken(request: IncomingMessage) {
@@ -35,6 +36,7 @@ export function validateAccounts(value: AccountsData) {
   if(!value || !Array.isArray(value.users) || !Array.isArray(value.sessions) || !value.attempts || typeof value.attempts!=='object')throw new Error('Invalid accounts');
   const ids=new Set<string>(), logins=new Set<string>();
   for(const u of value.users){
+    if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
     if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','manager'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
     ids.add(u.id);logins.add(u.login);
   }
@@ -48,7 +50,7 @@ async function passwordFields(input: unknown) {
   const salt=randomBytes(16).toString('hex');return {salt,passwordHash:(await scrypt(input,salt,64) as Buffer).toString('hex')};
 }
 export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false) {
-  if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
+  if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
   const accounts=data.accounts ??= {users:[],sessions:[],attempts:{}};
   const previous=id?accounts.users.find(u=>u.id===id):undefined;
   if(id && !previous)throw new ApiError(404,'Пользователь не найден.');
@@ -64,10 +66,14 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if(input.active!==undefined && typeof input.active!=='boolean')throw new ApiError(400,'Некорректный статус пользователя.');
   const active=setup?true:input.active!==false;
   if(previous?.role==='director' && (!active || role!=='director') && !accounts.users.some(u=>u.id!==id && u.active && u.role==='director'))throw new ApiError(409,'Нельзя отключить последнего директора.');
+  if (!setup && !managerId && (!previous || role === 'manager' && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
+  if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
+  const permissions = input.sections as SectionId[] | undefined ?? (previous?.role === 'manager' ? effectiveSections(previous) : undefined);
   const user:StoredUser={...(previous??await passwordFields(input.password)),...(previous && input.password?await passwordFields(input.password):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
+  user.sections = role === 'manager' ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);
-  if (previous && !active && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
+  if (previous && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
   return publicUser(user);
 }
 export async function login(data:OperationsData,input:Record<string,unknown>) {
