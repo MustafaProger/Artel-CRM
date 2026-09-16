@@ -24,7 +24,7 @@ try {
   chrome = await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
   safari = await webkit.launch({ headless: true });
   for (const [name, browser] of [['chromium', chrome], ['webkit', safari]]) {
-    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true, locale: 'ru-RU', timezoneId: 'Europe/Moscow' });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true, locale: 'ru-RU', timezoneId: 'Europe/Moscow', serviceWorkers: 'block' });
     assert.equal((await context.request.post(`${origin}/api/auth/login`, { data: { login: 'push-ui-qa', password } })).status(), 200);
     const page = await context.newPage(); page.on('pageerror', error => report.browserErrors.push(`${name}: ${error.message}`));
     for (const width of [320, 390, 768, 1440]) {
@@ -71,8 +71,8 @@ try {
   try {
     await expect(page.getByRole('button', { name: 'Проверить уведомление', exact: true })).toBeVisible({ timeout: 15000 });
     await page.getByRole('button', { name: 'Проверить уведомление', exact: true }).click();
-    await expect(page.getByText('Проверка отправлена. Проверьте уведомления устройства.')).toBeVisible({ timeout: 10000 });
-    report.realPush = true; pass('Real browser push subscription and provider accepted test message');
+    await expect(page.getByText('Браузер получил тестовое уведомление.')).toBeVisible({ timeout: 45000 });
+    report.realPush = true; pass('Real browser received the provider push and confirmed notification creation');
   } catch {
     report.realPushError = await page.locator('.work-push-settings').innerText();
     console.log('INFO Real browser push unavailable in this automated browser; testing subscription UI with a simulated PushManager.');
@@ -106,9 +106,10 @@ try {
   await fakePage.goto(`${origin}/#work`);
   await fakePage.getByRole('button', { name: 'Включить уведомления', exact: true }).click();
   await expect(fakePage.getByRole('button', { name: 'Проверить уведомление', exact: true })).toBeVisible();
-  await fakePage.route('**/api/push/test', route => route.fulfill({ json: { ok: true } }));
+  await fakePage.route('**/api/push/test', route => route.fulfill({ json: { ok: true, probeId: 'qa-ui-probe' } }));
+  await fakePage.route('**/api/push/test-status?*', route => route.fulfill({ json: { probeId: 'qa-ui-probe', status: 'confirmed', providerAcceptedAt: Date.now(), notificationCreatedAt: Date.now(), expiresAt: Date.now() + 300000 } }));
   await fakePage.getByRole('button', { name: 'Проверить уведомление', exact: true }).click();
-  await expect(fakePage.getByText('Проверка отправлена. Проверьте уведомления устройства.')).toBeVisible();
+  await expect(fakePage.getByText('Браузер получил тестовое уведомление.')).toBeVisible();
   await fakePage.getByRole('button', { name: 'Выключить', exact: true }).click();
   await expect(fakePage.getByRole('button', { name: 'Включить уведомления', exact: true })).toBeVisible();
   pass('Enable, test and disable UI with real subscription API and simulated browser push transport');

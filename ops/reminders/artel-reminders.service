@@ -1,0 +1,19 @@
+[Unit]
+Description=Artel CRM reminder dispatch (requires local configuration)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+# Required files are deliberately not included. No service is installed or enabled by this template.
+EnvironmentFile=/etc/artel-reminders/runner.env
+LoadCredential=cron-secret:/etc/artel-reminders/cron-secret
+# Copy the runner to this path and verify the Node executable before installing the unit.
+ExecStart=/usr/bin/node /usr/local/libexec/artel-dispatch-reminders.mjs --once
+TimeoutStartSec=70s
+TimeoutStopSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createECDH, randomBytes, randomUUID } from 'node:crypto';
+import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,7 @@ import { OperationsStore, decodeOperations, encodeOperations } from '../server/o
 import { ApiError } from '../server/api-error';
 import { dispatchReminders, parseSubscription, subscribe, validPushEndpoint, type PushConfig, type PushSender } from '../server/push';
 import { validPushWorkflow } from '../server/push-cron-auth';
+import { createPushReceiptLimiter } from '../server/push-probe';
 
 const base = await loadSnapshot();
 const config: PushConfig = { publicKey: 'test-public', privateKey: 'test-private', subject: 'https://artel-crm.vercel.app', schedule: true };
@@ -73,6 +74,177 @@ test('push endpoints enforce ownership, subscription validation, logout, rate li
   } finally { await f.close(); }
 });
 
+test('push tests distinguish provider acceptance from notification creation and accept only a scoped receipt token', async () => {
+  let probe: { id: string; token: string } | undefined;
+  const f = await fixture(async (_device, payload) => { probe = JSON.parse(payload).probe; });
+  try {
+    const sub = subscription();
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: sub })).status, 200);
+    const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
+    assert.equal(result.status, 200);
+    assert.ok(probe);
+    assert.deepEqual(result.body, { ok: true, probeId: probe.id });
+    const statusPath = `/api/push/test-status?probeId=${probe.id}`;
+    assert.equal((await f.anon(statusPath)).status, 401);
+    assert.equal((await f.director(statusPath)).status, 404);
+    const accepted = await f.manager(statusPath);
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.status, 'pending');
+    assert.equal(typeof accepted.body.providerAcceptedAt, 'number');
+    assert.equal(accepted.body.notificationCreatedAt, null);
+    assert.deepEqual(Object.keys(accepted.body).sort(), ['expiresAt', 'notificationCreatedAt', 'probeId', 'providerAcceptedAt', 'status']);
+    const stored = (await f.store.read(base.provenance.sourceSha256)).push!.probes![probe.id];
+    assert.equal(stored.tokenHash, createHash('sha256').update(probe.token).digest('hex'));
+    assert.equal(stored.expiresAt - stored.createdAt, 300000);
+    assert.equal(JSON.stringify(stored).includes(probe.token), false);
+    const receipt = { probeId: probe.id, token: probe.token };
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', { ...receipt, token: randomBytes(32).toString('base64url') })).status, 404);
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', { ...receipt, probeId: randomUUID() })).status, 404);
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', { ...receipt, userId: f.users[0].id })).status, 400);
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', receipt, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', { ...receipt, token: 'x'.repeat(2000) })).status, 413);
+    assert.equal((await f.anon('/api/push/test-receipt', 'GET')).status, 405);
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', receipt)).status, 200);
+    const confirmed = await f.manager(statusPath);
+    assert.equal(confirmed.body.status, 'confirmed');
+    assert.equal(typeof confirmed.body.notificationCreatedAt, 'number');
+    assert.equal(confirmed.body.providerAcceptedAt, accepted.body.providerAcceptedAt);
+    const revision = (await f.store.read(base.provenance.sourceSha256)).revision;
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', receipt)).status, 200);
+    assert.equal((await f.store.read(base.provenance.sourceSha256)).revision, revision, 'Replaying the token has no second effect');
+    assert.deepEqual((await f.manager(statusPath)).body, confirmed.body);
+  } finally { await f.close(); }
+});
+
+test('a notification receipt may arrive before provider completion; concurrent receipt retries keep both results', async () => {
+  let confirmedBeforeProvider: Record<string, unknown> | undefined;
+  const f = await fixture(async (_device, payload) => {
+    const probe = JSON.parse(payload).probe as { id: string; token: string };
+    assert.ok((await f.store.read(base.provenance.sourceSha256)).push!.probes![probe.id], 'Save the token hash before network I/O');
+    const receipts = await Promise.all([
+      f.anon('/api/push/test-receipt', 'POST', { probeId: probe.id, token: probe.token }),
+      f.anon('/api/push/test-receipt', 'POST', { probeId: probe.id, token: probe.token }),
+    ]);
+    assert.ok(receipts.every(result => result.status === 200));
+    confirmedBeforeProvider = (await f.manager(`/api/push/test-status?probeId=${probe.id}`)).body;
+  });
+  try {
+    const sub = subscription();
+    await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+    const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
+    assert.equal(result.status, 200);
+    assert.equal(confirmedBeforeProvider?.status, 'confirmed');
+    assert.equal(confirmedBeforeProvider?.providerAcceptedAt, null);
+    const status = (await f.manager(`/api/push/test-status?probeId=${result.body.probeId}`)).body;
+    assert.equal(status.status, 'confirmed');
+    assert.equal(status.notificationCreatedAt, confirmedBeforeProvider?.notificationCreatedAt);
+    assert.ok(status.providerAcceptedAt >= status.notificationCreatedAt);
+  } finally { await f.close(); }
+});
+
+test('a confirmed browser receipt remains successful when the sender times out without provider acceptance', async () => {
+  const f = await fixture(async (_device, payload) => {
+    const probe = JSON.parse(payload).probe as { id: string; token: string };
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', { probeId: probe.id, token: probe.token })).status, 200);
+    throw new Error('Sender timed out after the browser received the push');
+  });
+  try {
+    const sub = subscription();
+    await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+    const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, true);
+    assert.equal(typeof result.body.probeId, 'string');
+    assert.deepEqual(Object.keys(result.body).sort(), ['ok', 'probeId']);
+    const status = (await f.manager(`/api/push/test-status?probeId=${result.body.probeId}`)).body;
+    assert.equal(status.status, 'confirmed');
+    assert.equal(typeof status.notificationCreatedAt, 'number');
+    assert.equal(status.providerAcceptedAt, null, 'A browser receipt must not invent provider acceptance');
+    assert.deepEqual(Object.keys(status).sort(), ['expiresAt', 'notificationCreatedAt', 'probeId', 'providerAcceptedAt', 'status']);
+  } finally { await f.close(); }
+});
+
+test('acceptance storage failures after sending preserve the probe id and any already confirmed browser receipt', async () => {
+  for (const confirmed of [false, true]) {
+    let sends = 0;
+    const f = await fixture(async (_device, payload) => {
+      sends++;
+      const probe = JSON.parse(payload).probe as { id: string; token: string };
+      if (confirmed) assert.equal((await f.anon('/api/push/test-receipt', 'POST', { probeId: probe.id, token: probe.token })).status, 200);
+      // Only fail finalization: creation and an optional early browser receipt are already durable.
+      f.store.mutate = async () => { throw confirmed ? new ApiError(409, 'Injected persistent conflict') : new Error('Injected write failure'); };
+    });
+    const mutate = f.store.mutate.bind(f.store);
+    try {
+      const sub = subscription();
+      await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+      const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
+      f.store.mutate = mutate;
+      assert.equal(result.status, 200);
+      assert.equal(result.body.ok, true);
+      assert.equal(typeof result.body.probeId, 'string');
+      assert.deepEqual(Object.keys(result.body).sort(), ['ok', 'probeId']);
+      assert.equal(sends, 1, 'Retrying finalization must not resend the notification');
+      const status = (await f.manager(`/api/push/test-status?probeId=${result.body.probeId}`)).body;
+      assert.equal(status.status, confirmed ? 'confirmed' : 'pending');
+      assert.equal(status.providerAcceptedAt, null, 'An unsuccessful storage write must not fabricate persisted acceptance');
+      if (confirmed) assert.equal(typeof status.notificationCreatedAt, 'number');
+      else assert.equal(status.notificationCreatedAt, null);
+      assert.deepEqual(Object.keys(status).sort(), ['expiresAt', 'notificationCreatedAt', 'probeId', 'providerAcceptedAt', 'status']);
+    } finally { f.store.mutate = mutate; await f.close(); }
+  }
+});
+
+test('provider failures never claim acceptance; expired receipt tokens are refused without changing status', async () => {
+  let probe: { id: string; token: string } | undefined;
+  const f = await fixture(async (_device, payload) => { probe = JSON.parse(payload).probe; throw Object.assign(new Error('Provider unavailable'), { statusCode: 503 }); });
+  try {
+    const sub = subscription();
+    await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+    assert.equal((await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint })).status, 502);
+    assert.ok(probe);
+    const path = `/api/push/test-status?probeId=${probe.id}`;
+    const failed = (await f.manager(path)).body;
+    assert.equal(failed.status, 'pending');
+    assert.equal(failed.providerAcceptedAt, null);
+    assert.equal(failed.notificationCreatedAt, null);
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      const row = data.push!.probes![probe!.id];
+      row.createdAt = Date.now() - 600000;
+      row.expiresAt = Date.now() - 300001;
+      return { result: null, changed: true };
+    });
+    const revision = (await f.store.read(base.provenance.sourceSha256)).revision;
+    const expired = await f.anon('/api/push/test-receipt', 'POST', { probeId: probe.id, token: probe.token });
+    assert.equal(expired.status, 410);
+    const status = (await f.manager(path)).body;
+    assert.equal(status.status, 'expired');
+    assert.equal(status.providerAcceptedAt, null);
+    assert.equal(status.notificationCreatedAt, null);
+    assert.equal((await f.store.read(base.provenance.sourceSha256)).revision, revision);
+    assert.equal((await f.store.read(base.provenance.sourceSha256)).push!.devices.length, 1, 'A temporary failure preserves the subscription');
+  } finally { await f.close(); }
+});
+
+test('push probe data validates optional legacy storage and receipt traffic is rate limited', async () => {
+  const limiter = createPushReceiptLimiter();
+  for (let i = 0; i < 60; i++) limiter('127.0.0.1', now);
+  assert.throws(() => limiter('127.0.0.1', now), error => error instanceof ApiError && error.status === 429);
+  assert.doesNotThrow(() => limiter('127.0.0.1', now + 60000));
+  const f = await fixture();
+  try {
+    const data = await f.store.read(base.provenance.sourceSha256);
+    assert.equal(decodeOperations(encodeOperations(data), base.provenance.sourceSha256).push, undefined);
+    const valid = { userId: f.users[1].id, deviceId: randomUUID(), tokenHash: 'a'.repeat(64), createdAt: now, expiresAt: now + 300000 };
+    for (const invalid of [{ ...valid, tokenHash: 'secret' }, { ...valid, expiresAt: now + 300001 }, { ...valid, notificationCreatedAt: now - 1 }, { ...valid, providerAcceptedAt: 'now' }]) {
+      assert.throws(() => encodeOperations({ ...data, push: { devices: [], deliveries: {}, probes: { [randomUUID()]: invalid } } } as typeof data));
+    }
+    const receipt = { probeId: randomUUID(), token: randomBytes(32).toString('base64url') };
+    for (let i = 0; i < 60; i++) assert.equal((await f.anon('/api/push/test-receipt', 'POST', receipt)).status, 404);
+    assert.equal((await f.anon('/api/push/test-receipt', 'POST', receipt)).status, 429);
+  } finally { await f.close(); }
+});
+
 test('push dispatch persists deliveries, routes to the current assignee, skips done/archive/future/inactive, and excludes duplicate concurrent sends', async () => {
   const f = await fixture();
   try {
@@ -93,7 +265,8 @@ test('push dispatch persists deliveries, routes to the current assignee, skips d
     assert.match(JSON.parse(sent[0].payload).url, new RegExp(tasks[0].id));
     assert.equal(JSON.parse(sent[0].payload).body.includes('due'), false);
     const persisted = decodeOperations(encodeOperations(await f.store.read(base.provenance.sourceSha256)), base.provenance.sourceSha256);
-    assert.equal(Object.values(persisted.push!.deliveries).filter(row => row.sent).length, 1);
+    assert.equal(persisted.push!.deliveries[JSON.parse(sent[0].payload).tag].sent, true);
+    assert.equal(Object.values(persisted.push!.deliveries).filter(row => row.sent).length, 2, 'Immediate assignment and due reminder have separate persisted deliveries');
     await dispatchReminders(new OperationsStore(resolve(f.store.path, '..')), base.provenance.sourceSha256, config, sender, now + 60000);
     assert.equal(sent.length, 1);
     const reassign = await f.director(`/api/work/tasks/${tasks[0].id}`, 'PATCH', { version: tasks[0].version, assigneeId: f.users[0].id });

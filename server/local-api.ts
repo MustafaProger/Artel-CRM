@@ -27,8 +27,9 @@ import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
-import { dispatchReminders, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+import { dispatchReminders, dispatchTaskAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
+import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
 
 // Sum saved decimal strings exactly, including the source workbook's precision.
 const ExactDecimal = Decimal.clone({ precision: 80 });
@@ -323,6 +324,7 @@ function checkVersion(value: unknown, shipment: Shipment) {
 
 export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, options: LocalApiOptions = {}) {
   const operations = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(dataDirectory, '../local-operations'));
+  const limitPushReceipt = createPushReceiptLimiter();
   let cache: { signature: string; snapshot: Promise<Snapshot> } | undefined;
   async function baseSnapshot() {
     const names = ['manifest', 'companies', 'shipments', 'payments', 'stock_summaries', 'manager_labels', 'validation_report'];
@@ -345,7 +347,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
     const cronRequest = pathname === '/api/push/dispatch';
     const bankCron = pathname === '/api/banking/dispatch';
     const bankWebhook = pathname === '/api/banking/webhooks/tbank-nk-artel';
-    if (!cronRequest && !bankCron && !bankWebhook && !(options.authorizeRequest ?? isLocalRequest)(request)) return write(response, 403, '{"error":"Доступ к API запрещён."}');
+    const pushReceipt = pathname === '/api/push/test-receipt';
+    // A service worker receipt uses its short-lived token instead of a session cookie.
+    // Cloud callers without Origin may use that token; present browser origins still follow the normal check.
+    const originAllowed = pushReceipt && !request.headers.origin && options.authorizeRequest
+      ? request.headers['sec-fetch-site'] !== 'cross-site'
+      : (options.authorizeRequest ?? isLocalRequest)(request);
+    if (!cronRequest && !bankCron && !bankWebhook && !originAllowed) return write(response, 403, '{"error":"Доступ к API запрещён."}');
     void (async () => {
       if (cronRequest && !validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validPushWorkflow(request)) throw new ApiError(403, 'Доступ к планировщику запрещён.');
       const url = new URL(request.url!, 'http://localhost');
@@ -369,6 +377,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const result = await dispatchReminders(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush);
         return write(response, 200, JSON.stringify(result));
+      }
+      if (pushReceipt) {
+        if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+        limitPushReceipt(request.socket.remoteAddress ?? 'unknown');
+        const body = await jsonBody(request, false, 1024);
+        await mutatePushProbe(operations, base.provenance.sourceSha256, data => ({ result: null, changed: acceptPushProbeReceipt(data, body) }));
+        return write(response, 200, '{"ok":true}');
       }
       const secure = options.secureCookies ?? !isLocalHost(request.headers.host);
       if (pathname.startsWith('/api/auth/')) {
@@ -422,28 +437,42 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const data = await operations.read(base.provenance.sourceSha256);
           return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300 }));
         }
+        if (pathname === '/api/push/test-status') {
+          if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+          const data = await operations.read(base.provenance.sourceSha256);
+          return write(response, 200, JSON.stringify(readPushProbe(data, url.searchParams.get('probeId'), authorized(data).id)));
+        }
         if (pathname !== '/api/push/subscription' && pathname !== '/api/push/test') throw new ApiError(404, 'Маршрут не найден.');
         if (request.method !== 'POST' && !(pathname === '/api/push/subscription' && request.method === 'DELETE')) throw new ApiError(405, 'Метод не поддерживается.');
         if (request.method !== 'DELETE' && !pushReady(config)) throw new ApiError(503, 'Отправка уведомлений ещё не настроена.');
         const body = await jsonBody(request, false, 8192);
         if (pathname === '/api/push/test') {
-          const device = await operations.mutate(base.provenance.sourceSha256, data => {
+          const { device, probeId, token } = await mutatePushProbe(operations, base.provenance.sourceSha256, data => {
             const user = authorized(data);
             const device = data.push?.devices.find(device => device.userId === user.id && device.endpoint === body.endpoint);
             if (!device) throw new ApiError(404, 'Сначала включите уведомления на этом устройстве.');
             if (device.testAt && Date.now() - device.testAt < 30000) throw new ApiError(429, 'Повторную проверку можно отправить через 30 секунд.');
             device.testAt = Date.now();
-            return { result: { ...device }, changed: true };
+            return { result: { device: { ...device }, ...createPushProbe(data, device) }, changed: true };
           });
           try {
-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артель CRM', body: 'Уведомления включены. Здесь будут приходить ваши напоминания.', tag: 'artel-push-test', url: '/#work' }), config);
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артель CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: '/#work', probe: { id: probeId, token } }), config);
           } catch (error) {
+            const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
+            // A browser receipt is stronger evidence than a sender timeout after delivery.
+            if (received !== undefined) return write(response, 200, JSON.stringify({ ok: true, probeId }));
             if ([404, 410].includes((error as {statusCode: number}).statusCode)) {
               await operations.mutate(base.provenance.sourceSha256, data => ({ result: null, changed: unsubscribe(data, device.endpoint, device.userId) }));
               throw new ApiError(410, 'Подписка истекла. Выключите и снова включите уведомления.');
             }
             throw new ApiError(502, 'Сервис уведомлений недоступен. Повторите проверку позже.');
           }
+          try {
+            await mutatePushProbe(operations, base.provenance.sourceSha256, data => ({ result: null, changed: markPushProbeAccepted(data, probeId) }));
+          } catch {
+            console.error('Проверка уведомления отправлена. Не удалось сохранить результат сервиса; подтверждение устройства доступно по номеру проверки.');
+          }
+          return write(response, 200, JSON.stringify({ ok: true, probeId }));
         } else {
           await operations.mutate(base.provenance.sourceSha256, data => {
             const user = authorized(data);
@@ -528,6 +557,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const result=mutateWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work'),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
           return {result,changed:result.changed};
         });
+        if (workMatch[1] === 'tasks' && result.entry && pushReady(config)) {
+          // Await the attempt within the request so serverless runtimes do not drop it.
+          // The saved event remains available to the scheduler if delivery fails.
+          try { await dispatchTaskAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.entry.id); }
+          catch { console.error('Задача сохранена. Не удалось отправить уведомление о назначении; планировщик повторит попытку.'); }
+        }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
       const shipmentIdMatch = pathname.match(/^\/api\/shipments\/([^/]+)$/);

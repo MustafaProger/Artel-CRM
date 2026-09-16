@@ -3,6 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import webPush from 'web-push';
 import { ApiError } from './api-error';
 import { hasSection } from '../web/src/auth-model';
+import type { WorkTask } from '../web/src/work-model';
 import { sessionToken } from './auth';
 import type { OperationsData, OperationsStorage } from './operations-store';
 
@@ -11,7 +12,12 @@ export interface PushDevice {
   keys: { p256dh: string; auth: string }; createdAt: number; testAt?: number;
 }
 interface Delivery { deviceId: string; at: number; attempts: number; retryAt: number; lease?: string; sent?: boolean }
-export interface PushData { devices: PushDevice[]; deliveries: Record<string, Delivery>; lastRunAt?: number }
+interface TaskAssignment { version: number; assigneeId: string; at: number }
+export interface PushProbe {
+  userId: string; deviceId: string; tokenHash: string; createdAt: number; expiresAt: number;
+  providerAcceptedAt?: number; notificationCreatedAt?: number;
+}
+export interface PushData { devices: PushDevice[]; deliveries: Record<string, Delivery>; taskAssignments?: Record<string, TaskAssignment>; probes?: Record<string, PushProbe>; lastRunAt?: number }
 export interface PushConfig { publicKey: string; privateKey: string; subject: string; schedule: boolean }
 export type PushSender = (device: PushDevice, payload: string, config: PushConfig) => Promise<unknown>;
 export const pushConfig = (): PushConfig => ({ publicKey: process.env.VAPID_PUBLIC_KEY ?? '', privateKey: process.env.VAPID_PRIVATE_KEY ?? '', subject: process.env.VAPID_SUBJECT ?? '', schedule: process.env.PUSH_SCHEDULE_ENABLED === 'true' });
@@ -54,6 +60,35 @@ export function validatePush(value: PushData | undefined) {
   for (const [key, row] of Object.entries(value.deliveries)) {
     if (!/^[a-f0-9]{64}$/.test(key) || !row || typeof row.deviceId !== 'string' || !Number.isSafeInteger(row.at) || !Number.isSafeInteger(row.retryAt) || !Number.isSafeInteger(row.attempts) || row.attempts < 1 || row.lease !== undefined && typeof row.lease !== 'string' || row.sent !== undefined && typeof row.sent !== 'boolean') throw new Error('Invalid push delivery');
   }
+  if (value.taskAssignments !== undefined) {
+    if (!value.taskAssignments || typeof value.taskAssignments !== 'object' || Array.isArray(value.taskAssignments)) throw new Error('Invalid task assignments');
+    for (const [id, row] of Object.entries(value.taskAssignments)) {
+      if (!id || !row || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.assigneeId !== 'string' || !row.assigneeId || !Number.isSafeInteger(row.at) || row.at < 0) throw new Error('Invalid task assignment');
+    }
+  }
+  if (value.probes !== undefined) {
+    if (!value.probes || typeof value.probes !== 'object' || Array.isArray(value.probes) || Object.keys(value.probes).length > 1000) throw new Error('Invalid push probes');
+    for (const [id, row] of Object.entries(value.probes)) {
+      if (!/^[a-f0-9-]{36}$/.test(id) || !row || typeof row.userId !== 'string' || !row.userId || typeof row.deviceId !== 'string' || !row.deviceId || !/^[a-f0-9]{64}$/.test(row.tokenHash) || !Number.isSafeInteger(row.createdAt) || row.createdAt < 0 || !Number.isSafeInteger(row.expiresAt) || row.expiresAt <= row.createdAt || row.expiresAt - row.createdAt > 300000) throw new Error('Invalid push probe');
+      for (const at of [row.providerAcceptedAt, row.notificationCreatedAt]) if (at !== undefined && (!Number.isSafeInteger(at) || at < row.createdAt)) throw new Error('Invalid push probe result');
+    }
+  }
+}
+/** Store alongside the task mutation, so a committed assignment survives a failed immediate dispatch. */
+export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string): void {
+  const id = task?.id ?? previous?.id;
+  if (!id) return;
+  if (!task || task.archivedAt || task.status === 'done') {
+    if (data.push?.taskAssignments) delete data.push.taskAssignments[id];
+    return;
+  }
+  if (previous?.assigneeId === task.assigneeId) return;
+  if (task.assigneeId === actorId) {
+    if (data.push?.taskAssignments) delete data.push.taskAssignments[id];
+    return;
+  }
+  const push = data.push ??= { devices: [], deliveries: {} };
+  (push.taskAssignments ??= {})[id] = { version: task.version, assigneeId: task.assigneeId, at: Date.now() };
 }
 export function subscribe(data: OperationsData, value: unknown, userId: string, sessionHash: string) {
   const subscription = parseSubscription(value);
@@ -76,11 +111,26 @@ export const sendPush: PushSender = (device, payload, config) => webPush.sendNot
   vapidDetails: { publicKey: config.publicKey, privateKey: config.privateKey, subject: config.subject },
   TTL: 3600, urgency: 'high', timeout: 5000,
 });
-function candidates(data: OperationsData, now: number) {
+function reminderCandidates(data: OperationsData, now: number) {
   const rows = [...(data.work?.tasks ?? []).map(row => ({ ...row, kind: 'tasks' })), ...(data.work?.companyRecords ?? []).map(row => ({ ...row, kind: 'companies' }))];
   return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || row.status !== 'done') && data.accounts?.users.some(user => user.id === row.assigneeId && hasSection(user, 'work')));
 }
+const assignmentLifetime = 86400000;
+const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssignment, now: number) =>
+  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.assigneeId === assignment.assigneeId && !task.archivedAt && task.status !== 'done');
+interface PushCandidate { kind: string; id: string; assigneeId: string; token: string; event: 'reminder' | 'assignment' }
+function candidates(data: OperationsData, now: number): PushCandidate[] {
+  const reminders: PushCandidate[] = reminderCandidates(data, now).map(row => ({ kind: row.kind, id: row.id, assigneeId: row.assigneeId, token: row.reminderAt!, event: 'reminder' }));
+  const assignments: PushCandidate[] = [];
+  for (const [id, assignment] of Object.entries(data.push?.taskAssignments ?? {})) {
+    if (assignmentTask(data, id, assignment, now) && data.accounts?.users.some(user => user.id === assignment.assigneeId && hasSection(user, 'work'))) {
+      assignments.push({ kind: 'tasks', id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment' });
+    }
+  }
+  return [...reminders, ...assignments];
+}
 const deliveryKey = (kind: string, id: string, reminderAt: string, deviceId: string) => hash(`${kind}:${id}:${reminderAt}:${deviceId}`);
+const candidateKey = (row: PushCandidate, deviceId: string) => deliveryKey(row.event === 'assignment' ? 'task-assignment' : row.kind, row.id, row.token, deviceId);
 async function mutatePush<T>(store: OperationsStorage, source: string, update: (data: OperationsData) => { result: T; changed: boolean }) {
   for (let attempt = 0; ; attempt++) {
     try { return await store.mutate(source, update); }
@@ -91,34 +141,55 @@ async function mutatePush<T>(store: OperationsStorage, source: string, update: (
   }
 }
 
-/** Claim in durable storage before network I/O. Concurrent invocations cannot send the same claim. */
 export async function dispatchReminders(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now()) {
+  return dispatchNotifications(store, source, config, sender, now, true);
+}
+/** Immediately deliver only assignment events; the scheduler heartbeat is updated by dispatchReminders. */
+export async function dispatchTaskAssignments(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), taskId?: string) {
+  return dispatchNotifications(store, source, config, sender, now, false, taskId);
+}
+/** Claim in durable storage before network I/O. Concurrent invocations cannot send the same claim. */
+async function dispatchNotifications(store: OperationsStorage, source: string, config: PushConfig, sender: PushSender, now: number, includeReminders: boolean, taskId?: string) {
   if (!pushReady(config)) throw new ApiError(503, 'Отправка уведомлений ещё не настроена.');
   const lease = randomUUID();
   const claimed = await mutatePush(store, source, data => {
+    let changed = !data.push;
     const push = data.push ??= { devices: [], deliveries: {} };
-    push.lastRunAt = now;
-    const pending: { key: string; device: PushDevice; kind: string; id: string; reminderAt: string }[] = [];
+    if (includeReminders) { push.lastRunAt = now; changed = true; }
+    for (const [id, assignment] of Object.entries(push.taskAssignments ?? {})) {
+      if (!assignmentTask(data, id, assignment, now)) { delete push.taskAssignments![id]; changed = true; }
+    }
+    const pending: (PushCandidate & { key: string; device: PushDevice })[] = [];
+    const counts = { reminder: 0, assignment: 0 };
     const relevant = new Set<string>();
     for (const row of candidates(data, now)) for (const device of push.devices.filter(device => device.userId === row.assigneeId)) {
-      const key = deliveryKey(row.kind, row.id, row.reminderAt!, device.id);
+      const key = candidateKey(row, device.id);
       relevant.add(key);
+      if (row.event === 'reminder' && !includeReminders || row.event === 'assignment' && taskId !== undefined && row.id !== taskId) continue;
       const previous = push.deliveries[key];
-      if (pending.length >= 20 || previous?.sent || previous && previous.retryAt > now) continue;
+      // Each event type has its own allowance so an assignment burst cannot starve due reminders.
+      if (counts[row.event] >= 20 || previous?.sent || previous && previous.retryAt > now) continue;
       push.deliveries[key] = { deviceId: device.id, at: now, attempts: (previous?.attempts ?? 0) + 1, retryAt: now + 120000, lease };
-      pending.push({ key, device: { ...device }, kind: row.kind, id: row.id, reminderAt: row.reminderAt! });
+      pending.push({ ...row, key, device: { ...device } });
+      counts[row.event]++;
+      changed = true;
     }
-    for (const key of Object.keys(push.deliveries)) if (!relevant.has(key) && push.deliveries[key].at < now - 86400000) delete push.deliveries[key];
-    return { result: pending, changed: true };
+    for (const key of Object.keys(push.deliveries)) if (!relevant.has(key) && push.deliveries[key].at < now - assignmentLifetime) {
+      delete push.deliveries[key]; changed = true;
+    }
+    return { result: pending, changed };
   });
   const results: { key: string; deviceId: string; sent: boolean; expired: boolean; cancelled: boolean }[] = [];
   for (let offset = 0; offset < claimed.length; offset += 5) {
     const current = await store.read(source);
+    const availableCandidates = candidates(current, now);
     await Promise.all(claimed.slice(offset, offset + 5).map(async item => {
-      const available = current.push?.devices.some(device => device.id === item.device.id && device.userId === item.device.userId) && candidates(current, now).some(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.reminderAt === item.reminderAt);
+      const device = current.push?.devices.find(device => device.id === item.device.id && device.userId === item.device.userId);
+      const available = device && current.push?.deliveries[item.key]?.lease === lease && availableCandidates.some(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.event === item.event && row.token === item.token);
       if (!available) { results.push({ key: item.key, deviceId: item.device.id, sent: false, expired: false, cancelled: true }); return; }
       try {
-        await sender(item.device, JSON.stringify({ title: 'Артель CRM', body: 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.', tag: item.key, url: `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
+        const body = item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
+        await sender(device, JSON.stringify({ title: 'Артель CRM', body, tag: item.key, url: `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });
       } catch (error) {
         const status = (error as { statusCode?: number }).statusCode;

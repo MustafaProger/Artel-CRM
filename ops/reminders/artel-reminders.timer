@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Artel CRM reminders every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=artel-reminders.service
+
+[Install]
+WantedBy=timers.target

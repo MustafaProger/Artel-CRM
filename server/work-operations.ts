@@ -4,6 +4,7 @@ import type { Snapshot } from '../web/src/model';
 import { emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
+import { queueTaskAssignment } from './push';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const boundedText = (value: unknown, max: number, required = false): value is string => typeof value === 'string' && value.length <= max && (!required || !!value.trim());
@@ -107,6 +108,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     else if (key === 'companyRecords') work.companyRecords = work.companyRecords.filter(row => row.id !== id);
     else work.notes = work.notes.filter(row => row.id !== id);
     data.work = work;
+    if (kind === 'tasks') queueTaskAssignment(data, undefined, previous as WorkTask, actor.id);
     return { deleted: true, id, changed: true };
   }
   const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'companyId', 'dueDate', 'reminderAt'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
@@ -173,5 +175,6 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];
   validateWorkData(work);
   data.work = work;
+  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor.id);
   return { entry: publicWorkEntry(entry), created: !previous, changed: true };
 }
