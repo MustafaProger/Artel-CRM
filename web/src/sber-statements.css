@@ -1,0 +1,35 @@
+.sber-statements{min-width:0}
+.sber-statements .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.sber-statements .bank-table-scroll{position:relative}
+.sber-account-line{display:flex;gap:8px 22px;flex-wrap:wrap;margin:0 0 20px;font-size:12px;color:var(--bank-muted)}
+.sber-account-line strong{color:#354d3e;font-weight:500;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.sber-period{align-items:flex-end;flex-wrap:wrap}
+.sber-period .button{min-height:39px}
+.sber-period-error{width:100%;margin:0;color:#9c5947;font-size:12px}
+.sber-sync-progress{display:flex;flex-direction:column;gap:7px}
+.sber-sync-progress progress{width:min(450px,100%);height:7px;accent-color:#318752}
+.sber-sync-progress p{margin:0}
+.sber-summary{margin-bottom:24px}
+.sber-summary .bank-ledger-title{align-items:flex-start;flex-wrap:wrap}
+.sber-zero-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--bank-muted);cursor:pointer;line-height:1.5}
+.sber-zero-toggle input{width:16px;height:16px;margin:0;accent-color:#318752}
+.sber-statements .sber-days-table{min-width:750px}
+.sber-days-table td{vertical-align:middle}
+.sber-days-table .is-selected{background:#eaf5ee;box-shadow:inset 3px 0 #398359}
+.sber-days-table .is-selected:hover{background:#e5f2e9}
+.sber-days-table .bank-row-link{font-weight:500;padding:5px 0}
+.sber-value-missing{font-size:11px;color:var(--bank-muted);font-weight:400}
+.sber-summary-note{padding:12px 24px;margin:0;border-top:1px solid #edf0ee;font-size:11px;line-height:1.65;color:var(--bank-muted)}
+.sber-operations-title{display:flex;flex-direction:column;gap:7px}
+.sber-day-reset{border:0;background:none;color:#357551;font:inherit;font-size:12px;padding:0;cursor:pointer;text-align:left;width:fit-content;text-decoration:underline;text-underline-offset:3px}
+.sber-statements .sber-operations-table{min-width:900px}
+.sber-operations-table .bank-purpose{min-width:250px;max-width:430px}
+.sber-purpose-excerpt{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sber-operations-table .sber-counterparty{min-width:195px}
+.sber-operations-table .bank-account-number{display:block;margin-top:7px}
+.sber-table-footer{padding:14px 24px;border-top:1px solid #edf0ee;font-size:11px;color:var(--bank-muted);margin:0}
+.sber-detail-refresh{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-bottom:22px}
+.sber-detail-refresh p{font-size:11px;line-height:1.7;margin:0;color:var(--bank-muted)}
+.sber-raw-value{white-space:pre-wrap}
+.sber-statements button:focus-visible,.sber-payment-panel button:focus-visible{outline:2px solid #398359;outline-offset:3px}
+@media(max-width:850px){.sber-account-line{font-size:11px;gap:7px 16px}.sber-period input,.sber-statements .bank-search input,.sber-statements .bank-filters select{font-size:16px}.sber-period label{flex:1;min-width:130px}.sber-period input{width:100%;min-width:0;box-sizing:border-box}.sber-period .button{flex-basis:100%;justify-content:center}.sber-summary-note,.sber-table-footer{padding:12px 18px}.sber-statements .bank-heading-actions{width:100%}.sber-statements .bank-heading-actions>.button{justify-content:center}.sber-statements .bank-ledger-title{gap:16px}}

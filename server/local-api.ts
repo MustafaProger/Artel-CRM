@@ -3,6 +3,9 @@ import { BankingService } from './banking/service';
 import { bankingRoutes } from './banking/routes';
 import { validBankWorkflow } from './banking/cron-auth';
 import type { BankRequest } from './banking/transport';
+import { SberService } from './banking/sber-service';
+import { sberRoutes } from './banking/sber-routes';
+import type { SberRequest } from './banking/sber-client';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
@@ -285,6 +288,7 @@ export interface LocalApiOptions {
   requireAuthentication?: boolean;
   bankEnvironment?: Record<string, string | undefined>;
   bankRequest?: BankRequest;
+  sberRequest?: SberRequest;
   setupToken?: string;
   secureCookies?: boolean;
   operationsStore?: OperationsStorage;
@@ -371,6 +375,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         await banking.webhook('tbank-nk-artel', request.headers.authorization, await jsonBody(request, false, 65536));
         return write(response, 200, '{"received":true}');
       }
+      if (pathname === '/api/banking/sber' || pathname.startsWith('/api/banking/sber/')) return sberRoutes(new SberService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.sberRequest), request, response, url, () => jsonBody(request));
       if (pathname === '/api/banking' || pathname.startsWith('/api/banking/')) return bankingRoutes(banking, request, response, url, () => jsonBody(request));
       const config = options.pushConfig ?? pushConfig();
       if (cronRequest) {

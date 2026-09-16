@@ -38,7 +38,7 @@ try {
   const page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message));
   await page.goto(base + '/#payments');
   await expect(page.locator('.bank-card')).toHaveCount(3);
-  await expect(page.getByRole('heading', { name: 'Банковские счета ещё не подключены' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Т-Банк ещё не подключён' })).toBeVisible();
   await page.screenshot({ path: resolve(output, 'disconnected-desktop.png'), fullPage: true }); check('Three unconfigured connections and distinct no-connection state');
   await page.getByRole('tab', { name: 'Архив из файла' }).click();
   await expect(page.locator('.payment-stats')).toBeVisible(); await expect(page.getByRole('table', { name: 'Платежи из выписки' })).toBeVisible(); check('Existing XLSX table, summaries and CSV remain available');
@@ -57,7 +57,7 @@ try {
   await expect(page.locator('.bank-pagination')).toContainText('11–20'); assert.notEqual(await page.locator('.bank-row-link').first().getAttribute('aria-label'), first); check('Pagination changes rows and keeps totals');
   const bankRequests = [];
   page.on('request', request => { if (request.url().includes('/api/banking')) bankRequests.push(request.url()); });
-  for (const company of ['НК АРТЕЛЬ', 'АРТЕЛЬ']) {
+  for (const company of ['АРТЕЛЬ']) {
     await page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true }).click();
     await expect(page.getByRole('heading', { name: 'СберБизнес ещё не подключён' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Подключение', exact: true })).toBeDisabled();
@@ -79,7 +79,7 @@ try {
     await page.getByRole('button', { name: 'Все подключения', exact: true }).click();
     await expect(page.locator('.bank-card')).toHaveCount(3);
   }
-  check('Both Sber layouts retain navigation and responsive controls without API requests');
+  check('Legacy Sber ARTEL layout retains navigation and responsive controls without API requests; NK statements have separate QA');
   await page.getByRole('button', { name: 'Открыть Т-Банк — НК АРТЕЛЬ' }).click();
   await page.locator('.bank-row-link').first().click();
   await expect(page.getByRole('dialog')).toBeVisible();
