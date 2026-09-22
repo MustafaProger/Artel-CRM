@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownLeft, ArrowLeft, ArrowUpRight, ChevronRight, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, ChevronRight, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
 import type { BankParty } from './banking-model'
 import type { SberOperation, SberStatementsResult } from './sber-model'
+import BankConnectionHeader from './BankConnectionHeader'
 import './sber-statements.css'
 
 const endpoint = '/api/banking/sber'
@@ -133,22 +134,21 @@ export default function SberStatements({ onBack }: { onBack: () => void }) {
   }
 
   return <div className="sber-statements">
-    {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Автообновление подключённых банков каждые 5 минут</p>}
-    <div className="bank-section-heading">
-      <div><button className="bank-back" onClick={onBack}><ArrowLeft size={16}/>Все подключения</button><h2>СберБизнес · {data?.company ?? 'ООО «НК АРТЭЛЬ»'}</h2></div>
-      <div className="bank-heading-actions"><button className="button primary" disabled={busy || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button></div>
-    </div>
-    <div className="sber-account-line"><span>Расчётный счёт <strong>{data?.account ?? '40702810438720035571'}</strong></span><span>ИНН <strong>{data?.inn ?? '5050140563'}</strong></span><span>Валюта счёта <strong>Рубли</strong></span></div>
+    <BankConnectionHeader bankName="СберБизнес" company={data?.company ?? 'ООО «НК АРТЭЛЬ»'} provider="sber" onBack={onBack}
+      actions={<button className="button primary" disabled={busy || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button>}
+      fields={[{ label: 'Расчётный счёт', value: data?.account ?? '40702810438720035571' }, { label: 'ИНН', value: data?.inn ?? '5050140563' }, { label: 'Валюта счёта', value: 'Рубли' }]}>
     <form className="bank-period sber-period" onSubmit={event => { event.preventDefault(); if (!invalidPeriod && !busy) { setSelectedDay(null); setPeriod({ ...draft }) } }}>
       <label>Период с<input aria-label="Начало периода выписки Сбера" type="date" value={draft.from} max={draft.to && draft.to < today ? draft.to : today} disabled={busy} onChange={event => setDraft(previous => ({ ...previous, from: event.target.value }))}/></label>
       <span aria-hidden="true">—</span>
-      <label>по<input aria-label="Конец периода выписки Сбера" type="date" value={draft.to} min={draft.from} max={today} disabled={busy} onChange={event => setDraft(previous => ({ ...previous, to: event.target.value }))}/></label>
+      <label>Период по<input aria-label="Конец периода выписки Сбера" type="date" value={draft.to} min={draft.from} max={today} disabled={busy} onChange={event => setDraft(previous => ({ ...previous, to: event.target.value }))}/></label>
       <button className="button" type="submit" disabled={busy || !!invalidPeriod || loading}>Показать период</button>
 
       {invalidPeriod && <p className="sber-period-error" role="alert">{invalidPeriod}</p>}
       {draftChanged && !invalidPeriod && <p className="bank-muted">Нажмите «Показать период», чтобы применить выбранные даты.</p>}
     </form>
     <div className="bank-connection-line">{(!data?.lastSuccessAt || busy || syncError || !!data?.missing.length) && <span className={`bank-state ${busy ? 'syncing' : syncError ? 'error' : data?.missing.length ? 'not_configured' : data?.lastSuccessAt ? 'connected' : 'ready'}`}>{busy ? 'Синхронизация' : syncError ? 'Обновление не завершено' : data?.missing.length ? 'Доступ не настроен' : 'Ожидает первой загрузки'}</span>}<span>Обновлено: <strong>{displayTimestamp(data?.lastSuccessAt)}</strong></span>{data?.lastCompletedPeriod && <span>Загружен период: {displayDate(data.lastCompletedPeriod.from)} — {displayDate(data.lastCompletedPeriod.to)}</span>}</div>
+    {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Автообновление каждые 5 минут</p>}
+    </BankConnectionHeader>
     {data?.missing.length ? <div className="bank-notice" role="status"><strong>Для подключения не хватает серверных настроек</strong><p>{data.missing.join(', ')}.</p><p>После настройки доступа нажмите «Обновить из банка».</p></div> : null}
     {data?.progress && <div className="bank-notice sber-sync-progress" role="status"><strong>{busy ? 'Получаем банковские данные' : 'Есть незавершённая загрузка'}</strong><p>{displayDate(data.progress.from)} — {displayDate(data.progress.to)} · сохранено дней: {data.progress.completedDays} из {data.progress.totalDays}</p><progress value={data.progress.completedDays} max={Math.max(1, data.progress.totalDays)} aria-label="Дней выписки загружено"/><p>Текущая дата: {displayDate(data.progress.day)}{data.progress.pages !== undefined ? ` · страниц: ${data.progress.pages}` : ''}{data.progress.nextAttemptAt ? ` · повтор не ранее ${displayTimestamp(data.progress.nextAttemptAt)}` : ''}</p>{!busy && <p>Нажмите «Продолжить загрузку», чтобы закончить этот период.</p>}</div>}
     {syncError && <div className="bank-notice bank-error" role="alert"><strong>Не удалось завершить обновление</strong><p>{syncError}</p><p>Ранее загруженные выписки и операции сохранены.</p></div>}

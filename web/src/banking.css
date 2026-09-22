@@ -162,3 +162,99 @@ to{transform:translateX(0);opacity:1}
 @media(prefers-reduced-motion:reduce){.bank-payment-panel{animation:none}
 .bank-card{transition:none}
 }
+
+/* Archive shares the banking page's hierarchy and spacing. */
+.banking-page .bank-source-tabs{margin-bottom:24px}
+.banking-page .bank-source-tabs button{min-height:40px}
+.banking-page .bank-source-tabs button:focus-visible{outline:2px solid #176647;outline-offset:2px}
+.payment-archive{min-width:0}
+.archive-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}
+.archive-heading h2{font-size:22px;letter-spacing:-.5px;line-height:1.3;margin:0 0 5px;color:#242b29}
+.archive-heading p{font-size:13px;color:#5f6d64;margin:0;line-height:1.5}
+.payment-archive .period-control{width:auto;flex:none;margin:0;min-width:180px;min-height:42px}
+.payment-archive .period-control select{width:100%;min-width:0}
+.payment-archive .payment-stats{gap:16px;margin-bottom:20px}
+.payment-archive .stat-card{padding:18px 20px;box-shadow:none}
+.payment-archive .stat-label{font-size:12px}
+.payment-archive .stat-value{font-size:26px;margin:12px 0 0;letter-spacing:-.6px;overflow-wrap:anywhere}
+.payment-archive .stat-value>span{font-size:16px;margin-left:5px}
+.payment-archive .stat-card:first-child .stat-value{color:#28814e}
+.payment-archive .table-toolbar{padding:20px;gap:12px}
+.payment-archive .table-search{max-width:none;flex:1;min-width:200px}
+.payment-archive .table-search input{width:100%;min-width:0}
+.payment-archive .toolbar-actions{flex-wrap:wrap}
+.payment-archive .filter-select{max-width:none;min-height:42px;color:#293c33}
+.payment-archive .archive-empty{min-height:310px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:36px 24px;text-align:center}
+.archive-empty-icon{display:grid;place-items:center;width:64px;height:64px;border-radius:18px;background:#edf3ef;color:#45755f;margin-bottom:4px}
+.archive-empty h3{margin:0;font-size:19px;letter-spacing:-.3px;color:#293c33;font-weight:600}
+.archive-empty p{max-width:440px;margin:0;font-size:13px;line-height:1.8;color:#5f6d64}
+.payment-archive .archive-no-results{min-height:260px;color:#5f6d64}
+.payment-archive .archive-ledger{overflow:hidden}
+@media(max-width:760px){
+ .archive-heading{align-items:flex-start;flex-wrap:wrap}
+ .payment-archive .payment-stats{grid-template-columns:1fr;gap:10px}
+ .payment-archive .stat-card,.payment-archive .stat-card:last-child{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px}
+ .payment-archive .stat-value{margin:0;font-size:23px}
+ .payment-archive .stat-label svg{display:none}
+ .payment-archive .table-toolbar{padding:16px}
+ .payment-archive .table-search{min-width:0;flex-basis:100%;width:100%}
+ .payment-archive .table-search input,.payment-archive .filter-select,.payment-archive .period-control select{font-size:16px}
+ .payment-archive .toolbar-actions{width:100%}
+ .payment-archive .archive-empty{min-height:300px;padding:28px 20px}
+}
+@media(max-width:380px){
+ .payment-archive .toolbar-actions>*{width:100%;justify-content:center}
+ .payment-archive .period-control{width:100%}
+}
+
+/* Shared account header for every bank connection. */
+.banking-page .bank-detail-back{margin:0 0 16px;min-height:32px;font-size:13px}
+.bank-account-panel{padding:24px;margin-bottom:24px}
+.bank-account-panel .bank-section-heading{margin-bottom:20px}
+.bank-account-heading{display:flex;align-items:center;gap:12px;min-width:0}
+.bank-account-heading .bank-emblem{flex-shrink:0;width:46px;height:46px}
+.bank-account-heading h2{font-size:22px;line-height:1.2;margin:0 0 5px}
+.bank-account-heading p{margin:0;font-size:13px;color:#526158;overflow-wrap:anywhere}
+.bank-account-fields{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(130px,1fr) minmax(100px,1fr);gap:16px;padding:0 0 20px;margin:0;border-bottom:1px solid var(--bank-line)}
+.bank-account-fields>div{min-width:0;display:flex;flex-direction:column;gap:6px}
+.bank-account-fields dt{font-size:11px;color:var(--bank-muted)}
+.bank-account-fields dd{margin:0;display:flex;flex-direction:column;gap:5px;font-size:13px;color:#293c33;font-weight:500;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.bank-account-panel .bank-period{margin:20px 0 16px;gap:12px;flex-wrap:wrap}
+.bank-account-panel .bank-period label{font-size:12px}
+.bank-account-panel .bank-period input{height:42px;font-size:14px;min-width:165px}
+.bank-account-panel .bank-period .button{min-height:42px}
+.bank-account-panel .bank-connection-line{font-size:11px;gap:8px 20px;margin:0;line-height:1.7}
+.bank-account-panel .bank-auto-sync{margin:8px 0 0;font-size:11px}
+.bank-account-panel input:disabled{background:#f7f9f8;color:#69766e;cursor:not-allowed}
+.banking-page .bank-disconnected{min-height:240px;gap:14px}
+.bank-disconnected .bank-emblem{width:56px;height:56px;border-radius:16px;margin-bottom:4px}
+.bank-disconnected h3{font-size:18px;font-weight:600;color:#293c33}
+.bank-table td{color:#293c33;font-size:13px}
+.bank-table td strong,.bank-amount{font-size:13px}
+.bank-table td.bank-incoming{color:#28814e}
+.bank-table th{font-size:11px;background:#f7f9f8}
+.bank-table td small{font-size:11px}
+.banking-page .bank-filters select,.banking-page .bank-search{min-height:40px}
+.banking-page .bank-filters select,.banking-page .bank-search input{font-size:13px}
+@media(max-width:850px){
+ .bank-account-panel{padding:20px}
+ .bank-account-panel .bank-section-heading{flex-direction:row;flex-wrap:wrap;gap:18px}
+ .bank-account-panel .bank-heading-actions{width:auto}
+ .bank-account-fields{grid-template-columns:1fr 1fr}
+ .bank-account-fields>div:first-child{grid-column:1/-1}
+ .bank-account-panel .bank-period input{min-width:0;width:100%;box-sizing:border-box;font-size:16px}
+ .bank-account-panel .bank-period>span{display:none}
+ .bank-account-panel .bank-period label{min-width:0;flex:1}
+ .bank-account-panel .bank-period .button{flex-basis:auto}
+ .banking-page .bank-search input,.banking-page .bank-filters select{font-size:16px}
+}
+@media(max-width:520px){
+ .bank-account-panel{padding:18px 16px}
+ .bank-account-panel .bank-heading-actions{width:100%}
+ .bank-account-panel .bank-heading-actions .button{flex:1;justify-content:center}
+ .bank-account-panel .bank-period .button{flex-basis:100%;justify-content:center}
+ .bank-account-panel .bank-connection-line{flex-direction:column;align-items:flex-start}
+ .bank-account-heading h2{font-size:20px}
+ .bank-account-panel .bank-heading-actions .button{font-size:12px;padding-inline:10px}
+}
+@media(max-width:380px){.bank-account-panel .bank-heading-actions .button,.bank-account-panel .bank-period label{flex-basis:100%}}

@@ -38,16 +38,59 @@ try {
   const page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message));
   await page.goto(base + '/#payments');
   await expect(page.locator('.bank-card')).toHaveCount(3);
-  await expect(page.getByRole('heading', { name: 'Т-Банк ещё не подключён' })).toBeVisible();
-  await page.screenshot({ path: resolve(output, 'disconnected-desktop.png'), fullPage: true }); check('Three unconfigured connections and distinct no-connection state');
+  await expect(page.locator('.bank-ledger')).toHaveCount(0);
+  await page.screenshot({ path: resolve(output, 'disconnected-desktop.png'), fullPage: true }); check('Three connections without a duplicate T-Bank ledger on the overview');
   await page.getByRole('tab', { name: 'Архив из файла' }).click();
-  await expect(page.locator('.payment-stats')).toBeVisible(); await expect(page.getByRole('table', { name: 'Платежи из выписки' })).toBeVisible(); check('Existing XLSX table, summaries and CSV remain available');
+  if (await page.locator('.payment-stats').count()) {
+    await expect(page.getByRole('table', { name: 'Платежи из выписки' })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Контрагент или назначение…' }).fill('нет-такого-платежа-qa');
+    await expect(page.getByRole('heading', { name: 'Нет операций по выбранным условиям' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Экспорт CSV' })).toBeDisabled();
+    await expect(page.locator('.pagination')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Сбросить фильтры' }).click();
+    await expect(page.getByRole('table', { name: 'Платежи из выписки' })).toBeVisible();
+  } else {
+    await expect(page.getByRole('heading', { name: 'В архиве пока нет выписок' })).toBeVisible();
+    await expect(page.locator('.pagination')).toHaveCount(0);
+  }
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Archive overflow ${width}`);
+    await page.screenshot({ path: resolve(output, `archive-${width}.png`), fullPage: true });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const archiveAxe = await new AxeBuilder({ page }).include('.banking-page').withTags(['wcag2a','wcag2aa']).analyze();
+  assert.equal(archiveAxe.violations.length, 0, 'Archive accessibility');
+  check('Archive source rows, no-results reset, export availability and responsive layout');
+  await page.route('**/api/snapshot?*', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, payments: [] } });
+  });
+  await page.reload();
+  await page.getByRole('tab', { name: 'Архив из файла' }).click();
+  await expect(page.getByRole('heading', { name: 'В архиве пока нет выписок' })).toBeVisible();
+  await expect(page.locator('.payment-stats, .pagination, .payment-archive table')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Экспорт CSV' })).toHaveCount(0);
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Empty archive overflow ${width}`);
+    await page.screenshot({ path: resolve(output, `archive-empty-${width}.png`), fullPage: true });
+  }
+  const emptyAxe = await new AxeBuilder({ page }).include('.banking-page').withTags(['wcag2a','wcag2aa']).analyze();
+  assert.equal(emptyAxe.violations.length, 0, 'Empty archive accessibility');
+  await page.unroute('**/api/snapshot?*');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.reload();
+  check('Empty archive has its own accessible state without zero summaries, export or pagination');
   await page.getByRole('tab', { name: 'Банковские подключения' }).click();
   Object.assign(environment, fixtureEnvironment, { ARTEL_BANK_SYNC_ENABLED: 'false' }); // No external network or scheduler.
   await page.reload(); await page.getByLabel('Период с', { exact: true }).fill(fixtureDay); await page.getByLabel('Период по', { exact: true }).fill(fixtureDay);
   await expect(page.getByRole('button', { name: 'Синхронизировать', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Синхронизировать', exact: true }).click();
   await expect.poll(async () => (await read(`/api/banking?from=${fixtureDay}&to=${fixtureDay}`)).total).toBe(32);
+  await expect(page.locator('.bank-ledger')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Открыть Т-Банк — НК АРТЕЛЬ' }).click();
   await expect(page.locator('.bank-ledger-title')).toContainText('32 операций', { timeout: 15000 });
   await expect(page.locator('.bank-totals')).toContainText('3,10 ₽'); await expect(page.locator('.bank-totals')).toContainText('12,34 USD');
   await page.screenshot({ path: resolve(output, 'connected-desktop-fixtures.png'), fullPage: true }); check('Manual synchronization, durable continuation, per-currency summaries');
@@ -55,6 +98,7 @@ try {
   const first = await page.locator('.bank-row-link').first().getAttribute('aria-label');
   await page.getByRole('button', { name: 'Следующая страница операций' }).click();
   await expect(page.locator('.bank-pagination')).toContainText('11–20'); assert.notEqual(await page.locator('.bank-row-link').first().getAttribute('aria-label'), first); check('Pagination changes rows and keeps totals');
+  await page.getByRole('button', { name: 'Все подключения', exact: true }).click();
   const bankRequests = [];
   page.on('request', request => { if (request.url().includes('/api/banking')) bankRequests.push(request.url()); });
   for (const company of ['АРТЕЛЬ']) {
@@ -62,7 +106,8 @@ try {
     await expect(page.getByRole('heading', { name: 'СберБизнес ещё не подключён' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Подключение', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Синхронизировать', exact: true })).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Экспорт CSV', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Экспорт CSV', exact: true })).toHaveCount(0);
+    await expect(page.locator('.bank-pagination, .bank-filters')).toHaveCount(0);
     bankRequests.length = 0;
     await page.clock.install();
     await page.clock.fastForward(31000);
