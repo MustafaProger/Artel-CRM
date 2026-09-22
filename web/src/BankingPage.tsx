@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import Decimal from 'decimal.js'
 import { ArrowDownLeft, ArrowDownToLine, ArrowLeft, ArrowUpRight, Building2, Check, ChevronLeft, ChevronRight, Copy, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
 import { bankConnections, type BankCard, type BankListResult, type BankOperation, type BankParty, type BankTotals } from './banking-model'
 import SberLayout from './SberLayout'
@@ -7,11 +8,12 @@ import type { SberStatementsResult } from './sber-model'
 import './banking.css'
 
 const currentDay = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date())
+const Exact = Decimal.clone({ precision: 80 })
 const date = (value?: string) => value ? new Date(value.length === 10 ? `${value}T12:00:00` : value).toLocaleDateString('ru-RU') : 'Не передана'
 const time = (value?: string) => value ? new Date(value).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : 'Ещё не выполнялась'
 export function bankMoney(value: string, currency: string) {
   const [whole, fraction = ''] = value.split('.')
-  return `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0')},${fraction.padEnd(2, '0')} ${currency}`
+  return `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0')},${fraction.padEnd(2, '0')} ${currency === 'RUB' ? '₽' : currency}`
 }
 const stateName: Record<BankCard['state'], string> = { not_configured: 'Доступ не настроен', ready: 'Ожидает первой синхронизации', syncing: 'Синхронизация', error: 'Ошибка синхронизации', connected: 'Подключён' }
 async function api<T>(url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -54,10 +56,10 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   }, [params, revision, source, sber])
   useEffect(() => {
     if (source !== 'api' || connection) return
-    const controller = new AbortController(), today = currentDay()
-    api<SberStatementsResult>(`/api/banking/sber/statements?${new URLSearchParams({ from: `${today.slice(0, 7)}-01`, to: today })}`, undefined, controller.signal).then(result => { setSberCard(result); setSberCardError(false) }).catch(error => { if (error.name !== 'AbortError') setSberCardError(true) })
+    const controller = new AbortController()
+    api<SberStatementsResult>(`/api/banking/sber/statements?${new URLSearchParams({ from, to })}`, undefined, controller.signal).then(result => { setSberCard(result); setSberCardError(false) }).catch(error => { if (error.name !== 'AbortError') setSberCardError(true) })
     return () => controller.abort()
-  }, [source, connection, revision])
+  }, [source, connection, revision, from, to])
   const ongoing = data?.connections.filter(card => card.progress && card.progress.attempts < 5 && card.state !== 'not_configured').map(card => card.id).join(',') ?? ''
   useEffect(() => {
     if (!ongoing || busy || source !== 'api' || sber) return
@@ -89,14 +91,36 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const reset = () => { setQuery(''); setSearch(''); setDirection(''); setStatus(''); setAccount(''); setPage(1) }
   const filtered = !!(search || direction || status || account)
   const sberCardState: BankCard['state'] = sberCard?.progress ? 'syncing' : sberCard?.lastError ? 'error' : sberCard?.missing.length ? 'not_configured' : sberCard?.lastSuccessAt ? 'connected' : 'ready'
+  const sberRows = sberCard?.operations.filter(row => row.booked) ?? []
+  const sberTotals: BankTotals[] = sberRows.length ? [{ currency: 'RUB', count: sberRows.length,
+    incoming: sberRows.filter(row => row.direction === 'incoming').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
+    outgoing: sberRows.filter(row => row.direction === 'outgoing').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
+  }] : []
+  const connectionCards = bankConnections.map(definition => {
+    const live = data?.connections.find(item => item.id === definition.id)
+    const isSber = definition.id === 'sber-nk-artel', placeholder = definition.id === 'sber-artel'
+    const state = isSber ? sberCardError ? 'error' : sberCardState : live?.state ?? 'not_configured'
+    return { ...definition, state, label: placeholder ? 'Макет' : isSber && sberCardError ? 'Статус недоступен' : stateName[state],
+      accounts: isSber && sberCard ? [{ number: sberCard.account, currency: 'RUB' }] : live?.accounts ?? [],
+      totals: isSber ? sberCardError ? [] : sberTotals : live?.totals ?? [],
+      lastSuccessAt: isSber ? sberCard?.lastSuccessAt : live?.lastSuccessAt,
+    }
+  })
   return <section className="banking-page">
     <div className="bank-source-tabs" role="tablist" aria-label="Источник платежей"><button role="tab" aria-selected={source === 'api'} onClick={() => setSource('api')}>Банковские подключения</button><button role="tab" aria-selected={source === 'legacy'} onClick={() => setSource('legacy')}>Архив из файла</button></div>
     {source === 'legacy' ? <>{legacy}</> : sber ? sber.id === 'sber-nk-artel' ? <SberStatements onBack={() => selectBank('')}/> : <SberLayout bank={sber} onBack={() => selectBank('')}/> : <>
       <div className="bank-section-heading"><div>{connection ? <button className="bank-back" onClick={() => selectBank('')}><ArrowLeft size={16}/>Все подключения</button> : null}<h2>{card ? `${card.bankName} · ${card.company}` : 'Банки и операции'}</h2></div><div className="bank-heading-actions"><button className="button" onClick={() => setSettings(v => !v)}><Unplug size={16}/>Подключение</button><button className="button primary" onClick={() => void synchronize()} disabled={busy || loading || !!error || !(card ? !card.missing.length : data?.connections.some(card => !card.missing.length))}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем…' : card?.progress ? 'Продолжить загрузку' : 'Синхронизировать'}</button></div></div>
       <div className="bank-period"><label>Период с<input aria-label="Период с" type="date" value={from} max={to || currentDay()} onChange={e => { setFrom(e.target.value); setPage(1) }}/></label><span>—</span><label>по<input aria-label="Период по" type="date" value={to} min={from} max={currentDay()} onChange={e => { setTo(e.target.value); setPage(1) }}/></label></div>
+      {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Автообновление подключённых банков каждые 5 минут</p>}
       {settings && <div className="bank-settings panel"><h3>Настройка доступа к выпискам</h3><p>Доступ настраивается на сервере для каждого юридического лица. После настройки выберите период и запустите первую синхронизацию.</p>{(card ? [card] : data?.connections ?? []).map(item => <div key={item.id}><strong>{item.bankName} · {item.company}</strong><p>{item.missing.length ? `Требуются: ${item.missing.join(', ')}.` : 'Настройки доступа сохранены на сервере. Подключение подтверждается успешной загрузкой выписки.'}</p>{item.limitations.map(text => <p className="bank-muted" key={text}>{text}</p>)}</div>)}<p>Автоматическая сверка: {data?.scheduleEnabled ? 'включена на сервере' : 'ожидает включения на сервере'}. Для первого получения истории нужен ручной запуск.</p></div>}
       {loading && !data ? <div className="bank-empty" role="status"><LoaderCircle className="spin"/><h3>Загружаем подключения…</h3></div> : <>
-        {!connection && <div className="bank-cards">{[...bankConnections.filter(item => item.provider === 'sber').map(item => ({ ...item, accounts: [], state: 'not_configured' as const, totals: [], lastSuccessAt: undefined })), ...(data?.connections ?? [])].map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}><div className="bank-card-top"><span className="bank-emblem"><Building2 size={22}/></span><span className={`bank-state ${item.id === 'sber-nk-artel' ? sberCardState : item.state}`}>{item.id === 'sber-nk-artel' ? sberCardError ? 'Статус недоступен' : sberCard ? stateName[sberCardState] : 'Выписки' : item.provider === 'sber' ? 'Макет' : stateName[item.state]}</span></div><h3>{item.bankName}<ChevronRight size={18}/></h3><p className="bank-company">{item.company}</p><div className="bank-accounts">{item.id === 'sber-nk-artel' ? <span>40702810438720035571<small>RUB</small></span> : item.accounts.length ? item.accounts.map(account => <span key={account.number}>{account.number}<small>{account.currency}</small></span>) : <span>Счета ещё не подключены</span>}</div>{item.id === 'sber-nk-artel' ? <><div className="bank-last-sync">Успешная синхронизация<strong>{time(sberCard?.lastSuccessAt)}</strong></div></> : <><Totals values={item.totals} compact/><div className="bank-last-sync">Успешная синхронизация<strong>{time(item.lastSuccessAt)}</strong></div></>}</button>)}</div>}
+        {!connection && <div className="bank-cards">{connectionCards.map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}>
+          <div className="bank-card-top"><span className="bank-emblem"><Building2 size={22}/></span><span className={`bank-state ${item.state}`}>{item.label}</span></div>
+          <h3>{item.bankName}<ChevronRight size={18}/></h3><p className="bank-company">{item.company}</p>
+          <div className="bank-accounts">{item.accounts.length ? item.accounts.map(account => <span key={account.number}>{account.number}<small>{account.currency}</small></span>) : <span>Счета ещё не подключены</span>}</div>
+          <Totals values={item.totals} compact/>
+          <div className="bank-last-sync">Успешная синхронизация<strong>{time(item.lastSuccessAt)}</strong></div>
+        </button>)}</div>}
         {card && <div className="bank-connection-line"><span className={`bank-state ${card.state}`}>{stateName[card.state]}</span><span>Последняя успешная: <strong>{time(card.lastSuccessAt)}</strong></span>{card.lastCompletedPeriod && <span>Загружен период: {date(card.lastCompletedPeriod.from)} — {date(card.lastCompletedPeriod.to)}</span>}</div>}
         {(card ? [card] : data?.connections ?? []).filter(card => card.lastError || card.progress).map(item => <div key={item.id} className={`bank-notice ${item.lastError ? 'bank-error' : ''}`} role={item.lastError ? 'alert' : 'status'}><strong>{item.bankName} · {item.company}</strong>{item.lastError && <p>{item.lastError}</p>}{item.progress && <p>История {date(item.progress.from)} — {date(item.progress.to)} · загружается {date(item.progress.day)} · страниц: {item.progress.pages}{item.progress.nextAttemptAt ? ` · повтор не ранее ${time(item.progress.nextAttemptAt)}` : ''}</p>}</div>)}
         {(error || actionError) && <div className="bank-notice bank-error" role="alert">{error || actionError}{error && <button className="button" onClick={() => setRevision(v => v + 1)}>Повторить загрузку</button>}</div>}

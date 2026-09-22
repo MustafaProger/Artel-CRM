@@ -34,5 +34,6 @@ export interface SberStatementsResult {
   lastError?: string
   lastCompletedPeriod?: { from: string; to: string }
   missing: string[]
+  scheduleEnabled?: boolean
   progress?: SberSyncProgress
 }

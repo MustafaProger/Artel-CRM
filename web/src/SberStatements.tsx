@@ -72,6 +72,12 @@ export default function SberStatements({ onBack }: { onBack: () => void }) {
     void load(controller.signal).catch(() => {})
     return () => controller.abort()
   }, [load])
+  // Refresh saved state while the server performs the scheduled bank requests.
+  useEffect(() => {
+    if (!data?.scheduleEnabled) return
+    const timer = setInterval(() => { if (!working.current) void load().catch(() => {}) }, 30000)
+    return () => clearInterval(timer)
+  }, [load, data?.scheduleEnabled])
 
   const synchronize = async () => {
     if (working.current || invalidPeriod || draftChanged || data?.missing.length) return
@@ -127,6 +133,7 @@ export default function SberStatements({ onBack }: { onBack: () => void }) {
   }
 
   return <div className="sber-statements">
+    {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Автообновление подключённых банков каждые 5 минут</p>}
     <div className="bank-section-heading">
       <div><button className="bank-back" onClick={onBack}><ArrowLeft size={16}/>Все подключения</button><h2>СберБизнес · {data?.company ?? 'ООО «НК АРТЭЛЬ»'}</h2></div>
       <div className="bank-heading-actions"><button className="button primary" disabled={busy || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button></div>

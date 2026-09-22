@@ -28,6 +28,7 @@ export interface SberData {
   requestNotBefore?: number;
   encryptedTokens?: string;
   lastSuccessAt?: string;
+  lastScheduledAt?: string;
   lastAttemptAt?: string;
   lastError?: string;
   lastCompletedPeriod?: { from: string; to: string };

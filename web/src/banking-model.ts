@@ -49,6 +49,7 @@ export interface BankConnectionState {
   /** Only a complete, validated replacement may admit this exact account/day to settlements. */
   settlementVerifiedDays?: { account: string; date: string; syncedAt: string }[]
   lastSuccessAt?: string
+  lastScheduledAt?: string
   lastAttemptAt?: string
   lastError?: string
   lastCompletedPeriod?: { from: string; to: string }

@@ -4,6 +4,8 @@ import { bankingRoutes } from './banking/routes';
 import { validBankWorkflow } from './banking/cron-auth';
 import type { BankRequest } from './banking/transport';
 import { SberService } from './banking/sber-service';
+import { dispatchBanks } from './banking/scheduler';
+import { BANK_SYNC_TICK_MS } from './banking/schedule';
 import { sberRoutes } from './banking/sber-routes';
 import type { SberRequest } from './banking/sber-client';
 import { readFile, stat } from 'node:fs/promises';
@@ -369,7 +371,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         if (!validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validBankWorkflow(request)) throw new ApiError(403, 'Доступ к банковскому планировщику запрещён.');
         if (url.searchParams.has('check')) throw new ApiError(404, 'Банковский маршрут не найден.');
-        return write(response, 200, JSON.stringify(await banking.dispatch()));
+        return write(response, 200, JSON.stringify(await dispatchBanks(operations, base.provenance.sourceSha256, options.bankEnvironment, options.bankRequest, options.sberRequest)));
       }
       if (bankWebhook) {
         if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
@@ -722,13 +724,16 @@ export default function localApi(options: LocalApiOptions = {}): Plugin {
     if ((options.bankEnvironment ?? process.env).ARTEL_BANK_SYNC_ENABLED !== 'true') return;
     const store = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(defaultDataDirectory, '../local-operations'));
     let running = false;
-    const timer = setInterval(async () => {
+    const source = loadSnapshot().then(snapshot => snapshot.provenance.sourceSha256);
+    const check = async () => {
       if (running) return;
       running = true;
-      try { await new BankingService(store, (await loadSnapshot()).provenance.sourceSha256, options.bankEnvironment, options.bankRequest).dispatch(); }
+      try { await dispatchBanks(store, await source, options.bankEnvironment, options.bankRequest, options.sberRequest); }
       catch { /* Errors stay in connection state; never log bank responses or credentials. */ }
       finally { running = false; }
-    }, 30000);
+    };
+    const timer = setInterval(() => { void check(); }, BANK_SYNC_TICK_MS);
+    void check();
     timer.unref(); server.httpServer?.once('close', () => clearInterval(timer));
   }
   return {

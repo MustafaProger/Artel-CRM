@@ -6,6 +6,7 @@ import { activeBankConnections, bankConfig, bankRequest, BankHttpError, type Ban
 import { tbankAdapter } from './adapters';
 import { emptyBanking, filterOperations, nextDay, object, str, today, totals, upsertOperations, validDate } from './domain';
 import { replaceStatementDay } from './statement-publication';
+import { syncDue } from './schedule';
 
 const limitations = {
   tbank: ['История API доступна с июня 2023 года. Загружаются подтверждённые транзакции; авторизации не входят в фактические обороты.', 'Смена ID и удаление операций учитываются при полной повторной сверке дня. Печатная форма доступна для поддерживаемых исполненных документов.'],
@@ -148,12 +149,19 @@ export class BankingService {
     if (!result) throw new ApiError(423, 'Банк занят синхронизацией. Повторите получение формы позже.');
     return result;
   }
-  async dispatch() {
+  async dispatch(now = Date.now()) {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
     const data = (await this.store.read(this.source)).banking ?? emptyBanking();
-    const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= Date.now()) : state?.lastSuccessAt && (state.webhookPending || Date.now() - Date.parse(state.lastSuccessAt) >= 15 * 60000)).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
+    const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= now) : state?.lastSuccessAt && (state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
     if (!due) return { enabled: true, pending: false };
-    if (!due.state?.job) await this.start(due.def.id, nextDay((due.state?.lastSuccessAt ?? today()).slice(0, 10), -7), today());
+    if (!due.state?.job) await this.mutate(data => {
+      const state = data.banking!.connections[due.def.id];
+      if (state.job || !(state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))) return { result: null, changed: false };
+      const to = today(), from = nextDay(to, -6);
+      state.job = { id: randomUUID(), from, to, day: from, accountIndex: 0, accounts: this.config(due.def.id).accounts, startedAt: new Date(now).toISOString(), pages: 0, attempts: 0 };
+      state.lastScheduledAt = new Date(now).toISOString(); state.webhookPending = false; delete state.lastError;
+      return { result: null, changed: true };
+    });
     return { enabled: true, ...await this.tick(due.def.id) };
   }
   async webhook(id: string, authorization: string | undefined, raw: Record<string, unknown>) {

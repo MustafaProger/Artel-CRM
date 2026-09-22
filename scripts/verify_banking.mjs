@@ -49,7 +49,7 @@ try {
   await page.getByRole('button', { name: 'Синхронизировать', exact: true }).click();
   await expect.poll(async () => (await read(`/api/banking?from=${fixtureDay}&to=${fixtureDay}`)).total).toBe(32);
   await expect(page.locator('.bank-ledger-title')).toContainText('32 операций', { timeout: 15000 });
-  await expect(page.locator('.bank-totals')).toContainText('3,10 RUB'); await expect(page.locator('.bank-totals')).toContainText('12,34 USD');
+  await expect(page.locator('.bank-totals')).toContainText('3,10 ₽'); await expect(page.locator('.bank-totals')).toContainText('12,34 USD');
   await page.screenshot({ path: resolve(output, 'connected-desktop-fixtures.png'), fullPage: true }); check('Manual synchronization, durable continuation, per-currency summaries');
   await page.getByLabel('Операций на странице').selectOption('10'); await expect(page.locator('.bank-table tbody tr')).toHaveCount(10);
   const first = await page.locator('.bank-row-link').first().getAttribute('aria-label');
@@ -91,7 +91,7 @@ try {
   await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
   check('T-Bank detail, copying and synthetic PDF remain available');
   await page.getByLabel('Наш счёт', { exact: true }).selectOption(dollarAccount);
-  await expect(page.locator('.bank-table tbody tr')).toHaveCount(1); await expect(page.locator('.bank-totals')).not.toContainText('RUB'); check('Account filter and currency-separated totals');
+  await expect(page.locator('.bank-table tbody tr')).toHaveCount(1); await expect(page.locator('.bank-totals')).not.toContainText('₽'); check('Account filter and currency-separated totals');
   await page.getByRole('button', { name: 'Сбросить', exact: true }).click();
   await page.getByLabel('Поиск банковских операций').fill('7812345678');
   await expect(page.locator('.bank-ledger-title')).toContainText('32 операций');

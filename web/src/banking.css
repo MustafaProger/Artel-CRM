@@ -14,7 +14,7 @@
 .bank-period>span{padding-bottom:12px;color:#5f6d64}
 .bank-period small{margin-left:auto;color:var(--bank-muted);font-size:11px;padding-bottom:11px}
 .bank-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:24px}
-.bank-card{background:#fff;border:1px solid #e3e8e5;border-radius:17px;padding:21px;text-align:left;cursor:pointer;color:inherit;min-width:0;transition:transform .18s,box-shadow .18s,border-color .18s;font:inherit}
+.bank-card{display:flex;flex-direction:column;align-items:stretch;background:#fff;border:1px solid #e3e8e5;border-radius:17px;padding:21px;text-align:left;cursor:pointer;color:inherit;min-width:0;transition:transform .18s,box-shadow .18s,border-color .18s;font:inherit}
 .bank-card:hover{transform:translateY(-3px);border-color:#99baa9;box-shadow:0 9px 23px #193d2510}
 .bank-card:active{transform:scale(.985)}
 .bank-card-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -38,7 +38,8 @@
 .bank-incoming{color:#28814e}
 .bank-muted{font-size:12px;color:var(--bank-muted);line-height:1.6}
 .bank-card-totals>.bank-muted{margin:0;font-size:11px;max-width:220px}
-.bank-last-sync{display:flex;flex-direction:column;gap:5px;font-size:10px;color:#5f6d64}
+.bank-last-sync{display:flex;flex-direction:column;gap:5px;font-size:10px;color:#5f6d64;margin-top:auto}
+.bank-auto-sync{display:flex;align-items:center;gap:7px;color:var(--bank-muted);font-size:12px;line-height:1.6;margin:0 0 20px}
 .bank-last-sync strong{font-size:11px;font-weight:500;color:#616e65}
 .bank-connection-line{display:flex;align-items:center;gap:15px;flex-wrap:wrap;font-size:12px;color:#5f6d64;margin-bottom:20px}
 .bank-ledger{overflow:hidden}

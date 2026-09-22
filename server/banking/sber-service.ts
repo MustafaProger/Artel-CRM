@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BankOperation } from '../../web/src/banking-model';
 import type { SberStatementsResult } from '../../web/src/sber-model';
 import { ApiError } from '../api-error';
+import { syncDue } from './schedule';
 import type { OperationsData, OperationsStorage } from '../operations-store';
 import { nextDay, object, today } from './domain';
 import { SberClient, sberMissing, sberRequest, type SberRequest, type SberTokenVault } from './sber-client';
@@ -36,6 +37,7 @@ export class SberService {
       days: state.days.filter(day => day.date >= period.from && day.date <= period.to).sort((a, b) => b.date.localeCompare(a.date)),
       operations: operations.sort((a, b) => b.statementDate.localeCompare(a.statementDate) || (b.bookedAt ?? '').localeCompare(a.bookedAt ?? '') || a.id.localeCompare(b.id)).map(row => ({ ...row, bankData: {} })),
       missing: this.missing(state), lastSuccessAt: state.lastSuccessAt, lastError: state.lastError, lastCompletedPeriod: state.lastCompletedPeriod,
+      scheduleEnabled: this.env.ARTEL_BANK_SYNC_ENABLED === 'true',
       progress: job ? { from: job.from, to: job.to, day: job.day, completedDays: completeCount, totalDays: Math.round((Date.parse(job.to) - Date.parse(job.from)) / 86400000) + 1, pages: job.pages, nextAttemptAt: job.nextAttemptAt } : undefined,
     };
   }
@@ -56,6 +58,22 @@ export class SberService {
       return { result: null, changed: true };
     });
     return { pending: true };
+  }
+  async dispatch(now = Date.now()) {
+    if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false };
+    const state = (await this.store.read(this.source)).sber ?? emptySber();
+    if (this.missing(state).length || !state.job && !syncDue(state.lastScheduledAt, state.lastSuccessAt, now)) return { enabled: true, pending: false };
+    if (!state.job) await this.mutate(data => {
+      const current = data.sber!;
+      if (current.job || !syncDue(current.lastScheduledAt, current.lastSuccessAt, now)) return { result: null, changed: false };
+      const to = today(), from = [SBER_FIRST_DAY, nextDay(to, -6)].sort().at(-1)!;
+      current.job = { id: randomUUID(), from, to, day: from, page: 1, pages: 0, staged: [], seenPages: [], attempts: 0 };
+      current.lastScheduledAt = new Date(now).toISOString(); delete current.lastError;
+      return { result: null, changed: true };
+    });
+    const result = await this.tick();
+    const after = (await this.store.read(this.source)).sber;
+    return { enabled: true, ...result, failed: !!after?.lastError };
   }
   private async locked<T>(work: (state: SberData, fence: string, client: SberClient) => Promise<T>): Promise<T | null> {
     const fence = randomUUID();

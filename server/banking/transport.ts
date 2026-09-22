@@ -1,5 +1,6 @@
 import { request } from 'node:https';
 import { randomUUID } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 import { bankConnections, type BankAccount } from '../../web/src/banking-model';
 import { ApiError } from '../api-error';
 import { object } from './domain';
@@ -32,11 +33,22 @@ export class BankHttpError extends ApiError {
   get transient() { return this.bankStatus === 202 || this.bankStatus === 429 || this.bankStatus >= 500 || this.bankStatus === 408; }
 }
 export type BankRequest = (config: BankConfig, path: string, token: string) => Promise<unknown>;
+/** Bind only T-Bank traffic to an explicitly selected local IPv4 interface. */
+export function bankNetworkOptions(config: BankConfig, interfaces = networkInterfaces()): { localAddress?: string; family?: 4 } {
+  const name = config.env[`${config.definition.envPrefix}_INTERFACE`]?.trim();
+  if (!name) return {};
+  const entries = Object.hasOwn(interfaces, name) ? interfaces[name] : undefined;
+  const address = entries?.find(row => row.family === 'IPv4' && !row.internal)?.address;
+  // Never silently fall back to the VPN/default route when the selected network disappears.
+  if (!address) throw new ApiError(503, 'Сетевой интерфейс Т-Банка недоступен. Подключите настроенную сеть и повторите запрос.');
+  return { localAddress: address, family: 4 };
+}
 export const bankRequest: BankRequest = async (config, path, token) => {
   if (config.definition.provider !== 'tbank' || !path.startsWith('/openapi/api/')) throw new ApiError(500, 'Недопустимый банковский метод.');
   const url = new URL(path, 'https://business.tbank.ru');
+  const network = bankNetworkOptions(config);
   const raw = await new Promise<string>((resolve, reject) => {
-    const req = request(url, { method: 'GET', minVersion: 'TLSv1.2', rejectUnauthorized: true, headers: { Accept: 'application/json', 'X-Request-Id': randomUUID(), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
+    const req = request(url, { ...network, method: 'GET', minVersion: 'TLSv1.2', rejectUnauthorized: true, headers: { Accept: 'application/json', 'X-Request-Id': randomUUID(), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
       const status = res.statusCode ?? 502;
       if (status !== 200) { res.resume(); const retry = res.headers['retry-after']; reject(new BankHttpError(status, Math.min(3600, Math.max(status === 202 ? 60 : 0, Number(retry) || (Date.parse(String(retry)) - Date.now()) / 1000 || 0)))); return; }
       const chunks: Buffer[] = []; let size = 0;
