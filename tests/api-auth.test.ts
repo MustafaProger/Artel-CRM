@@ -96,3 +96,66 @@ test('a fresh cloud store instance retains users and sessions in the same protec
     assert.deepEqual((await first.read(base.provenance.sourceSha256)).accounts,(await next.read(base.provenance.sourceSha256)).accounts);
   }finally{await local.close();}
 });
+
+test('account deletion enforces permissions, exact confirmation, versions and director protection; revokes access durably', async () => {
+  const r = await runtime();
+  try {
+    const password = randomBytes(20).toString('hex');
+    const setup = await r.request('/api/auth/setup', 'POST', { name: 'Director', login: 'delete-owner', password });
+    const owner = setup.body.user as AccountUser, cookie = setup.cookie!.split(';')[0];
+    const employee = await r.request('/api/directories', 'POST', { kind: 'managers', name: 'Delete QA' }, cookie);
+    const created = await r.request('/api/auth/users', 'POST', { name: 'Delete QA', login: 'delete-qa', password, role: 'manager', managerId: employee.body.entry.id }, cookie);
+    const user = created.body.user as AccountUser, path = `/api/auth/users/${user.id}`;
+    const signed = await r.request('/api/auth/login', 'POST', { login: user.login, password });
+    const managerCookie = signed.cookie!.split(';')[0], body = { version: user.version, confirmationName: user.name };
+    assert.equal((await r.request(path, 'DELETE', body)).status, 401);
+    assert.equal((await r.request(`/api/auth/users/${owner.id}`, 'DELETE', { version: owner.version, confirmationName: owner.name }, managerCookie)).status, 403);
+    assert.equal((await r.request(`/api/auth/users/${owner.id}`, 'DELETE', { version: owner.version, confirmationName: owner.name }, cookie)).status, 409);
+    assert.equal((await r.request(path, 'DELETE', { confirmationName: user.name }, cookie)).status, 400);
+    assert.equal((await r.request(path, 'DELETE', { ...body, confirmationName: 'wrong' }, cookie)).status, 400);
+    assert.equal((await r.request(path, 'DELETE', { ...body, active: false }, cookie)).status, 400);
+    assert.equal((await r.request(path, 'DELETE', { ...body, version: user.version + 1 }, cookie)).status, 409);
+    const base = await loadSnapshot();
+    const before = await r.store.read(base.provenance.sourceSha256);
+    assert.equal((await r.request(path, 'DELETE', body, cookie)).status, 200);
+    const persisted = await new OperationsStore(r.directory).read(base.provenance.sourceSha256);
+    const tombstone = persisted.accounts!.users.find(row => row.id === user.id)!;
+    assert.equal(tombstone.active, false); assert.ok(tombstone.deletedAt); assert.equal(tombstone.deletedBy, owner.id);
+    assert.equal(tombstone.managerId, user.managerId); assert.equal(tombstone.name, user.name); assert.equal(tombstone.version, user.version + 1);
+    assert.deepEqual(persisted.directories, before.directories); assert.deepEqual(persisted.shipments, before.shipments); assert.deepEqual(persisted.companies, before.companies);
+    assert.equal(persisted.accounts!.sessions.some(session => session.userId === user.id), false);
+    assert.equal((await r.request('/api/snapshot', 'GET', undefined, managerCookie)).status, 401);
+    assert.equal((await r.request('/api/auth/login', 'POST', { login: user.login, password })).status, 401);
+    assert.equal((await r.request('/api/auth/users', 'GET', undefined, cookie)).body.users.some((row: AccountUser) => row.id === user.id), false);
+    assert.equal((await r.request(path, 'PATCH', { name: user.name, login: user.login, role: user.role, managerId: user.managerId, version: tombstone.version, active: true }, cookie)).status, 404);
+    const beforeRetry = await readFile(r.store.path, 'utf8');
+    assert.equal((await r.request(path, 'DELETE', body, cookie)).status, 200);
+    assert.equal(await readFile(r.store.path, 'utf8'), beforeRetry);
+    // Tombstoned login remains reserved; its manager can be linked to a new account.
+    assert.equal((await r.request('/api/auth/users', 'POST', { name: user.name, login: user.login, password, role: 'manager', managerId: user.managerId }, cookie)).status, 409);
+    assert.equal((await r.request('/api/auth/users', 'POST', { name: user.name, login: 'delete-replacement', password, role: 'manager', managerId: user.managerId }, cookie)).status, 201);
+  } finally { await r.close(); }
+});
+
+test('administrator cannot delete last active director, but can remove a second director and retries reject unrelated old versions', async () => {
+  const r = await runtime();
+  try {
+    const password = randomBytes(20).toString('hex');
+    const setup = await r.request('/api/auth/setup', 'POST', { name: 'Owner', login: 'owner', password });
+    const owner = setup.body.user as AccountUser, cookie = setup.cookie!.split(';')[0];
+    const employee = await r.request('/api/directories', 'POST', { kind: 'managers', name: 'Admin' }, cookie);
+    const created = await r.request('/api/auth/users', 'POST', { name: 'Admin', login: 'delete-admin', password, role: 'admin', managerId: employee.body.entry.id }, cookie);
+    assert.equal(created.status, 201);
+    const signed = await r.request('/api/auth/login', 'POST', { login: 'delete-admin', password });
+    const adminCookie = signed.cookie!.split(';')[0];
+    const request = { version: owner.version, confirmationName: owner.name };
+    assert.match((await r.request(`/api/auth/users/${owner.id}`, 'DELETE', request, adminCookie)).body.error, /последнего активного директора/);
+    const secondEmployee = await r.request('/api/directories', 'POST', { kind: 'managers', name: 'Second Director' }, cookie);
+    const second = await r.request('/api/auth/users', 'POST', { name: 'Second Director', login: 'second-owner', password, role: 'director', managerId: secondEmployee.body.entry.id }, cookie);
+    assert.equal(second.status, 201);
+    assert.equal((await r.request(`/api/auth/users/${owner.id}`, 'PATCH', { name: owner.name, login: owner.login, role: owner.role, managerId: null, version: owner.version }, adminCookie)).status, 200);
+    assert.equal((await r.request(`/api/auth/users/${owner.id}`, 'DELETE', request, adminCookie)).status, 409);
+    assert.equal((await r.request(`/api/auth/users/${owner.id}`, 'DELETE', { ...request, version: 2 }, adminCookie)).status, 200);
+    assert.equal((await r.request(`/api/auth/users/${owner.id}`, 'DELETE', request, adminCookie)).status, 409);
+  } finally { await r.close(); }
+});

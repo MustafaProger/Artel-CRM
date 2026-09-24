@@ -2,6 +2,7 @@ import { loadEnv } from 'vite';
 import { resolve } from 'node:path';
 import { loadSnapshot } from '../server/local-api';
 import { OperationsStore } from '../server/operations-store';
+import { sberConnections, type SberConnectionId } from '../server/banking/sber-connections';
 import { SberService } from '../server/banking/sber-service';
 import { sberPeriod } from '../server/banking/sber-domain';
 import { today } from '../server/banking/domain';
@@ -12,7 +13,9 @@ const env = loadEnv('development', process.cwd(), 'ARTEL_');
 const { from, to } = sberPeriod(process.argv[2] ?? '2026-09-01', process.argv[3] ?? today());
 const store = new OperationsStore(env.ARTEL_STORE_DIR ?? resolve('data/local-operations'));
 const source = (await loadSnapshot()).provenance.sourceSha256;
-const service = new SberService(store, source, env);
+const connectionId = process.argv[4] ?? 'sber-nk-artel';
+if (!(connectionId in sberConnections)) throw new Error('Unknown Sber connection');
+const service = new SberService(store, source, env, undefined, sberConnections[connectionId as SberConnectionId]);
 try {
   await service.start(from, to);
   for (;;) {

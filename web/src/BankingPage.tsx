@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Decimal from 'decimal.js'
 import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Building2, Check, ChevronLeft, ChevronRight, Copy, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
 import { bankConnections, type BankCard, type BankListResult, type BankOperation, type BankParty, type BankTotals } from './banking-model'
-import SberLayout from './SberLayout'
 import BankConnectionHeader from './BankConnectionHeader'
 import SberStatements from './SberStatements'
 import type { SberStatementsResult } from './sber-model'
@@ -45,7 +44,7 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const [data, setData] = useState<BankListResult | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [actionError, setActionError] = useState(''), [busy, setBusy] = useState(false), [detail, setDetail] = useState<string | null>(null)
   const [settings, setSettings] = useState(false)
-  const [sberCard, setSberCard] = useState<SberStatementsResult | null>(null), [sberCardError, setSberCardError] = useState(false)
+  const [sberCards, setSberCards] = useState<Record<string, SberStatementsResult>>({}), [sberCardErrors, setSberCardErrors] = useState<Record<string, boolean>>({})
   useEffect(() => { const timer = setTimeout(() => { setSearch(query); setPage(1) }, 250); return () => clearTimeout(timer) }, [query])
   const params = new URLSearchParams({ from, to, q: search, direction, account, status, connection, page: String(page), pageSize: String(pageSize) }).toString()
   useEffect(() => {
@@ -58,16 +57,25 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   useEffect(() => {
     if (source !== 'api' || connection) return
     const controller = new AbortController()
-    api<SberStatementsResult>(`/api/banking/sber/statements?${new URLSearchParams({ from, to })}`, undefined, controller.signal).then(result => { setSberCard(result); setSberCardError(false) }).catch(error => { if (error.name !== 'AbortError') setSberCardError(true) })
+    for (const { id } of bankConnections.filter(row => row.provider === 'sber')) {
+      api<SberStatementsResult>(`/api/banking/sber/${id}/statements?${new URLSearchParams({ from, to })}`, undefined, controller.signal).then(result => { setSberCards(current => ({ ...current, [id]: result })); setSberCardErrors(current => ({ ...current, [id]: false })) }).catch(error => { if (error.name !== 'AbortError') setSberCardErrors(current => ({ ...current, [id]: true })) })
+    }
     return () => controller.abort()
   }, [source, connection, revision, from, to])
-  const ongoing = data?.connections.filter(card => card.progress && card.progress.attempts < 5 && card.state !== 'not_configured').map(card => card.id).join(',') ?? ''
+  const ongoing = [...(data?.connections.filter(card => card.progress && card.progress.attempts < 5 && card.state !== 'not_configured').map(card => card.id) ?? []), ...(!connection ? Object.entries(sberCards).filter(([, state]) => state.progress && !state.missing.length && (!state.lastError || state.progress.nextAttemptAt)).map(([id]) => id) : [])].join(',')
   useEffect(() => {
     if (!ongoing || busy || source !== 'api' || sber) return
     let stopped = false
     const timer = setTimeout(async () => {
-      try { for (const id of ongoing.split(',')) { if (stopped) break; await api(`/api/banking/connections/${id}/continue`, {}) } }
-      catch (e) { if (!stopped) setActionError((e as Error).message) }
+      try {
+        const errors: string[] = []
+        for (const id of ongoing.split(',')) {
+          if (stopped) break
+          try { await api(id.startsWith('sber-') ? `/api/banking/sber/${id}/continue` : `/api/banking/connections/${id}/continue`, {}) }
+          catch (error) { errors.push((error as Error).message) }
+        }
+        if (!stopped && errors.length) setActionError([...new Set(errors)].join(' '))
+      }
       finally { if (!stopped) setRevision(v => v + 1) }
     }, 1500)
     return () => { stopped = true; clearTimeout(timer) }
@@ -85,34 +93,40 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
     setBusy(true); setActionError('')
     try {
       const targets = card ? [card] : data?.connections.filter(card => !card.missing.length) ?? []
-      for (const item of targets) await api(`/api/banking/connections/${item.id}/sync`, { from: item.progress?.from ?? from, to: item.progress?.to ?? to })
+      const requests = [
+        ...targets.map(item => api(`/api/banking/connections/${item.id}/sync`, { from: item.progress?.from ?? from, to: item.progress?.to ?? to })),
+        ...(!card ? Object.entries(sberCards).filter(([, state]) => !state.missing.length).map(([id, state]) => api(`/api/banking/sber/${id}/sync`, { from: state.progress?.from ?? from, to: state.progress?.to ?? to })) : []),
+      ]
+      const results = await Promise.allSettled(requests)
+      const errors = results.flatMap(result => result.status === 'rejected' ? [(result.reason as Error).message] : [])
+      if (errors.length) setActionError([...new Set(errors)].join(' '))
     } catch (e) { setActionError((e as Error).message) }
     finally { setBusy(false); setRevision(v => v + 1) }
   }
   const reset = () => { setQuery(''); setSearch(''); setDirection(''); setStatus(''); setAccount(''); setPage(1) }
   const filtered = !!(search || direction || status || account)
-  const sberCardState: BankCard['state'] = sberCard?.progress ? 'syncing' : sberCard?.lastError ? 'error' : sberCard?.missing.length ? 'not_configured' : sberCard?.lastSuccessAt ? 'connected' : 'ready'
-  const sberRows = sberCard?.operations.filter(row => row.booked) ?? []
-  const sberTotals: BankTotals[] = sberRows.length ? [{ currency: 'RUB', count: sberRows.length,
-    incoming: sberRows.filter(row => row.direction === 'incoming').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
-    outgoing: sberRows.filter(row => row.direction === 'outgoing').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
-  }] : []
   const connectionCards = bankConnections.map(definition => {
     const live = data?.connections.find(item => item.id === definition.id)
-    const isSber = definition.id === 'sber-nk-artel', placeholder = definition.id === 'sber-artel'
+    const isSber = definition.provider === 'sber', sberCard = sberCards[definition.id], sberCardError = sberCardErrors[definition.id]
+    const sberCardState: BankCard['state'] = sberCard?.progress ? 'syncing' : sberCard?.lastError ? 'error' : sberCard?.missing.length ? 'not_configured' : sberCard?.lastSuccessAt ? 'connected' : 'ready'
+    const sberRows = sberCard?.operations.filter(row => row.booked) ?? []
+    const sberTotals: BankTotals[] = sberRows.length ? [{ currency: 'RUB', count: sberRows.length,
+      incoming: sberRows.filter(row => row.direction === 'incoming').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
+      outgoing: sberRows.filter(row => row.direction === 'outgoing').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
+    }] : []
     const state = isSber ? sberCardError ? 'error' : sberCardState : live?.state ?? 'not_configured'
-    return { ...definition, state, label: placeholder ? 'Не подключён' : isSber && sberCardError ? 'Статус недоступен' : stateName[state],
+    return { ...definition, state, label: isSber && sberCardError ? 'Статус недоступен' : stateName[state],
       accounts: isSber && sberCard ? [{ number: sberCard.account, currency: 'RUB' }] : live?.accounts ?? [],
       totals: isSber ? sberCardError ? [] : sberTotals : live?.totals ?? [],
       lastSuccessAt: isSber ? sberCard?.lastSuccessAt : live?.lastSuccessAt,
     }
   })
   const selectedBank = bankConnections.find(item => item.id === connection)
-  const syncControls = <><button className="button" onClick={() => setSettings(v => !v)}><Unplug size={16}/>Подключение</button><button className="button primary" onClick={() => void synchronize()} disabled={busy || loading || !!error || !(card ? !card.missing.length : data?.connections.some(card => !card.missing.length))}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем…' : card?.progress ? 'Продолжить загрузку' : 'Синхронизировать'}</button></>
+  const syncControls = <><button className="button" onClick={() => setSettings(v => !v)}><Unplug size={16}/>Подключение</button><button className="button primary" onClick={() => void synchronize()} disabled={busy || loading || !!error || !(card ? !card.missing.length : data?.connections.some(card => !card.missing.length) || Object.values(sberCards).some(state => !state.missing.length))}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем…' : card?.progress ? 'Продолжить загрузку' : 'Синхронизировать'}</button></>
   const periodControls = <div className="bank-period"><label>Период с<input aria-label="Период с" type="date" value={from} max={to || currentDay()} onChange={e => { setFrom(e.target.value); setPage(1) }}/></label><span>—</span><label>Период по<input aria-label="Период по" type="date" value={to} min={from} max={currentDay()} onChange={e => { setTo(e.target.value); setPage(1) }}/></label></div>
   return <section className="banking-page">
     <div className="bank-source-tabs" role="tablist" aria-label="Источник платежей"><button role="tab" aria-selected={source === 'api'} onClick={() => setSource('api')}>Банковские подключения</button><button role="tab" aria-selected={source === 'legacy'} onClick={() => setSource('legacy')}>Архив из файла</button></div>
-    {source === 'legacy' ? <>{legacy}</> : sber ? sber.id === 'sber-nk-artel' ? <SberStatements onBack={() => selectBank('')}/> : <SberLayout bank={sber} onBack={() => selectBank('')}/> : <>
+    {source === 'legacy' ? <>{legacy}</> : sber ? <SberStatements key={sber.id} connectionId={sber.id} onBack={() => selectBank('')}/> : <>
       {selectedBank ? <BankConnectionHeader bankName={selectedBank.bankName} company={selectedBank.company} provider={selectedBank.provider} onBack={() => selectBank('')}
         actions={syncControls}
         fields={[{ label: (card?.accounts.length ?? 0) > 1 ? 'Расчётные счета' : 'Расчётный счёт', value: card?.accounts.length ? card.accounts.map(item => <span key={item.number}>{item.number}</span>) : 'Счета ещё не подключены' }, { label: 'Валюта счетов', value: card?.accounts.length ? [...new Set(card.accounts.map(item => item.currency === 'RUB' ? 'Рубли' : item.currency))].join(', ') : 'Нет данных' }]}>

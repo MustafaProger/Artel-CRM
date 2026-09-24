@@ -5,7 +5,6 @@ import type { SberOperation, SberStatementsResult } from './sber-model'
 import BankConnectionHeader from './BankConnectionHeader'
 import './sber-statements.css'
 
-const endpoint = '/api/banking/sber'
 const currentDay = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date())
 const displayDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) ? value.split('-').reverse().join('.') : value
 const displayTimestamp = (value?: string) => {
@@ -37,7 +36,8 @@ async function api<T>(url: string, body?: unknown, signal?: AbortSignal): Promis
   return result
 }
 
-export default function SberStatements({ onBack }: { onBack: () => void }) {
+export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' }: { onBack: () => void; connectionId?: string }) {
+  const endpoint = `/api/banking/sber/${connectionId}`
   const [period, setPeriod] = useState(() => ({ from: '2026-09-01', to: currentDay() }))
   const [draft, setDraft] = useState(period)
   const [data, setData] = useState<SberStatementsResult | null>(null)
@@ -66,7 +66,7 @@ export default function SberStatements({ onBack }: { onBack: () => void }) {
       if (mounted.current && version === requestVersion.current && (caught as Error).name !== 'AbortError') setError((caught as Error).message)
       throw caught
     } finally { if (mounted.current && version === requestVersion.current) setLoading(false) }
-  }, [period])
+  }, [period, endpoint])
   // Opening the screen only reads saved data. A bank request starts with the user's refresh action.
   useEffect(() => {
     const controller = new AbortController()
@@ -134,9 +134,9 @@ export default function SberStatements({ onBack }: { onBack: () => void }) {
   }
 
   return <div className="sber-statements">
-    <BankConnectionHeader bankName="СберБизнес" company={data?.company ?? 'ООО «НК АРТЭЛЬ»'} provider="sber" onBack={onBack}
+    <BankConnectionHeader bankName="СберБизнес" company={data?.company ?? (connectionId === 'sber-artel' ? 'ООО «АРТЭЛЬ»' : 'ООО «НК АРТЭЛЬ»')} provider="sber" onBack={onBack}
       actions={<button className="button primary" disabled={busy || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button>}
-      fields={[{ label: 'Расчётный счёт', value: data?.account ?? '40702810438720035571' }, { label: 'ИНН', value: data?.inn ?? '5050140563' }, { label: 'Валюта счёта', value: 'Рубли' }]}>
+      fields={[{ label: 'Расчётный счёт', value: data?.account ?? 'Загружаем…' }, { label: 'ИНН', value: data?.inn ?? 'Загружаем…' }, { label: 'Валюта счёта', value: 'Рубли' }]}>
     <form className="bank-period sber-period" onSubmit={event => { event.preventDefault(); if (!invalidPeriod && !busy) { setSelectedDay(null); setPeriod({ ...draft }) } }}>
       <label>Период с<input aria-label="Начало периода выписки Сбера" type="date" value={draft.from} max={draft.to && draft.to < today ? draft.to : today} disabled={busy} onChange={event => setDraft(previous => ({ ...previous, from: event.target.value }))}/></label>
       <span aria-hidden="true">—</span>
@@ -167,13 +167,13 @@ export default function SberStatements({ onBack }: { onBack: () => void }) {
 
       </div>
     </>}
-    {detail && <OperationDetails initial={detail} available={!data?.missing.length} onUpdate={updateOperation} onClose={() => setDetail(null)}/>}
+    {detail && <OperationDetails endpoint={endpoint} initial={detail} available={!data?.missing.length} onUpdate={updateOperation} onClose={() => setDetail(null)}/>}
   </div>
 }
 
 const partyFields: [keyof BankParty, string][] = [['name', 'Наименование'], ['inn', 'ИНН'], ['kpp', 'КПП'], ['account', 'Расчётный счёт'], ['bankName', 'Банк'], ['bic', 'БИК / SWIFT'], ['correspondentAccount', 'Корреспондентский счёт']]
 const rawFields = (value: unknown, prefix = ''): [string, string][] => value && typeof value === 'object' ? Object.entries(value).flatMap(([key, item]) => rawFields(item, prefix ? `${prefix}.${key}` : key)) : [[prefix, value == null ? 'Не передано банком' : String(value)]]
-function OperationDetails({ initial, available, onUpdate, onClose }: { initial: SberOperation; available: boolean; onUpdate: (operation: SberOperation) => void; onClose: () => void }) {
+function OperationDetails({ endpoint, initial, available, onUpdate, onClose }: { endpoint: string; initial: SberOperation; available: boolean; onUpdate: (operation: SberOperation) => void; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [row, setRow] = useState(initial), [loading, setLoading] = useState(false), [refreshing, setRefreshing] = useState(false), [error, setError] = useState('')
   const mounted = useRef(true)
@@ -188,7 +188,7 @@ function OperationDetails({ initial, available, onUpdate, onClose }: { initial: 
     setLoading(true)
     void api<{ operation: SberOperation }>(`${endpoint}/operations/${encodeURIComponent(initial.id)}`, undefined, controller.signal).then(result => { setRow(result.operation); onUpdate(result.operation) }).catch(caught => { if (!controller.signal.aborted) setError((caught as Error).message) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [initial.id, onUpdate])
+  }, [initial.id, onUpdate, endpoint])
   const refresh = async () => {
     if (refreshing) return
     setRefreshing(true); setError('')

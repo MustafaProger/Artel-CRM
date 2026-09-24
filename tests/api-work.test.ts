@@ -162,3 +162,33 @@ test('work decoder accepts old stores and refuses malformed persisted task data 
   for (const value of [null, {}, { tasks: [], companyRecords: [], notes: [{}] }, { tasks: null, companyRecords: [], notes: [] }]) assert.throws(() => validateWorkData(value), StoreError);
   assert.throws(() => decodeOperations('{"data":{"work":{"tasks":[{}]}}}', base.provenance.sourceSha256), StoreError);
 });
+
+test('employee deletion requires handover of open work, keeps authored history and forbids new assignments to deleted accounts', async () => {
+  const f = await setup();
+  try {
+    const alice = f.users[1], deletion = { version: alice.version, confirmationName: alice.name };
+    const task = (await f.alice('/api/work/tasks', 'POST', { title: 'History stays', comment: 'Written by Alice', addAttachments: [{ name: 'memo.txt', data: Buffer.from('history').toString('base64') }] })).body.entry as WorkTask;
+    const company = (await f.alice('/api/work/companies', 'POST', { companyId: f.snapshot.companies[0].id, question: 'Open question' })).body.entry as WorkCompanyRecord;
+    const note = (await f.alice('/api/work/notes', 'POST', { title: 'Keep note', content: 'History' })).body.entry as WorkNote;
+    const blocked = await f.director(`/api/auth/users/${alice.id}`, 'DELETE', deletion);
+    assert.equal(blocked.status, 409); assert.match(blocked.body.error, /задачи — 1, работа с компаниями — 1/);
+    assert.equal((await f.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: task.version, status: 'done' })).status, 200);
+    assert.equal((await f.director(`/api/auth/users/${alice.id}`, 'DELETE', deletion)).status, 409);
+    assert.equal((await f.alice(`/api/work/companies/${company.id}`, 'PATCH', { version: company.version, assigneeId: f.users[2].id })).status, 200);
+    const before = (await f.store.read(base.provenance.sourceSha256)).work;
+    assert.equal((await f.director(`/api/auth/users/${alice.id}`, 'DELETE', deletion)).status, 200);
+    const after = await new OperationsStore(f.directory).read(base.provenance.sourceSha256);
+    assert.deepEqual(after.work, before);
+    const response = (await f.bob('/api/work')).body as WorkResponse;
+    assert.equal(response.users.some(user => user.id === alice.id), false);
+    assert.deepEqual(response.historicalUsers, [{ id: alice.id, name: alice.name }]);
+    const directorWork = (await f.director(`/api/work?assigneeId=${alice.id}`)).body as WorkResponse;
+    assert.equal(directorWork.work.tasks[0].comments![0].authorId, alice.id);
+    assert.equal(directorWork.work.tasks[0].attachments![0].authorId, alice.id);
+    assert.equal(directorWork.work.notes[0].id, note.id);
+    assert.equal((await f.director('/api/work/tasks', 'POST', { title: 'Invalid assignment', assigneeId: alice.id })).status, 400);
+    assert.equal((await f.director(`/api/work/tasks/${task.id}`, 'PATCH', { version: 2, comment: 'History still editable' })).status, 200);
+    assert.equal((await f.director(`/api/work/tasks/${task.id}`, 'PATCH', { version: 3, status: 'doing' })).status, 400);
+    assert.equal((await f.director(`/api/work/tasks/${task.id}`, 'PATCH', { version: 3, status: 'doing', assigneeId: f.users[2].id })).status, 200);
+  } finally { await f.close(); }
+});

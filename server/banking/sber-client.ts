@@ -7,18 +7,18 @@ import { parseBankJson } from './transport';
 export interface SberTokens { accessToken: string; refreshToken: string; expiresAt?: number }
 export interface SberTokenVault { read(): Promise<SberTokens | undefined>; save(tokens: SberTokens): Promise<void> }
 export interface SberRequestOptions { path: string; query?: Record<string, string>; accessToken?: string; form?: Record<string, string> }
-export type SberRequest = (env: Record<string, string | undefined>, options: SberRequestOptions) => Promise<unknown>;
+export type SberRequest = (env: Record<string, string | undefined>, options: SberRequestOptions, prefix?: string) => Promise<unknown>;
 export const SBER_PREFIX = 'ARTEL_BANK_SBER_NK';
 const ORIGIN = 'https://fintech.sberbank.ru:9443';
 const TOKEN_PATH = '/ic/sso/api/v2/oauth/token';
 const READ_PATHS = new Set(['/fintech/api/v2/statement/transactions', '/fintech/api/v2/statement/summary', '/fintech/api/v2/statement/transactionId']);
 
-export function sberMissing(env: Record<string, string | undefined>, hasSavedTokens = false): string[] {
+export function sberMissing(env: Record<string, string | undefined>, hasSavedTokens = false, prefix = SBER_PREFIX): string[] {
   const missing: string[] = [];
   for (const [key, label] of [['CLIENT_ID', 'Идентификатор сервиса'], ['CLIENT_SECRET', 'Секрет сервиса'], ['TLS_PFX_BASE64', 'Клиентский сертификат'], ['TLS_PASSPHRASE', 'Пароль клиентского сертификата'], ['TLS_CA_BASE64', 'Доверенная цепочка сертификатов']] as const) {
-    if (!env[`${SBER_PREFIX}_${key}`]) missing.push(label);
+    if (!env[`${prefix}_${key}`]) missing.push(label);
   }
-  if (!hasSavedTokens && (!env[`${SBER_PREFIX}_ACCESS_TOKEN`] || !env[`${SBER_PREFIX}_REFRESH_TOKEN`])) missing.push('Ключи доступа к выпискам');
+  if (!hasSavedTokens && (!env[`${prefix}_ACCESS_TOKEN`] || !env[`${prefix}_REFRESH_TOKEN`])) missing.push('Ключи доступа к выпискам');
   const key = env.ARTEL_BANK_ENCRYPTION_KEY ?? '';
   if (!/^[a-f0-9]{64}$/i.test(key) && !(/^[A-Za-z0-9+/]{43}=$/.test(key) && Buffer.from(key, 'base64').length === 32)) missing.push('Ключ защиты банковского доступа на сервере');
   return missing;
@@ -32,7 +32,7 @@ export class SberHttpError extends ApiError {
   get transient() { return this.bankStatus === 429 || this.bankStatus === 408 || this.bankStatus >= 500; }
 }
 
-export const sberRequest: SberRequest = async (env, options) => {
+export const sberRequest: SberRequest = async (env, options, prefix = SBER_PREFIX) => {
   const refresh = options.path === TOKEN_PATH && !!options.form;
   if ((!refresh && (!READ_PATHS.has(options.path) || options.form)) || (refresh && options.form?.grant_type !== 'refresh_token')) throw new ApiError(500, 'Недопустимый метод Сбера.');
   const url = new URL(options.path, ORIGIN);
@@ -40,8 +40,8 @@ export const sberRequest: SberRequest = async (env, options) => {
   const body = refresh ? new URLSearchParams(options.form).toString() : undefined;
   let pfx: Buffer, ca: string;
   try {
-    pfx = Buffer.from(env[`${SBER_PREFIX}_TLS_PFX_BASE64`] ?? '', 'base64');
-    ca = Buffer.from(env[`${SBER_PREFIX}_TLS_CA_BASE64`] ?? '', 'base64').toString('utf8');
+    pfx = Buffer.from(env[`${prefix}_TLS_PFX_BASE64`] ?? '', 'base64');
+    ca = Buffer.from(env[`${prefix}_TLS_CA_BASE64`] ?? '', 'base64').toString('utf8');
     if (!pfx.length || !ca.includes('-----BEGIN CERTIFICATE-----')) throw new Error();
   } catch { throw new SberHttpError(495); }
   const raw = await new Promise<string>((resolve, reject) => {
@@ -49,7 +49,7 @@ export const sberRequest: SberRequest = async (env, options) => {
     try {
       req = request(url, {
         method: refresh ? 'POST' : 'GET', minVersion: 'TLSv1.2', rejectUnauthorized: true,
-        pfx, passphrase: env[`${SBER_PREFIX}_TLS_PASSPHRASE`], ca: [...rootCertificates, ca],
+        pfx, passphrase: env[`${prefix}_TLS_PASSPHRASE`], ca: [...rootCertificates, ca],
         headers: { Accept: 'application/json', 'X-Request-ID': randomUUID(), ...(options.accessToken ? { Authorization: options.accessToken } : {}), ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}) },
       }, res => {
         const status = res.statusCode ?? 502;
@@ -78,25 +78,25 @@ export const sberRequest: SberRequest = async (env, options) => {
 /** Caller holds the durable connection lease, including during refresh and token persistence. */
 export class SberClient {
   private lastRequestAt = 0;
-  constructor(private readonly env: Record<string, string | undefined>, private readonly vault: SberTokenVault, private readonly request: SberRequest = sberRequest) {}
+  constructor(private readonly env: Record<string, string | undefined>, private readonly vault: SberTokenVault, private readonly request: SberRequest = sberRequest, private readonly prefix = SBER_PREFIX) {}
   private async call(options: SberRequestOptions) {
     const wait = this.lastRequestAt + 250 - Date.now();
     if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
     this.lastRequestAt = Date.now();
-    return this.request(this.env, options);
+    return this.request(this.env, options, this.prefix);
   }
   private async tokens(): Promise<SberTokens> {
     const saved = await this.vault.read();
     if (saved) return saved;
-    const accessToken = this.env[`${SBER_PREFIX}_ACCESS_TOKEN`], refreshToken = this.env[`${SBER_PREFIX}_REFRESH_TOKEN`];
+    const accessToken = this.env[`${this.prefix}_ACCESS_TOKEN`], refreshToken = this.env[`${this.prefix}_REFRESH_TOKEN`];
     if (!accessToken || !refreshToken) throw new ApiError(503, 'На сервере не сохранены ключи доступа Сбера.');
-    const expiresAt = Number(this.env[`${SBER_PREFIX}_ACCESS_TOKEN_EXPIRES_AT`]);
+    const expiresAt = Number(this.env[`${this.prefix}_ACCESS_TOKEN_EXPIRES_AT`]);
     const tokens: SberTokens = { accessToken, refreshToken, ...(Number.isFinite(expiresAt) && expiresAt > 0 ? { expiresAt } : {}) };
     await this.vault.save(tokens);
     return tokens;
   }
   private async refresh(tokens: SberTokens) {
-    const result = await this.call({ path: TOKEN_PATH, form: { grant_type: 'refresh_token', refresh_token: tokens.refreshToken, client_id: this.env[`${SBER_PREFIX}_CLIENT_ID`] ?? '', client_secret: this.env[`${SBER_PREFIX}_CLIENT_SECRET`] ?? '' } });
+    const result = await this.call({ path: TOKEN_PATH, form: { grant_type: 'refresh_token', refresh_token: tokens.refreshToken, client_id: this.env[`${this.prefix}_CLIENT_ID`] ?? '', client_secret: this.env[`${this.prefix}_CLIENT_SECRET`] ?? '' } });
     if (!result || typeof result !== 'object') throw new ApiError(502, 'Сбер не вернул новую пару ключей.');
     const row = result as Record<string, unknown>;
     if (typeof row.access_token !== 'string' || !row.access_token || typeof row.refresh_token !== 'string' || !row.refresh_token) throw new ApiError(502, 'Сбер не вернул новую пару ключей.');

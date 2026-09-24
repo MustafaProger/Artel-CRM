@@ -51,6 +51,17 @@
 .account-status::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
 .account-status.is-inactive { background: #f0f1f4; color: #767a82; }
 .account-panel .account-row small { margin-top: 5px; font-size: 12px; line-height: 1.6; color: #777b82; }
+.account-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 240px; }
+.account-row-actions > small { flex-basis: 100%; text-align: right; }
+.account-panel .account-delete { color: #a53939; }
+.account-panel .account-delete:disabled { color: #8b8e95; }
+.account-delete-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; border: 1px solid #dedfe4; border-radius: 18px; padding: 26px; color: #24262a; background: #fff; box-shadow: 0 24px 80px #0003; }
+.account-delete-dialog::backdrop { background: #19212a80; }
+.account-delete-dialog h2 { margin: 0 0 18px; font-size: 20px; }
+.account-delete-dialog p { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.account-delete-dialog label { display: grid; gap: 8px; margin: 22px 0; font-size: 13px; }
+.account-delete-dialog input { min-width: 0; min-height: 44px; border: 1px solid #dedfe4; border-radius: 10px; padding: 10px 12px; font: inherit; }
+.account-delete-dialog .account-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
 @media (max-width: 1200px) { .account-editor-grid { grid-template-columns: 1fr; } }
 @media (max-width: 650px) {
   .account-panel.panel { padding: 18px; }
@@ -67,7 +78,11 @@
   .account-panel .account-actions { flex-wrap: wrap; }
   .account-panel .account-actions .button { flex: 1 1 auto; }
   .account-panel .account-row { gap: 10px; flex-wrap: wrap; }
-  .account-panel .account-row > .button { margin-left: 50px; }
+  .account-panel .account-row-actions { margin-left: 50px; justify-content: flex-start; max-width: none; }
+  .account-row-actions > small { text-align: left; }
+  .account-delete-dialog { padding: 20px; }
+  .account-delete-dialog input { font-size: 16px; }
+  .account-delete-dialog .account-actions .button { flex: 1 1 auto; }
   .account-user-info { flex-basis: calc(100% - 50px); }
 }
 @media (prefers-reduced-motion: reduce) { .account-panel .account-form input.account-toggle, .account-panel .account-form input.account-toggle::after { transition: none; } .account-panel .button:active { transform: none; } }

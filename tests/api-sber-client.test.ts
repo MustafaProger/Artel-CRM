@@ -242,3 +242,17 @@ test('Sber checks server encryption and connection credentials without exposing 
   env.ARTEL_BANK_ENCRYPTION_KEY = Buffer.alloc(31).toString('base64');
   assert.ok(sberMissing(env, true).includes('Ключ защиты банковского доступа на сервере'));
 });
+
+test('ARTEL transport selects its certificate and passphrase without falling back to NK credentials', async t => {
+  const prefix = 'ARTEL_BANK_SBER_ARTEL';
+  const env = { ...environment(), [`${prefix}_TLS_PFX_BASE64`]: Buffer.from('fixture-artel-container').toString('base64'), [`${prefix}_TLS_PASSPHRASE`]: 'fixture-artel-pass', [`${prefix}_TLS_CA_BASE64`]: Buffer.from('-----BEGIN CERTIFICATE-----\nfixture-artel-ca\n-----END CERTIFICATE-----').toString('base64') };
+  const calls = captureHttps(t, [{ body: '{}' }]);
+  await sberRequest(env, { path: SUMMARY, query, accessToken: 'fixture-artel-access' }, prefix);
+  assert.equal((calls[0].options.pfx as Buffer).toString(), 'fixture-artel-container');
+  assert.equal(calls[0].options.passphrase, 'fixture-artel-pass');
+  assert.ok((calls[0].options.ca as string[]).at(-1)!.includes('fixture-artel-ca'));
+  assert.equal((calls[0].options.headers as Record<string, string>).Authorization, 'fixture-artel-access');
+  assert.equal(sberMissing(environment(), false, prefix).length, 6);
+  await assert.rejects(sberRequest(environment(), { path: SUMMARY, query }, prefix), (error: unknown) => error instanceof SberHttpError && error.bankStatus === 495);
+  assert.equal(calls.length, 1, 'missing ARTEL settings cannot send with NK mTLS');
+});

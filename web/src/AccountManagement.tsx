@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Plus, ShieldCheck, UserRound } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Plus, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 import './accounts.css';
 import { effectiveSections, legacyManagerSections, sections, type AccountRole, type AccountUser, type SectionId } from './auth-model';
 import type { Directories } from './model';
@@ -15,8 +15,9 @@ export default function AccountManagement({ directories, onChanged }: { director
   const [users, setUsers] = useState<AccountUser[]>([]), [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<AccountUser | null | undefined>(undefined), [form, setForm] = useState(empty), [employeeName, setEmployeeName] = useState('');
   const [employees, setEmployees] = useState(directories.managers);
+  const [currentUserId, setCurrentUserId] = useState(''), [deleting, setDeleting] = useState<AccountUser | null>(null);
   useEffect(() => setEmployees(directories.managers), [directories.managers]);
-  const refresh = async () => setUsers((await request('/api/auth/users')).users);
+  const refresh = async () => { const result = await request('/api/auth/users'); setUsers(result.users); setCurrentUserId(result.currentUserId); };
   useEffect(() => { void refresh().catch(e => setError(e.message)); }, []);
   const edit = (user: AccountUser | null) => {
     setEditing(user); setError(''); setNotice(''); setEmployeeName('');
@@ -24,6 +25,7 @@ export default function AccountManagement({ directories, onChanged }: { director
   };
   const toggle = (id: SectionId, enabled: boolean) => setForm(previous => ({ ...previous, sections: enabled ? [...previous.sections, id] : previous.sections.filter(value => value !== id) }));
   const privileged = form.role !== 'manager';
+  const deletionBlock = (user: AccountUser) => user.id === currentUserId ? 'Нельзя удалить свою учётную запись' : user.active && user.role === 'director' && users.filter(row => row.active && row.role === 'director').length === 1 ? 'Нельзя удалить последнего активного директора' : '';
   return <section className="panel account-panel">
     <div className="panel-heading"><div><h2>Учётные записи</h2></div><button className="button primary" disabled={busy} onClick={() => edit(null)}><Plus size={16} aria-hidden="true" />Добавить пользователя</button></div>
     {error && <p className="soft-notice" role="alert">{error}</p>}{notice && <p className="soft-notice" role="status">{notice}</p>}
@@ -59,6 +61,20 @@ export default function AccountManagement({ directories, onChanged }: { director
       <div className="account-form-footer"><label className="active-field"><input className="account-toggle" type="checkbox" checked={form.active} onChange={event => setForm({ ...form, active: event.target.checked })} /><span>Активен</span></label>
       <div className="account-actions"><button className="button primary" type="submit">{busy ? 'Сохраняем…' : 'Сохранить пользователя'}</button><button className="button" type="button" onClick={() => setEditing(undefined)}>Отмена</button></div></div>
     </fieldset></form>}
-    <div className="account-list-heading"><h3>Пользователи</h3><span>{users.length}</span></div><div className="account-list">{users.map(user => <div className="account-row" key={user.id}><span className="account-avatar" aria-hidden="true">{user.name.trim().slice(0, 1).toUpperCase()}</span><div className="account-user-info"><div className="account-user-title"><strong>{user.name}</strong><span className={`account-status${user.active ? '' : ' is-inactive'}`}>{user.active ? 'Активен' : 'Отключён'}</span></div><small>{user.login} · {roleNames[user.role]}</small><small>Сотрудник: {employees.find(employee => employee.id === user.managerId)?.name ?? 'Не связан — привяжите сотрудника'}</small><small>Разделы: {user.active ? sections.filter(section => effectiveSections(user).includes(section.id)).map(section => section.title).join(', ') || 'Нет доступа' : 'Доступ отключён'}</small><small>{user.role === 'manager' ? 'Отгрузки: только свои' : 'Отгрузки: все'}</small></div><button className="button" disabled={busy} onClick={() => edit(user)}>Изменить</button></div>)}</div>
+    <div className="account-list-heading"><h3>Пользователи</h3><span>{users.length}</span></div><div className="account-list">{users.map(user => <div className="account-row" key={user.id}><span className="account-avatar" aria-hidden="true">{user.name.trim().slice(0, 1).toUpperCase()}</span><div className="account-user-info"><div className="account-user-title"><strong>{user.name}</strong><span className={`account-status${user.active ? '' : ' is-inactive'}`}>{user.active ? 'Активен' : 'Отключён'}</span></div><small>{user.login} · {roleNames[user.role]}</small><small>Сотрудник: {employees.find(employee => employee.id === user.managerId)?.name ?? 'Не связан — привяжите сотрудника'}</small><small>Разделы: {user.active ? sections.filter(section => effectiveSections(user).includes(section.id)).map(section => section.title).join(', ') || 'Нет доступа' : 'Доступ отключён'}</small><small>{user.role === 'manager' ? 'Отгрузки: только свои' : 'Отгрузки: все'}</small></div><div className="account-row-actions"><button className="button" disabled={busy} onClick={() => edit(user)}>Изменить</button><button className="button account-delete" disabled={busy || !!deletionBlock(user)} title={deletionBlock(user) || `Удалить ${user.name}`} aria-label={`Удалить ${user.name}`} onClick={() => { setDeleting(user); setError(''); setNotice(''); }}><Trash2 size={15} aria-hidden="true"/>Удалить</button>{deletionBlock(user) && <small>{deletionBlock(user)}</small>}</div></div>)}</div>
+    {deleting && <DeleteAccountDialog user={deleting} onClose={() => setDeleting(null)} onDeleted={async () => { await refresh(); setDeleting(null); if (editing?.id === deleting.id) setEditing(undefined); onChanged(); setNotice('Учётная запись удалена. Доступ и уведомления отключены, история работы сохранена.'); }}/>}
   </section>;
+}
+
+function DeleteAccountDialog({ user, onClose, onDeleted }: { user: AccountUser; onClose: () => void; onDeleted: () => Promise<void> }) {
+  const dialog = useRef<HTMLDialogElement>(null), confirmationInput = useRef<HTMLInputElement>(null), inFlight = useRef(false);
+  const [confirmationName, setConfirmationName] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  useEffect(() => { const element = dialog.current; element?.showModal(); confirmationInput.current?.focus(); return () => element?.close(); }, []);
+  return <dialog ref={dialog} className="account-delete-dialog" aria-labelledby="account-delete-title" onCancel={event => { event.preventDefault(); if (!inFlight.current) onClose(); }}><form onSubmit={async event => {
+    event.preventDefault(); if (inFlight.current || confirmationName !== user.name) return;
+    inFlight.current = true; setBusy(true); setError('');
+    try { await request(`/api/auth/users/${encodeURIComponent(user.id)}`, 'DELETE', { version: user.version, confirmationName }); await onDeleted(); }
+    catch (reason) { setError((reason as Error).message); }
+    finally { inFlight.current = false; setBusy(false); }
+  }}><h2 id="account-delete-title">Удалить учётную запись?</h2><p><strong>{user.name}</strong> больше не сможет войти в CRM. Все сеансы завершатся, уведомления будут отключены.</p><p>История, комментарии, файлы и сотрудник в справочнике сохранятся. Вернуть эту учётную запись через интерфейс нельзя.</p><p>Незавершённые задачи и работу с компаниями сначала передайте другому сотруднику или завершите и архивируйте в разделе <a href="#work" onClick={event => { if (inFlight.current) event.preventDefault(); else onClose(); }}>«Работа»</a>.</p><label>Для подтверждения введите точное имя: <strong>{user.name}</strong><input ref={confirmationInput} autoComplete="off" aria-label="Имя сотрудника для подтверждения удаления" value={confirmationName} disabled={busy} onChange={event => setConfirmationName(event.target.value)} /></label>{error && <p className="shipment-error" role="alert">{error}</p>}<div className="account-actions"><button type="button" className="button" disabled={busy} onClick={onClose}>Отмена</button><button type="submit" className="button danger" disabled={busy || confirmationName !== user.name}>{busy ? 'Удаление…' : 'Удалить учётную запись'}</button></div></form></dialog>;
 }

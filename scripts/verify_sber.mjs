@@ -14,20 +14,24 @@ import { OperationsStore } from '../server/operations-store.ts';
 import { SberHttpError } from '../server/banking/sber-client.ts';
 import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
 
-const root = resolve(import.meta.dirname, '..'), output = resolve(root, 'qa/sber');
+const artel = process.argv.includes('--artel');
+const connectionId = artel ? 'sber-artel' : 'sber-nk-artel', company = artel ? 'АРТЕЛЬ' : 'НК АРТЕЛЬ';
+const endpoint = `/api/banking/sber/${connectionId}`;
+const root = resolve(import.meta.dirname, '..'), output = resolve(root, artel ? 'qa/sber-artel/fixtures' : 'qa/sber');
 const temporary = await mkdtemp(resolve(tmpdir(), 'artel-sber-browser-'));
 const port = Number(process.env.ARTEL_SBER_QA_PORT || 5196), base = `http://127.0.0.1:${port}`;
 const report = { fixtureOnly: true, checks: [], errors: [], violations: [], measurements: [], bankRequests: [] };
 const check = name => { report.checks.push(name); console.log('PASS', name); };
-const account = '40702810438720035571';
-const environment = Object.fromEntries(['CLIENT_ID', 'CLIENT_SECRET', 'TLS_PFX_BASE64', 'TLS_PASSPHRASE', 'TLS_CA_BASE64', 'ACCESS_TOKEN', 'REFRESH_TOKEN'].map(key => [`ARTEL_BANK_SBER_NK_${key}`, `synthetic-qa-${key}`]));
+const account = artel ? '40702810538000003495' : '40702810438720035571';
+const ownName = artel ? 'ООО «АРТЭЛЬ»' : 'ООО «НК АРТЭЛЬ»', ownInn = artel ? '9721079780' : '5050140563';
+const environment = Object.fromEntries(['CLIENT_ID', 'CLIENT_SECRET', 'TLS_PFX_BASE64', 'TLS_PASSPHRASE', 'TLS_CA_BASE64', 'ACCESS_TOKEN', 'REFRESH_TOKEN'].map(key => [`ARTEL_BANK_SBER_${artel ? 'ARTEL' : 'NK'}_${key}`, `synthetic-qa-${key}`]));
 environment.ARTEL_BANK_ENCRYPTION_KEY = randomBytes(32).toString('base64');
 environment.ARTEL_BANK_SYNC_ENABLED = 'false';
 const money = amount => ({ amount, currencyName: 'RUR' });
 const bankRow = (id, direction, amount, name, inn, counterpartyAccount) => ({
   operationId: id, direction, amount: money(amount), operationDate: '2026-09-15T09:31:30+03:00', number: id,
   documentDate: '2026-09-15', paymentPurpose: `Тестовая оплата ${id}. Уникальное назначение ${id === 'incoming-alpha' ? 'кипарис' : 'берёза'}.`,
-  rurTransfer: direction === 'CREDIT' ? { payerName: name, payerInn: inn, payerAccount: counterpartyAccount, payeeName: 'ООО «НК АРТЭЛЬ»', payeeInn: '5050140563', payeeAccount: account } : { payeeName: name, payeeInn: inn, payeeAccount: counterpartyAccount, payerName: 'ООО «НК АРТЭЛЬ»', payerInn: '5050140563', payerAccount: account },
+  rurTransfer: direction === 'CREDIT' ? { payerName: name, payerInn: inn, payerAccount: counterpartyAccount, payeeName: ownName, payeeInn: ownInn, payeeAccount: account } : { payeeName: name, payeeInn: inn, payeeAccount: counterpartyAccount, payerName: ownName, payerInn: ownInn, payerAccount: account },
 });
 const rows = [bankRow('incoming-alpha', 'CREDIT', '0.1', 'Тест Альфа', '7700000001', '40700000000000000001'), bankRow('outgoing-beta', 'DEBIT', '0.2', 'Тест Бета', '7700000002', '40700000000000000002'), bankRow('incoming-gamma', 'CREDIT', '0.2', 'Тест Гамма', '7700000003', '40700000000000000003')];
 let bankFailure = false, incompleteSummary = false, server, browser;
@@ -59,13 +63,13 @@ try {
   await server.listen();
   const { cookie } = await bootstrapQaAuth(base);
   const before = await store.read(snapshot.provenance.sourceSha256);
-  const read = async () => { const response = await fetch(`${base}/api/banking/sber/statements?from=2026-09-14&to=2026-09-16`, { headers: { Cookie: cookie } }); assert.ok(response.ok); return response.json(); };
+  const read = async () => { const response = await fetch(`${base}${endpoint}/statements?from=2026-09-14&to=2026-09-16`, { headers: { Cookie: cookie } }); assert.ok(response.ok); return response.json(); };
   browser = await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', timezoneId: 'Europe/Moscow' });
   await authenticateContext(context, base, cookie);
   const page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message));
   await page.goto(`${base}/#payments`);
-  await page.getByRole('button', { name: 'Открыть СберБизнес — НК АРТЕЛЬ', exact: true }).click();
+  await page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Выписки по дням', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Обновить из банка', exact: true })).toBeEnabled();
   await expect(page.getByLabel('Начало периода выписки Сбера')).toHaveValue('2026-09-01');
@@ -138,15 +142,23 @@ try {
   await setPeriod('2026-09-13', '2026-09-16');
   incompleteSummary = true;
   await page.getByRole('button', { name: 'Обновить из банка', exact: true }).click();
+  if (artel) {
+    await expect(page.getByRole('button', { name: 'Продолжить загрузку', exact: true })).toBeEnabled({ timeout: 30000 });
+    await expect(page.getByRole('alert').first()).toContainText('Сбер не передал полные дневные итоги');
+    assert.equal((await read()).operations.length, 3);
+    assert.equal((await store.read(snapshot.provenance.sourceSha256)).banking.connections[connectionId].settlementVerifiedDays.length, 3);
+    check('ARTEL missing totals cannot publish a day or remove verified operations');
+  } else {
   await expect(page.getByRole('button', { name: 'Обновить из банка', exact: true })).toBeEnabled({ timeout: 30000 });
   await expect(page.locator('.sber-days-table').getByRole('row').filter({ hasText: '13.09.2026' })).toContainText('Не передано');
   await page.getByLabel('Скрыть дни без оборотов').check();
   await expect(page.locator('.sber-days-table tbody tr')).toHaveCount(2);
   assert.equal((await read()).operations.length, 3);
   check('Missing turnover remains unknown and its day is not hidden as zero; repeated refresh does not duplicate rows');
+  }
   incompleteSummary = false;
   bankFailure = true;
-  await page.getByRole('button', { name: 'Обновить из банка', exact: true }).click();
+  await page.getByRole('button', { name: artel ? 'Продолжить загрузку' : 'Обновить из банка', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Продолжить загрузку', exact: true })).toBeEnabled({ timeout: 30000 });
   await expect(page.getByRole('alert').first()).toContainText('Сбер не разрешил просмотр');
   const failed = await read(); assert.equal(failed.operations.length, 3); assert.equal(failed.lastSuccessAt, initialState.lastSuccessAt);
@@ -172,6 +184,7 @@ try {
     assert.ok(size.scroll <= size.width + 1, `Statement page overflow at ${width}`);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole('button', { name: 'Операции за 15.09.2026', exact: true }).click();
   const axe = await new AxeBuilder({ page }).include('.sber-statements').withTags(['wcag2a', 'wcag2aa']).analyze();
   report.violations.push(...axe.violations.map(value => ({ scope: 'page', id: value.id, nodes: value.nodes.map(node => ({ target: node.target, summary: node.failureSummary })) })));
   assert.equal(report.violations.length, 0, 'Sber statements and detail accessibility');
@@ -179,7 +192,7 @@ try {
   check('Statements and detail fit 1440, 768, 390 and 320 px; Axe WCAG A/AA audit and browser errors clean');
   const requestsBeforeCard = report.bankRequests.length;
   await page.getByRole('button', { name: 'Все подключения', exact: true }).click();
-  const card = page.getByRole('button', { name: 'Открыть СберБизнес — НК АРТЕЛЬ', exact: true });
+  const card = page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true });
   await expect(card).toContainText('Подключён');
   await expect(card).toContainText(account);
   await expect(card.locator('.bank-last-sync')).not.toContainText('Ещё не выполнялась');
@@ -188,6 +201,26 @@ try {
   const after = await store.read(snapshot.provenance.sourceSha256);
   for (const key of ['shipments', 'companies', 'directories', 'paymentAllocations']) assert.deepEqual(after[key], before[key]);
   check('Shipment, directory and allocation data remain unchanged in isolated storage');
+  const globalStarts = [];
+  await page.route('**/api/banking?**', async route => {
+    const response = await route.fetch(), result = await response.json();
+    result.connections = result.connections.map(connection => connection.id === 'tbank-nk-artel' ? { ...connection, missing: [] } : connection);
+    await route.fulfill({ response, json: result });
+  });
+  await page.route('**/api/banking/connections/tbank-nk-artel/sync', async route => {
+    globalStarts.push('tbank-nk-artel');
+    await route.fulfill({ status: 403, json: { error: 'Синтетический отказ Т-Банка' } });
+  });
+  await page.route(`**${endpoint}/sync`, async route => {
+    globalStarts.push(connectionId);
+    await route.fulfill({ status: 200, json: { pending: false } });
+  });
+  await page.reload();
+  await expect(card).toContainText('Подключён');
+  await page.getByRole('button', { name: 'Синхронизировать', exact: true }).click();
+  await expect.poll(() => globalStarts.sort()).toEqual([connectionId, 'tbank-nk-artel'].sort());
+  await expect(page.getByRole('alert')).toContainText('Синтетический отказ Т-Банка');
+  check('Global synchronization still starts Sber when T-Bank rejects its request');
   report.status = 'passed';
 } catch (error) { report.status = 'failed'; report.failure = error.message; throw error; }
 finally { await writeFile(resolve(output, 'verification.json'), JSON.stringify(report, null, 2)); await browser?.close(); await server?.close(); await rm(temporary, { recursive: true, force: true }); }

@@ -59,12 +59,20 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
 export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSearchParams, actor: AccountUser, users: AccountUser[]): WorkResponse {
   if (!['director', 'admin', 'manager'].includes(actor.role)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
   const requested = params.get('assigneeId');
-  if (requested && requested !== 'mine' && !users.some(user => user.id === requested)) throw new ApiError(400, 'Сотрудник не найден.');
+  if (requested && requested !== 'mine' && !users.some(user => user.id === requested) && !(isSupervisor(actor) && data.accounts?.users.some(user => user.id === requested))) throw new ApiError(400, 'Сотрудник не найден.');
   const assigneeId = requested === 'mine' ? actor.id : requested;
   const work = data.work ?? emptyWork();
   const visible = (entry: AnyWorkEntry) => canAccess(actor, entry) && (!assigneeId || entry.assigneeId === assigneeId);
+  const visibleWork = { tasks: work.tasks.filter(visible).map(publicWorkEntry), companyRecords: work.companyRecords.filter(visible).map(publicWorkEntry), notes: work.notes.filter(visible) };
+  const referenced = new Set<string>();
+  for (const row of [...visibleWork.tasks, ...visibleWork.companyRecords, ...visibleWork.notes]) {
+    for (const id of [row.assigneeId, row.createdBy, row.updatedBy]) referenced.add(id);
+    if ('comments' in row) for (const comment of row.comments ?? []) referenced.add(comment.authorId);
+    if ('attachments' in row) for (const file of row.attachments ?? []) referenced.add(file.authorId);
+  }
   return {
-    work: { tasks: work.tasks.filter(visible).map(publicWorkEntry), companyRecords: work.companyRecords.filter(visible).map(publicWorkEntry), notes: work.notes.filter(visible) },
+    work: visibleWork,
+    historicalUsers: (data.accounts?.users ?? []).filter(user => referenced.has(user.id) && !users.some(active => active.id === user.id)).map(({ id, name }) => ({ id, name })),
     users: isSupervisor(actor) ? users : users.map(user => ({ ...user, login: '' })), companies: snapshot.companies, currentUser: actor, revision: data.revision,
   };
 }
@@ -117,7 +125,8 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId))) throw new ApiError(400, 'Некорректный идентификатор запроса.');
   const get = (name: string, fallback: unknown) => body[name] === undefined ? previous ? (previous as unknown as Record<string, unknown>)[name] : fallback : body[name];
   const assigneeId = get('assigneeId', actor.id);
-  if (!identifier(assigneeId) || !users.some(user => user.id === assigneeId)) throw new ApiError(400, 'Выберите действующего сотрудника.');
+  const activeAssignee = users.some(user => user.id === assigneeId && user.active && !user.deletedAt);
+  if (!identifier(assigneeId) || !activeAssignee && previous?.assigneeId !== assigneeId) throw new ApiError(400, 'Выберите действующего сотрудника.');
   // Managers may create for themselves and then explicitly hand their task over; they cannot write into another employee's list directly.
   if (!previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
   const companyId = kind === 'notes' ? null : get('companyId', null);
@@ -170,6 +179,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
       return { entry: publicWorkEntry(duplicate), created: false, changed: false };
     }
   }
+  if (!activeAssignee && kind !== 'notes' && !('archivedAt' in entry && entry.archivedAt) && !('status' in entry && entry.status === 'done')) throw new ApiError(400, 'Чтобы вернуть запись в работу, выберите действующего сотрудника.');
   if (key === 'tasks') work.tasks = [...work.tasks.filter(row => row.id !== entry.id), entry as WorkTask];
   else if (key === 'companyRecords') work.companyRecords = [...work.companyRecords.filter(row => row.id !== entry.id), entry as WorkCompanyRecord];
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];

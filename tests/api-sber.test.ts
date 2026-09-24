@@ -214,6 +214,7 @@ test('every Sber endpoint requires CRM login/management; browser and snapshot ne
   const baseUrl=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const request=(path:string,cookie='',body?:unknown)=>fetch(baseUrl+path,{...(body!==undefined?{method:'POST',body:JSON.stringify(body)}:{}),headers:{cookie,'Content-Type':'application/json'}});
   const endpoints: [string,unknown?][]=[['/api/banking/sber/statements'],['/api/banking/sber/sync',{from:DAY,to:DAY}],['/api/banking/sber/continue',{}],[`/api/banking/sber/operations/${'0'.repeat(64)}`],[`/api/banking/sber/operations/${'0'.repeat(64)}/refresh`,{}]];
+  endpoints.push(...endpoints.map(([path, body]): [string, unknown?] => [path.replace('/sber/', '/sber/sber-artel/'), body]));
   try {
     for(const [path,body]of endpoints)assert.equal((await request(path,'',body)).status,401,path);
     const password=randomBytes(20).toString('hex');
@@ -222,6 +223,9 @@ test('every Sber endpoint requires CRM login/management; browser and snapshot ne
     assert.equal((await request('/api/banking/sber/sync',cookie,{from:DAY,to:DAY})).status,200);
     assert.equal((await request('/api/banking/sber/continue',cookie,{})).status,200);
     const list=await(await request('/api/banking/sber/statements',cookie)).json();assert.equal(list.operations.length,2);
+    const artelList = await (await request('/api/banking/sber/sber-artel/statements', cookie)).json();
+    assert.equal(artelList.account, '40702810538000003495'); assert.equal(artelList.inn, '9721079780'); assert.equal(artelList.operations.length, 0);
+    assert.ok(!JSON.stringify(artelList).includes('encryptedTokens'));
     const response=JSON.stringify(await(await request('/api/snapshot',cookie)).json());
     assert.ok(!response.includes('encryptedTokens'));assert.ok(!response.includes('fixture-access'));
     await request('/api/auth/users',cookie,{name:'Manager',login:'sber.manager',password,role:'manager',managerId:snapshot.directories.managers[0].id});

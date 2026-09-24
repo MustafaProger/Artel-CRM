@@ -65,7 +65,7 @@ test('Both banks start on the same cycle, finish durable jobs and wait until the
     await dispatchBanks(f.store, f.source, f.env, bank, sber, f.now - 1);
     assert.equal(bankDates.length + sberDates.length, 0);
     const first = await dispatchBanks(f.store, f.source, f.env, bank, sber, f.now);
-    assert.deepEqual(first.connections.map(row => row.id), ['tbank-nk-artel', 'sber-nk-artel']);
+    assert.deepEqual(first.connections.map(row => row.id), ['tbank-nk-artel', 'sber-nk-artel', 'sber-artel']);
     assert.equal(bankDates.length, 1); assert.equal(sberDates.length, 1);
     const started = await f.store.read(f.source);
     assert.equal(started.banking!.connections['tbank-nk-artel'].lastScheduledAt, new Date(f.now).toISOString());

@@ -52,6 +52,8 @@ export type AnyWorkEntry = WorkTask | WorkCompanyRecord | WorkNote;
 export interface WorkResponse {
   work: WorkData;
   users: AccountUser[];
+  /** Names referenced by visible records, including former employees. Never used for new assignments. */
+  historicalUsers: Pick<AccountUser, 'id' | 'name'>[];
   companies: Company[];
   currentUser: AccountUser;
   revision: number;

@@ -6,7 +6,7 @@ import { SberService } from './sber-service';
 
 export async function sberRoutes(service: SberService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
   requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
-  const path = url.pathname, method = request.method;
+  const path = url.pathname.replace('/api/banking/sber/sber-artel/', '/api/banking/sber/').replace('/api/banking/sber/sber-nk-artel/', '/api/banking/sber/'), method = request.method;
   const send = (value: unknown) => {
     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     response.end(JSON.stringify(value));

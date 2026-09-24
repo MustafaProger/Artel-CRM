@@ -35,8 +35,10 @@
 
 .sber-statements .sber-days-table th{padding:13px 20px;background:#f7f9f8;font-size:11px;color:#526158}
 .sber-statements .sber-days-table td{padding:16px 20px;font-size:13px;color:#293c33}
-.sber-statements .sber-days-table .bank-incoming{color:#28814e}
+.sber-statements .sber-days-table .bank-incoming{color:#246e48}
 .sber-statements .sber-days-table td:nth-last-child(2){font-weight:600}
 .sber-statements .sber-days-table .bank-row-link{font-size:13px}
 .sber-statements .sber-summary .bank-ledger-title{align-items:center;padding:20px 24px}
 .sber-statements .sber-summary .bank-ledger-title p{font-size:12px}
+
+.sber-statements .bank-direction.incoming{color:#246e48}

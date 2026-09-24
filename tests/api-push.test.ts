@@ -74,6 +74,23 @@ test('push endpoints enforce ownership, subscription validation, logout, rate li
   } finally { await f.close(); }
 });
 
+test('deleting an employee revokes push subscriptions and test probes while preserving other devices', async () => {
+  const f = await fixture();
+  try {
+    const managerSub = subscription(), directorSub = subscription();
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: managerSub })).status, 200);
+    assert.equal((await f.director('/api/push/subscription', 'POST', { subscription: directorSub })).status, 200);
+    const probe = await f.manager('/api/push/test', 'POST', { endpoint: managerSub.endpoint });
+    assert.equal(probe.status, 200);
+    const user = f.users[1];
+    assert.equal((await f.director(`/api/auth/users/${user.id}`, 'DELETE', { version: user.version, confirmationName: user.name })).status, 200);
+    const stored = await f.store.read(base.provenance.sourceSha256);
+    assert.deepEqual(stored.push!.devices.map(device => device.userId), [f.users[0].id]);
+    assert.equal(Object.values(stored.push!.probes ?? {}).some(row => row.userId === user.id), false);
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: managerSub })).status, 401);
+  } finally { await f.close(); }
+});
+
 test('push tests distinguish provider acceptance from notification creation and accept only a scoped receipt token', async () => {
   let probe: { id: string; token: string } | undefined;
   const f = await fixture(async (_device, payload) => { probe = JSON.parse(payload).probe; });

@@ -3,6 +3,7 @@ import { BankingService } from './banking/service';
 import { bankingRoutes } from './banking/routes';
 import { validBankWorkflow } from './banking/cron-auth';
 import type { BankRequest } from './banking/transport';
+import { sberConnections } from './banking/sber-connections';
 import { SberService } from './banking/sber-service';
 import { dispatchBanks } from './banking/scheduler';
 import { BANK_SYNC_TICK_MS } from './banking/schedule';
@@ -16,7 +17,7 @@ import type { Plugin } from 'vite';
 import type { AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
-import { activeUsers, authenticate, login, logout, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+import { activeUsers, authenticate, deleteUser, login, logout, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
 import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
 import { apiSection, requireSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
@@ -378,7 +379,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         await banking.webhook('tbank-nk-artel', request.headers.authorization, await jsonBody(request, false, 65536));
         return write(response, 200, '{"received":true}');
       }
-      if (pathname === '/api/banking/sber' || pathname.startsWith('/api/banking/sber/')) return sberRoutes(new SberService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.sberRequest), request, response, url, () => jsonBody(request));
+      if (pathname === '/api/banking/sber' || pathname.startsWith('/api/banking/sber/')) return sberRoutes(new SberService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.sberRequest, sberConnections[pathname.startsWith('/api/banking/sber/sber-artel/') ? 'sber-artel' : 'sber-nk-artel']), request, response, url, () => jsonBody(request));
       if (pathname === '/api/banking' || pathname.startsWith('/api/banking/')) return bankingRoutes(banking, request, response, url, () => jsonBody(request));
       const config = options.pushConfig ?? pushConfig();
       if (cronRequest) {
@@ -404,10 +405,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const data = await operations.read(base.provenance.sourceSha256);
           const actor = requireUser(data, request);
           requireManage(actor);
-          const users = (data.accounts?.users ?? []).map(publicUser);
-          return write(response, 200, JSON.stringify({users}));
+          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(publicUser);
+          return write(response, 200, JSON.stringify({users, currentUserId: actor.id}));
         }
-        const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || request.method === 'PATCH' && !!userId;
+        const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
         const body = await jsonBody(request);
         const result = await operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
@@ -425,6 +426,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             logout(data,request);return {result:{status:200,token:''},changed:true};
           }
           requireManage(actor);
+          if (request.method === 'DELETE' && userId) {
+            const { changed, ...deleted } = deleteUser(data, actor, decodeURIComponent(userId), body);
+            return { result: { status: 200, ...deleted }, changed };
+          }
           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined)},changed:true};
         });
         if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure));

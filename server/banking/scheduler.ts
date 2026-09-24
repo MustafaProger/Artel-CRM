@@ -1,5 +1,6 @@
 import type { OperationsStorage } from '../operations-store';
 import { BankingService } from './service';
+import { sberConnections } from './sber-connections';
 import { SberService } from './sber-service';
 import type { BankRequest } from './transport';
 import type { SberRequest } from './sber-client';
@@ -9,10 +10,10 @@ export async function dispatchBanks(store: OperationsStorage, source: string, en
   if (env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false, failed: false, connections: [] };
   const results = await Promise.allSettled([
     new BankingService(store, source, env, bankRequest).dispatch(now),
-    new SberService(store, source, env, sberRequest).dispatch(now),
+    ...Object.values(sberConnections).map(connection => new SberService(store, source, env, sberRequest, connection).dispatch(now)),
   ]);
   const connections = results.map((result, index) => ({
-    id: index === 0 ? 'tbank-nk-artel' : 'sber-nk-artel',
+    id: ['tbank-nk-artel', ...Object.keys(sberConnections)][index],
     pending: result.status === 'fulfilled' && !!result.value.pending,
     failed: result.status === 'rejected' || !!('failed' in result.value && result.value.failed),
   }));

@@ -1,7 +1,8 @@
 import { bankConnections, type BankOperation } from '../web/src/banking-model';
 import { decimal } from '../web/src/shipment-calculations';
 import type { SettlementSource } from '../web/src/settlements-model';
-import { SBER_ACCOUNT, SBER_CONNECTION, SBER_INN } from './banking/sber-domain';
+import { sberConnections } from './banking/sber-connections';
+import { SBER_CONNECTION } from './banking/sber-domain';
 import type { OperationsData } from './operations-store';
 
 /** The legacy Sber array is not authoritative. ARTEL's new connector must publish
@@ -14,11 +15,11 @@ export const settlementConnections = bankConnections.map(connection => ({
 
 export function settlementSources(store: OperationsData) {
   const candidates: BankOperation[] = [];
-  const ownAccounts = new Set([SBER_ACCOUNT]);
-  const ownInns = new Set([SBER_INN]);
+  const ownAccounts = new Set<string>(Object.values(sberConnections).map(row => row.account));
+  const ownInns = new Set<string>(Object.values(sberConnections).map(row => row.inn));
   const sources: SettlementSource[] = [];
   for (const definition of settlementConnections) {
-    const state = definition.storage === 'sber' ? store.sber : store.banking?.connections[definition.id];
+    const state = definition.id === 'sber-artel' && store.sberArtel ? store.sberArtel : definition.storage === 'sber' ? store.sber : store.banking?.connections[definition.id];
     const connection = store.banking?.connections[definition.id];
     for (const account of connection?.accounts ?? []) ownAccounts.add(account.number);
     const confirmed = new Set((connection?.settlementVerifiedDays ?? []).map(day => `${day.account}:${day.date}`));
