@@ -7,6 +7,7 @@ import { loadSnapshot } from '../server/local-api';
 import { OperationsStore, encodeOperations, decodeOperations } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
 import { prepareCustomerShipmentCleanup } from '../server/customer-shipment-cleanup';
+import { saveCompany } from '../server/directory-editing';
 
 const base = await loadSnapshot(resolve('data/local-xlsx-final'));
 test('maintenance removes imported and local shipments and customer roles, retaining payment, supplier and address history after reload', async () => {
@@ -41,5 +42,12 @@ test('maintenance removes imported and local shipments and customer roles, retai
     assert.deepEqual(prepareCustomerShipmentCleanup(base, saved).data, saved, 'Repeated cleanup cannot resurrect or alter data');
     await store.mutate(base.provenance.sourceSha256, data => { Object.assign(data, saved); return { result: null, changed: true }; });
     assert.equal(currentSnapshot(base, await new OperationsStore(directory).read(base.provenance.sourceSha256)).shipments.length, 0);
+    const customerOnly = before.companies.find(c => c.roles.includes('customer') && !c.roles.some(role => ['supplier', 'carrier'].includes(role)))!;
+    assert.ok(customerOnly);
+    assert.equal(after.companies.find(c => c.id === customerOnly.id)!.directoryArchived, true, 'Payment history must not prevent explicit re-adding of a cleared client');
+    const restored = saveCompany({ name: customerOnly.name, inn: customerOnly.inn, roles: ['customer'], addresses: [], managerId: null }, after, saved);
+    assert.equal(restored.entry.id, customerOnly.id);
+    assert.equal(restored.entry.directoryArchived, false);
+    assert.equal(currentSnapshot(base, saved).shipments.length, 0, 'Re-adding a client cannot restore old shipments');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

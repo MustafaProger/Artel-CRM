@@ -17,7 +17,7 @@ export function prepareCustomerShipmentCleanup(base: Snapshot, original: Operati
   data.paymentAllocations = [];
   for (const company of targets) {
     const roles = company.roles.filter(role => role !== 'customer');
-    const updated = { ...company, roles, ...(!roles.length ? { directoryArchived: true } : {}), version: (company.version ?? 0) + 1 };
+    const updated = { ...company, roles, ...(!roles.some(role => ['supplier', 'carrier'].includes(role)) ? { directoryArchived: true } : {}), version: (company.version ?? 0) + 1 };
     const index = data.companies.findIndex(row => row.id === company.id);
     if (index < 0) data.companies.push(updated); else data.companies[index] = updated;
   }
