@@ -86,6 +86,19 @@ function requestPath(request: IncomingMessage): string | undefined {
   return path;
 }
 
+/** External links may open the public shell, but cannot relax API or asset access. */
+function publicShellNavigationAllowed(request: IncomingMessage, publicOrigin: string, pathname: string | undefined) {
+  if (!pathname || pathname === '/api' || pathname.startsWith('/api/') || pathname === '/healthz'
+      || pathname === '/assets' || pathname.startsWith('/assets/')
+      || (pathname !== '/index.html' && extname(pathname))) return false;
+  const origin = new URL(publicOrigin);
+  return request.headers.host === origin.host && request.method === 'GET'
+    && request.headers['sec-fetch-site'] === 'cross-site'
+    && request.headers['sec-fetch-mode'] === 'navigate'
+    && request.headers['sec-fetch-dest'] === 'document'
+    && (request.headers.origin === undefined || request.headers.origin === origin.origin);
+}
+
 async function serveStatic(request: IncomingMessage, response: ServerResponse, root: string, pathname: string) {
   if (request.method !== 'GET' && request.method !== 'HEAD') return json(response, 405, { error: 'Метод не поддерживается.' });
   const extension = extname(pathname);
@@ -138,8 +151,9 @@ export async function createProductionRuntime(env: Environment = process.env) {
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Referrer-Policy', 'same-origin');
     response.setHeader('X-Frame-Options', 'DENY');
-    if (!productionRequestAllowed(request, configuration.origin)) return json(response, 403, { error: 'Доступ запрещён.' });
     const pathname = requestPath(request);
+    if (!productionRequestAllowed(request, configuration.origin)
+        && !publicShellNavigationAllowed(request, configuration.origin, pathname)) return json(response, 403, { error: 'Доступ запрещён.' });
     if (!pathname) return json(response, 404, { error: 'Маршрут не найден.' });
     if (pathname === '/healthz') {
       if (request.method !== 'GET' && request.method !== 'HEAD') return json(response, 405, { error: 'Метод не поддерживается.' });

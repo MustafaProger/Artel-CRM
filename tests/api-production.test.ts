@@ -118,6 +118,37 @@ test('production serves the compiled app only and validates host, origin, traver
   } finally { await runtime.stop(); await f.close(); }
 });
 
+test('external top-level links can open only the public app shell without relaxing request authorization', async () => {
+  const f = await fixture(); const runtime = await f.runtime();
+  const headers = { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
+  // Browser link navigations omit Origin, unlike the fixture's default same-origin API requests.
+  const navigation = { origin: null, headers };
+  try {
+    for (const path of ['/', '/index.html', '/shipments', '/shipments?view=all']) {
+      const result = await runtime.request(path, navigation);
+      assert.equal(result.status, 200, path); assert.match(result.text, /Artel synthetic test/);
+    }
+    assert.equal((await runtime.request('/', { ...navigation, origin: publicOrigin })).status, 200);
+    for (const path of ['/api', '/api/snapshot', '/api/auth/setup', '/healthz', '/assets', '/assets/app', '/assets/app.js', '/sw.js',
+      '/data', '/server/production', '/.env', '/%2eenv', '/%2e%2e/shipments', '/a/../shipments', '/%252e%252e/shipments', '/%5cshipments', '/%00', '/%ZZ', '//shipments']) {
+      const result = await runtime.request(path, navigation);
+      assert.equal(result.status, 403, path); assert.ok(!result.text.includes('Artel synthetic test'));
+    }
+    for (const method of ['POST', 'HEAD']) assert.equal((await runtime.request('/', { ...navigation, method })).status, 403, method);
+    for (const override of [
+      { 'sec-fetch-mode': 'cors' }, { 'sec-fetch-mode': 'no-cors' },
+      { 'sec-fetch-dest': 'iframe' }, { 'sec-fetch-dest': 'embed' }, { 'sec-fetch-dest': 'empty' },
+      { 'sec-fetch-mode': '' }, { 'sec-fetch-dest': '' },
+    ]) assert.equal((await runtime.request('/', { ...navigation, headers: { ...headers, ...override } })).status, 403, JSON.stringify(override));
+    assert.equal((await runtime.request('/', { origin: null, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.equal((await runtime.request('/', { ...navigation, host: 'evil.example', headers: { ...headers, 'x-forwarded-host': publicHost } })).status, 403);
+    for (const origin of ['https://evil.example', `${publicOrigin}/`, 'null']) {
+      assert.equal((await runtime.request('/', { ...navigation, origin })).status, 403, origin);
+    }
+    assert.equal(productionRequestAllowed({ method: 'GET', headers: { host: publicHost, ...headers } }, publicOrigin), false);
+  } finally { await runtime.stop(); await f.close(); }
+});
+
 test('HTTPS sessions, saved users and data survive a production restart with authentication intact', async () => {
   const f = await fixture(); let runtime = await f.runtime();
   try {
