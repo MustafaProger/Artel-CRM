@@ -1,0 +1,34 @@
+name: artel-crm
+services:
+  crm:
+    image: ${ARTEL_IMAGE:?Set the immutable CRM image tag}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: /opt/artel-crm/secrets/runtime.env
+        format: raw
+    ports:
+      - "127.0.0.1:18083:8080"
+    volumes:
+      - /opt/artel-crm/data/operations:/var/lib/artel/operations
+      - /opt/artel-crm/data/snapshot:/var/lib/artel/snapshot:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({host:'127.0.0.1',port:8080,path:'/healthz',headers:{host:new URL(process.env.ARTEL_PUBLIC_ORIGIN).host}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

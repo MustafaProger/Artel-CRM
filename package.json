@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
+    "build:server": "node scripts/build-server.mjs",
+    "build:production": "npm run build && npm run build:server",
+    "start": "node server-render/production.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "test:api": "tsx --test tests/api*.test.ts",
     "typecheck": "tsc --noEmit",

@@ -1,0 +1,15 @@
+[Unit]
+Description=Back up the isolated Artel CRM data and configuration
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/artel-crm/ops/backup.py
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/artel-crm/backups

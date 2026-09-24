@@ -1,0 +1,7 @@
+# Replace CRM_DOMAIN with the separately assigned CRM domain after its A record resolves.
+# Install as /etc/caddy/sites-enabled/artel-crm.caddy; preserve all other site files.
+CRM_DOMAIN {
+    encode zstd gzip
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:18083
+}
