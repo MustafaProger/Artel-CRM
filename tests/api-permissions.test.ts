@@ -74,8 +74,8 @@ test('administration links existing employees, rejects duplicate links, unknown 
 
 test('two employees: IDs, spoofed owners, shared customers, search, facets, totals, sorting, pages and export pagination stay isolated', async () => {
   const f = await fixture(); try {
-    const a = await f.aidar('/api/shipments', 'POST', { fields: f.azs() });
-    const b = await f.zufar('/api/shipments', 'POST', { fields: { ...f.azs(), customer_amount: '777777', quantity_litres: '2222' } });
+    const a = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
+    const b = await f.director('/api/shipments', 'POST', { fields: { ...f.azs(f.users[1].managerId!), customer_amount: '777777', quantity_litres: '2222' } });
     assert.equal(a.status, 201, JSON.stringify(a.body)); assert.equal(b.status, 201, JSON.stringify(b.body));
     const aid = a.body.shipment.id, bid = b.body.shipment.id;
     assert.equal(a.body.shipment.fields.manager_id, f.users[0].managerId);
@@ -104,6 +104,28 @@ test('two employees: IDs, spoofed owners, shared customers, search, facets, tota
     const exported = []; let offset = 0;
     do { const page = (await f.aidar('/api/shipments?limit=1&offset=' + offset)).body; exported.push(...page.items); if (!page.hasMore) break; offset = page.nextOffset; } while (offset < 10);
     assert.deepEqual(exported.map(row => row.id), [aid]);
+  } finally { await f.close(); }
+});
+
+test('a manager cannot claim an unassigned customer through a zero shipment or truck; existing historical own clients remain usable', async () => {
+  const f = await fixture(); try {
+    const created = await f.director('/api/directories', 'POST', { kind: 'companies', name: 'Unassigned protected customer', roles: ['customer'], addresses: [] });
+    assert.equal(created.status, 201); const customerId = created.body.entry.id;
+    const before = await readFile(f.store.path, 'utf8');
+    const fields = { ...f.azs(), customer_id: customerId, customer_amount: '0' };
+    assert.equal((await f.aidar('/api/shipments', 'POST', { fields })).status, 403);
+    const catalog = f.snapshot.directories!;
+    const truck = { date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: catalog.products[0].id, purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: catalog.drivers[0].id, additional_costs: '0' };
+    const customer = { customer_id: customerId, payment_form_id: catalog.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '0' };
+    assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields: truck, customers: [{ fields: customer }] })).status, 403);
+    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.ok(!(await f.aidar('/api/snapshot')).body.companies.some((company: { id: string }) => company.id === customerId));
+    assert.ok(!(await f.aidar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
+    const seeded = await f.director('/api/shipments', 'POST', { fields: { ...fields, manager_id: f.users[0].managerId } });
+    assert.equal(seeded.status, 201);
+    assert.equal((await f.aidar('/api/shipments', 'POST', { fields })).status, 201, 'An existing own historical customer remains usable without inventing a directory assignment');
+    assert.ok((await f.aidar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
+    assert.ok(!(await f.zufar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
   } finally { await f.close(); }
 });
 
@@ -137,7 +159,7 @@ test('section changes, account disable and password reset revoke sessions; share
     assert.equal(task.status, 201);
     const file = `/api/work/tasks/${task.body.entry.id}/files/${task.body.entry.attachments[0].id}`;
     assert.equal((await f.zufar(file)).status, 404);
-    await f.aidar('/api/shipments', 'POST', { fields: f.azs() });
+    await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
     let user = f.users[0];
     const changed = await f.director('/api/auth/users/' + user.id, 'PATCH', update(user, { sections: ['overview', 'directories'] }));
     assert.equal(changed.status, 200); user = changed.body.user;
@@ -185,5 +207,44 @@ test('legacy accounts retain bounded defaults; missing employee associations, un
     }
     const explicit = { ...row, fields: { ...row.fields, manager_id: employeeId } };
     assert.equal(scopeSnapshot({ ...snapshot, shipments: [explicit] }, { ...f.users[1], managerId: 'missing' }).shipments.length, 0);
+  } finally { await f.close(); }
+});
+
+test('stored legacy settlement access survives reload as overview; explicit empty and revoked sections remain denied', async () => {
+  const f = await fixture(); try {
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      data.accounts!.users.find(user => user.id === f.users[0].id)!.sections = ['settlements'];
+      data.accounts!.users.find(user => user.id === f.users[1].id)!.sections = [];
+      return { changed: true, result: null };
+    });
+    const stored = await f.store.read(base.provenance.sourceSha256);
+    assert.deepEqual(decodeOperations(encodeOperations(stored), base.provenance.sourceSha256).accounts, stored.accounts);
+    const login = await f.aidar('/api/auth/login', 'POST', { login: f.users[0].login, password: f.password });
+    assert.deepEqual(login.body.user.sections, ['overview']);
+    assert.equal((await f.aidar('/api/settlements')).status, 200);
+    assert.equal((await f.aidar('/api/shipments')).status, 403);
+    assert.equal((await f.zufar('/api/settlements')).status, 403);
+    const changed = await f.director('/api/auth/users/' + f.users[0].id, 'PATCH', update(f.users[0], { sections: ['overview', 'settlements'] }));
+    assert.equal(changed.status, 200); assert.deepEqual(changed.body.user.sections, ['overview']);
+    assert.deepEqual((await f.store.read(base.provenance.sourceSha256)).accounts!.users.find(user => user.id === f.users[0].id)!.sections, ['overview']);
+  } finally { await f.close(); }
+});
+
+test('manager directory projection never exposes unrelated payment/summary customer aliases, addresses or deleted IDs', async () => {
+  const f = await fixture(); try {
+    const template = f.snapshot.companies[0];
+    const hidden = { ...template, id: 'hidden-customer', name: 'Hidden customer name', roles: ['customer', 'payment_counterparty'] };
+    const payment = { ...template, id: 'hidden-payment', name: 'Hidden payment name', roles: ['payment_counterparty', 'summary_counterparty'] };
+    const supplier = { ...template, id: 'shared-supplier', name: 'Shared supplier name', roles: ['customer', 'supplier', 'payment_counterparty'], shipmentIds: ['hidden-shipment'], inn: '7736050003' };
+    const snapshot = { ...f.snapshot, companies: [hidden, payment, supplier], shipments: [], directories: { ...f.snapshot.directories!,
+      addresses: [{ id: 'hidden-address', name: 'Hidden delivery address', companyId: hidden.id, kind: 'delivery' as const }],
+      customerManagers: [{ companyId: hidden.id, managerId: f.users[1].managerId! }], deletedEntries: { companies: ['deleted-private-company'] },
+    } };
+    const scoped = scopeSnapshot(snapshot, f.users[0]);
+    assert.deepEqual(scoped.companies.map(company => company.id), [supplier.id]);
+    assert.deepEqual(scoped.companies[0].roles, ['supplier']); assert.equal(scoped.companies[0].inn, undefined);
+    assert.deepEqual(scoped.directories!.addresses, []); assert.equal(scoped.directories!.deletedEntries, undefined);
+    assert.equal(scoped.overview.companyCount, 0);
+    for (const text of [hidden.name, payment.name, 'hidden-address', 'deleted-private-company', 'hidden-shipment']) assert.ok(!JSON.stringify(scoped).includes(text), text);
   } finally { await f.close(); }
 });

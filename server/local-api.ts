@@ -23,13 +23,14 @@ import { apiSection, requireSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
-import { readWork, mutateWork, workFile } from './work-operations';
+import { readWork, mutateWork, workFile, workCompanyIds } from './work-operations';
 import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-cleanup';
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
 import { currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
 import { buildSettlements } from './settlements';
+import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
@@ -447,9 +448,9 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (pathname === '/api/settlements') {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const stored = await operations.read(base.provenance.sourceSha256);
-        if (actor) requireManage(authorized(stored));
         const snapshot = currentSnapshot(base, stored, false);
-        return write(response, 200, JSON.stringify(buildSettlements(snapshot.shipments, snapshot.companies, stored).report));
+        const report = buildSettlements(snapshot.shipments, snapshot.companies, stored).report;
+        return write(response, 200, JSON.stringify(actor ? scopeSettlements(report, snapshot, authorized(stored)) : { ...includeIdleCustomers(report, snapshot), scope: 'all' }));
       }
       if (pathname.startsWith('/api/push/')) {
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
@@ -568,13 +569,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if(!actor)throw new ApiError(401,'Войдите в приложение.');
         if(pathname === '/api/work' && request.method === 'GET'){
           const data=await operations.read(base.provenance.sourceSha256);
-          return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentSnapshot(base,data),authorized(data),'work'),url.searchParams,authorized(data),activeUsers(data))));
+          const currentActor = authorized(data);
+          return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),url.searchParams,currentActor,activeUsers(data))));
         }
         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
         const body=await jsonBody(request, false, 3 * 1024 * 1024);
         const result=await operations.mutate(base.provenance.sourceSha256,data=>{
           const currentActor=authorized(data);
-          const result=mutateWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work'),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
+          const result=mutateWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
           return {result,changed:result.changed};
         });
         if (workMatch[1] === 'tasks' && result.entry && pushReady(config)) {

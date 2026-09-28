@@ -66,6 +66,7 @@ export interface SettlementSource {
   to: string | null
 }
 export interface SettlementsReport {
+  scope?: 'all' | 'own'
   companies: SettlementCompany[]
   review: SettlementReview[]
   totals: { shipped: string; incoming: string; debt: string; advance: string; allocated: string }

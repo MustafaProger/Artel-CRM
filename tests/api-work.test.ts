@@ -43,6 +43,7 @@ async function setup() {
     assert.equal((await request('/api/auth/login', 'POST', { login, password })).status, 200);
   }
   const snapshot = (await director('/api/snapshot')).body as Snapshot;
+  assert.equal((await director('/api/directories', 'POST', { kind: 'customerManagers', companyId: snapshot.companies[0].id, managerId: users[1].managerId })).status, 201);
   return { directory, store, director, alice, bob, anonymous, users, snapshot, close: async () => { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(directory, { recursive: true, force: true }); } };
 }
 
@@ -140,6 +141,9 @@ test('company questions, append-only authored comments, reminders and separate n
     assert.equal((await runtime.bob('/api/work')).body.work.companyRecords.length, 0);
     const updated = await runtime.alice(`/api/work/companies/${row.id}`, 'PATCH', { version: 1, comment: 'Передано коллеге', assigneeId: runtime.users[2].id }); assert.equal(updated.status, 200);
     const response = (await runtime.bob('/api/work')).body as WorkResponse;
+    assert.ok(response.companies.some(company => company.id === companyId));
+    assert.ok(!response.companies.find(company => company.id === companyId)!.inn);
+    assert.ok(!(await runtime.bob('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(companyId)), 'Work handoff never grants a financial portfolio');
     assert.equal(response.work.companyRecords[0].comments.length, 2); assert.equal(response.work.companyRecords[0].reminderAt, payload.reminderAt);
     assert.equal((await runtime.bob(`/api/work/companies/${row.id}`, 'PATCH', { version: 2, comments: [] })).status, 400);
     assert.equal((await runtime.bob(`/api/work/companies/${row.id}`, 'PATCH', { version: 2, comment: 'Окно подтверждено', reminderAt: null })).status, 200);

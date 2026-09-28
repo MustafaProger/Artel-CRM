@@ -41,14 +41,16 @@ try {
   await page.getByLabel('Логин', { exact: true }).fill('navigation-director');
   await page.getByLabel('Пароль', { exact: true }).fill(directorPassword);
   await page.getByRole('button', { name: 'Создать директора', exact: true }).click();
-  await expect(page.locator('.blank-workspace')).toBeVisible();
+  await expect(page.locator('.overview-page')).toBeVisible();
   assert.equal((await context.request.get(`${base}/api/auth/session`).then(response => response.json())).user.role, 'director');
   check('First director created through the UI; authenticated session persists');
   await page.setViewportSize({ width: 1440, height: 1000 });
   const labels = await page.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button').allTextContents();
   assert.deepEqual(labels.slice(0, 2), ['Обзор', 'Работа']);
   await expect(page.getByRole('button', { name: 'Проверка данных', exact: true })).toHaveCount(0);
-  for (const [id, title] of [['overview', 'Обзор'], ['stock', 'Склад']]) {
+  await expect(page.getByRole('button', { name: 'Взаиморасчёты', exact: true })).toHaveCount(0);
+  for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure('overview', width); }
+  for (const [id, title] of [['stock', 'Склад']]) {
     await page.goto(`${base}/#${id}`);
     const space = page.getByRole('region', { name: `${title}: рабочее пространство`, exact: true });
     await expect(space).toBeVisible(); await expect(space).toBeEmpty();
@@ -56,13 +58,13 @@ try {
     for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure(`blank-${id}`, width); }
   }
   await page.goto(`${base}/#china`);
-  await expect(page.getByRole('heading', { name: 'Артель Китай', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Китай', exact: true })).toBeVisible();
   await expect(page.getByTestId('china-balance')).toHaveText('0');
   for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure('china', width); }
   await page.goto(`${base}/#operator`);
   await expect(page.getByRole('region', { name: 'Операторская: рабочее пространство', exact: true })).toContainText('Excel-файл с системой учёта не предоставлен');
   for (const width of widths) { await page.setViewportSize({ width, height: 1000 }); await measure('operator', width); }
-  check('Overview and Warehouse are empty; China accounting and Operator missing-file notice are visible; navigation is correct');
+  check('Overview is available without a separate settlements navigation item; Warehouse is empty, China accounting and Operator missing-file notice are visible');
   await page.goto(`${base}/#payroll`);
   for (const title of ['Зарплаты водителей', 'Зарплаты менеджеров']) {
     const tab = page.getByRole('tab', { name: title, exact: true }); await tab.click(); await expect(tab).toHaveAttribute('aria-selected', 'true'); await expect(page.getByRole('tabpanel', { name: title, exact: true })).toBeEmpty();

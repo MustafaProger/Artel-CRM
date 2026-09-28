@@ -37,7 +37,7 @@ export function validateAccounts(value: AccountsData) {
   const ids=new Set<string>(), logins=new Set<string>();
   for(const u of value.users){
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
-    if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
+    if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
     if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','manager'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
     ids.add(u.id);logins.add(u.login);
   }
@@ -68,8 +68,9 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   const active=setup?true:input.active!==false;
   if(previous?.role==='director' && (!active || role!=='director') && !accounts.users.some(u=>u.id!==id && u.active && u.role==='director'))throw new ApiError(409,'Нельзя отключить последнего директора.');
   if (!setup && !managerId && (!previous || role === 'manager' && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
-  if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
-  const permissions = input.sections as SectionId[] | undefined ?? (previous?.role === 'manager' ? effectiveSections(previous) : undefined);
+  if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
+  const permissions = input.sections === undefined ? previous?.role === 'manager' ? effectiveSections(previous) : undefined
+    : [...new Set((input.sections as SectionId[]).map(id => id === 'settlements' ? 'overview' : id))];
   const user:StoredUser={...(previous??await passwordFields(input.password)),...(previous && input.password?await passwordFields(input.password):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
   user.sections = role === 'manager' ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);

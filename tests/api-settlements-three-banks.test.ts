@@ -76,8 +76,9 @@ async function fixture(t: TestContext) {
 
 function checkBalances(report: SettlementsReport, shipped: string, incoming: string, allocated: string, debt: string, advance: string) {
   assert.deepEqual(report.totals, { shipped, incoming, allocated, debt, advance });
-  assert.equal(report.companies.length, 1);
-  const company = report.companies[0]; assert.equal(company.inn, CUSTOMER_INN);
+  const active = report.companies.filter(company => company.shipments.length || company.receipts.length);
+  assert.equal(active.length, 1);
+  const company = active[0]; assert.equal(company.inn, CUSTOMER_INN);
   assert.deepEqual({ shipped: company.shipped, incoming: company.incoming, allocated: company.allocated, debt: company.debt, advance: company.advance }, report.totals);
   return company;
 }
@@ -171,7 +172,7 @@ test('legacy and staged third-bank data cannot pay debt; publication failures pr
   });
   report = await f.report(); checkBalances(report, '70000', '100000', '70000', '0', '30000');
   assert.equal(report.sources.find(row => row.id === 'sber-artel')!.status, 'ready');
-  assert.ok(!report.companies[0].receipts.some(row => row.id === legacy.id));
+  assert.ok(!report.companies.some(company => company.receipts.some(row => row.id === legacy.id)));
 
   const beforeInvalidPublication = await readFile(f.store.path, 'utf8');
   await assert.rejects(f.store.mutate(base.provenance.sourceSha256, data => {

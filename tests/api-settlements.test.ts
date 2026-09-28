@@ -9,12 +9,14 @@ import { resolve } from 'node:path';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
+import { buildSettlements } from '../server/settlements';
+import { scopeSettlements } from '../server/settlement-scope';
 import { BankingService } from '../server/banking/service';
 import { normalizeTbank } from '../server/banking/adapters';
 import { emptyBanking, operationId, upsertOperations } from '../server/banking/domain';
 import { emptySber, normalizeSberOperation, SBER_ACCOUNT, SBER_INN } from '../server/banking/sber-domain';
-import { sections } from '../web/src/auth-model';
 import type { BankOperation } from '../web/src/banking-model';
+import type { AccountUser } from '../web/src/auth-model';
 import type { Company, Shipment, Snapshot } from '../web/src/model';
 import type { SettlementCompany, SettlementsReport } from '../web/src/settlements-model';
 import { accountNumber, fixtureConfig, fixtureDay, fixtureEnvironment, tbankRow } from './banking-fixtures';
@@ -182,37 +184,124 @@ test('editing an existing historical payment never turns projected bank money in
   } finally { await f.close(); }
 });
 
-test('the firm ledger requires management access while employee shipment views contain only their projected payments and no bank receipt details', async t => {
+test('overview ledger isolates two assigned portfolios, empty managers, unassigned payers, direct APIs and permissions', async t => {
   const f = await fixture(t);
   try {
     assert.equal((await f.client()('/api/settlements')).status, 401);
-    const managerIds = f.snapshot.directories!.managers.slice(0, 2).map(row => row.id);
-    assert.equal(managerIds.length, 2);
+    const managerIds = f.snapshot.directories!.managers.slice(0, 3).map(row => row.id);
+    assert.equal(managerIds.length, 3);
+    const assignment = await f.director('/api/directories', 'POST', { kind: 'customerManagers', companyId: f.companies[1].id, managerId: managerIds[1] });
+    assert.equal(assignment.status, 201);
     const first = await f.shipment('40000', '2026-09-01', f.companies[0].id, managerIds[0]);
-    const second = await f.shipment('30000', '2026-09-02', f.companies[0].id, managerIds[1]);
-    const incoming = receipt('private-bank-receipt', '100000'); incoming.purpose = 'PRIVATE BANK PURPOSE';
-    await f.insert([incoming]);
+    const second = await f.shipment('130000', '2026-09-02', f.companies[1].id, managerIds[1]);
+    const oldOwner = await f.shipment('777', '2026-09-03', f.companies[1].id, managerIds[0]);
+    const incoming = receipt('first-private-receipt', '100000'); incoming.purpose = 'FIRST CUSTOMER PAYMENT';
+    const otherIncoming = receipt('second-private-receipt', '30000', OTHER_INN); otherIncoming.purpose = 'SECOND CUSTOMER PAYMENT';
+    const unknown = receipt('unassigned-payer', '999999', '7702070139'); unknown.payer.name = 'Unassigned payer';
+    const pending = { ...receipt('pending-private-receipt', '123456'), booked: false };
+    await f.insert([incoming, otherIncoming, unknown, pending]);
+    const managers = [];
     for (const [index, managerId] of managerIds.entries()) {
       const login = `settlements.manager.${index}`;
-      const created = await f.director('/api/auth/users', 'POST', { name: `Manager ${index}`, login, password: f.password, role: 'manager', managerId, sections: sections.map(row => row.id) });
+      const created = await f.director('/api/auth/users', 'POST', { name: `Manager ${index}`, login, password: f.password, role: 'manager', managerId, sections: ['overview', 'shipments', 'directories'] });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const manager = f.client(); assert.equal((await manager('/api/auth/login', 'POST', { login, password: f.password })).status, 200);
-      assert.equal((await manager('/api/settlements')).status, 403, 'Granting the section alone must not expose the global ledger');
-      const response = await manager('/api/snapshot'); assert.equal(response.status, 200);
-      const snap: Snapshot = response.body, own = index ? second : first;
+      managers.push({ request: manager, user: created.body.user });
+      const response = await manager('/api/settlements?managerId=' + managerIds[1 - Math.min(index, 1)]);
+      assert.equal(response.status, 200);
+      const report = response.body as SettlementsReport;
+      assert.equal(report.scope, 'own'); assert.deepEqual(report.sources, []); assert.deepEqual(report.review, []);
+      if (index === 2) {
+        assert.deepEqual(report.companies, []);
+        assert.deepEqual(report.totals, { shipped: '0', incoming: '0', debt: '0', advance: '0', allocated: '0' });
+        continue;
+      }
+      const own = index ? second : first, foreign = index ? first : second, ownReceipt = index ? otherIncoming : incoming;
+      assert.deepEqual(report.companies.map(row => row.companyIds), [[f.companies[index].id]]);
+      assert.deepEqual(report.companies[0].shipments.map(row => row.id), [own.id]);
+      assert.deepEqual(report.companies[0].receipts.map(row => row.id), [ownReceipt.id]);
+      assert.equal(report.companies[0].receipts[0].purpose, index ? null : incoming.purpose);
+      assert.deepEqual(report.totals, index ? { shipped: '130000', incoming: '30000', debt: '100000', advance: '0', allocated: '30000' } : { shipped: '40000', incoming: '100000', debt: '0', advance: '60000', allocated: '40000' });
+      const json = JSON.stringify(report);
+      for (const privateValue of [foreign.id, oldOwner.id, pending.id, unknown.id, index ? incoming.id : otherIncoming.id, index ? incoming.purpose! : otherIncoming.purpose!]) assert.ok(!json.includes(privateValue), privateValue);
+      const snap: Snapshot = (await manager('/api/snapshot')).body;
       assert.deepEqual(snap.shipments.map(row => row.id), [own.id]);
-      assert.equal(snap.shipments[0].fields.paid_amount_source, index ? '30000' : '40000');
-      assert.equal(snap.shipments[0].fields.debt_overpayment_source, '0');
-      const json = JSON.stringify(snap);
-      for (const privateValue of [incoming.id, incoming.purpose!, accountNumber, '"settlements"', '"receipts"', '"advance"']) assert.ok(!json.includes(privateValue), privateValue);
-      assert.equal((await manager(`/api/shipments/${own.id}`)).body.shipment.fields.paid_amount_source, index ? '30000' : '40000');
-      assert.equal((await manager(`/api/shipments/${index ? first.id : second.id}`)).status, 404);
+      assert.ok(!snap.companies.some(company => company.id === f.companies[1 - index].id));
+      assert.equal(snap.overview.shipmentCount, 1); assert.equal(snap.overview.revenue.total, index ? '130000' : '40000');
+      assert.equal((await manager(`/api/shipments/${foreign.id}`)).status, 404);
+      assert.equal((await manager(`/api/shipments/${oldOwner.id}`)).status, 404);
+      assert.equal((await manager(`/api/shipments/${own.id}`)).status, 200);
+      assert.equal((await manager('/api/banking/connections')).status, 403);
     }
+    const { request: manager, user } = managers[0];
+    const before = await f.store.read(base.provenance.sourceSha256);
+    assert.equal((await manager('/api/shipments', 'POST', { fields: { ...first.fields, customer_id: f.companies[1].id } })).status, 403);
+    assert.equal((await manager(`/api/shipments/${first.id}`, 'PATCH', { version: first.version, fields: { customer_id: f.companies[1].id } })).status, 403);
+    assert.deepEqual(await f.store.read(base.provenance.sourceSha256), before, 'Rejected customer access never mutates records');
+    assert.equal((await f.director(`/api/auth/users/${user.id}`, 'PATCH', { ...user, id: undefined, sections: ['shipments'] })).status, 200);
+    await manager('/api/auth/login', 'POST', { login: user.login, password: f.password });
+    assert.equal((await manager('/api/settlements')).status, 403);
+    const directorReport = await f.report();
+    assert.equal(directorReport.scope, 'all'); assert.equal(directorReport.sources.length, 3); assert.equal(directorReport.review.length, 1);
+    assert.ok(directorReport.companies.some(company => company.receipts.some(row => row.id === unknown.id)));
     const admin = f.client();
     const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'Ledger admin employee' });
-    assert.equal(employee.status, 201);
     assert.equal((await f.director('/api/auth/users', 'POST', { name: 'Ledger admin', login: 'settlements.admin', password: f.password, role: 'admin', managerId: employee.body.entry.id, sections: [] })).status, 201);
-    assert.equal((await admin('/api/auth/login', 'POST', { login: 'settlements.admin', password: f.password })).status, 200);
-    assert.equal((await admin('/api/settlements')).status, 200);
+    await admin('/api/auth/login', 'POST', { login: 'settlements.admin', password: f.password });
+    assert.deepEqual((await admin('/api/settlements')).body, directorReport);
+  } finally { await f.close(); }
+});
+
+test('assigned advance is visible before first shipment; duplicate INN customer records never reveal the other manager or unallocated shared money', async t => {
+  const f = await fixture(t);
+  try {
+    const managerIds = f.snapshot.directories!.managers.slice(0, 2).map(row => row.id);
+    const clients = [], users: AccountUser[] = [];
+    for (const [index, managerId] of managerIds.entries()) {
+      const login = `duplicate.manager.${index}`;
+      const created = await f.director('/api/auth/users', 'POST', { name: `Manager ${index}`, login, password: f.password, role: 'manager', managerId, sections: ['overview'] });
+      assert.equal(created.status, 201); users.push(created.body.user);
+      const manager = f.client(); await manager('/api/auth/login', 'POST', { login, password: f.password }); clients.push(manager);
+    }
+    const emptyReport: SettlementsReport = (await clients[0]('/api/settlements')).body;
+    assert.deepEqual(emptyReport.companies.map(company => company.companyIds[0]).sort(), f.companies.map(company => company.id).sort());
+    assert.ok(emptyReport.companies.every(company => company.debt === '0' && company.advance === '0' && !company.shipments.length && !company.receipts.length));
+    const incoming = receipt('shared-fifo-receipt', '100000'); incoming.purpose = 'May mention another customer record';
+    await f.insert([incoming]);
+    let report: SettlementsReport = (await clients[0]('/api/settlements')).body;
+    const prepaid = report.companies.find(company => company.inn === ROMASHKA_INN)!;
+    assert.equal(prepaid.advance, '100000'); assert.equal(prepaid.receipts[0].amount, '100000');
+    assert.deepEqual((await clients[1]('/api/settlements')).body.companies, []);
+    // Pure projection also defends imported duplicate identities, while operations storage
+    // intentionally rejects newly persisted companies with duplicate INNs.
+    const alias = { ...f.companies[0], id: 'company-local-duplicate-inn', name: 'Private duplicate name', shipmentIds: [], paymentIds: [] };
+    const first = await f.shipment('40000', '2026-09-01');
+    const second = await f.shipment('30000', '2026-09-02', f.companies[1].id, managerIds[1]);
+    const saved = await f.store.read(base.provenance.sourceSha256), snapshot = currentSnapshot(base, saved, false);
+    snapshot.companies.push(alias);
+    snapshot.directories!.customerManagers!.push({ companyId: alias.id, managerId: managerIds[1] });
+    const duplicateShipment = snapshot.shipments.find(row => row.id === second.id)!;
+    duplicateShipment.customerId = alias.id; duplicateShipment.customer = alias.name;
+    Object.assign(duplicateShipment.fields, { customer_id: alias.id, customer_inn: ROMASHKA_INN, customer_name: alias.name });
+    const global = buildSettlements(snapshot.shipments, snapshot.companies, saved).report;
+    for (const [index, user] of users.entries()) {
+      report = scopeSettlements(global, snapshot, user);
+      const own = index ? second : first, foreign = index ? first : second;
+      const amount = index ? '30000' : '40000';
+      assert.deepEqual(report.totals, { shipped: amount, incoming: amount, debt: '0', advance: '0', allocated: amount });
+      const company = report.companies.find(company => company.inn === ROMASHKA_INN)!;
+      assert.equal(company.name, index ? alias.name : f.companies[0].name);
+      assert.deepEqual(company.companyIds, [index ? alias.id : f.companies[0].id]);
+      const projected = company.receipts[0];
+      assert.equal(projected.amount, amount); assert.equal(projected.allocated, amount); assert.equal(projected.advance, '0'); assert.equal(projected.purpose, null);
+      assert.deepEqual(projected.allocations.map(row => row.shipmentId), [own.id]);
+      assert.ok(company.issues.some(issue => issue.includes('Общий аванс')));
+      assert.ok(!JSON.stringify(report).includes(foreign.id));
+      if (!index) assert.ok(!JSON.stringify(report).includes(alias.name));
+    }
+    assert.equal(global.companies.find(company => company.inn === ROMASHKA_INN)!.advance, '30000', 'Global FIFO is preserved rather than reallocated independently for each manager');
+    const stored = await f.store.read(base.provenance.sourceSha256);
+    await clients[0]('/api/settlements'); await clients[1]('/api/settlements');
+    assert.deepEqual(await f.store.read(base.provenance.sourceSha256), stored);
   } finally { await f.close(); }
 });

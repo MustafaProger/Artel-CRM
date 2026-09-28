@@ -8,7 +8,20 @@ import { SHIPMENT_DECIMAL_PRECISION } from '../web/src/shipment-calculations';
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 
 export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
-  return canManage(actor) || !!actor.managerId && snapshot.directories?.managers.some(employee => employee.id === actor.managerId) && shipmentOwnership(snapshot, row).employeeId === actor.managerId;
+  if (canManage(actor)) return true;
+  if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId) || shipmentOwnership(snapshot, row).employeeId !== actor.managerId) return false;
+  const assignments = snapshot.directories.customerManagers?.filter(link => link.companyId === row.customerId) ?? [];
+  return !assignments.length || assignments.some(link => link.managerId === actor.managerId);
+}
+/** Explicit customer assignments include clients with no shipments yet. Historical
+ * shipment ownership is a fallback only while the client remains unassigned. */
+export function ownCustomerIds(snapshot: Snapshot, actor: AccountUser): Set<string> {
+  if (canManage(actor)) return new Set(snapshot.companies.filter(company => company.roles.includes('customer')).map(company => company.id));
+  if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId)) return new Set();
+  return new Set([
+    ...(snapshot.directories.customerManagers?.filter(link => link.managerId === actor.managerId).map(link => link.companyId) ?? []),
+    ...snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).flatMap(row => row.customerId ? [row.customerId] : []),
+  ]);
 }
 export function requireOwnedShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
   if (!ownsShipment(actor, row, snapshot)) throw new ApiError(404, 'Отгрузка не найдена.');
@@ -19,7 +32,7 @@ export function requireWholeTrip(actor: AccountUser, snapshot: Snapshot, id: str
   if (rows.some(row => !ownsShipment(actor, row, snapshot))) throw new ApiError(403, 'Общий рейс доступен для изменения только администратору. Ваши строки доступны в списке отгрузок.');
 }
 const companyLookup = (company: Company): Company => ({ id: company.id, name: company.name, roles: company.roles, directoryArchived: company.directoryArchived, shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] });
-export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work'): Snapshot {
+export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work', workCompanyIds: string[] = []): Snapshot {
   if (canManage(actor) && !context) return snapshot;
   const shipmentAccess = !context && hasSection(actor, 'shipments');
   const directoryAccess = !context && hasSection(actor, 'directories');
@@ -28,9 +41,13 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
     return mixed ? { ...row, tripReadOnly: true, fields: { ...row.fields, trip_total_tonnes: null, trip_additional_costs: null } } : row;
   }) : [];
   const ids = new Set(shipments.map(row => row.id));
+  const customerIds = ownCustomerIds(snapshot, actor);
   // Shared company lookup is operational input, never a back door to directory details or records.
-  const companies = (directoryAccess || shipmentAccess || hasSection(actor, 'work') ? snapshot.companies : []).map(company => ({
-    ...(directoryAccess ? company : companyLookup(company)),
+  const companies = (directoryAccess || shipmentAccess || hasSection(actor, 'work') ? snapshot.companies : [])
+    .filter(company => canManage(actor) || customerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || company.roles.some(role => role === 'supplier' || role === 'carrier'))
+    .map(company => ({
+    ...(directoryAccess && (canManage(actor) || customerIds.has(company.id)) ? company : companyLookup(company)),
+    roles: canManage(actor) || customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'supplier' || role === 'carrier'),
     shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: [], managerLabels: [], flags: [],
   }));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };
@@ -45,13 +62,15 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
       deletedEntries: undefined,
     }),
     managers: canManage(actor) ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
+    deletedEntries: canManage(actor) ? catalog.deletedEntries : undefined,
     customerManagers: canManage(actor) ? catalog.customerManagers : catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
-    assignedCustomerIds: [...new Set([...(catalog.customerManagers?.filter(link => link.managerId === actor.managerId).map(link => link.companyId) ?? []), ...shipments.flatMap(row => row.customerId ? [row.customerId] : [])])],
+    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || canManage(actor))),
+    assignedCustomerIds: [...customerIds],
     currentEmployeeId: actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
     duplicates: [],
   } : undefined;
   return { ...snapshot, directories, shipments, payments: [], stocks: [], companies, managers: [],
-    overview: { ...totals(shipments), companyCount: companies.length, missingShipmentDates: shipments.filter(s => !s.date).length, missingPaymentDates: 0 },
+    overview: { ...totals(shipments), companyCount: companies.filter(company => customerIds.has(company.id)).length, missingShipmentDates: shipments.filter(s => !s.date).length, missingPaymentDates: 0 },
     monthly: [...new Set(dates.map(d => d.slice(0, 7)))].map(month => ({ month, ...totals(shipments.filter(s => s.date?.startsWith(month))) })),
     provenance: { ...snapshot.provenance, counts: { shipment_rows: shipments.length, counterparties: companies.length }, dateRange: { from: dates[0] ?? null, to: dates.at(-1) ?? null } },
     quality: { status: 'scoped', issueCounts: {}, issues: [], recordFlagCounts: { shipments: {}, payments: {} }, flaggedShipmentCount: 0, flaggedPaymentCount: 0, duplicateCandidates: [], aliasCandidates: [], multipleManagerCompanyIds: [], limitations: [] },
@@ -61,6 +80,11 @@ export function checkShipmentWrite(actor: AccountUser, fields: Record<string, st
   if (canManage(actor)) return;
   if (previous) requireOwnedShipment(actor, previous, snapshot);
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId) || fields.manager_id !== actor.managerId) throw new ApiError(403, 'Можно сохранять только свои отгрузки.');
+  if (fields.customer_id && fields.customer_id !== previous?.customerId) {
+    const assignments = snapshot.directories.customerManagers?.filter(link => link.companyId === fields.customer_id) ?? [];
+    if (assignments.length && !assignments.some(link => link.managerId === actor.managerId)) throw new ApiError(403, 'Клиент закреплён за другим менеджером.');
+    if (!ownCustomerIds(snapshot, actor).has(fields.customer_id)) throw new ApiError(403, 'Клиент недоступен. Попросите администратора закрепить его за вами.');
+  }
 }
 /** Bind omitted owner to the authenticated employee; reject forged IDs before validation. */
 export function ownShipmentInput(actor: AccountUser, input: unknown, snapshot: Snapshot, previous?: Shipment): unknown {
@@ -69,6 +93,6 @@ export function ownShipmentInput(actor: AccountUser, input: unknown, snapshot: S
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
   const fields = input as Record<string, unknown>;
   if (Object.hasOwn(fields, 'manager_id') && fields.manager_id !== actor.managerId) throw new ApiError(403, 'Можно сохранять только свои отгрузки.');
-  checkShipmentWrite(actor, { manager_id: actor.managerId }, snapshot, previous);
+  checkShipmentWrite(actor, { manager_id: actor.managerId, customer_id: typeof fields.customer_id === 'string' ? fields.customer_id : null }, snapshot, previous);
   return { ...fields, manager_id: actor.managerId };
 }

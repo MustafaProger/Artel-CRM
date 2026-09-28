@@ -15,6 +15,13 @@ const listKey = (kind: WorkKind) => kind === 'companies' ? 'companyRecords' : ki
 const isSupervisor = (actor: AccountUser) => actor.role === 'director' || actor.role === 'admin';
 const canAccess = (actor: AccountUser, entry: AnyWorkEntry) => isSupervisor(actor) || actor.role === 'manager' && entry.assigneeId === actor.id;
 
+/** A handed-over task grants its company label in Work, never ownership of that
+ * company's shipments or money. Existing task edits must retain this reference. */
+export function workCompanyIds(data: OperationsData, actor: AccountUser): string[] {
+  return [...new Set([...(data.work?.tasks ?? []), ...(data.work?.companyRecords ?? [])]
+    .filter(row => canAccess(actor, row)).flatMap(row => row.companyId ? [row.companyId] : []))];
+}
+
 /** Old stores may omit work entirely. Existing malformed work is never silently discarded. */
 export function validateWorkData(value: unknown): asserts value is WorkData | undefined {
   if (value === undefined) return;

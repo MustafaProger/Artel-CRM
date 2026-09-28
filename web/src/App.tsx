@@ -3,7 +3,7 @@ import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, Ca
 import type { Snapshot, Company, Shipment, Payment } from './model'
 import ChinaPage from './ChinaPage'
 import BankingPage from './BankingPage'
-import SettlementsPage from './SettlementsPage'
+import OverviewPage from './OverviewPage'
 import ShipmentsPage from './ShipmentsPage'
 import DirectoriesPage from './DirectoriesPage'
 import WorkPage from './WorkPage'
@@ -18,7 +18,6 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
   {id:'shipments',title:'Отгрузки',icon:Truck,section:0,description:'Движение топлива — от поставщика до покупателя.'},
   {id:'payments',title:'Платежи',icon:Wallet,section:0,description:'Поступления и списания из банковской выписки.'},
-  {id:'settlements',title:'Взаиморасчёты',icon:Banknote,section:0,description:'Долги и авансы клиентов по ИНН.'},
   {id:'stock',title:'Склад',icon:PackageCheck,section:0,description:''},
   {id:'china',title:'Китай',icon:Globe,section:0,description:''},
   {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
@@ -26,7 +25,7 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'accounts',title:'Сотрудники и доступ',icon:Building2,section:1,description:'Учётные записи и права сотрудников.'},
   {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Компании и менеджеры, товары, водители и автомобили.'},
 ]
-const allowedPage = (user: AccountUser, page: Page) => page === 'accounts' ? isAdministrator(user) : page === 'settlements' ? isAdministrator(user) && hasSection(user, page) : hasSection(user, page)
+const allowedPage = (user: AccountUser, page: Page) => page === 'accounts' ? isAdministrator(user) : hasSection(user, page)
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
@@ -64,8 +63,16 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   }, [menu])
   const fetchData = () => { setError(''); fetch('/api/snapshot?shipments=omit').then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(setData).catch(e => setError(e.message)) }
   useEffect(fetchData, [])
-  useEffect(() => { if(location.hash === '#companies') location.replace('#shipments') }, [])
-  useEffect(() => { const handle = () => {const nextPage=getPage();setPage(nextPage);setMenu(false);setDetail(null);setToast('')}; window.addEventListener('hashchange',handle);return () => window.removeEventListener('hashchange',handle) },[])
+  useEffect(() => {
+    const handle = () => {
+      const replacement = location.hash === '#companies' ? '#shipments' : location.hash === '#settlements' ? '#overview' : null
+      if (replacement) history.replaceState(null, '', replacement)
+      setPage(getPage()); setMenu(false); setDetail(null); setToast('')
+    }
+    if (location.hash) handle()
+    window.addEventListener('hashchange', handle)
+    return () => window.removeEventListener('hashchange', handle)
+  }, [])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''),3200); return () => clearTimeout(timer) },[toast])
   useEffect(() => { const key = (event: KeyboardEvent) => {if(event.key === 'Escape') setMenu(false)};window.addEventListener('keydown',key);return () => window.removeEventListener('keydown',key) },[])
   const navigate = (id: Page) => {location.hash = id;setPage(id);setMenu(false);window.scrollTo({top:0,behavior:'instant'})}
@@ -92,12 +99,12 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       <main id="main-content" tabIndex={-1}>{page !== 'shipments' ? <div className="page-heading page-heading-compact"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div> : <div className="page-heading"><div><div className="eyebrow">АРТЕЛЬ / {active.title.toUpperCase()}</div><h1>{active.title}<span className="heading-dot">.</span></h1><p>{active.description}</p></div>{(page === 'shipments') && data && <label className="period-control"><CalendarDays size={16}/><select aria-label="Период" value={period} onChange={e => setPeriod(e.target.value)}><option value="all">Все месяцы</option>{data.monthly.map(m => <option key={m.month} value={m.month}>{monthName(m.month)}</option>)}</select><ChevronDown size={14}/></label>}</div>}
       {page === 'shipments' && (!data || error) && <button className="button" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={20}/>Меню</button>}
       {!allowedPage(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
-      {['overview','stock'].includes(page) && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
+      {page === 'overview' && <OverviewPage personalScope={!canManage}/>}
+      {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
       {page === 'operator' && <section className="blank-workspace" aria-label="Операторская: рабочее пространство"><p className="soft-notice">Excel-файл с системой учёта не предоставлен. Структура работы и расчёты пока не настроены.</p></section>}
       {page === 'accounts' && data.directories && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'work' && <WorkPage/>}
-      {page === 'settlements' && canManage && <SettlementsPage/>}
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && <ShipmentsPage canReadDirectories={hasSection(user, 'directories')} canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
