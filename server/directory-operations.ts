@@ -1,3 +1,5 @@
+import { locationDetailKeys, locationDetails } from './location-details';
+import { driverTransportDetails } from './driver-transport-details';
 import { driverFields, allVehicleFields } from '../web/src/directory-fields';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Directories, NamedEntry, Snapshot } from '../web/src/model';
@@ -49,7 +51,7 @@ export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snap
   }
   if (!['managers','products','paymentForms','vehicles','drivers','addresses'].includes(String(kind))) throw new ApiError(400,'Неизвестный справочник.');
   const key = kind as 'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses';
-  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name'],paymentForms:['name'],vehicles:['plate','name','brand','model','trailer','capacityLitres','compartmentsLitres',...allVehicleFields.map(([key])=>key)],drivers:['name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind']};
+  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name'],paymentForms:['name'],vehicles:['plate','name','brand','model','trailer','capacityLitres','compartmentsLitres',...allVehicleFields.map(([key])=>key)],drivers:['name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind',...locationDetailKeys]};
   if (Object.keys(input).some(k => k !== 'kind' && !permitted[key].includes(k))) throw new ApiError(400,'Неизвестное поле справочника.');
   const text = (field: string, required = true) => {
     if (typeof input[field] !== 'string' || !(input[field] as string).trim() || (input[field] as string).length > 500) {
@@ -87,13 +89,13 @@ export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snap
       }
       const phone = text('phone', false);
       if (phone && !validPhone(phone)) throw new ApiError(400, 'Проверьте телефон водителя.');
-      entry = { ...Object.fromEntries(driverFields.map(([key])=>[key,text(key,false)])), id, name, vehicleId, ...(phone ? { phone } : {}) };
+      entry = { ...driverTransportDetails(Object.fromEntries(driverFields.map(([key])=>[key,text(key,false)]))), id, name, vehicleId, ...(phone ? { phone } : {}) };
     } else if (key === 'addresses') {
       const companyId = text('companyId'), addressKind = text('addressKind');
       if (!snapshot.companies.some(c => c.id === companyId) || !['loading','delivery'].includes(addressKind)) throw new ApiError(400,'Выберите компанию и тип адреса.');
       const duplicate = catalog.addresses.find(a => a.companyId === companyId && a.kind === addressKind && normalizeName(a.name) === normalizeName(name));
       if (duplicate) return { entry: duplicate, created: false };
-      entry = { id, name, companyId, kind: addressKind as 'loading'|'delivery' };
+      entry = { id, name, companyId, kind: addressKind as 'loading'|'delivery', ...locationDetails(input) };
     } else {
       const duplicate = catalog[key].find(r => normalizeName(r.name) === normalizeName(name));
       if (duplicate) return { entry: duplicate, created: false };

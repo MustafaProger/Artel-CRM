@@ -5,6 +5,7 @@ import ChinaPage from './ChinaPage'
 import BankingPage from './BankingPage'
 import OverviewPage from './OverviewPage'
 import ShipmentsPage from './ShipmentsPage'
+import TripsPage from './TripsPage'
 import DirectoriesPage from './DirectoriesPage'
 import WorkPage from './WorkPage'
 import AuthGate from './AuthGate'
@@ -17,6 +18,7 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:''},
   {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
   {id:'shipments',title:'Отгрузки',icon:Truck,section:0,description:'Движение топлива — от поставщика до покупателя.'},
+  {id:'trips',title:'Рейсы',icon:Truck,section:0,description:'Маршруты, клиентские доставки и отправка в Saby.'},
   {id:'payments',title:'Платежи',icon:Wallet,section:0,description:'Поступления и списания из банковской выписки.'},
   {id:'stock',title:'Склад',icon:PackageCheck,section:0,description:''},
   {id:'china',title:'Китай',icon:Globe,section:0,description:''},
@@ -108,6 +110,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && <ShipmentsPage canReadDirectories={hasSection(user, 'directories')} canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
+      {page === 'trips' && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
       {page === 'payments' && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div>}
       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артель CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}

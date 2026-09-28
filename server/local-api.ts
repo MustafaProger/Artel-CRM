@@ -19,7 +19,7 @@ import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock 
 import { ApiError } from './api-error';
 import { activeUsers, authenticate, deleteUser, login, logout, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
 import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
-import { apiSection, requireSection } from './permissions';
+import { apiSection, requireSection, requireTripSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
@@ -36,6 +36,8 @@ import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
+import { getSabyTrip, submitSabyTrip } from './saby-service';
+import type { SabyClient } from './saby-client';
 import { dispatchReminders, dispatchTaskAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
@@ -304,6 +306,8 @@ export interface LocalApiOptions {
   checkoApiKey?: string;
   /** Injectable only on the server, for provider integration tests. */
   fetcher?: typeof fetch;
+  /** Provider adapter injection for isolated integration tests only. */
+  sabyClient?: SabyClient;
 }
 
 async function jsonBody(request: IncomingMessage, optional = false, limit = 128 * 1024): Promise<Record<string, unknown>> {
@@ -441,6 +445,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       const authorized = (data: import('./operations-store').OperationsData) => {
         const user = requireUser(data, request);
+        if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, pathname.endsWith('/saby') || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
         if (section) requireSection(user, section);
         return user;
@@ -591,11 +596,28 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
+      const sabyTripMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby$/);
+      if (sabyTripMatch) {
+        if (!['GET', 'POST'].includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
+        const tripId = decodeURIComponent(sabyTripMatch[1]);
+        const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => {
+          if (actor) requireWholeTrip(authorized(data), snapshot, tripId);
+        };
+        if (request.method === 'GET') {
+          const data = await operations.read(base.provenance.sourceSha256);
+          authorize(currentSnapshot(base, data), data);
+          return write(response, 200, JSON.stringify(getSabyTrip(base, data, tripId, options.sabyClient?.config)));
+        }
+        const body = await jsonBody(request);
+        if (Object.keys(body).length) throw new ApiError(400, 'Данные передачи берутся из сохранённого рейса.');
+        const result = await submitSabyTrip({ base, store: operations, tripId, authorize, client: options.sabyClient });
+        return write(response, 200, JSON.stringify(result));
+      }
       const shipmentIdMatch = pathname.match(/^\/api\/shipments\/([^/]+)$/);
       const directoryMatch = pathname.match(/^\/api\/directories\/([^/]+)\/([^/]+)$/);
       const tripIdMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)$/);
       if (!['/api/snapshot', '/api/shipments', '/api/shipment-trips', '/api/directories', '/api/companies/from-inn', '/api/companies/lookup'].includes(pathname) && !shipmentIdMatch && !tripIdMatch && !directoryMatch) throw new ApiError(404, 'Маршрут не найден.');
-      const allowed = directoryMatch ? ['PATCH','DELETE'] : pathname === '/api/snapshot' ? ['GET'] : tripIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['/api/companies/from-inn', '/api/companies/lookup', '/api/shipment-trips'].includes(pathname) ? ['POST'] : shipmentIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['GET', 'POST'];
+      const allowed = directoryMatch ? ['PATCH','DELETE'] : pathname === '/api/snapshot' ? ['GET'] : tripIdMatch ? ['GET', 'PATCH', 'DELETE'] : pathname === '/api/shipment-trips' ? ['GET', 'POST'] : ['/api/companies/from-inn', '/api/companies/lookup'].includes(pathname) ? ['POST'] : shipmentIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['GET', 'POST'];
       if (!allowed.includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается для этого маршрута.');
       if (request.method === 'GET') {
         const stored = await operations.read(base.provenance.sourceSha256);
@@ -606,10 +628,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           if (url.searchParams.get('shipments') === 'omit') snapshot.shipments = [];
           return write(response, 200, JSON.stringify(snapshot));
         }
+        if (pathname === '/api/shipment-trips') {
+          const currentActor = actor ? authorized(stored) : null;
+          const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
+            try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
+          }).map(id => getShipmentTrip(snapshot, id)).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
+          return write(response, 200, JSON.stringify({ trips }));
+        }
         if (tripIdMatch) {
           const id = decodeURIComponent(tripIdMatch[1]);
           if (actor) requireWholeTrip(authorized(stored), fullSnapshot, id);
-          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id) }));
+          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
         }
         if (shipmentIdMatch) {
           const shipment = snapshot.shipments.find(row => row.id === decodeURIComponent(shipmentIdMatch[1]));
@@ -669,7 +698,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
               if (!customer || typeof customer !== 'object' || Array.isArray(customer)) return customer;
               return { ...customer, fields: ownShipmentInput(currentActor, customer.fields, snapshot) };
             });
-            const result=saveShipmentTrip(base,data,body,id);
+            const result=saveShipmentTrip(base,data,body,id,currentActor?.id ?? null);
+            if (currentActor) requireWholeTrip(currentActor, currentSnapshot(base, data), result.trip.id);
             if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
             return {result,changed:true};
           });

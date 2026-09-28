@@ -49,7 +49,7 @@ try {
     await page.getByLabel('Логин', { exact: true }).fill(login);
     await page.getByLabel('Пароль', { exact: true }).fill(password);
     for (const title of ['Обзор', 'Работа', 'Склад', 'Операторская', 'ЗП', 'Справочники']) await page.getByRole('checkbox', { name: title, exact: true }).uncheck();
-    await expect(page.locator('.account-section-grid input')).toHaveCount(9);
+    await expect(page.locator('.account-section-grid input')).toHaveCount(10);
     if (!index) for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       const dimensions = await page.evaluate(() => ({ width: innerWidth, content: document.documentElement.scrollWidth }));
@@ -60,7 +60,7 @@ try {
     await expect(page.locator('.account-form')).toHaveCount(0);
     await expect(page.locator('.account-row').filter({ hasText: login })).toContainText('Отгрузки: только свои');
   }
-  check('Administrator creates an employee and links an existing employee through the UI; all nine permissions are individually configurable; desktop and mobile forms save');
+  check('Administrator creates an employee and links an existing employee through the UI; all ten permissions are individually configurable; desktop and mobile forms save');
   const users = (await (await admin.request.get(base + '/api/auth/users')).json()).users.filter(user => user.role === 'manager');
   const snap = await (await admin.request.get(base + '/api/snapshot')).json();
   const directory = snap.directories;

@@ -3,6 +3,9 @@ import Decimal from 'decimal.js'
 import { ChevronDown, LoaderCircle, Plus, Save, Trash2, Truck, X } from 'lucide-react'
 import DirectorySelect, { type SelectEntry } from './DirectorySelect'
 import type { ShipmentEditorProps } from './ShipmentEditor'
+import type { ShipmentAddress } from './model'
+import TripLocationPicker from './TripLocationPicker'
+import './trips.css'
 import { calculateShipment, daysSinceShipment, today, unpaidShipmentDays } from './shipment-calculations'
 import { customerManagerId, availableShipmentCustomer } from './customer-manager'
 import { allocateTrip } from './trip-calculations'
@@ -33,19 +36,31 @@ const numericValue = (value: string) => {
   return parsed.isFinite() ? parsed : null
 }
 const serialize = (draft: TripDraft) => JSON.stringify(draft)
+const numericKeys = new Set(['purchase_price_unspecified_unit', 'quantity_tonnes', 'additional_costs', 'quantity_litres', 'sale_price_per_litre', 'transport_amount'])
+const comparable = (key: string, value: string | null | undefined) => numericKeys.has(key) && value ? numericValue(value)?.toFixed() ?? value : value?.trim() || null
+const sameFields = (expected: Record<string, string | null>, actual: Record<string, string | null>) => Object.entries(expected).every(([key, value]) => comparable(key, value) === comparable(key, actual[key]))
 
-export default function ShipmentTripEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved }: ShipmentEditorProps) {
-  const tripId = shipment?.fields.trip_id
+interface TripEditorProps extends ShipmentEditorProps { tripId?: string; tripMode?: boolean; canManagePlaces?: boolean; onDirectoriesChanged?: () => void }
+
+export default function ShipmentTripEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved, tripId: selectedTripId, tripMode = false, canManagePlaces = false, onDirectoriesChanged }: TripEditorProps) {
+  const tripId = selectedTripId ?? shipment?.fields.trip_id
+  const idempotencyKey = useRef(crypto.randomUUID())
+  const savingLock = useRef(false)
+  const retryPayload = useRef<string | null>(null)
+  const [uncertain, setUncertain] = useState(false)
+  const [conflict, setConflict] = useState(false)
+  const [addedAddresses, setAddedAddresses] = useState<ShipmentAddress[]>([])
+  const addresses = [...directories.addresses, ...addedAddresses.filter(item => !directories.addresses.some(existing => existing.id === item.id))]
   const dialog = useRef<HTMLDialogElement>(null)
   const errorElement = useRef<HTMLDivElement>(null)
   const pendingCustomerFocus = useRef<string | null>(null)
   const defaultPaymentId = directories.paymentForms.find(p => p.name === defaultPaymentForm)?.id ?? ''
   const newCustomer = (): CustomerDraft => ({
     key: crypto.randomUUID(),
-    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '' },
+    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', delivery_notes: '', unloading_planned_at: '', unloading_actual_at: '' },
   })
   const [draft, setDraft] = useState<TripDraft>(() => ({
-    fields: { organization_id: '', date: today(), supplier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0' },
+    fields: { organization_id: '', date: today(), supplier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', loading_planned_at: '', loading_actual_at: '' },
     customers: [newCustomer()],
   }))
   const [initial, setInitial] = useState(() => serialize(draft))
@@ -58,7 +73,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const [confirmClose, setConfirmClose] = useState(false)
   const dirty = serialize(draft) !== initial
   const fields = draft.fields
-  const disabled = saving || loading
+  const disabled = saving || loading || uncertain
 
   useEffect(() => {
     const element = dialog.current
@@ -85,6 +100,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
         setDraft(loaded)
         setInitial(serialize(loaded))
         setVersions(Object.fromEntries(trip.customers.map(customer => [customer.id, customer.version])))
+        setConflict(false)
+        setError('')
       } catch (reason) {
         if (!controller.signal.aborted) setLoadError(reason instanceof Error ? reason.message : 'Нет связи с сервером')
       } finally {
@@ -131,11 +148,11 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
 
   const changed = () => { setConfirmClose(false); setError('') }
   const update = (key: string, value: string) => {
-    setDraft(previous => ({ ...previous, fields: { ...previous.fields, [key]: value, ...(key === 'supplier_id' ? { loading_address_id: '' } : key === 'driver_id' ? { vehicle_id: directories.drivers.find(entry => entry.id === value)?.vehicleId ?? '' } : {}) } }))
+    setDraft(previous => ({ ...previous, fields: { ...previous.fields, [key]: value, ...(key === 'loading_address_id' ? { loading_address: '', loading_map_url: '' } : {}), ...(key === 'supplier_id' ? { loading_address_id: '', loading_address: '', loading_map_url: '' } : key === 'driver_id' ? { vehicle_id: directories.drivers.find(entry => entry.id === value)?.vehicleId ?? '' } : {}) } }))
     changed()
   }
   const updateCustomer = (customerKey: string, key: string, value: string) => {
-    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'customer_id' ? { unloading_address_id: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
+    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'unloading_address_id' ? { unloading_address: '', unloading_map_url: '' } : {}), ...(key === 'customer_id' ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
     changed()
   }
   const addCustomer = () => {
@@ -150,7 +167,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     setDraft(previous => ({ ...previous, customers: previous.customers.filter(customer => customer.key !== key) }))
     changed()
   }
-  const close = () => { if (!saving) { if (dirty) setConfirmClose(true); else onClose() } }
+  const close = () => { if (uncertain) { setError('Результат сохранения пока неизвестен. Повторите сохранение, чтобы получить результат без дублей.'); return } if (!saving) { if (dirty) setConfirmClose(true); else onClose() } }
 
   const validate = () => {
     if (!tripId && !isOurOrganizationId(fields.organization_id)) return 'Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.'
@@ -178,28 +195,69 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   }
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (disabled || loadError) return
-    const validationError = validate()
+    if (savingLock.current || loading || loadError || conflict) return
+    const validationError = retryPayload.current ? null : validate()
     if (validationError) { setError(validationError); errorElement.current?.focus(); return }
     setError('')
     setSaving(true)
-    const clean = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.trim() || null]))
+    savingLock.current = true
+    const snapshotFields = new Set(['loading_address', 'loading_map_url', 'unloading_address', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude'])
+    const clean = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).filter(([key]) => !snapshotFields.has(key)).map(([key, value]) => [key, value.trim() || null]))
     const payload = {
       fields: clean({ ...fields, additional_costs: fields.additional_costs || '0' }),
       customers: draft.customers.map(customer => ({ ...(customer.id ? { id: customer.id } : {}), fields: clean({ ...customer.fields, transport_amount: customer.fields.transport_amount || '0' }) })),
-      ...(tripId ? { versions } : {}),
+      ...(tripId ? { versions } : { idempotencyKey: idempotencyKey.current }),
+    }
+    const body = retryPayload.current ?? JSON.stringify(payload)
+    retryPayload.current = body
+    const recoverPatch = async () => {
+      if (!tripId) return false
+      const response = await fetch(`/api/shipment-trips/${encodeURIComponent(tripId)}`, { signal: AbortSignal.timeout(10000) })
+      if (!response.ok) return false
+      const result = await response.json(), current: LoadedTrip = result.trip
+      const expected = JSON.parse(body) as typeof payload
+      const remaining = [...current.customers]
+      const identicalCustomers = expected.customers.length === remaining.length && expected.customers.every(customer => {
+        const index = remaining.findIndex(row => (!customer.id || row.id === customer.id) && sameFields(customer.fields, row.fields))
+        if (index < 0) return false
+        remaining.splice(index, 1); return true
+      })
+      if (sameFields(expected.fields, current.fields) && identicalCustomers && result.shipment) { onSaved(result.shipment); return true }
+      const priorVersions: Record<string, number> = 'versions' in expected ? expected.versions : {}
+      if (current.customers.length !== Object.keys(priorVersions).length || current.customers.some(row => priorVersions[row.id] !== row.version)) {
+        retryPayload.current = null; setUncertain(false); setConflict(true)
+        throw new Error('Рейс изменён в другом окне. Загрузите актуальный рейс и проверьте изменения перед сохранением.')
+      }
+      return false
     }
     try {
-      const response = await fetch(tripId ? `/api/shipment-trips/${encodeURIComponent(tripId)}` : '/api/shipment-trips', { method: tripId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const response = await fetch(tripId ? `/api/shipment-trips/${encodeURIComponent(tripId)}` : '/api/shipment-trips', { method: tripId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(20000) })
       const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Не удалось сохранить отгрузку')
+      if (!response.ok) {
+        if (response.status === 409 && tripId && await recoverPatch()) return
+        if (response.status < 500) { retryPayload.current = null; setUncertain(false) }
+        else setUncertain(true)
+        throw new Error(result.error || 'Не удалось сохранить отгрузку')
+      }
       onSaved(result.shipment ?? result.shipments[0])
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }
-    finally { setSaving(false) }
+    } catch (reason) {
+      let failure = reason
+      if (tripId && retryPayload.current) {
+        try { if (await recoverPatch()) return }
+        catch (recoveryError) { failure = recoveryError }
+      }
+      if (retryPayload.current) setUncertain(true)
+      setError(failure instanceof Error ? failure.message : 'Нет связи с сервером')
+    }
+    finally { savingLock.current = false; setSaving(false) }
   }
 
   const select = (label: string, key: string, entries: SelectEntry[], options: { required?: boolean; disabled?: boolean; customer?: CustomerDraft } = {}) => <DirectorySelect label={label} value={(options.customer?.fields ?? fields)[key] ?? ''} entries={entries} required={options.required} disabled={disabled || options.disabled} onChange={value => options.customer ? updateCustomer(options.customer.key, key, value) : update(key, value)}/>
-  const input = (label: string, key: string, options: { required?: boolean; type?: string; customer?: CustomerDraft } = {}) => <label className="shipment-field"><span>{label}{options.required && ' *'}</span><input type={options.type ?? 'text'} inputMode={options.type === 'date' ? undefined : 'decimal'} autoFocus={key === 'date'} value={(options.customer?.fields ?? fields)[key] ?? ''} required={options.required} disabled={disabled} onChange={event => options.customer ? updateCustomer(options.customer.key, key, event.target.value) : update(key, event.target.value)}/></label>
+  const input = (label: string, key: string, options: { required?: boolean; type?: string; customer?: CustomerDraft; text?: boolean } = {}) => <label className="shipment-field"><span>{label}{options.required && ' *'}</span><input type={options.type ?? 'text'} inputMode={options.type === 'date' || options.type === 'datetime-local' || options.text ? undefined : 'decimal'} autoFocus={key === 'date'} value={(options.customer?.fields ?? fields)[key] ?? ''} required={options.required} disabled={disabled} onChange={event => options.customer ? updateCustomer(options.customer.key, key, event.target.value) : update(key, event.target.value)}/></label>
+  const location = (customer?: CustomerDraft) => {
+    const values = customer?.fields ?? fields, prefix = customer ? 'unloading' : 'loading'
+    return <TripLocationPicker label={customer ? 'Место выгрузки' : 'Место загрузки'} kind={customer ? 'delivery' : 'loading'} companyId={values[customer ? 'customer_id' : 'supplier_id']} value={values[`${prefix}_address_id`] ?? ''} addresses={addresses} addressSnapshot={values[`${prefix}_address`] || undefined} mapSnapshot={values[`${prefix}_map_url`] || undefined} disabled={disabled} canManage={canManagePlaces} onChange={id => customer ? updateCustomer(customer.key, `${prefix}_address_id`, id) : update(`${prefix}_address_id`, id)} onCreated={address => { setAddedAddresses(previous => [...previous.filter(item => item.id !== address.id), address]); onDirectoriesChanged?.() }}/>
+  }
   const output = (label: string, value: string | number | null | undefined, digits = 2) => <div className="shipment-calculated"><span>{label}</span><output aria-label={label}>{value == null || value === '' ? '—' : number(value, digits)}</output></div>
 
   return <dialog ref={dialog} className="shipment-editor shipment-trip-editor" aria-labelledby="shipment-trip-title" onCancel={event => { event.preventDefault(); close() }}>
@@ -210,16 +268,20 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
         controls[controls.indexOf(event.target) + 1]?.focus()
       }
     }}>
-      <header className="shipment-editor-heading"><div><span>{tripId ? 'РЕДАКТИРОВАНИЕ ОТГРУЗКИ' : 'НОВАЯ ОТГРУЗКА'}</span><h2 id="shipment-trip-title">{tripId ? 'Изменить отгрузку' : 'Добавить отгрузку'}</h2></div><button type="button" className="icon-button" aria-label="Закрыть редактор" disabled={saving} onClick={close}><X size={23}/></button></header>
+      <header className="shipment-editor-heading"><div><span>{tripMode ? (tripId ? 'РЕДАКТИРОВАНИЕ РЕЙСА' : 'НОВЫЙ РЕЙС') : (tripId ? 'РЕДАКТИРОВАНИЕ ОТГРУЗКИ' : 'НОВАЯ ОТГРУЗКА')}</span><h2 id="shipment-trip-title">{tripMode ? (tripId ? 'Изменить рейс' : 'Новый рейс') : (tripId ? 'Изменить отгрузку' : 'Добавить отгрузку')}</h2></div><button type="button" className="icon-button" aria-label="Закрыть редактор" disabled={saving} onClick={close}><X size={23}/></button></header>
       <div className="shipment-editor-body" aria-busy={loading || saving}>
         {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={24}/><span>Загружаем отгрузку и всех её клиентов…</span></div> : loadError ? <div className="shipment-trip-loading"><p className="shipment-error" role="alert">{loadError}</p><button type="button" className="button" onClick={() => setReload(value => value + 1)}>Повторить загрузку</button></div> : <>
-          <p className="shipment-editor-note shipment-trip-intro">Одна машина — одна отгрузка. Укажите общий тоннаж, затем литры и условия для каждого клиента.</p>
+          <p className="shipment-editor-note shipment-trip-intro">{tripMode ? 'Сохранение создаёт рабочий рейс и строки клиентов в «Отгрузках». Передать его в Saby можно после сохранения.' : 'Одна машина — одна отгрузка. Укажите общий тоннаж, затем литры и условия для каждого клиента.'}</p>
+          {uncertain && <p className="shipment-calculation-warning" role="status">Ответ сервера не подтверждён. Повторите сохранение: будет проверен тот же запрос без создания второго рейса.</p>}
           {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
+          {conflict && <button type="button" className="button" disabled={saving} onClick={() => setReload(value => value + 1)}>Загрузить актуальный рейс</button>}
           <fieldset className="shipment-fieldset group-purchase"><legend>Отгрузка и поставщик</legend><div className="shipment-field-grid">
             {select('Наша организация', 'organization_id', ourOrganizations.map(organization => ({ ...organization })), { required: !tripId })}
             {input('Дата отгрузки', 'date', { type: 'date', required: true })}
             {select('Поставщик', 'supplier_id', companyEntries('supplier', draft.fields.supplier_id), { required: true })}
-            {select('Место загрузки', 'loading_address_id', directories.addresses.filter(address => address.kind === 'loading' && address.companyId === fields.supplier_id), { disabled: !fields.supplier_id })}
+            {location()}
+            {input('Плановая погрузка', 'loading_planned_at', { type: 'datetime-local' })}
+            {input('Фактическая погрузка', 'loading_actual_at', { type: 'datetime-local' })}
             {input('Цена поставщика за тонну, ₽', 'purchase_price_unspecified_unit', { required: true })}
             {input('Тоннаж всей машины, т', 'quantity_tonnes', { required: true })}
             {select('Товар', 'product_id', directories.products, { required: true })}
@@ -239,7 +301,11 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                   {input('Количество литров, л', 'quantity_litres', { required: true, customer })}
                   {input('Цена за литр, ₽', 'sale_price_per_litre', { required: true, customer })}
                   {input('Сумма перевозки, ₽', 'transport_amount', { customer })}
-                  {select('Место выгрузки', 'unloading_address_id', directories.addresses.filter(address => address.kind === 'delivery' && address.companyId === customer.fields.customer_id), { disabled: !customer.fields.customer_id, customer })}
+                  {location(customer)}
+                  {input('Плановая выгрузка', 'unloading_planned_at', { type: 'datetime-local', customer })}
+                  {input('Фактическая выгрузка', 'unloading_actual_at', { type: 'datetime-local', customer })}
+                  {input('Примечание к доставке', 'delivery_notes', { text: true, customer })}
+                  <label className="trip-invoice-option"><input type="checkbox" checked={customer.fields.invoice_not_required === 'true'} disabled={disabled} onChange={event => updateCustomer(customer.key, 'invoice_not_required', String(event.target.checked))}/>Счёт не нужен</label>
                   {select('Менеджер', 'manager_id', directories.managers, { required: true, customer })}
                 </div>
                 <div className="shipment-calculation-strip shipment-trip-client-totals">{output('Тоннаж клиента, т', allocation?.tonnes[index], 6)}{output('Сумма клиента, ₽', litres && price ? litres.times(price).toFixed(2) : null)}{output('Прибыль, ₽', calculation?.fields.profit_source)}<span className="shipment-trip-auto">Тоннаж · автоматически</span></div>
@@ -259,10 +325,11 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
             {overCapacity && <p className="shipment-calculation-warning" role="status">Литры клиентов превышают объём выбранного автомобиля на {number(totalLitres.minus(capacity!).toString(), 3)} л. Проверьте объём и автомобиль.</p>}
           </fieldset>
 
+          <label className="shipment-field trip-notes"><span>Примечание к рейсу</span><textarea value={fields.trip_notes ?? ''} maxLength={4000} rows={3} disabled={disabled} onChange={event => update('trip_notes', event.target.value)}/></label>
           <details className="shipment-trip-extras"><summary><div><span>Дополнительные затраты</span><small>{numericValue(fields.additional_costs || '0')?.gt(0) ? `${number(numericValue(fields.additional_costs)!.toString(), 2)} ₽ на всю машину` : 'При необходимости'}</small></div><ChevronDown size={19}/></summary><div className="shipment-trip-extras-body">{input('Дополнительные затраты, ₽', 'additional_costs')}<p>Общие для всей машины. Распределяются между клиентами пропорционально литрам.</p></div></details>
         </>}
       </div>
-      <footer className="shipment-editor-footer">{confirmClose ? <div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить</button><button type="button" className="button danger" onClick={onClose}>Закрыть без сохранения</button></div> : <><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={disabled || !!loadError || !!tripId && !dirty}>{saving ? <LoaderCircle className="spin" size={17}/> : <Save size={17}/>}Сохранить отгрузку</button></>}</footer>
+      <footer className="shipment-editor-footer">{confirmClose ? <div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить</button><button type="button" className="button danger" onClick={onClose}>Закрыть без сохранения</button></div> : <><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={saving || loading || conflict || !!loadError || !!tripId && !dirty}>{saving ? <LoaderCircle className="spin" size={17}/> : <Save size={17}/>} {uncertain ? 'Повторить сохранение' : tripMode ? 'Сохранить рейс' : 'Сохранить отгрузку'}</button></>}</footer>
     </form>
   </dialog>
 }

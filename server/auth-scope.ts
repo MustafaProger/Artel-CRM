@@ -34,7 +34,7 @@ export function requireWholeTrip(actor: AccountUser, snapshot: Snapshot, id: str
 const companyLookup = (company: Company): Company => ({ id: company.id, name: company.name, roles: company.roles, directoryArchived: company.directoryArchived, shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] });
 export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work', workCompanyIds: string[] = []): Snapshot {
   if (canManage(actor) && !context) return snapshot;
-  const shipmentAccess = !context && hasSection(actor, 'shipments');
+  const shipmentAccess = !context && (hasSection(actor, 'shipments') || hasSection(actor, 'trips'));
   const directoryAccess = !context && hasSection(actor, 'directories');
   const shipments = shipmentAccess ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).map(row => {
     const mixed = row.fields.trip_id && snapshot.shipments.some(other => other.fields.trip_id === row.fields.trip_id && !ownsShipment(actor, other, snapshot));

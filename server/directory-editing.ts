@@ -1,3 +1,4 @@
+import { locationDetailKeys, locationDetails } from './location-details';
 import { companyFields } from '../web/src/directory-fields';
 import { randomUUID } from 'node:crypto';
 import type { Company, Directories, ShipmentAddress, Snapshot } from '../web/src/model';
@@ -19,7 +20,7 @@ export function updateDirectoryEntry(kind: string, id: string, input: Record<str
   // Reuse creation validation, excluding only the record being edited.
   const catalog = { ...snapshot.directories!, [key]: snapshot.directories![key].filter(row => row.id !== id) };
   const draft = structuredClone(data);
-  const result = addDirectoryEntry({ ...fields, kind }, { ...snapshot, directories: catalog }, draft);
+  const result = addDirectoryEntry({ ...(key === 'addresses' ? Object.fromEntries(locationDetailKeys.map(key => [key, (previous as ShipmentAddress)[key]])) : {}), ...fields, kind }, { ...snapshot, directories: catalog }, draft);
   if (!result.created) throw new ApiError(409, 'Такая запись уже есть в справочнике.');
   const entry = { ...result.entry, id, version: (previous.version ?? 0) + 1 } as Directories[typeof key][number];
   const rows = data.directories![key] as (typeof entry)[];
@@ -63,14 +64,15 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   const seen = new Set<string>();
   const oldAddresses = snapshot.directories!.addresses.filter(address => address.companyId === companyId);
   const addresses: ShipmentAddress[] = input.addresses.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['id', 'name', 'kind'].includes(key)) || typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 500 || !['loading', 'delivery'].includes(raw.kind)) throw new ApiError(400, 'Проверьте адрес и его тип.');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['id', 'name', 'kind', ...locationDetailKeys].includes(key)) || typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 500 || !['loading', 'delivery'].includes(raw.kind)) throw new ApiError(400, 'Проверьте адрес и его тип.');
     if (raw.id && (typeof raw.id !== 'string' || !oldAddresses.some(address => address.id === raw.id && address.kind === raw.kind))) throw new ApiError(400, 'Адрес не принадлежит компании или имеет другой тип.');
     const name = raw.name.normalize('NFKC').trim().replace(/\s+/g, ' ');
     const key = `${raw.kind}:${normalizeName(name)}`;
     if (seen.has(key) || raw.id && seen.has(raw.id)) throw new ApiError(400, 'Адрес указан дважды.');
     seen.add(key); if (raw.id) seen.add(raw.id);
     const previousAddress = oldAddresses.find(row => row.id === raw.id);
-    return { id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name ? 0 : 1) } : {}) };
+    const details = locationDetails({ ...previousAddress, ...raw });
+    return { ...details, id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => previousAddress[key] === details[key]) ? 0 : 1) } : {}) };
   });
   const removed = oldAddresses.filter(address => !addresses.some(row => row.id === address.id));
   if (snapshot.shipments.some(row => removed.some(address => [row.fields.loading_address_id, row.fields.unloading_address_id].includes(address.id)))) throw new ApiError(409, 'Адрес используется в отгрузке. Его можно изменить, но нельзя удалить.');

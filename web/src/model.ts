@@ -194,7 +194,7 @@ export interface Snapshot {
 export interface NamedEntry { id: string; name: string; version?: number }
 export interface Vehicle extends VehicleDetails { id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
 export interface Driver extends NamedEntry, DriverDetails { vehicleId: string; phone?: string }
-export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery' }
+export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string }
 export type ProfitRule = 'azs-payment-form' | 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
 export interface CalculationRules {
   sale: 'litres' | 'tonnes' | null;

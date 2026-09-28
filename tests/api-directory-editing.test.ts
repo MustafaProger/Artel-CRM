@@ -68,6 +68,7 @@ test('renaming source directories and seeded fleet does not recreate old rows; a
     const vehicleExtra=Object.fromEntries(allVehicleFields.map(([key])=>[key,`Тест ${key}`]));
     assert.equal((await runtime.request(`/api/directories/vehicles/${vehicle.id}`,'PATCH',{version:0,plate:'Новая машина 489',name:'Новое название машины',...vehicleExtra})).status,200);
     const driverExtra=Object.fromEntries(driverFields.map(([key])=>[key,`Тест ${key}`]));
+    Object.assign(driverExtra, { inn: '990000000041', licenseSeries: '1122', licenseNumber: '123456', licenseIssuedAt: '2026-09-28' });
     assert.equal((await runtime.request(`/api/directories/drivers/${driver.id}`,'PATCH',{version:0,name:'Водитель после изменения',phone:driver.phone,vehicleId:vehicle.id,...driverExtra})).status,200);
     const loaded=currentSnapshot(base,await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).directories!;
     assert.equal(loaded.vehicles.length,catalog.vehicles.length);assert.equal(loaded.drivers.length,catalog.drivers.length);

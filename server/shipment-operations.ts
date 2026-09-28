@@ -23,6 +23,9 @@ export const SHIPMENT_FIELDS = [
   // Explicit picker identities, separate from the workbook's visible columns.
   'customer_id', 'supplier_id', 'carrier_id',
   'manager_id', 'product_id', 'payment_form_id', 'driver_id', 'vehicle_id', 'driver_name', 'vehicle_plate',
+  'trip_notes', 'delivery_notes', 'invoice_not_required',
+  'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude',
+  'loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at',
   'trip_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
   'opening_payment_date', 'opening_paid_amount', 'loading_address_id', 'unloading_address_id', 'purchase_unit', 'payment_due_date', 'overdue_days', 'calculation_mode', 'profit_rule',
 ] as const;
@@ -76,6 +79,10 @@ export function validateShipmentFields(input: unknown, previous: Shipment | unde
     // Unchanged saved Excel errors and historical values are permitted and preserved.
     if (previous && raw === previous.fields[key]) continue;
     let value = raw === null ? null : raw.trim() || null;
+    if (value !== null && key === 'invoice_not_required' && !['true', 'false'].includes(value)) throw new ApiError(400, 'Пометка «счёт не нужен» должна быть true или false.');
+    if (value !== null && ['loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at'].includes(key)) {
+      if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(value) || !day(value.slice(0, 10))) throw new ApiError(400, 'Укажите корректные дату и время площадки (московское время).');
+    }
     if (value !== null && key === 'organization_id' && !isOurOrganizationId(value)) throw new ApiError(400, 'Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.');
     if (value !== null && (key === 'date' || key === 'payment_date' || key === 'payment_due_date')) {
       const parsed = day(value);
@@ -132,7 +139,7 @@ function validateStoredTrips(shipments: Shipment[]) {
     const members = groups.get(row.fields.trip_id) ?? [];
     members.push(row); groups.set(row.fields.trip_id, members);
   }
-  const shared = ['organization_id', 'date', 'supplier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'trip_total_tonnes', 'trip_additional_costs'];
+  const shared = ['organization_id', 'date', 'supplier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs'];
   for (const rows of groups.values()) {
     const first = rows[0].fields;
     if (!numeric(first.trip_total_tonnes) || !new Exact(first.trip_total_tonnes!).gt(0) || !numeric(first.trip_additional_costs) || new Exact(first.trip_additional_costs!).lt(0)) throw new StoreError('Invalid trip totals');
@@ -366,6 +373,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   }
   data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
+  automatic.push('loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);
@@ -396,8 +404,15 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
       const address = catalog.addresses.find(a => a.id === data[`${key}_id`]);
       const companyId = data[`${role}_id`] ?? previous?.[`${role}Id`];
       if (!address || address.kind !== kind || address.companyId !== companyId) throw new ApiError(400,'Адрес не принадлежит выбранной компании.');
-      data[key] = address.name;
-    } else if (Object.hasOwn(data,`${key}_id`)) data[key] = null;
+      const samePlace = previous?.fields[`${key}_id`] === address.id && previous?.fields[key];
+      data[key] = samePlace ? previous!.fields[key] : address.address || address.name;
+      const prefix = key === 'loading_address' ? 'loading' : 'unloading';
+      for (const [suffix, property] of [['map_url','mapUrl'], ['latitude','latitude'], ['longitude','longitude']] as const) data[`${prefix}_${suffix}`] = samePlace ? previous!.fields[`${prefix}_${suffix}`] ?? null : address[property] || null;
+    } else if (Object.hasOwn(data,`${key}_id`)) {
+      data[key] = null;
+      const prefix = key === 'loading_address' ? 'loading' : 'unloading';
+      for (const suffix of ['map_url', 'latitude', 'longitude']) data[`${prefix}_${suffix}`] = null;
+    }
   }
   if (Object.hasOwn(data,'driver_id')) {
     const driver = catalog.drivers.find(d => d.id === data.driver_id);

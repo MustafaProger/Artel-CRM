@@ -4,6 +4,7 @@ export const companyFields = [
   ['phone','Телефон компании'],['email','Электронная почта'],['bankName','Банк клиента'],['settlementAccount','Расчётный счёт'],['correspondentAccount','Корреспондентский счёт'],['bik','БИК'],
 ] as const
 export const driverFields = [
+  ['inn','ИНН водителя'],['licenseSeries','Серия ВУ'],['licenseNumber','Номер ВУ'],['licenseIssuedAt','Дата выдачи ВУ'],
   ['fullName','ФИО по паспорту'],['passportIssuedBy','Кем выдан паспорт'],['passportIssuedAt','Дата выдачи паспорта'],['passportDepartmentCode','Код подразделения'],['passportSeries','Серия паспорта'],['passportNumber','Номер паспорта'],['gender','Пол'],['birthplace','Место рождения'],['birthdate','Дата рождения'],['registeredAddress','Адрес регистрации'],
 ] as const
 export const vehicleFields = [

@@ -1,3 +1,5 @@
+import { locationDetails } from './location-details';
+import { validateSabyData, type SabyData } from './saby-service';
 import { companyFields, driverFields } from '../web/src/directory-fields';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, rename, unlink } from 'node:fs/promises';
@@ -32,6 +34,8 @@ export interface OperationsData {
   companies: Company[];
   directories?: Directories;
   paymentAllocations?: PaymentAllocation[];
+  tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
+  saby?: SabyData;
   /** Explicit reset: source operations must never be imported again. */
   sourceOperationsCleared?: boolean;
   work?: WorkData;
@@ -53,6 +57,11 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 export function validate(data: unknown, sourceSha256: string): asserts data is OperationsData {
   if (!object(data) || (data.schemaVersion !== 1 && data.schemaVersion !== 2) || data.sourceSha256 !== sourceSha256 || !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 || !object(data.shipments) || !Array.isArray(data.companies)) throw new StoreError('Invalid operations store');
   if (data.sourceOperationsCleared !== undefined && typeof data.sourceOperationsCleared !== 'boolean') throw new StoreError('Invalid operations reset');
+  if (data.tripCreateRequests !== undefined) {
+    if (!object(data.tripCreateRequests)) throw new StoreError('Invalid trip requests');
+    for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
+  }
+  try { validateSabyData(data.saby); } catch { throw new StoreError('Invalid Saby storage'); }
   validateChina(data.china);
   try { validateBanking(data.banking as BankingData | undefined); } catch { throw new StoreError('Invalid banking storage'); }
   try { validateSber(data.sber as SberData | undefined); validateSber(data.sberArtel as SberData | undefined, sberConnections['sber-artel']); } catch { throw new StoreError('Invalid Sber storage'); }
@@ -86,6 +95,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
         if (key === 'drivers' && driverFields.some(([key])=>row[key] !== undefined && (typeof row[key] !== 'string' || (row[key] as string).length > 500))) throw new StoreError('Invalid driver details');
         if (key === 'drivers' && row.phone !== undefined && !validPhone(row.phone)) throw new StoreError('Invalid driver phone');
         if (key === 'drivers' && (typeof row.vehicleId !== 'string' || !(directories.vehicles as {id:string}[]).some(v => v.id === row.vehicleId))) throw new StoreError('Invalid driver vehicle');
+        if (key === 'addresses') { try { locationDetails(row); } catch { throw new StoreError('Invalid location details'); } }
         if (key === 'addresses' && (typeof row.companyId !== 'string' || !['loading','delivery'].includes(String(row.kind)))) throw new StoreError('Invalid address');
       }
     }
