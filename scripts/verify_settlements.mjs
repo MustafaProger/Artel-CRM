@@ -99,37 +99,6 @@ try {
   assert.deepEqual(ledger.companies.find(row => row.inn === companies[0].inn).receipts.map(row => row.connectionId).sort(), [...report.connections].sort());
   page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message));
   await page.clock.setFixedTime(new Date('2026-09-28T09:00:00Z'));
-  const showLegacy = target => target.getByRole('button', { name: 'Общий клиентский итог и прежняя история', exact: true }).click();
-  await page.goto(base + '/#settlements');
-  await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
-  await expect(page.getByTestId('organization-unassigned-notice')).toContainText('4 отгрузок');
-  await showLegacy(page);
-  await expect(page.locator('.overview-page')).toBeVisible();
-  await expect(page).toHaveURL(base + '/#overview');
-  await expect(page.getByRole('button', { name: 'Взаиморасчёты', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Взаиморасчёты', exact: true })).toHaveCount(0);
-  await expect(page.locator('.overview-company-button')).toHaveCount(4);
-  await expect(page.locator('.overview-total[data-total="debt"]')).toContainText('130 000,00');
-  await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('30 000,00');
-  await expect(page.locator('.overview-review')).toBeVisible();
-  check('Legacy settlements route opens Overview, with one navigation entry, debt/advance totals and unresolved receipts');
-
-  const companyButton = (name, target = page) => target.locator('.overview-company-button').filter({ hasText: name });
-  const romashka = companyButton(companies[0].name), vasilek = companyButton(companies[1].name);
-  const positiveBalance = romashka.locator('.overview-balance'), negativeBalance = vasilek.locator('.overview-balance');
-  await expect(positiveBalance).toHaveAttribute('data-balance', '30000.00');
-  await expect(positiveBalance).toHaveAttribute('data-tone', 'advance');
-  await expect(positiveBalance).toContainText('+30 000,00');
-  await expect(negativeBalance).toHaveAttribute('data-balance', '-120000.00');
-  await expect(negativeBalance).toHaveAttribute('data-tone', 'debt');
-  await expect(companyButton(companies[3].name).locator('.overview-balance')).toHaveAttribute('data-balance', '0.00');
-  assert.match((await negativeBalance.innerText()).replace(/\s/g, ''), /^[−-]120000,00/);
-  const colors = await Promise.all([positiveBalance, negativeBalance].map(locator => locator.evaluate(element => getComputedStyle(element).color)));
-  const rgb = value => value.match(/[\d.]+/g).map(Number);
-  assert.ok(rgb(colors[0])[1] > rgb(colors[0])[0], `Advance must be green: ${colors[0]}`);
-  assert.ok(rgb(colors[1])[0] > rgb(colors[1])[1], `Debt must be red: ${colors[1]}`);
-  check('Company names sit beside exact signed balances: a green +30,000 advance and a red −120,000 debt');
-
   const capture = async (name, width, target = page) => {
     await target.setViewportSize({ width, height: 1000 });
     await target.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); window.scrollTo(0, 0); });
@@ -143,180 +112,22 @@ try {
     report.accessibility.push({ name, width, violations: result.violations });
     assert.deepEqual(result.violations, [], `Accessibility violations in ${name} at ${width}px`);
   };
-  const period = page.getByRole('combobox', { name: 'Период диаграммы', exact: true });
-  await expect(period).toHaveValue('6');
-  await expect(page.locator('.overview-month-button')).toHaveCount(6);
-  await period.selectOption('12'); await expect(period).toHaveValue('12');
-  await expect(page.locator('.overview-month-button')).toHaveCount(12);
-  await period.selectOption('all'); await expect(period).toHaveValue('all');
-  await page.locator('.overview-month-button[data-month="2026-09"]').click();
-  await expect(page.locator('.overview-chart-detail')).toContainText('130 000,00');
-  await expect(page.locator('.overview-chart-detail')).toContainText('230 000,00');
-  await expect(positiveBalance).toHaveAttribute('data-balance', '30000.00');
-  await period.selectOption('6');
-  check('Monthly chart supports six/twelve months and all time; selecting September exposes exact incoming/shipped values without changing current balances');
-  for (const width of [1440, 390, 320]) await capture('overview', width);
-  for (const width of [1440, 320]) await audit('overview', width);
-
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.locator('.overview-sources summary').click();
-  for (const [id, label] of [['tbank-nk-artel', 'Т-Банк · НК АРТЕЛЬ'], ['sber-nk-artel', 'СберБизнес · НК АРТЕЛЬ'], ['sber-artel', 'СберБизнес · АРТЕЛЬ']]) {
-    const item = page.locator(`.overview-sources [data-connection-id="${id}"]`);
-    await expect(item).toContainText(label); await expect(item).toContainText('Выписка загружена');
-  }
-  check('Director can inspect the three distinct stored bank statement sources without contacting a bank');
-  const search = page.getByRole('textbox', { name: 'Поиск компаний по названию или ИНН', exact: true });
-  await search.fill(companies[0].inn); await expect(page.locator('.overview-company-button')).toHaveCount(1);
-  await romashka.click();
-  const details = page.locator('.overview-company-details');
-  await expect(details).toContainText(companies[0].name);
-  await expect(details).toContainText('ROM-40'); await expect(details).toContainText('ROM-30');
-  await expect(details.locator('.overview-transaction[data-type="shipment"]')).toHaveCount(2);
-  await expect(details.locator('.overview-transaction[data-type="receipt"]')).toHaveCount(3);
-  for (const label of ['Т-Банк', 'СберБизнес', 'НК АРТЕЛЬ', 'АРТЕЛЬ']) await expect(details).toContainText(label);
-  const transactionFilter = details.getByRole('combobox', { name: 'Тип операций компании', exact: true });
-  await transactionFilter.selectOption('receipt'); await expect(details.locator('.overview-transaction')).toHaveCount(3);
-  await transactionFilter.selectOption('shipment'); await expect(details.locator('.overview-transaction')).toHaveCount(2);
-  await transactionFilter.selectOption('all');
-  const shipmentEntry = details.locator('.overview-transaction[data-type="shipment"]').filter({ hasText: 'ROM-40' });
-  await shipmentEntry.locator('summary').click();
-  await expect(shipmentEntry.getByText('Сумма отгрузки', { exact: true })).toBeVisible();
-  await expect(shipmentEntry.getByText('Оплачено всего', { exact: true })).toBeVisible();
-  await expect(shipmentEntry.locator('.overview-operation-data')).toContainText('40 000,00');
-  const receiptEntry = details.locator('.overview-transaction[data-type="receipt"]').first();
-  await receiptEntry.locator('summary').click();
-  await expect(receiptEntry.getByText('Счёт зачисления', { exact: true })).toBeVisible();
-  await expect(receiptEntry.getByText('Назначение платежа', { exact: true })).toBeVisible();
-  await transactionFilter.selectOption('receipt');
-  const allocationReceipt = details.locator('.overview-transaction[data-type="receipt"]').filter({ has: page.locator('.overview-receipt-allocations button') }).first();
-  if (await allocationReceipt.locator('details').getAttribute('open') === null) await allocationReceipt.locator('summary').click();
-  const relatedShipment = allocationReceipt.locator('.overview-receipt-allocations button').first();
-  const targetNumber = (await relatedShipment.innerText()).match(/ROM-(?:40|30)/)[0];
-  await relatedShipment.click();
-  await expect(transactionFilter).toHaveValue('all');
-  const focusedShipment = details.locator('.overview-transaction[data-type="shipment"]').filter({ hasText: targetNumber });
-  await expect(focusedShipment.locator('summary')).toBeFocused();
-  await expect(focusedShipment.locator('details')).toHaveAttribute('open', '');
-  await expect(page).toHaveURL(base + '/#overview');
-  for (const width of [1440, 390, 320]) await capture('company-advance', width);
-  for (const width of [1440, 320]) await audit('company-details', width);
-  check('Company drilldown shows both shipment debits with document numbers and three bank receipt credits, accessible on desktop and narrow mobile screens');
-  await page.getByRole('button', { name: 'Назад к компаниям', exact: true }).click();
-  await expect(search).toHaveValue(companies[0].inn);
-  await search.fill('Василёк'); await expect(page.locator('.overview-company-button')).toHaveCount(1);
-  await vasilek.click();
-  await expect(details).toContainText('VAS-150');
-  await expect(details.locator('.overview-transaction[data-type="receipt"]')).toHaveCount(1);
-  await expect(details.locator('.overview-transaction[data-type="shipment"]')).toHaveCount(1);
-  await capture('company-debt', 320);
-  await page.getByRole('button', { name: 'Назад к компаниям', exact: true }).click();
-  await search.fill('');
-  const companyFilter = page.getByRole('combobox', { name: 'Фильтр компаний', exact: true });
-  await companyFilter.selectOption('debt'); await expect(page.locator('.overview-company-button')).toHaveCount(2);
-  await companyFilter.selectOption('advance'); await expect(page.locator('.overview-company-button')).toHaveCount(1);
-  await companyFilter.selectOption('review'); await expect(page.locator('.overview-company-button')).toHaveCount(1);
-  await expect(page.locator('.overview-company-button')).toContainText('без ИНН');
-  await companyFilter.selectOption('all');
-  await search.fill('Такой компании нет'); await expect(page.locator('.overview-company-button')).toHaveCount(0);
-  await expect(page.locator('.overview-page')).toContainText(/нет|найден/);
-  await search.fill('');
-  check('Name/INN search, empty search, debt/advance/review filters and returning from a company work while preserving search');
-
   const managerLogins = [];
   for (let index = 0; index < managers.length; index++) {
     const password = randomBytes(24).toString('hex'), login = `overview-manager-${index}`;
     managerLogins.push({ login, password });
     await api('/api/auth/users', { name: managers[index].name, login, password, role: 'manager', managerId: managers[index].id, sections: ['overview', 'shipments'] });
-    const managerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
-    try {
-      assert.equal((await managerContext.request.post(base + '/api/auth/login', { data: { login, password } })).status(), 200);
-      const scopedResponse = await managerContext.request.get(base + '/api/settlements'); assert.equal(scopedResponse.status(), 200);
-      const scoped = await scopedResponse.json(), own = companies[index], other = companies[1 - index];
-      assert.equal(scoped.scope, 'own'); assert.deepEqual(scoped.sources, []); assert.deepEqual(scoped.review, []);
-      assert.deepEqual(scoped.companies.map(row => row.name).sort(), (index === 0 ? [companies[0].name, companies[2].name, companies[3].name] : [companies[1].name]).sort());
-      assert.ok(!JSON.stringify(scoped).includes(other.name)); assert.ok(!JSON.stringify(scoped).includes(other.id));
-      assert.equal(scoped.totals.incoming, index === 0 ? '100000' : '30000');
-      assert.equal(scoped.totals.shipped, index === 0 ? '80000' : '150000');
-      const managerPage = await managerContext.newPage(); managerPage.on('pageerror', error => report.errors.push(error.message));
-      await managerPage.clock.setFixedTime(new Date('2026-09-28T09:00:00Z'));
-      await managerPage.goto(base + '/#overview');
-      await showLegacy(managerPage);
-      await expect(managerPage.locator('.overview-company-button')).toHaveCount(index === 0 ? 3 : 1);
-      await expect(managerPage.locator('.overview-page')).not.toContainText(other.name);
-      await expect(managerPage.locator('.overview-sources')).toHaveCount(0);
-      await managerPage.locator('.overview-month-button[data-month="2026-09"]').click();
-      await expect(managerPage.locator('.overview-chart-detail')).toContainText(index === 0 ? '100 000,00' : '30 000,00');
-      await expect(managerPage.locator('.overview-chart-detail')).toContainText(index === 0 ? '80 000,00' : '150 000,00');
-      await capture(`manager-${index + 1}`, 1440, managerPage);
-      await companyButton(own.name, managerPage).click();
-      await expect(managerPage.locator('.overview-company-details')).toContainText(index === 0 ? 'ROM-40' : 'VAS-150');
-      await expect(managerPage.locator('.overview-page')).not.toContainText(index === 0 ? 'VAS-150' : 'ROM-40');
-      await expect(managerPage.locator('.overview-transaction[data-type="receipt"]')).toHaveCount(index === 0 ? 3 : 1);
-      await capture(`manager-${index + 1}-company`, 320, managerPage);
-    } finally { await managerContext.close(); }
   }
-  check('Two isolated manager sessions each receive and render only their companies, credits, shipment debits, balances and chart totals; global sources/unresolved receipts are absent');
-
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await createShipment(companies[0], '20000', '2026-09-05', 'ROM-20');
-  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
-  await page.reload(); await showLegacy(page); await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
-  const persisted = await api('/api/settlements'); assert.equal(persisted.companies.find(row => row.inn === companies[0].inn).advance, '10000');
-  check('A new shipment consumes 20,000 of the existing company advance after refresh, and the result survives a reload');
-  const failedSourceMessage = 'Тестовая ошибка загрузки СберБизнес АРТЕЛЬ. Предыдущая выписка сохранена.';
-  await store.mutate(source.provenance.sourceSha256, data => { data.banking.connections['sber-artel'].lastError = failedSourceMessage; return { changed: true, result: null }; });
-  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  const failedSource = page.locator('.overview-sources [data-connection-id="sber-artel"]');
-  await expect(failedSource).toContainText('Ошибка загрузки'); await expect(failedSource).toContainText(failedSourceMessage);
-  const afterSourceError = await api('/api/settlements');
-  assert.deepEqual(afterSourceError.totals, persisted.totals); assert.deepEqual(afterSourceError.companies, persisted.companies);
-  assert.equal(afterSourceError.sources.find(row => row.id === 'sber-artel').status, 'error');
-  await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
-  check('A bank statement refresh error is visible and retains saved receipts and all company balances');
-  const refreshFailure = route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Тестовая временная недоступность обзора.' }) });
-  await page.route('**/api/settlements', refreshFailure);
-  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  await expect(page.locator('.overview-error')).toContainText('Тестовая временная недоступность обзора.');
-  await expect(page.locator('.overview-error')).toContainText('Они могут быть неактуальны');
-  await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
-  await page.unroute('**/api/settlements', refreshFailure);
-  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  await expect(page.locator('.overview-error')).toHaveCount(0);
-  check('Failed HTTP refresh preserves displayed balances with a stale-data warning; successful retry clears the warning');
-
-  for (const status of [401, 403]) {
-    await companyButton(companies[0].name).click();
-    await expect(page.locator('.overview-company-details')).toContainText(companies[0].name);
-    const denied = route => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ error: `Тестовая потеря доступа: ${status}.` }) });
-    await page.route('**/api/settlements', denied);
-    await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-    await expect(page.locator('.overview-error')).toContainText(`Тестовая потеря доступа: ${status}.`);
-    await expect(page.locator('.overview-company-details, .overview-company-button, .overview-total, .overview-charts')).toHaveCount(0);
-    await expect(page.locator('.overview-page')).not.toContainText(companies[0].name);
-    await page.unroute('**/api/settlements', denied);
-    await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-    await expect(page.locator('.overview-company-button')).toHaveCount(4);
-  }
-  check('401/403 refresh immediately removes previously visible company details, balances and charts; restored access reloads the company list');
-
-  const emptyReport = { ...persisted, companies: [], sources: [], review: [], totals: { shipped: '0', incoming: '0', debt: '0', advance: '0', allocated: '0' } };
-  const emptyResponse = route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(emptyReport) });
-  await page.route('**/api/settlements', emptyResponse);
-  await page.reload(); await showLegacy(page); await expect(page.locator('.overview-company-button')).toHaveCount(0);
-  await expect(page.locator('.overview-total[data-total="debt"]')).toContainText('0,00');
-  await capture('empty-overview', 320); await audit('empty-overview', 320);
-  await page.unroute('**/api/settlements', emptyResponse);
-  await page.route('**/api/settlements', refreshFailure);
-  await page.reload(); await expect(page.locator('.overview-page')).toBeVisible({ timeout: 15000 });
-  await expect(page.locator('.overview-error')).toContainText('Тестовая временная недоступность обзора.');
-  await expect(page.locator('.overview-company-button')).toHaveCount(0);
-  await capture('unavailable-overview', 320);
-  await page.unroute('**/api/settlements', refreshFailure);
-  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  await showLegacy(page);
-  await expect(page.locator('.overview-company-button')).toHaveCount(4);
-  check('An empty report and an initially unavailable report render without stale invented data; retry restores the real isolated fixture');
+  await page.goto(base + '/#settlements');
+  await expect(page.locator('.overview-page')).toBeVisible();
+  await expect(page).toHaveURL(base + '/#overview');
+  await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
+  await expect(page.locator('.overview-freshness')).toContainText('28.09.2026');
+  await expect(page.getByRole('button', { name: 'Общий клиентский итог и прежняя история', exact: true })).toHaveCount(0);
+  await expect(page.locator('.overview-charts, .overview-review, .overview-org-rule')).toHaveCount(0);
+  await expect(page.getByTestId('organization-unassigned-notice')).toContainText('4 отгрузок');
+  await expect(page.getByTestId('organization-unassigned-notice').locator('p')).toHaveCount(0);
+  check('Legacy settlements route opens the organization overview; refresh and update date remain, removed legacy view, explanations and review panels are absent');
 
   // New organization ledgers: all writes below remain in this temporary store.
   await createShipment(companies[0], '500000', '2026-09-06', 'NK-PURCHASE-400', { organization_id: 'nk-artel', purchase_amount: '400000' });
@@ -331,7 +142,6 @@ try {
   assert.equal(supplierGroup(organizationReport, 'nk-artel').debt, '400000');
   assert.equal(supplierGroup(organizationReport, 'artel').advance, '400000');
   assert.equal(supplierGroup(organizationReport, 'artel').debt, '0');
-  await page.getByRole('button', { name: 'К расчётам по организациям', exact: true }).click();
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await expect(page.getByTestId('organization-ledger')).toHaveAttribute('data-organization-id', 'nk-artel');
   const orgBalance = () => page.locator('.organization-company-button').filter({ hasText: supplier.name }).getByTestId('organization-company-balance');
@@ -341,6 +151,10 @@ try {
   for (const width of [1440, 320]) await audit('organization-suppliers', width);
   await page.locator('.overview-organization-picker [data-organization-id="artel"]').click();
   await expect(orgBalance()).toHaveAttribute('data-balance', '400000.00');
+  const initialFilter = page.getByRole('combobox', { name: 'Фильтр контрагентов', exact: true });
+  await initialFilter.selectOption('advance'); await expect(page.locator('.organization-company-button')).toHaveCount(1);
+  await initialFilter.selectOption('debt'); await expect(page.locator('.organization-company-button')).toHaveCount(0);
+  await initialFilter.selectOption('all');
   await page.locator('.organization-company-button').filter({ hasText: supplier.name }).click();
   const orgDetails = page.locator('.organization-company-details');
   await expect(orgDetails.locator('.overview-transaction[data-type="shipment"]')).toHaveCount(1);
@@ -445,6 +259,165 @@ try {
     await capture('manager-supplier-detail', 320, ownPage);
   } finally { await ownContext.close(); }
   check('Manager supplier view shows only own 450,000 of a shared payment, labels it as partial, hides foreign purchases and does not claim access to the free supplier advance');
+  // Distinct synthetic balances and latest-operation dates exercise every sort
+  // independently in each organization and on both sides of the ledger.
+  const extraSuppliers = [];
+  for (const [name, inn] of [['Поставщик Бета · сортировка QA', '9900000049'], ['Поставщик Гамма · сортировка QA', '9900000056']]) {
+    extraSuppliers.push((await api('/api/directories', { kind: 'companies', name, inn, roles: ['supplier'], addresses: [] })).entry);
+  }
+  for (const [company, sale, date, number, org, purchase, vendor] of [
+    [companies[0], '12000', '2026-09-11', 'NK-SORT-10', 'nk-artel', '10000', supplier],
+    [companies[0], '24000', '2026-09-19', 'NK-SORT-20', 'nk-artel', '20000', supplier],
+    [companies[1], '90000', '2026-09-12', 'NK-BETA', 'nk-artel', '120000', extraSuppliers[0]],
+    [companies[3], '45000', '2026-09-22', 'NK-GAMMA', 'nk-artel', '60000', extraSuppliers[1]],
+    [companies[1], '80000', '2026-09-20', 'ARTEL-BETA', 'artel', '120000', extraSuppliers[0]],
+    [companies[3], '25000', '2026-09-25', 'ARTEL-GAMMA', 'artel', '60000', extraSuppliers[1]],
+  ]) await createShipment(company, sale, date, number, { organization_id: org, purchase_amount: purchase, supplier_id: vendor.id });
+  organizationReport = await api('/api/settlements');
+  await page.goto(base + '/#overview');
+  const companyButtons = () => page.locator('.organization-company-button');
+  const companyNames = () => companyButtons().locator('.overview-company-identity strong');
+  const companySort = page.getByRole('combobox', { name: 'Сортировка контрагентов', exact: true });
+  const operationSort = page.getByRole('combobox', { name: 'Сортировка операций', exact: true });
+  const expectedCompanies = {
+    'nk-artel:suppliers': { amount: [supplier.name, extraSuppliers[0].name, extraSuppliers[1].name], date: [extraSuppliers[1].name, supplier.name, extraSuppliers[0].name] },
+    'artel:suppliers': { amount: [extraSuppliers[0].name, supplier.name, extraSuppliers[1].name], date: [extraSuppliers[1].name, extraSuppliers[0].name, supplier.name] },
+    'nk-artel:clients': { amount: [companies[0].name, companies[1].name, companies[3].name], date: [companies[3].name, companies[0].name, companies[1].name] },
+    'artel:clients': { amount: [companies[0].name, companies[1].name, companies[3].name], date: [companies[3].name, companies[1].name, companies[0].name] },
+  };
+  for (const org of ['nk-artel', 'artel']) {
+    await page.locator(`.overview-organization-picker [data-organization-id="${org}"]`).click();
+    for (const side of ['suppliers', 'clients']) {
+      await page.getByRole('button', { name: side === 'suppliers' ? 'Поставщики' : 'Клиенты', exact: true }).click();
+      const expected = expectedCompanies[`${org}:${side}`];
+      // Clients with no operations can remain in the directory; limit this
+      // check to the three counterparties whose balances have distinct values.
+      await page.getByRole('combobox', { name: 'Фильтр контрагентов', exact: true }).selectOption('debt');
+      await expect(companySort).toHaveValue('amount-desc');
+      for (const option of ['amount-desc', 'amount-asc', 'date-desc', 'date-asc']) {
+        await companySort.selectOption(option);
+        const names = expected[option.startsWith('amount') ? 'amount' : 'date'];
+        await expect(companyNames()).toHaveText(option.endsWith('asc') ? [...names].reverse() : names);
+      }
+      const mainName = side === 'suppliers' ? supplier.name : companies[0].name;
+      await companyButtons().filter({ hasText: mainName }).click();
+      await expect(operationSort).toHaveValue('date-desc');
+      const data = organizationReport.organizations.find(row => row.id === org)[side].companies.find(row => row.name === mainName);
+      const entryValues = new Map([...data.shipments.map(row => [`shipment:${row.id}`, { amount: Number(row.amount), date: row.date }]), ...data.receipts.map(row => [`receipt:${row.id}`, { amount: Number(row.amount), date: row.date }])]);
+      assert.ok(entryValues.size >= 3, 'Each sorting fixture must contain at least three real API operations');
+      for (const option of ['amount-desc', 'amount-asc', 'date-desc', 'date-asc']) {
+        await operationSort.selectOption(option);
+        const ids = await orgDetails.locator('.overview-transaction').evaluateAll(rows => rows.map(row => `${row.dataset.type}:${row.dataset.transactionId}`));
+        assert.deepEqual([...ids].sort(), [...entryValues.keys()].sort(), `${org}/${side} ${option} preserves all operations`);
+        const key = option.startsWith('amount') ? 'amount' : 'date';
+        const values = ids.map(id => entryValues.get(id)[key]);
+        const ordered = [...values].sort((a, b) => typeof a === 'number' ? a - b : a.localeCompare(b));
+        assert.deepEqual(values, option.endsWith('desc') ? ordered.reverse() : ordered, `${org}/${side} ${option} uses original API amounts/dates`);
+      }
+      const transactionType = orgDetails.getByRole('combobox', { name: 'Тип операций контрагента', exact: true });
+      await transactionType.selectOption('shipment');
+      await expect(orgDetails.locator('.overview-transaction')).toHaveCount(data.shipments.length);
+      await operationSort.selectOption('amount-desc');
+      await expect(transactionType).toHaveValue('shipment');
+      await transactionType.selectOption('receipt');
+      await expect(orgDetails.locator('.overview-transaction')).toHaveCount(data.receipts.length);
+      await transactionType.selectOption('all');
+      if (org === 'artel' && side === 'clients') {
+        for (const width of [1440, 390, 320]) await capture('organization-sorted-history', width);
+        for (const width of [1440, 320]) await audit('organization-sorted-history', width);
+      }
+      await page.getByRole('button', { name: side === 'suppliers' ? 'Назад к поставщикам' : 'Назад к клиентам', exact: true }).click();
+      await expect(companySort).toHaveValue('date-asc');
+    }
+  }
+  check('All four amount/date sorts work independently for supplier/client lists and operation histories in both organizations; filters and list order survive drilldown');
+  const search = page.getByRole('textbox', { name: 'Поиск контрагентов по названию или ИНН', exact: true });
+  const companyFilter = page.getByRole('combobox', { name: 'Фильтр контрагентов', exact: true });
+  await search.fill(companies[0].inn); await expect(companyButtons()).toHaveCount(1);
+  await companyButtons().click();
+  await page.getByRole('button', { name: 'Назад к клиентам', exact: true }).click();
+  await expect(search).toHaveValue(companies[0].inn);
+  await search.fill('Василёк'); await expect(companyButtons()).toHaveCount(1);
+  await search.fill('Такого контрагента нет'); await expect(companyButtons()).toHaveCount(0);
+  await page.getByRole('button', { name: 'Сбросить фильтры', exact: true }).click();
+  await expect(search).toHaveValue(''); await expect(companyFilter).toHaveValue('all');
+  await expect(companyButtons()).toHaveCount(3);
+  await createShipment(companies[2], '9000', '2026-09-26', 'REVIEW-INN', { organization_id: 'artel' });
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await companyFilter.selectOption('review'); await expect(companyButtons()).toHaveCount(1);
+  await expect(companyButtons()).toContainText('без ИНН');
+  await expect(page.locator('.overview-review')).toHaveCount(0);
+  await companyFilter.selectOption('all');
+  for (const width of [1440, 390, 320]) await capture('organization-sorted-list', width);
+  for (const width of [1440, 320]) await audit('organization-sorted-list', width);
+  check('Name/INN search, empty search reset and review filtering work; the removed payment-review panel remains absent');
+
+  // Verify both managers against actual permission-scoped API responses.
+  for (let index = 0; index < managers.length; index++) {
+    const managerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
+    try {
+      assert.equal((await managerContext.request.post(base + '/api/auth/login', { data: managerLogins[index] })).status(), 200);
+      const scoped = await (await managerContext.request.get(base + '/api/settlements')).json();
+      const managerPage = await managerContext.newPage(); managerPage.on('pageerror', error => report.errors.push(error.message));
+      await managerPage.goto(base + '/#overview');
+      for (const org of ['nk-artel', 'artel']) {
+        await managerPage.locator(`.overview-organization-picker [data-organization-id="${org}"]`).click();
+        await managerPage.getByRole('button', { name: 'Клиенты', exact: true }).click();
+        const expected = scoped.organizations.find(row => row.id === org).clients;
+        assert.equal(expected.scope, 'own'); assert.deepEqual(expected.sources, []); assert.deepEqual(expected.review, []);
+        await expect(managerPage.locator('.organization-company-button')).toHaveCount(expected.companies.length);
+        await expect(managerPage.locator('.overview-page')).not.toContainText(companies[1 - index].name);
+        await expect(managerPage.locator('.overview-sources, .overview-review')).toHaveCount(0);
+      }
+      await capture(`manager-${index + 1}-clients`, 320, managerPage);
+    } finally { await managerContext.close(); }
+  }
+  check('Two manager sessions render only their own organization counterparties; foreign names, source data and review panels are absent');
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const refreshFailure = route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Тестовая временная недоступность обзора.' }) });
+  const balancesBeforeError = await companyButtons().getByTestId('organization-company-balance').allTextContents();
+  await page.route('**/api/settlements', refreshFailure);
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await expect(page.locator('.overview-error')).toContainText('Тестовая временная недоступность обзора.');
+  await expect(page.locator('.overview-error')).toContainText('могут быть неактуальны');
+  assert.deepEqual(await companyButtons().getByTestId('organization-company-balance').allTextContents(), balancesBeforeError);
+  await page.unroute('**/api/settlements', refreshFailure);
+  await page.getByRole('button', { name: 'Повторить загрузку', exact: true }).click();
+  await expect(page.locator('.overview-error')).toHaveCount(0);
+  check('Failed refresh retains balances with an actionable stale-data warning; retry clears it');
+  for (const status of [401, 403]) {
+    await companyButtons().filter({ hasText: companies[0].name }).click();
+    const denied = route => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ error: `Тестовая потеря доступа: ${status}.` }) });
+    await page.route('**/api/settlements', denied);
+    await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+    await expect(page.locator('.overview-error')).toContainText(`Тестовая потеря доступа: ${status}.`);
+    await expect(page.locator('.organization-company-details, .organization-company-button, .overview-organization-picker')).toHaveCount(0);
+    await expect(page.locator('.overview-page')).not.toContainText(companies[0].name);
+    await page.unroute('**/api/settlements', denied);
+    await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+    await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
+    await page.locator('.overview-organization-picker [data-organization-id="artel"]').click();
+    await page.getByRole('button', { name: 'Клиенты', exact: true }).click();
+  }
+  check('401/403 refresh removes previously visible balances, counterparties and history; restored access reloads the organization list');
+  const currentReport = await api('/api/settlements');
+  const emptyLedger = row => ({ ...row, companies: [], sources: [], review: [], totals: { shipped: '0', incoming: '0', debt: '0', advance: '0', allocated: '0' } });
+  const emptyReport = { ...emptyLedger(currentReport), organizations: currentReport.organizations.map(row => ({ ...row, suppliers: emptyLedger(row.suppliers), clients: emptyLedger(row.clients) })) };
+  const emptyResponse = route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(emptyReport) });
+  await page.route('**/api/settlements', emptyResponse);
+  await page.reload(); await expect(companyButtons()).toHaveCount(0);
+  await expect(page.locator('[data-total="debt"]')).toContainText('0,00');
+  await capture('empty-overview', 320); await audit('empty-overview', 320);
+  await page.unroute('**/api/settlements', emptyResponse);
+  await page.route('**/api/settlements', refreshFailure);
+  await page.reload(); await expect(page.locator('.overview-error')).toContainText('Тестовая временная недоступность обзора.');
+  await expect(companyButtons()).toHaveCount(0); await expect(page.locator('.overview-organization-picker')).toHaveCount(0);
+  await capture('unavailable-overview', 320); await audit('unavailable-overview', 320);
+  await page.unroute('**/api/settlements', refreshFailure);
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
+  check('Empty and initially unavailable organization reports render without invented data; retry restores the isolated fixture');
   assert.deepEqual(report.errors, []); assert.deepEqual(report.overflows, []);
   check('No browser exceptions or horizontal page overflow at 1440, 390 and 320 pixels; axe reports no violations for overview, company and empty states');
   await rm(resolve(output, 'failure.png'), { force: true });

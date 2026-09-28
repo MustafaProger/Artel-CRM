@@ -3,6 +3,7 @@ import { AlertCircle, ArrowDownLeft, ArrowLeft, Building2, ChevronRight, Search,
 import type { OrganizationSettlement } from './organization-settlements-model'
 import type { SettlementCompany, SettlementReceipt, SettlementShipment, SettlementsReport } from './settlements-model'
 import { OverviewDecimal as Exact, companyBalance, hasUnknownAmounts, needsReview, overviewMoney as money, signedMoney } from './overview-model'
+import { sortOverviewCompanies, sortOverviewEntries, type OverviewEntry, type OverviewSort } from './overview-sorting'
 
 type Side = 'suppliers' | 'clients'
 type Filter = 'all' | 'debt' | 'advance' | 'review'
@@ -28,24 +29,25 @@ export default function OrganizationOverview({ organizations, unassignedShipment
   const organization = organizations.find(row => row.id === organizationId) ?? organizations[0]
   return <section className="organization-overview" aria-label="Расчёты по нашим организациям">
     {organization ? <>
-      <div className="overview-organization-picker" role="group" aria-label="Наша организация">{organizations.map(row => <button type="button" key={row.id} aria-pressed={organization.id === row.id} onClick={() => setOrganizationId(row.id)} data-organization-id={row.id}><Building2 size={20}/><span>{row.name}</span>{organization.id === row.id && <span className="overview-organization-selected">Выбрана</span>}</button>)}</div>
+      <div className="overview-organization-picker" role="group" aria-label="Наша организация">{organizations.map(row => <button type="button" key={row.id} aria-pressed={organization.id === row.id} onClick={() => setOrganizationId(row.id)} data-organization-id={row.id}><Building2 size={20}/><span>{row.name}</span></button>)}</div>
       <div className="overview-ledger-tabs" role="group" aria-label="Сторона взаиморасчётов"><button type="button" aria-pressed={side === 'suppliers'} onClick={() => setSide('suppliers')}>Поставщики</button><button type="button" aria-pressed={side === 'clients'} onClick={() => setSide('clients')}>Клиенты</button></div>
-      {unassignedShipmentCount > 0 && <div className="overview-notice" data-testid="organization-unassigned-notice"><AlertCircle size={18}/><div><strong>Без нашей организации: {unassignedShipmentCount} отгрузок</strong><p>Они сохранены в общей истории клиентов и не включены в расчёты по организациям. Принадлежность старых отгрузок нужно уточнить.</p></div></div>}
+      {unassignedShipmentCount > 0 && <div className="overview-notice" data-testid="organization-unassigned-notice"><AlertCircle size={18}/><div><strong>Без нашей организации: {unassignedShipmentCount} отгрузок</strong></div></div>}
       <OrganizationLedger key={`${organization.id}:${side}`} report={organization[side]} organization={organization.name} organizationId={organization.id} side={side}/>
-    </> : <div className="overview-empty overview-card"><Building2 size={30}/><h3>Раздельные расчёты пока недоступны</h3><p>Общий клиентский итог и сохранённая история доступны по ссылке выше.</p></div>}
+    </> : <div className="overview-empty overview-card"><Building2 size={30}/><h3>Раздельные расчёты пока недоступны</h3></div>}
   </section>
 }
 
 function OrganizationLedger({ report, organization, organizationId, side }: { report: SettlementsReport; organization: string; organizationId: string; side: Side }) {
   const supplierScope = side === 'suppliers' && report.scope === 'own'
   const [query, setQuery] = useState(''), [filter, setFilter] = useState<Filter>('all')
+  const [sort, setSort] = useState<OverviewSort>('amount-desc')
   const [selected, setSelected] = useState<string | null>(null)
   const heading = useRef<HTMLHeadingElement | null>(null)
   const term = query.trim().toLocaleLowerCase('ru-RU')
-  const companies = useMemo(() => report.companies.filter(company =>
+  const companies = useMemo(() => sortOverviewCompanies(report.companies.filter(company =>
     (!term || `${company.name} ${company.inn ?? ''}`.toLocaleLowerCase('ru-RU').includes(term)) &&
     (filter === 'all' || filter === 'debt' && positive(company.debt) || filter === 'advance' && positive(company.advance) || filter === 'review' && needsReview(company)),
-  ).sort((a, b) => new Exact(companyBalance(a)).cmp(companyBalance(b)) || a.name.localeCompare(b.name, 'ru')), [report.companies, term, filter])
+  ), sort), [report.companies, term, filter, sort])
   const detail = report.companies.find(row => row.key === selected)
   useEffect(() => { if (selected) heading.current?.focus() }, [selected])
   const onBack = () => {
@@ -54,35 +56,46 @@ function OrganizationLedger({ report, organization, organizationId, side }: { re
     requestAnimationFrame(() => [...document.querySelectorAll<HTMLButtonElement>('.organization-company-button')].find(button => button.dataset.companyKey === previous)?.focus({ preventScroll: true }))
   }
   return <section className="organization-ledger" data-testid="organization-ledger" data-organization-id={organizationId} data-side={side} aria-label={`${side === 'suppliers' ? 'Поставщики' : 'Клиенты'} · ${organization}`}>
-    <p className="overview-org-rule">{side === 'suppliers' ? 'Оплаты закрывают самые ранние закупки у этого поставщика. Остаток оплаты сохраняется как аванс.' : 'Здесь учтены продажи и поступления выбранной организации. Прежний общий клиентский итог доступен отдельно.'} Расчёты разных организаций не перекрывают друг друга.</p>
-    {selected ? detail ? <LedgerDetails company={detail} organization={organization} side={side} supplierScope={supplierScope} headingRef={heading} onBack={onBack}/> : <div className="overview-empty overview-card"><h3>Контрагент больше не доступен</h3><p>Данные или доступ к контрагенту изменились.</p><button type="button" className="button" onClick={onBack}>Назад к списку</button></div> : <>
+    {selected ? detail ? <LedgerDetails company={detail} organization={organization} side={side} supplierScope={supplierScope} headingRef={heading} onBack={onBack}/> : <div className="overview-empty overview-card"><h3>Контрагент больше не доступен</h3><button type="button" className="button" onClick={onBack}>Назад к списку</button></div> : <>
       <dl className="overview-org-totals overview-card" aria-label={`Итоги · ${organization}`}><div><dt>{supplierScope ? 'Долг по вашим закупкам' : side === 'suppliers' ? 'Наш долг поставщикам' : 'Долг клиентов'}</dt><dd data-tone="debt" data-total="debt">{signedMoney(new Exact(report.totals.debt).negated().toFixed(2))}</dd></div><div><dt>{side === 'suppliers' ? 'Наш аванс поставщикам' : 'Авансы клиентов'}</dt><dd data-tone={supplierScope ? 'zero' : 'advance'} data-total="advance" className={supplierScope ? 'overview-scoped-value' : ''}>{supplierScope ? 'Доступен руководителю' : signedMoney(report.totals.advance)}</dd></div></dl>
-      {report.companies.some(hasUnknownAmounts) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Итог по известным суммам</strong><p>В некоторых операциях сумма неизвестна. Откройте отмеченных контрагентов для проверки.</p></div></div>}
+      {report.companies.some(hasUnknownAmounts) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Итог по известным суммам</strong></div></div>}
       <section className="overview-card overview-companies" aria-labelledby="organization-companies-title">
-        <div className="overview-card-heading"><div><h3 id="organization-companies-title">{side === 'suppliers' ? 'Поставщики' : 'Клиенты'} · {organization} <span>{companies.length}</span></h3><p>Откройте контрагента, чтобы увидеть суммы и распределение оплат.</p></div></div>
-        <div className="overview-toolbar"><label className="overview-search"><Search size={18}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Название или ИНН" aria-label="Поиск контрагентов по названию или ИНН"/>{query && <button type="button" aria-label="Очистить поиск контрагентов" onClick={() => setQuery('')}><X size={16}/></button>}</label><select aria-label="Фильтр контрагентов" value={filter} onChange={event => setFilter(event.target.value as Filter)}><option value="all">Все контрагенты</option><option value="debt">С долгом</option><option value="advance">С авансом</option><option value="review">Требуют проверки</option></select></div>
+        <div className="overview-card-heading"><div><h3 id="organization-companies-title">{side === 'suppliers' ? 'Поставщики' : 'Клиенты'} · {organization} <span>{companies.length}</span></h3></div></div>
+        <div className="overview-toolbar"><label className="overview-search"><Search size={18}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Название или ИНН" aria-label="Поиск контрагентов по названию или ИНН"/>{query && <button type="button" aria-label="Очистить поиск контрагентов" onClick={() => setQuery('')}><X size={16}/></button>}</label><select aria-label="Фильтр контрагентов" value={filter} onChange={event => setFilter(event.target.value as Filter)}><option value="all">Все контрагенты</option><option value="debt">С долгом</option><option value="advance">С авансом</option><option value="review">Требуют проверки</option></select><LedgerSort value={sort} onChange={setSort} companies/></div>
         <div className="overview-list-caption" aria-hidden="true"><span>Контрагент</span><span>Баланс</span></div>
-        {companies.length ? <ul className="overview-company-list">{companies.map(company => <li key={company.key}><button type="button" className="overview-company-button organization-company-button" data-company-key={company.key} data-testid="organization-company" onClick={() => setSelected(company.key)}><span className="overview-company-avatar" aria-hidden="true"><Building2 size={19}/></span><span className="overview-company-identity"><strong>{company.name}</strong><small>{company.inn ? `ИНН ${company.inn}` : 'ИНН не указан'} · {company.shipments.length} {side === 'suppliers' ? 'закупок' : 'отгрузок'}</small>{needsReview(company) && <span className="overview-issue-badge">Требует проверки</span>}</span><span className="overview-company-amount"><LedgerBalance company={company}/><small>{stateLabel(company, side, supplierScope)}</small></span><ChevronRight size={18} aria-hidden="true"/></button></li>)}</ul> : <div className="overview-empty"><Building2 size={30}/><h3>{query || filter !== 'all' ? 'Контрагенты не найдены' : 'Операций пока нет'}</h3><p>{query || filter !== 'all' ? 'Измените название или фильтр.' : `Здесь появятся ${side === 'suppliers' ? 'закупки и оплаты поставщикам' : 'продажи и поступления клиентов'} организации ${organization}.`}</p>{(query || filter !== 'all') && <button type="button" className="button" onClick={() => { setQuery(''); setFilter('all') }}>Сбросить фильтры</button>}</div>}
-        <div className="overview-list-note"><span><i className="overview-dot is-debt"/>Минус — {side === 'suppliers' ? 'наш долг поставщику' : 'долг клиента'}</span><span><i className="overview-dot is-advance"/>Плюс — {side === 'suppliers' ? 'наш аванс поставщику' : 'аванс клиента'}</span></div>
+        {companies.length ? <ul className="overview-company-list">{companies.map(company => <li key={company.key}><button type="button" className="overview-company-button organization-company-button" data-company-key={company.key} data-testid="organization-company" onClick={() => setSelected(company.key)}><span className="overview-company-avatar" aria-hidden="true"><Building2 size={19}/></span><span className="overview-company-identity"><strong>{company.name}</strong><small>{company.inn ? `ИНН ${company.inn}` : 'ИНН не указан'} · {company.shipments.length} {side === 'suppliers' ? 'закупок' : 'отгрузок'}</small>{needsReview(company) && <span className="overview-issue-badge">Требует проверки</span>}</span><span className="overview-company-amount"><LedgerBalance company={company}/><small>{stateLabel(company, side, supplierScope)}</small></span><ChevronRight size={18} aria-hidden="true"/></button></li>)}</ul> : <div className="overview-empty"><Building2 size={30}/><h3>{query || filter !== 'all' ? 'Контрагенты не найдены' : 'Операций пока нет'}</h3>{(query || filter !== 'all') && <button type="button" className="button" onClick={() => { setQuery(''); setFilter('all') }}>Сбросить фильтры</button>}</div>}
       </section>
-      <LedgerReview report={report} side={side}/>
       <LedgerSources report={report}/>
     </>}
   </section>
+}
+
+function LedgerSort({ value, onChange, companies = false }: { value: OverviewSort; onChange: (value: OverviewSort) => void; companies?: boolean }) {
+  return <select aria-label={companies ? 'Сортировка контрагентов' : 'Сортировка операций'} value={value} onChange={event => onChange(event.target.value as OverviewSort)}>
+    <option value="amount-desc">Сначала большие суммы</option>
+    <option value="amount-asc">Сначала меньшие суммы</option>
+    {companies ? <optgroup label="По последней операции">
+      <option value="date-desc">Сначала новые операции</option>
+      <option value="date-asc">Сначала старые операции</option>
+    </optgroup> : <>
+      <option value="date-desc">Сначала новые</option>
+      <option value="date-asc">Сначала старые</option>
+    </>}
+  </select>
 }
 
 function LedgerBalance({ company }: { company: SettlementCompany }) {
   const balance = companyBalance(company), value = new Exact(balance)
   return <strong className="overview-balance" data-testid="organization-company-balance" data-balance={balance} data-tone={value.lt(0) ? 'debt' : value.gt(0) ? 'advance' : 'zero'}>{signedMoney(balance)}</strong>
 }
-type Entry = { type: 'receipt'; date: string; item: SettlementReceipt } | { type: 'shipment'; date: string | null; item: SettlementShipment }
 function LedgerDetails({ company, organization, side, supplierScope, headingRef, onBack }: { company: SettlementCompany; organization: string; side: Side; supplierScope: boolean; headingRef: React.RefObject<HTMLHeadingElement | null>; onBack: () => void }) {
   const [filter, setFilter] = useState<'all' | 'receipt' | 'shipment'>('all')
+  const [sort, setSort] = useState<OverviewSort>('date-desc')
   const container = useRef<HTMLElement | null>(null)
   const transactions = useMemo(() => {
-    const entries: Entry[] = [...company.shipments.map(item => ({ type: 'shipment' as const, date: item.date, item })), ...company.receipts.map(item => ({ type: 'receipt' as const, date: item.date, item }))]
-    return entries.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? '') || a.type.localeCompare(b.type) || a.item.id.localeCompare(b.item.id))
-  }, [company])
+    const entries: OverviewEntry[] = [...company.shipments.map(item => ({ type: 'shipment' as const, date: item.date, item })), ...company.receipts.map(item => ({ type: 'receipt' as const, date: item.date, item }))]
+    return sortOverviewEntries(entries, sort)
+  }, [company, sort])
   const visible = transactions.filter(entry => filter === 'all' || filter === entry.type)
   const focusTransaction = (id: string, type: 'receipt' | 'shipment') => {
     setFilter('all')
@@ -97,13 +110,13 @@ function LedgerDetails({ company, organization, side, supplierScope, headingRef,
   return <section ref={container} className="overview-company-details organization-company-details" data-company-key={company.key} aria-label={`Операции ${company.name} · ${organization}`}>
     <button type="button" className="overview-back" onClick={onBack}><ArrowLeft size={17}/>Назад к {side === 'suppliers' ? 'поставщикам' : 'клиентам'}</button>
     <div className="overview-card overview-company-hero"><div><span className="overview-eyebrow">{organization} · {side === 'suppliers' ? 'ПОСТАВЩИК' : 'КЛИЕНТ'}</span><h3 ref={headingRef} tabIndex={-1}>{company.name}</h3><p>{company.inn ? `ИНН ${company.inn}` : 'ИНН не указан'}</p></div><div className="overview-hero-balance"><LedgerBalance company={company}/><span>{stateLabel(company, side, supplierScope)}</span></div></div>
-    {hasUnknownAmounts(company) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Есть неизвестные суммы</strong><p>Итог учитывает только известные суммы. Нулевой баланс не подтверждает закрытие всех расчётов.</p></div></div>}
+    {hasUnknownAmounts(company) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Итог по известным суммам · есть неизвестные суммы</strong></div></div>}
     {company.issues.length > 0 && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Нужно проверить</strong><ul>{company.issues.map(issue => <li key={issue}>{issue}</li>)}</ul></div></div>}
-    {positive(company.debt) && positive(company.advance) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Есть долг и нераспределённый аванс</strong><p>Долг {money(company.debt)}, аванс {money(company.advance)}. Итог показан как аванс минус долг. Причины нераспределённой оплаты указаны в истории.</p></div></div>}
+    {positive(company.debt) && positive(company.advance) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Есть долг и нераспределённый аванс</strong><p>Долг {money(company.debt)} · аванс {money(company.advance)}</p></div></div>}
     <dl className="overview-company-summary"><div><dt>{side === 'suppliers' ? 'Закуплено' : 'Продано'}</dt><dd>{money(company.shipped)}</dd></div><div><dt>{supplierScope ? 'Зачтено по вашим закупкам' : side === 'suppliers' ? 'Оплачено поставщику' : 'Поступило от клиента'}</dt><dd>{money(company.incoming)}</dd></div><div><dt>Учтено в погашение</dt><dd>{money(company.allocated)}</dd></div></dl>
-    <section className="overview-card overview-transactions" aria-labelledby="organization-transactions-title"><div className="overview-card-heading"><div><h3 id="organization-transactions-title">История операций <span>{visible.length}</span></h3><p>Закрытые {side === 'suppliers' ? 'закупки' : 'отгрузки'} и распределение оплат остаются в истории.</p></div><select aria-label="Тип операций контрагента" value={filter} onChange={event => setFilter(event.target.value as typeof filter)}><option value="all">Все операции</option><option value="shipment">{side === 'suppliers' ? 'Закупки' : 'Отгрузки'}</option><option value="receipt">{side === 'suppliers' ? 'Оплаты поставщику' : 'Поступления клиента'}</option></select></div>
-      {positive(company.openingPaid) && <p className="overview-opening-note">Ранее учтённая оплата: {money(company.openingPaid)}. Банковская операция для этой суммы не установлена.</p>}
-      {visible.length ? <ol className="overview-transaction-list">{visible.map(entry => <li key={`${entry.type}:${entry.item.id}`} className="overview-transaction" data-type={entry.type} data-transaction-id={entry.item.id}><details><summary><span className={`overview-transaction-icon is-${entry.type}`} aria-hidden="true">{entry.type === 'shipment' ? <Truck size={18}/> : <ArrowDownLeft size={18}/>}</span><span className="overview-transaction-title"><strong>{entry.type === 'shipment' ? shipmentTitle(entry.item, side) : paymentTitle(entry.item, side)}</strong><small>{date(entry.date)}{entry.type === 'receipt' ? ` · ${entry.item.bank}` : ''}</small>{entry.type === 'receipt' && entry.item.amountIsScoped && <small>Часть платежа по вашим операциям</small>}{entry.type === 'shipment' && entry.item.issue && <span className="overview-issue-badge">Требует проверки</span>}</span><strong className={`overview-transaction-amount is-${entry.type}`}>{entry.type === 'receipt' ? signedMoney(entry.item.amount) : entry.item.amount === null ? 'Сумма неизвестна' : signedMoney(new Exact(entry.item.amount).negated().toFixed(2))}</strong><ChevronRight size={17} aria-hidden="true"/></summary><div className="overview-transaction-body">{entry.type === 'shipment' ? <PurchaseDetails shipment={entry.item} company={company} organization={organization} side={side} onPayment={id => focusTransaction(id, 'receipt')}/> : <PaymentDetails payment={entry.item} company={company} organization={organization} side={side} onShipment={id => focusTransaction(id, 'shipment')}/>}</div></details></li>)}</ol> : <div className="overview-empty"><Wallet size={28}/><h3>Операций пока нет</h3><p>{filter === 'all' ? 'Здесь появятся операции этого контрагента.' : 'Выберите другой тип операций.'}</p></div>}
+    <section className="overview-card overview-transactions" aria-labelledby="organization-transactions-title"><div className="overview-card-heading"><div><h3 id="organization-transactions-title">История операций <span>{visible.length}</span></h3></div><div className="overview-transaction-controls"><select aria-label="Тип операций контрагента" value={filter} onChange={event => setFilter(event.target.value as typeof filter)}><option value="all">Все операции</option><option value="shipment">{side === 'suppliers' ? 'Закупки' : 'Отгрузки'}</option><option value="receipt">{side === 'suppliers' ? 'Оплаты поставщику' : 'Поступления клиента'}</option></select><LedgerSort value={sort} onChange={setSort}/></div></div>
+      {positive(company.openingPaid) && <p className="overview-opening-note">Ранее учтённая оплата: {money(company.openingPaid)} · без банковской операции</p>}
+      {visible.length ? <ol className="overview-transaction-list">{visible.map(entry => <li key={`${entry.type}:${entry.item.id}`} className="overview-transaction" data-type={entry.type} data-transaction-id={entry.item.id}><details><summary><span className={`overview-transaction-icon is-${entry.type}`} aria-hidden="true">{entry.type === 'shipment' ? <Truck size={18}/> : <ArrowDownLeft size={18}/>}</span><span className="overview-transaction-title"><strong>{entry.type === 'shipment' ? shipmentTitle(entry.item, side) : paymentTitle(entry.item, side)}</strong><small>{date(entry.date)}{entry.type === 'receipt' ? ` · ${entry.item.bank}` : ''}</small>{entry.type === 'receipt' && entry.item.amountIsScoped && <small>Часть платежа по вашим операциям</small>}{entry.type === 'shipment' && entry.item.issue && <span className="overview-issue-badge">Требует проверки</span>}</span><strong className={`overview-transaction-amount is-${entry.type}`}>{entry.type === 'receipt' ? signedMoney(entry.item.amount) : entry.item.amount === null ? 'Сумма неизвестна' : signedMoney(new Exact(entry.item.amount).negated().toFixed(2))}</strong><ChevronRight size={17} aria-hidden="true"/></summary><div className="overview-transaction-body">{entry.type === 'shipment' ? <PurchaseDetails shipment={entry.item} company={company} organization={organization} side={side} onPayment={id => focusTransaction(id, 'receipt')}/> : <PaymentDetails payment={entry.item} company={company} organization={organization} side={side} onShipment={id => focusTransaction(id, 'shipment')}/>}</div></details></li>)}</ol> : <div className="overview-empty"><Wallet size={28}/><h3>Операций пока нет</h3></div>}
     </section>
   </section>
 }
@@ -122,16 +135,12 @@ function PaymentDetails({ payment, company, organization, side, onShipment }: { 
     <div className="overview-allocation-trace"><h4>Куда распределён платёж</h4>{payment.allocations.length ? <ul>{payment.allocations.map(allocation => { const shipment = company.shipments.find(row => row.id === allocation.shipmentId); return <li key={`${allocation.shipmentId}:${allocation.paymentId}`}>
       {shipment ? <button type="button" onClick={() => onShipment(shipment.id)}>{shipmentTitle(shipment, side)} · {date(shipment.date)}<ChevronRight size={14}/></button> : <strong>{side === 'suppliers' ? 'Закупка' : 'Отгрузка'} {allocation.shipmentId}</strong>}
       <dl><div><dt>{side === 'suppliers' ? 'Исходная сумма закупки' : 'Исходная сумма продажи'}</dt><dd>{money(shipment?.amount)}</dd></div><div><dt>Из этого платежа</dt><dd>{money(allocation.amount)}</dd></div><div><dt>Текущий остаток долга</dt><dd>{money(shipment?.debt)}</dd></div></dl>
-    </li> })}</ul> : <p>Платёж ещё не распределён. Сумма аванса доступна для последующих {side === 'suppliers' ? 'закупок у этого поставщика' : 'отгрузок клиенту'} только в организации {organization}.</p>}</div>
+    </li> })}</ul> : <p>Платёж не распределён.</p>}</div>
   </>
 }
 
-function LedgerReview({ report, side }: { report: SettlementsReport; side: Side }) {
-  if (!report.review.length) return null
-  return <section className="overview-card overview-review" aria-labelledby="organization-review-title"><div className="overview-card-heading"><div><h3 id="organization-review-title">{side === 'suppliers' ? 'Оплаты' : 'Поступления'} на проверку <span>{report.review.length}</span></h3><p>Эти операции не включены в расчёт.</p></div><AlertCircle size={19}/></div><ul>{report.review.map(row => <li key={row.id}><div><strong>{row.name}</strong><p>{row.inn ? `ИНН ${row.inn}` : 'ИНН не указан'} · {date(row.date)}</p><p>{row.bank} · {row.company}<br/>Счёт {row.account}</p></div><b>{money(row.amount, row.currency === 'RUB' || row.currency === '643' ? '₽' : row.currency)}</b><p className="overview-review-reason">{row.reason}</p></li>)}</ul></section>
-}
 const sourceStatuses = { ready: 'Выписка загружена', not_loaded: 'Выписка ещё не загружена', syncing: 'Выписка загружена частично', error: 'Ошибка загрузки выписки' }
 function LedgerSources({ report }: { report: SettlementsReport }) {
   if (!report.sources.length) return null
-  return <details className="overview-sources" open={report.sources.some(source => source.status !== 'ready')}><summary>Источники данных · {report.sources.length}</summary><p>Расчёт использует сохранённые банковские операции. Выписки обновляются в разделе «Платежи».</p><ul>{report.sources.map(source => <li key={source.id}><strong>{source.name}</strong><span className={`overview-source-status is-${source.status}`}>{sourceStatuses[source.status]}</span><span>Последняя успешная загрузка: {source.lastSuccessAt ? date(source.lastSuccessAt) : 'Ещё не загружались'}</span><span>{source.from && source.to ? `${date(source.from)} — ${date(source.to)}` : 'Загруженный период не подтверждён'}</span>{source.lastError && <p className="overview-text-debt">{source.lastError}</p>}</li>)}</ul></details>
+  return <details className="overview-sources" open={report.sources.some(source => source.status !== 'ready')}><summary>Источники данных · {report.sources.length}</summary><ul>{report.sources.map(source => <li key={source.id}><strong>{source.name}</strong><span className={`overview-source-status is-${source.status}`}>{sourceStatuses[source.status]}</span><span>Последняя успешная загрузка: {source.lastSuccessAt ? date(source.lastSuccessAt) : 'Ещё не загружались'}</span><span>{source.from && source.to ? `${date(source.from)} — ${date(source.to)}` : 'Загруженный период не подтверждён'}</span>{source.lastError && <p className="overview-text-debt">{source.lastError}</p>}</li>)}</ul></details>
 }

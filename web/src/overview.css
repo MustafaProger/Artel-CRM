@@ -329,3 +329,16 @@
   .overview-org-totals > div { display: flex; justify-content: space-between; align-items: baseline; gap: 15px; }
   .overview-org-totals dd { margin: 0; text-align: right; }
 }
+.organization-ledger .overview-toolbar { flex-wrap: wrap; }
+.organization-ledger .overview-search { flex-basis: 240px; max-width: none; }
+.organization-ledger .overview-toolbar select { flex: 1 1 190px; }
+.organization-ledger .overview-toolbar select[aria-label="Сортировка контрагентов"] { flex-basis: 220px; }
+.organization-company-details .overview-transactions .overview-card-heading { flex-wrap: wrap; align-items: center; }
+.overview-transaction-controls { display: flex; flex-wrap: wrap; gap: 10px; max-width: 100%; }
+.overview-transaction-controls select { flex: 1 1 180px; max-width: none; min-width: 0; }
+.overview-transaction-controls select[aria-label="Сортировка операций"] { flex-basis: 210px; }
+@media (max-width: 650px) {
+  .organization-ledger .overview-search { flex-basis: 100%; }
+  .overview-transaction-controls { width: 100%; }
+  .overview-transaction-controls select { font-size: 13px; min-height: 40px; }
+}
