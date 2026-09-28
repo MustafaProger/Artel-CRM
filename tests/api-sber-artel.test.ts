@@ -11,7 +11,7 @@ import { decryptSberTokens, emptySber, normalizeSberOperation, parseSberPage } f
 import { SberHttpError, type SberRequest } from '../server/banking/sber-client';
 import { settlementSources } from '../server/settlement-sources';
 import { dispatchBanks } from '../server/banking/scheduler';
-import { BANK_SYNC_INTERVAL_MS } from '../server/banking/schedule';
+import { BANK_SYNC_INTERVAL_MS, BANK_SYNC_RETRY_COOLDOWN_MS } from '../server/banking/schedule';
 
 const artel = sberConnections['sber-artel'], nk = sberConnections['sber-nk-artel'], day = '2026-09-23';
 const money = (amount: string) => ({ amount, currencyName: 'RUB' });
@@ -122,7 +122,7 @@ test('Sber identities cannot cross accounts, page links, storage slots or operat
   } finally { await f.close(); }
 });
 
-test('repeated later-page failures exhaust the day retry budget and wait for an explicit retry', async () => {
+test('repeated later-page outages enter a durable cooldown and recover without manual restart', async () => {
   const f = await fixture(); let calls = 0, rejectLastPage = true;
   const request: SberRequest = async (_env, options) => {
     calls++;
@@ -134,17 +134,20 @@ test('repeated later-page failures exhaust the day retry budget and wait for an 
   const service = new SberService(f.store, f.source, f.env, request, artel);
   try {
     await service.start(day, day);
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    for (let attempt = 1; attempt <= 6; attempt++) {
       await service.tick(); await service.tick();
       const state = (await f.store.read(f.source)).sberArtel!;
-      assert.equal(state.job!.attempts, attempt);
+      assert.equal(state.job!.attempts, Math.min(5, attempt));
       assert.equal(state.operations.length, 0, 'partial pages stay unpublished');
-      await f.store.mutate(f.source, data => { delete data.sberArtel!.job!.nextAttemptAt; return { result: null, changed: true }; });
+      if (attempt >= 5) assert.ok(Date.parse(state.job!.nextAttemptAt!) >= Date.now() + BANK_SYNC_RETRY_COOLDOWN_MS - 1000);
+      if (attempt < 6) await f.store.mutate(f.source, data => { data.sberArtel!.job!.nextAttemptAt = new Date(0).toISOString(); return { result: null, changed: true }; });
     }
     const before = calls;
-    await service.tick(); assert.equal(calls, before, 'exhausted jobs do not contact the bank');
+    await service.tick(); assert.equal(calls, before, 'cooling jobs do not contact the bank');
     rejectLastPage = false;
-    await service.start(day, day); await service.tick(); await service.tick();
+    await f.store.mutate(f.source, data => { data.sberArtel!.job!.nextAttemptAt = new Date(0).toISOString(); return { result: null, changed: true }; });
+    const restarted = new SberService(new OperationsStore(f.store.path.replace('/operations.json','')), f.source, f.env, request, artel);
+    await restarted.tick(); await restarted.tick();
     const state = (await f.store.read(f.source)).sberArtel!;
     assert.equal(state.job, undefined); assert.equal(state.operations.length, 2); assert.equal(state.lastError, undefined);
   } finally { await f.close(); }

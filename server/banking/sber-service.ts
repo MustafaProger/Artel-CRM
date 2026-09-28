@@ -2,10 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BankOperation } from '../../web/src/banking-model';
 import type { SberStatementsResult } from '../../web/src/sber-model';
 import { ApiError } from '../api-error';
-import { syncDue } from './schedule';
+import { bankJobDue, bankRetryDelay, BANK_SYNC_RETRY_LIMIT, syncDue } from './schedule';
 import type { OperationsData, OperationsStorage } from '../operations-store';
 import { nextDay, object, today, upsertOperations } from './domain';
-import { SberClient, sberMissing, sberRequest, type SberRequest, type SberTokenVault } from './sber-client';
+import { SberClient, SberHttpError, sberMissing, sberRequest, type SberRequest, type SberTokenVault } from './sber-client';
 import { decryptSberTokens, emptySber, encryptSberTokens, mergeSberRows, normalizeSberOperation, normalizeSberSummary, parseSberPage, reconcileSberDay, SBER_FIRST_DAY, sberEncryptionKey, sberPeriod, type SberData } from './sber-domain';
 
 import { defaultSberConnection, type SberConnection } from './sber-connections';
@@ -135,10 +135,10 @@ export class SberService {
   }
   async tick(): Promise<{ pending: boolean }> {
     const queued = (await this.store.read(this.source))[this.connection.slot]?.job;
-    if (!queued || queued.attempts >= 5 || queued.nextAttemptAt && Date.parse(queued.nextAttemptAt) > Date.now()) return { pending: !!queued };
+    if (!queued || !bankJobDue(queued)) return { pending: !!queued };
     return await this.locked(async (state, fence, client) => {
       const job = state.job;
-      if (!job) return { pending: false };
+      if (!job || !bankJobDue(job)) return { pending: !!job };
       try {
         let summary = job.summary;
         if (job.page === 1) {
@@ -156,7 +156,9 @@ export class SberService {
           if (current.lease?.id !== fence || current.lease.until <= Date.now() || current.job?.id !== job.id) throw new ApiError(423, 'Истёк срок текущей загрузки Сбера.');
           const active = current.job;
           active.staged = mergeSberRows(active.staged, page.operations); active.summary = summary;
-          active.pages++; delete active.nextAttemptAt;
+          active.pages++;
+          // Keep the expired retry time across pages after a cooldown: attempts only reset on a complete day.
+          if (active.attempts < BANK_SYNC_RETRY_LIMIT) delete active.nextAttemptAt;
           current.lastAttemptAt = new Date().toISOString(); delete current.lastError;
           if (page.nextPage) { active.page = page.nextPage; active.seenPages.push(signature); return { result: null, changed: true }; }
           if (!summary) throw new ApiError(502, 'Не удалось получить дневные итоги Сбера.');
@@ -172,7 +174,7 @@ export class SberService {
           current.operations = mergeSberRows(kept, active.staged);
           current.days = [...current.days.filter(day => day.date !== job.day), { ...summary, syncedAt: new Date().toISOString() }];
           // A successful early page must not erase failures on later pages of the same day.
-          active.attempts = 0;
+          active.attempts = 0; delete active.nextAttemptAt;
           if (job.day < job.to) {
             active.day = nextDay(job.day); active.page = 1; active.staged = []; active.seenPages = []; delete active.summary;
           } else {
@@ -190,12 +192,12 @@ export class SberService {
           if (current.lease?.id !== fence || current.job?.id !== job.id) return { result: null, changed: false };
           current.lastAttemptAt = new Date().toISOString();
           current.lastError = error instanceof ApiError ? error.message : 'Не удалось обновить выписку Сбера. Ранее загруженные данные сохранены.';
-          current.job.attempts++;
+          current.job.attempts = Math.min(BANK_SYNC_RETRY_LIMIT, current.job.attempts + 1);
           current.job.page = 1; current.job.staged = []; current.job.seenPages = []; delete current.job.summary;
-          const bankStatus = (error as { bankStatus?: number }).bankStatus;
-          if (bankStatus && bankStatus >= 400 && bankStatus < 500 && bankStatus !== 429) current.job.attempts = 5;
-          if (current.job.attempts >= 5) { delete current.job.nextAttemptAt; current.lastError += ' Нажмите «Обновить», чтобы повторить загрузку.'; }
-          else current.job.nextAttemptAt = new Date(Date.now() + Math.max((error as { retryAfterSeconds?: number }).retryAfterSeconds ?? 0, Math.min(900, 5 * 2 ** current.job.attempts)) * 1000).toISOString();
+          if (error instanceof SberHttpError && !error.transient) current.job.attempts = BANK_SYNC_RETRY_LIMIT;
+          const delay = bankRetryDelay(current.job.attempts, error instanceof SberHttpError && error.transient, error instanceof SberHttpError ? error.retryAfterSeconds : 0);
+          if (delay === undefined) { delete current.job.nextAttemptAt; current.lastError += ' Нажмите «Обновить», чтобы повторить загрузку.'; }
+          else current.job.nextAttemptAt = new Date(Date.now() + delay).toISOString();
           return { result: null, changed: true };
         });
       }

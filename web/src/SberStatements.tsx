@@ -43,7 +43,8 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
   const [data, setData] = useState<SberStatementsResult | null>(null)
   const [dataPeriod, setDataPeriod] = useState(period)
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false)
-  const [error, setError] = useState(''), [actionError, setActionError] = useState('')
+  const [error, setError] = useState('')
+  const [actionError, setActionError] = useState<{ message: string; snapshot: SberStatementsResult | null } | null>(null)
   const [hideZero, setHideZero] = useState(false), [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [search, setSearch] = useState(''), [direction, setDirection] = useState('')
   const [detail, setDetail] = useState<SberOperation | null>(null)
@@ -60,6 +61,13 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
       const result = await api<SberStatementsResult>(`${endpoint}/statements?${new URLSearchParams(period)}`, undefined, signal)
       if (mounted.current && version === requestVersion.current) {
         setData(result); setDataPeriod(period); setError('')
+        setActionError(previous => {
+          if (!previous || result.lastError) return previous
+          const prior = previous.snapshot
+          const completed = result.lastSuccessAt && result.lastSuccessAt !== prior?.lastSuccessAt
+          const advanced = result.progress && (result.progress.from !== prior?.progress?.from || result.progress.to !== prior?.progress?.to || result.progress.day !== prior?.progress?.day || (result.progress.pages ?? 0) > (prior?.progress?.pages ?? 0))
+          return completed || advanced ? null : previous
+        })
       }
       return result
     } catch (caught) {
@@ -82,11 +90,17 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
 
   const synchronize = async () => {
     if (working.current || invalidPeriod || draftChanged || data?.missing.length) return
-    working.current = true; setBusy(true); setActionError('')
+    working.current = true; setBusy(true); setActionError(null)
+    let snapshot = data
     try {
-      // Re-arm a failed durable job as well as starting a new one.
-      await api(`${endpoint}/sync`, data?.progress ? { from: data.progress.from, to: data.progress.to } : period)
-      let snapshot = await load()
+      // Read the current job before acting: another server may have scheduled a retry.
+      snapshot = await load()
+      if (!snapshot.progress || snapshot.lastError && !snapshot.progress.nextAttemptAt) {
+        await api(`${endpoint}/sync`, snapshot.progress ? { from: snapshot.progress.from, to: snapshot.progress.to } : period)
+        snapshot = await load()
+      }
+      // The server owns scheduled jobs, including their retry delays, even after this page closes.
+      if (snapshot.scheduleEnabled) return
       while (mounted.current && snapshot.progress) {
         const delay = snapshot.progress.nextAttemptAt ? Math.max(0, new Date(snapshot.progress.nextAttemptAt).getTime() - Date.now()) : 0
         if (delay > 0) {
@@ -102,7 +116,7 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
       }
     } catch (caught) {
       if (mounted.current) {
-        setActionError((caught as Error).message)
+        setActionError({ message: (caught as Error).message, snapshot })
         await load().catch(() => {})
       }
     } finally {
@@ -121,7 +135,10 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
     return [party.name, party.inn, party.account, row.purpose, row.documentNumber].some(value => value?.toLocaleLowerCase('ru-RU').includes(normalizedSearch))
   }).sort((a, b) => b.statementDate.localeCompare(a.statementDate) || (b.bookedAt ?? '').localeCompare(a.bookedAt ?? '') || a.bankOperationId.localeCompare(b.bankOperationId)), [data?.operations, selectedDay, direction, normalizedSearch])
   const allDayOperations = data?.operations.filter(row => !selectedDay || row.statementDate === selectedDay).length ?? 0
-  const syncError = actionError || data?.lastError
+  const syncError = data?.lastError || actionError?.message
+  const backgroundSync = !!(data?.scheduleEnabled && data.progress && (!data.lastError || data.progress.nextAttemptAt))
+  const retryPending = !!(data?.progress?.nextAttemptAt && (data.lastError || Date.parse(data.progress.nextAttemptAt) > Date.now()))
+  const scheduledRetry = backgroundSync && retryPending
   const selectedSummary = data?.days.find(day => day.date === selectedDay)
   const stalePeriod = dataPeriod.from !== period.from || dataPeriod.to !== period.to
   const updateOperation = useCallback((operation: SberOperation) => {
@@ -135,7 +152,7 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
 
   return <div className="sber-statements">
     <BankConnectionHeader bankName="СберБизнес" company={data?.company ?? (connectionId === 'sber-artel' ? 'ООО «АРТЭЛЬ»' : 'ООО «НК АРТЭЛЬ»')} provider="sber" onBack={onBack}
-      actions={<button className="button primary" disabled={busy || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button>}
+      actions={<button className="button primary" disabled={busy || backgroundSync || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy || backgroundSync && !scheduledRetry ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : scheduledRetry ? 'Ожидаем повтора' : backgroundSync ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button>}
       fields={[{ label: 'Расчётный счёт', value: data?.account ?? 'Загружаем…' }, { label: 'ИНН', value: data?.inn ?? 'Загружаем…' }, { label: 'Валюта счёта', value: 'Рубли' }]}>
     <form className="bank-period sber-period" onSubmit={event => { event.preventDefault(); if (!invalidPeriod && !busy) { setSelectedDay(null); setPeriod({ ...draft }) } }}>
       <label>Период с<input aria-label="Начало периода выписки Сбера" type="date" value={draft.from} max={draft.to && draft.to < today ? draft.to : today} disabled={busy} onChange={event => setDraft(previous => ({ ...previous, from: event.target.value }))}/></label>
@@ -147,11 +164,11 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
       {draftChanged && !invalidPeriod && <p className="bank-muted">Нажмите «Показать период», чтобы применить выбранные даты.</p>}
     </form>
     <div className="bank-connection-line">{(!data?.lastSuccessAt || busy || syncError || !!data?.missing.length) && <span className={`bank-state ${busy ? 'syncing' : syncError ? 'error' : data?.missing.length ? 'not_configured' : data?.lastSuccessAt ? 'connected' : 'ready'}`}>{busy ? 'Синхронизация' : syncError ? 'Обновление не завершено' : data?.missing.length ? 'Доступ не настроен' : 'Ожидает первой загрузки'}</span>}<span>Обновлено: <strong>{displayTimestamp(data?.lastSuccessAt)}</strong></span>{data?.lastCompletedPeriod && <span>Загружен период: {displayDate(data.lastCompletedPeriod.from)} — {displayDate(data.lastCompletedPeriod.to)}</span>}</div>
-    {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Автообновление каждые 5 минут</p>}
+    {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Фоновое обновление каждые 5 минут, даже когда страница закрыта</p>}
     </BankConnectionHeader>
     {data?.missing.length ? <div className="bank-notice" role="status"><strong>Для подключения не хватает серверных настроек</strong><p>{data.missing.join(', ')}.</p><p>После настройки доступа нажмите «Обновить из банка».</p></div> : null}
-    {data?.progress && <div className="bank-notice sber-sync-progress" role="status"><strong>{busy ? 'Получаем банковские данные' : 'Есть незавершённая загрузка'}</strong><p>{displayDate(data.progress.from)} — {displayDate(data.progress.to)} · сохранено дней: {data.progress.completedDays} из {data.progress.totalDays}</p><progress value={data.progress.completedDays} max={Math.max(1, data.progress.totalDays)} aria-label="Дней выписки загружено"/><p>Текущая дата: {displayDate(data.progress.day)}{data.progress.pages !== undefined ? ` · страниц: ${data.progress.pages}` : ''}{data.progress.nextAttemptAt ? ` · повтор не ранее ${displayTimestamp(data.progress.nextAttemptAt)}` : ''}</p>{!busy && <p>Нажмите «Продолжить загрузку», чтобы закончить этот период.</p>}</div>}
-    {syncError && <div className="bank-notice bank-error" role="alert"><strong>Не удалось завершить обновление</strong><p>{syncError}</p><p>Ранее загруженные выписки и операции сохранены.</p></div>}
+    {data?.progress && <div className="bank-notice sber-sync-progress" role="status"><strong>{scheduledRetry ? 'Повтор запланирован' : busy || backgroundSync ? 'Получаем банковские данные' : 'Есть незавершённая загрузка'}</strong><p>{displayDate(data.progress.from)} — {displayDate(data.progress.to)} · сохранено дней: {data.progress.completedDays} из {data.progress.totalDays}</p><progress value={data.progress.completedDays} max={Math.max(1, data.progress.totalDays)} aria-label="Дней выписки загружено"/><p>Текущая дата: {displayDate(data.progress.day)}{data.progress.pages !== undefined ? ` · страниц: ${data.progress.pages}` : ''}{retryPending ? ` · повтор не ранее ${displayTimestamp(data.progress.nextAttemptAt)}` : ''}</p>{backgroundSync ? <p>{scheduledRetry ? 'Загрузка продолжится автоматически после паузы. Страницу можно закрыть.' : 'Загрузка выполняется в фоне. Страницу можно закрыть.'}</p> : !busy && <p>Нажмите «Продолжить загрузку», чтобы закончить этот период.</p>}</div>}
+    {syncError && <div className="bank-notice bank-error" role="alert"><strong>{scheduledRetry ? 'Обновление временно отложено' : 'Не удалось завершить обновление'}</strong><p>{syncError}</p><p>Ранее загруженные выписки и операции сохранены.</p></div>}
     {error && <div className="bank-notice bank-error" role="alert"><strong>Не удалось загрузить сохранённые данные</strong><p>{error}</p>{data && <p>Показаны ранее загруженные данные за {displayDate(dataPeriod.from)} — {displayDate(dataPeriod.to)}.</p>}<button className="button" disabled={loading || busy} onClick={() => void load().catch(() => {})}>Повторить загрузку</button></div>}
     {loading && !data ? <div className="bank-empty" role="status"><LoaderCircle className="spin"/><h3>Загружаем сохранённую выписку…</h3></div> : data && <>
       <div className="panel bank-ledger sber-summary" aria-busy={loading}>

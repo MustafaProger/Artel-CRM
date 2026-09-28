@@ -6,7 +6,7 @@ import { activeBankConnections, bankConfig, bankRequest, BankHttpError, type Ban
 import { tbankAdapter } from './adapters';
 import { emptyBanking, filterOperations, nextDay, object, str, today, totals, upsertOperations, validDate } from './domain';
 import { replaceStatementDay } from './statement-publication';
-import { syncDue } from './schedule';
+import { bankJobDue, bankRetryDelay, BANK_SYNC_RETRY_LIMIT, syncDue } from './schedule';
 
 const limitations = {
   tbank: ['История API доступна с июня 2023 года. Загружаются подтверждённые транзакции; авторизации не входят в фактические обороты.', 'Смена ID и удаление операций учитываются при полной повторной сверке дня. Печатная форма доступна для поддерживаемых исполненных документов.'],
@@ -96,10 +96,10 @@ export class BankingService {
   async tick(id: string) {
     this.config(id);
     const queued = (await this.store.read(this.source)).banking?.connections[id]?.job;
-    if (!queued || queued.attempts >= 5 || queued.nextAttemptAt && Date.parse(queued.nextAttemptAt) > Date.now()) return { pending: !!queued };
+    if (!queued || !bankJobDue(queued)) return { pending: !!queued };
     return this.locked(id, async (config, state, fence) => {
       const job = state.job;
-      if (!job || job.attempts >= 5 || job.nextAttemptAt && Date.parse(job.nextAttemptAt) > Date.now()) return { pending: !!job };
+      if (!job || !bankJobDue(job)) return { pending: !!job };
       try {
         const token = this.token(config);
         const account = job.accounts[job.accountIndex];
@@ -130,12 +130,13 @@ export class BankingService {
           if (current.lease?.id !== fence || current.job?.id !== job.id) return { result: null, changed: false };
           current.lastAttemptAt = new Date().toISOString();
           current.lastError = error instanceof ApiError ? error.message : 'Не удалось сохранить страницу выписки. Предыдущие данные доступны.';
-          current.job.attempts++;
-          if (error instanceof BankHttpError && !error.transient) current.job.attempts = 5;
-          if (current.job.attempts >= 5) {
+          current.job.attempts = Math.min(BANK_SYNC_RETRY_LIMIT, current.job.attempts + 1);
+          if (error instanceof BankHttpError && !error.transient) current.job.attempts = BANK_SYNC_RETRY_LIMIT;
+          const delay = bankRetryDelay(current.job.attempts, error instanceof BankHttpError && error.transient, error instanceof BankHttpError ? error.retryAfterSeconds : 0);
+          if (delay === undefined) {
             delete current.job.nextAttemptAt;
             current.lastError += ' Автоматические попытки остановлены. Проверьте доступ и нажмите «Продолжить загрузку».';
-          } else current.job.nextAttemptAt = new Date(Date.now() + Math.max(error instanceof BankHttpError ? error.retryAfterSeconds : 0, Math.min(900, 5 * 2 ** current.job.attempts)) * 1000).toISOString();
+          } else current.job.nextAttemptAt = new Date(Date.now() + delay).toISOString();
           return { result: null, changed: true };
         });
         return { pending: true, failed: true };
@@ -152,7 +153,7 @@ export class BankingService {
   async dispatch(now = Date.now()) {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
     const data = (await this.store.read(this.source)).banking ?? emptyBanking();
-    const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? state.job.attempts < 5 && (!state.job.nextAttemptAt || Date.parse(state.job.nextAttemptAt) <= now) : state?.lastSuccessAt && (state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
+    const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? bankJobDue(state.job, now) : state?.lastSuccessAt && (state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
     if (!due) return { enabled: true, pending: false };
     if (!due.state?.job) await this.mutate(data => {
       const state = data.banking!.connections[due.def.id];
