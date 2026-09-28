@@ -4,6 +4,7 @@ import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Building2, Check, Chevron
 import { bankConnections, type BankCard, type BankListResult, type BankOperation, type BankParty, type BankTotals } from './banking-model'
 import BankConnectionHeader from './BankConnectionHeader'
 import SberStatements from './SberStatements'
+import SupplierPaymentTrace from './SupplierPaymentTrace'
 import type { SberStatementsResult } from './sber-model'
 import './banking.css'
 
@@ -180,6 +181,7 @@ function PaymentPanel({ id, onClose }: { id: string; onClose: () => void }) {
   return <dialog ref={dialog} className="bank-payment-panel" aria-labelledby="bank-payment-title" onCancel={onClose} onClick={e => { if (e.target === dialog.current) { const bounds = dialog.current.getBoundingClientRect(); if (e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom) onClose() } }}><div className="bank-panel-header"><div><h2 id="bank-payment-title">Платёж {row?.documentNumber ? `№ ${row.documentNumber}` : ''}</h2><p>{bank?.bankName} · {bank?.company}</p></div><button autoFocus className="icon-button" aria-label="Закрыть карточку платежа" onClick={onClose}><X size={21}/></button></div>
     {error && <p className="bank-notice bank-error" role="alert">{error}</p>}{!row ? <div className="bank-empty" role="status">{error ? 'Реквизиты недоступны' : <><LoaderCircle className="spin"/>Загружаем реквизиты…</>}</div> : <div className="bank-panel-body">
       <div className={`bank-payment-sum ${row.direction === 'incoming' ? 'bank-incoming' : ''}`}><span>{row.direction === 'incoming' ? 'Поступление на наш счёт' : 'Списание с нашего счёта'}</span><strong>{bankMoney(row.amount, row.currency)}</strong></div>
+      <SupplierPaymentTrace operation={row}/>
       <dl className="bank-details-grid">{field('Наш счёт', row.account)}{field('Идентификатор операции банка', row.bankOperationId)}{field('Номер документа', row.documentNumber)}{field('Дата документа', row.documentDate ? date(row.documentDate) : undefined)}{field('Дата выписки', date(row.statementDate))}{field('Проведение / исполнение', row.bookedAt)}{field('Статус банка', row.status)}{field('Направление', row.direction === 'incoming' ? 'Поступление' : 'Списание')}</dl>
       <section className="bank-payment-purpose"><h3>Назначение платежа</h3><p>{row.purpose ?? 'Не передано банком'}</p>{row.purpose && <button className="button" onClick={() => void copy(row.purpose!, 'Назначение')}><Copy size={14}/>Копировать назначение</button>}</section>
       <div className="bank-parties">{([['payer','Плательщик'],['payee','Получатель']] as const).map(([key, title]) => <section key={key}><div className="bank-party-title"><h3>{title}</h3><button className="icon-button" aria-label={`Копировать реквизиты: ${title}`} onClick={() => void copy(partyFields.filter(([field]) => row[key][field]).map(([field, label]) => `${label}: ${row[key][field]}`).join('\n'), title)}><Copy size={15}/></button></div><dl>{partyFields.map(([keyName, label]) => field(`${title} · ${label}`, row[key][keyName]))}</dl></section>)}</div>

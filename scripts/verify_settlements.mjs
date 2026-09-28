@@ -63,12 +63,12 @@ try {
   const snapshot = await api('/api/snapshot'), directories = snapshot.directories;
   const managers = [];
   for (const name of ['Айдар · обзор QA', 'Зуфар · обзор QA']) managers.push((await api('/api/directories', { kind: 'managers', name })).entry);
-  const supplier = (await api('/api/directories', { kind: 'companies', name: 'Поставщик · обзор QA', roles: ['supplier'], addresses: [] })).entry;
+  const supplier = (await api('/api/directories', { kind: 'companies', name: 'ООО МТК · обзор QA', inn: '9900000024', roles: ['supplier'], addresses: [] })).entry;
   const companies = [];
   for (const [name, inn, manager] of [['ООО Ромашка · тестовый аванс', '7707083893', managers[0]], ['ООО Василёк · тестовый долг', '7736050003', managers[1]], ['Покупатель без ИНН · нужна проверка', '', managers[0]], ['ООО Новый клиент · без операций', '9900000017', managers[0]]]) {
     companies.push({ ...(await api('/api/directories', { kind: 'companies', name, inn, roles: ['customer'], managerId: manager.id, addresses: [] })).entry, managerId: manager.id });
   }
-  const createShipment = async (company, amount, date, number) => api('/api/shipments', { fields: { shipment_type: 'azs', date, document_number: number, customer_id: company.id, supplier_id: supplier.id, manager_id: company.managerId, product_id: directories.products[0].id, payment_form_id: directories.paymentForms.find(row => row.name === 'б/нал').id, quantity_litres: '1000', customer_amount: amount, purchase_amount: '0' } });
+  const createShipment = async (company, amount, date, number, extra = {}) => api('/api/shipments', { fields: { shipment_type: 'azs', date, document_number: number, customer_id: company.id, supplier_id: supplier.id, manager_id: company.managerId, product_id: directories.products[0].id, payment_form_id: directories.paymentForms.find(row => row.name === 'б/нал').id, quantity_litres: '1000', customer_amount: amount, purchase_amount: '0', ...extra } });
   await createShipment(companies[0], '40000', '2026-09-01', 'ROM-40');
   await createShipment(companies[0], '30000', '2026-09-02', 'ROM-30');
   await createShipment(companies[1], '150000', '2026-09-03', 'VAS-150');
@@ -99,7 +99,11 @@ try {
   assert.deepEqual(ledger.companies.find(row => row.inn === companies[0].inn).receipts.map(row => row.connectionId).sort(), [...report.connections].sort());
   page = await context.newPage(); page.on('pageerror', error => report.errors.push(error.message));
   await page.clock.setFixedTime(new Date('2026-09-28T09:00:00Z'));
+  const showLegacy = target => target.getByRole('button', { name: 'Общий клиентский итог и прежняя история', exact: true }).click();
   await page.goto(base + '/#settlements');
+  await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
+  await expect(page.getByTestId('organization-unassigned-notice')).toContainText('4 отгрузок');
+  await showLegacy(page);
   await expect(page.locator('.overview-page')).toBeVisible();
   await expect(page).toHaveURL(base + '/#overview');
   await expect(page.getByRole('button', { name: 'Взаиморасчёты', exact: true })).toHaveCount(0);
@@ -218,8 +222,10 @@ try {
   await search.fill('');
   check('Name/INN search, empty search, debt/advance/review filters and returning from a company work while preserving search');
 
+  const managerLogins = [];
   for (let index = 0; index < managers.length; index++) {
     const password = randomBytes(24).toString('hex'), login = `overview-manager-${index}`;
+    managerLogins.push({ login, password });
     await api('/api/auth/users', { name: managers[index].name, login, password, role: 'manager', managerId: managers[index].id, sections: ['overview', 'shipments'] });
     const managerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
     try {
@@ -234,6 +240,7 @@ try {
       const managerPage = await managerContext.newPage(); managerPage.on('pageerror', error => report.errors.push(error.message));
       await managerPage.clock.setFixedTime(new Date('2026-09-28T09:00:00Z'));
       await managerPage.goto(base + '/#overview');
+      await showLegacy(managerPage);
       await expect(managerPage.locator('.overview-company-button')).toHaveCount(index === 0 ? 3 : 1);
       await expect(managerPage.locator('.overview-page')).not.toContainText(other.name);
       await expect(managerPage.locator('.overview-sources')).toHaveCount(0);
@@ -254,7 +261,7 @@ try {
   await createShipment(companies[0], '20000', '2026-09-05', 'ROM-20');
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
-  await page.reload(); await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
+  await page.reload(); await showLegacy(page); await expect(page.locator('.overview-total[data-total="advance"]')).toContainText('10 000,00');
   const persisted = await api('/api/settlements'); assert.equal(persisted.companies.find(row => row.inn === companies[0].inn).advance, '10000');
   check('A new shipment consumes 20,000 of the existing company advance after refresh, and the result survives a reload');
   const failedSourceMessage = 'Тестовая ошибка загрузки СберБизнес АРТЕЛЬ. Предыдущая выписка сохранена.';
@@ -296,7 +303,7 @@ try {
   const emptyReport = { ...persisted, companies: [], sources: [], review: [], totals: { shipped: '0', incoming: '0', debt: '0', advance: '0', allocated: '0' } };
   const emptyResponse = route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(emptyReport) });
   await page.route('**/api/settlements', emptyResponse);
-  await page.reload(); await expect(page.locator('.overview-company-button')).toHaveCount(0);
+  await page.reload(); await showLegacy(page); await expect(page.locator('.overview-company-button')).toHaveCount(0);
   await expect(page.locator('.overview-total[data-total="debt"]')).toContainText('0,00');
   await capture('empty-overview', 320); await audit('empty-overview', 320);
   await page.unroute('**/api/settlements', emptyResponse);
@@ -307,8 +314,137 @@ try {
   await capture('unavailable-overview', 320);
   await page.unroute('**/api/settlements', refreshFailure);
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await showLegacy(page);
   await expect(page.locator('.overview-company-button')).toHaveCount(4);
   check('An empty report and an initially unavailable report render without stale invented data; retry restores the real isolated fixture');
+
+  // New organization ledgers: all writes below remain in this temporary store.
+  await createShipment(companies[0], '500000', '2026-09-06', 'NK-PURCHASE-400', { organization_id: 'nk-artel', purchase_amount: '400000' });
+  await createShipment(companies[0], '350000', '2026-09-07', 'ARTEL-PURCHASE-300', { organization_id: 'artel', purchase_amount: '300000' });
+  const supplierPayment = { ...artelReceipt, id: operationId('sber-artel', artelAccount, 'qa-supplier-artel-700'), bankOperationId: 'qa-supplier-artel-700', documentNumber: 'QA-700', direction: 'outgoing', amount: '700000', booked: true, payer: { name: 'АРТЕЛЬ · тест', account: artelAccount }, payee: { name: supplier.name, inn: supplier.inn, account: '40702810000000000299' }, purpose: 'Синтетическая оплата МТК. Только временная проверка.', bankData: {} };
+  await store.mutate(source.provenance.sourceSha256, data => {
+    replaceStatementDay(data.banking, 'sber-artel', { number: artelAccount, currency: 'RUB' }, fixtureDay, [artelReceipt, supplierPayment], `${fixtureDay}T13:00:00Z`);
+    return { changed: true, result: null };
+  });
+  let organizationReport = await api('/api/settlements');
+  const supplierGroup = (result, id) => result.organizations.find(row => row.id === id).suppliers.companies.find(row => row.inn === supplier.inn);
+  assert.equal(supplierGroup(organizationReport, 'nk-artel').debt, '400000');
+  assert.equal(supplierGroup(organizationReport, 'artel').advance, '400000');
+  assert.equal(supplierGroup(organizationReport, 'artel').debt, '0');
+  await page.getByRole('button', { name: 'К расчётам по организациям', exact: true }).click();
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await expect(page.getByTestId('organization-ledger')).toHaveAttribute('data-organization-id', 'nk-artel');
+  const orgBalance = () => page.locator('.organization-company-button').filter({ hasText: supplier.name }).getByTestId('organization-company-balance');
+  await expect(orgBalance()).toHaveAttribute('data-balance', '-400000.00');
+  await expect(page.locator('.overview-charts')).toHaveCount(0);
+  for (const width of [1440, 390, 320]) await capture('organization-suppliers', width);
+  for (const width of [1440, 320]) await audit('organization-suppliers', width);
+  await page.locator('.overview-organization-picker [data-organization-id="artel"]').click();
+  await expect(orgBalance()).toHaveAttribute('data-balance', '400000.00');
+  await page.locator('.organization-company-button').filter({ hasText: supplier.name }).click();
+  const orgDetails = page.locator('.organization-company-details');
+  await expect(orgDetails.locator('.overview-transaction[data-type="shipment"]')).toHaveCount(1);
+  await expect(orgDetails.locator('.overview-transaction[data-type="receipt"]')).toHaveCount(1);
+  const purchaseRow = orgDetails.locator('.overview-transaction[data-type="shipment"]');
+  await purchaseRow.locator('summary').click();
+  await expect(purchaseRow).toContainText('300 000,00');
+  await expect(purchaseRow).toContainText('700 000,00');
+  await expect(purchaseRow).toContainText('400 000,00');
+  await expect(purchaseRow).toContainText('qa-supplier-artel-700');
+  await purchaseRow.locator('.overview-allocation-trace button').click();
+  const paymentRow = orgDetails.locator('.overview-transaction[data-type="receipt"]');
+  await expect(paymentRow.locator('details')).toHaveAttribute('open', '');
+  await expect(paymentRow.locator('summary')).toBeFocused();
+  await expect(paymentRow).toContainText(artelAccount);
+  await expect(paymentRow).toContainText('QA-700');
+  await paymentRow.locator('.overview-allocation-trace button').click();
+  await expect(purchaseRow.locator('summary')).toBeFocused();
+  for (const width of [1440, 390, 320]) await capture('supplier-allocation-detail', width);
+  for (const width of [1440, 320]) await audit('supplier-allocation-detail', width);
+  check('Organization C: ARTEL 700,000 pays only its 300,000 purchase, leaves 400,000 advance; NK debt 400,000 remains; closed purchases retain bidirectional payment trace');
+
+  await createShipment(companies[0], '200000', '2026-09-15', 'ARTEL-ADVANCE-150', { organization_id: 'artel', purchase_amount: '150000' });
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await expect(orgDetails.getByTestId('organization-company-balance')).toHaveAttribute('data-balance', '250000.00');
+  await page.reload();
+  await page.locator('.overview-organization-picker [data-organization-id="artel"]').click();
+  await expect(orgBalance()).toHaveAttribute('data-balance', '250000.00');
+  organizationReport = await api('/api/settlements');
+  assert.deepEqual(supplierGroup(organizationReport, 'artel').receipts[0].allocations.map(row => row.amount), ['300000', '150000']);
+  assert.equal(supplierGroup(organizationReport, 'nk-artel').debt, '400000');
+  await page.getByRole('button', { name: 'Клиенты', exact: true }).click();
+  await expect(page.getByTestId('organization-ledger')).toHaveAttribute('data-side', 'clients');
+  const scopedClient = page.locator('.organization-company-button').filter({ hasText: companies[0].name });
+  await scopedClient.click();
+  await expect(orgDetails).toContainText('ARTEL-PURCHASE-300');
+  await expect(orgDetails).not.toContainText('NK-PURCHASE-400');
+  await expect(orgDetails).not.toContainText('ROM-40');
+  check('Supplier advance is consumed once by the next purchase and persists after reload; client detail contains only the chosen organization and excludes unassigned history');
+
+  // A loss of access must also clear the new organization drilldown.
+  const organizationDenied = route => route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Тестовая потеря доступа к организациям.' }) });
+  await page.route('**/api/settlements', organizationDenied);
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await expect(page.locator('.organization-company-details, .organization-company-button, .overview-organization-picker')).toHaveCount(0);
+  await page.unroute('**/api/settlements', organizationDenied);
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
+  check('403 clears organization balances and transaction detail before retry');
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  // Sber's production adapter pins its account server-side. Render the same
+  // synthetic stored operation through a read-only UI fixture, never a real account.
+  const sberUiFixture = route => {
+    assert.equal(route.request().method(), 'GET');
+    const url = new URL(route.request().url());
+    const body = url.pathname.endsWith('/statements') ? { account: artelAccount, company: 'АРТЕЛЬ · тест', inn: '9900000032', days: [], operations: [supplierPayment], lastSuccessAt: `${fixtureDay}T13:00:00Z`, missing: ['Тестовая выписка: банк отключён'] } : { operation: supplierPayment };
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  };
+  await page.route('**/api/banking/sber/sber-artel/**', sberUiFixture);
+  await page.goto(base + '/#payments');
+  await page.getByRole('button', { name: 'Открыть СберБизнес — АРТЕЛЬ', exact: true }).click();
+  await page.getByRole('button', { name: 'Открыть операцию № QA-700', exact: true }).click();
+  const bankDialog = page.getByRole('dialog');
+  await expect(bankDialog.locator('.bank-panel-header')).toContainText('АРТЕЛЬ');
+  await expect(bankDialog.locator('.bank-panel-header')).not.toContainText('НК АРТЕЛЬ');
+  const bankTrace = bankDialog.getByRole('region', { name: 'Распределение оплаты поставщику', exact: true });
+  await expect(bankTrace).toContainText('700 000,00');
+  await expect(bankTrace).toContainText('450 000,00');
+  await expect(bankTrace).toContainText('250 000,00');
+  await expect(bankTrace).toContainText('ARTEL-PURCHASE-300');
+  await expect(bankTrace).toContainText('ARTEL-ADVANCE-150');
+  await expect(bankTrace).not.toContainText('NK-PURCHASE-400');
+  await capture('supplier-bank-payment', 320);
+  const bankAxe = await new AxeBuilder({ page }).include('.bank-supplier-trace').analyze();
+  report.accessibility.push({ name: 'supplier-bank-payment', width: 320, violations: bankAxe.violations });
+  assert.deepEqual(bankAxe.violations, []);
+  check('Sber ARTEL synthetic payment UI shows original 700,000, allocated 450,000, advance 250,000 from real temporary settlement API; bank listing/detail mocked, no bank contacted');
+
+  await createShipment(companies[1], '400000', '2026-09-16', 'OTHER-MANAGER-350', { organization_id: 'artel', purchase_amount: '350000' });
+  const ownContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
+  try {
+    assert.equal((await ownContext.request.post(base + '/api/auth/login', { data: managerLogins[0] })).status(), 200);
+    const scoped = await (await ownContext.request.get(base + '/api/settlements')).json();
+    const ownSupplier = supplierGroup(scoped, 'artel');
+    assert.equal(ownSupplier.receipts[0].amount, '450000');
+    assert.equal(ownSupplier.receipts[0].amountIsScoped, true);
+    assert.equal(ownSupplier.receipts[0].advance, '0');
+    assert.ok(!JSON.stringify(scoped).includes('OTHER-MANAGER-350'));
+    const ownPage = await ownContext.newPage();
+    ownPage.on('pageerror', error => report.errors.push(error.message));
+    await ownPage.goto(base + '/#overview');
+    await ownPage.locator('.overview-organization-picker [data-organization-id="artel"]').click();
+    await expect(ownPage.locator('[data-total="advance"]')).toContainText('Доступен руководителю');
+    await ownPage.locator('.organization-company-button').filter({ hasText: supplier.name }).click();
+    const ownReceipt = ownPage.locator('.organization-company-details .overview-transaction[data-type="receipt"]');
+    await ownReceipt.locator('summary').click();
+    await expect(ownReceipt).toContainText('Сумма в вашей области');
+    await expect(ownReceipt).toContainText('450 000,00');
+    await expect(ownReceipt).not.toContainText('700 000,00');
+    await expect(ownReceipt).not.toContainText('OTHER-MANAGER-350');
+    await capture('manager-supplier-detail', 320, ownPage);
+  } finally { await ownContext.close(); }
+  check('Manager supplier view shows only own 450,000 of a shared payment, labels it as partial, hides foreign purchases and does not claim access to the free supplier advance');
   assert.deepEqual(report.errors, []); assert.deepEqual(report.overflows, []);
   check('No browser exceptions or horizontal page overflow at 1440, 390 and 320 pixels; axe reports no violations for overview, company and empty states');
   await rm(resolve(output, 'failure.png'), { force: true });

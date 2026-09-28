@@ -45,14 +45,21 @@ export function scopeSettlements(report: SettlementsReport, snapshot: Snapshot, 
     const companyIds = group.companyIds.filter(id => customerIds.has(id));
     const shipments = group.shipments.filter(row => shipmentIds.has(row.id));
     if (!companyIds.length && !shipments.length) continue;
-    const shared = shipments.length !== group.shipments.length || group.companyIds.some(id =>
+    // Organization reports contain only that organization's rows. Ownership of
+    // a shared customer still spans its complete history, including other legal
+    // entities and unassigned rows; an empty org queue must not reveal its advance.
+    const foreignHistory = snapshot.shipments.some(row => !shipmentIds.has(row.id) && (
+      !!row.customerId && group.companyIds.includes(row.customerId)
+      || !!group.inn && (row.fields.customer_inn?.replace(/\s/g, '') ?? companyById.get(row.customerId ?? '')?.inn?.replace(/\s/g, '')) === group.inn
+    ));
+    const shared = foreignHistory || shipments.length !== group.shipments.length || group.companyIds.some(id =>
       !customerIds.has(id)
       || snapshot.directories?.customerManagers?.some(link => link.companyId === id && link.managerId !== actor.managerId));
     const receipts = group.receipts.flatMap(receipt => {
       const allocations = receipt.allocations.filter(allocation => shipmentIds.has(allocation.shipmentId));
       if (!shared) return [{ ...receipt, allocations }];
       const allocated = sum(allocations.map(allocation => allocation.amount));
-      return allocated === '0' ? [] : [{ ...receipt, amount: allocated, allocated, advance: '0', purpose: null, allocations }];
+      return allocated === '0' ? [] : [{ ...receipt, amount: allocated, allocated, advance: '0', amountIsScoped: true, purpose: null, allocations }];
     });
     const historicalAdvance = sum(shipments.flatMap(row => row.amount !== null && row.openingPaid !== null
       ? [Exact.max(0, new Exact(row.openingPaid).minus(row.amount)).toFixed()] : []));

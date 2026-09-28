@@ -10,11 +10,12 @@ import { shipmentColumns, fieldValue } from '../web/src/shipment-templates';
 import { ApiError } from './api-error';
 import { validInn } from './checko';
 import { StoreError, type OperationsData } from './operations-store';
-import { buildSettlements } from './settlements';
+import { shipmentSettlementAllocations } from './organization-settlements';
+import { isOurOrganizationId, organizationName, shipmentOrganizationId } from '../web/src/our-organizations';
 
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 export const SHIPMENT_FIELDS = [
-  'shipment_type', 'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
+  'shipment_type', 'organization_id', 'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
   'quantity_tonnes', 'quantity_litres', 'sale_price_per_tonne', 'sale_price_per_litre', 'customer_amount',
   'supplier_name', 'purchase_price_unspecified_unit', 'purchase_amount', 'carrier_name', 'transport_amount',
   'kvp_source', 'profit_source', 'paid_amount_source', 'debt_overpayment_source', 'term_source', 'unlabelled_note',
@@ -75,6 +76,7 @@ export function validateShipmentFields(input: unknown, previous: Shipment | unde
     // Unchanged saved Excel errors and historical values are permitted and preserved.
     if (previous && raw === previous.fields[key]) continue;
     let value = raw === null ? null : raw.trim() || null;
+    if (value !== null && key === 'organization_id' && !isOurOrganizationId(value)) throw new ApiError(400, 'Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.');
     if (value !== null && (key === 'date' || key === 'payment_date' || key === 'payment_due_date')) {
       const parsed = day(value);
       if (!parsed) throw new ApiError(400, `Поле ${key}: укажите корректную дату ГГГГ-ММ-ДД.`);
@@ -130,7 +132,7 @@ function validateStoredTrips(shipments: Shipment[]) {
     const members = groups.get(row.fields.trip_id) ?? [];
     members.push(row); groups.set(row.fields.trip_id, members);
   }
-  const shared = ['date', 'supplier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'trip_total_tonnes', 'trip_additional_costs'];
+  const shared = ['organization_id', 'date', 'supplier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'trip_total_tonnes', 'trip_additional_costs'];
   for (const rows of groups.values()) {
     const first = rows[0].fields;
     if (!numeric(first.trip_total_tonnes) || !new Exact(first.trip_total_tonnes!).gt(0) || !numeric(first.trip_additional_costs) || new Exact(first.trip_additional_costs!).lt(0)) throw new StoreError('Invalid trip totals');
@@ -165,6 +167,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBa
     if (override.deleted) continue;
     if (!originals.has(id) && !id.startsWith('shipment-local-')) throw new StoreError('Unknown original shipment');
     if (Object.keys(override.fields).some(key => !allowedFields.has(key))) throw new StoreError('Unknown stored field');
+    if (override.fields.organization_id && !isOurOrganizationId(override.fields.organization_id)) throw new StoreError('Invalid shipment organization');
     try {
       const row = composeShipment(id, override.fields, companies, originals.get(id));
       shipments.push({ ...row, version: override.version, createdAt: override.createdAt, updatedAt: override.updatedAt });
@@ -211,7 +214,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBa
   // Derive from complete, unfiltered records before applying employee scopes or pagination.
   // Bank allocations never enter stored shipment fields or the legacy XLSX allocation list.
   if (includeBankSettlements) {
-    const { allocations } = buildSettlements(shipments, companies, store);
+    const allocations = shipmentSettlementAllocations(shipments, companies, store);
     const byShipment = new Map<string, typeof allocations>();
     for (const allocation of [...(store.paymentAllocations ?? []), ...allocations]) {
       const rows = byShipment.get(allocation.shipmentId) ?? [];
@@ -300,6 +303,8 @@ export function shipmentPage(snapshot: Snapshot, params: URLSearchParams): Shipm
   const period = params.get('period') ?? 'all';
   if (period !== 'all' && !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(period)) throw new ApiError(400, 'Некорректный период.');
   const manager = params.get('manager') ?? 'all';
+  const organization = params.get('organization') ?? 'all';
+  if (!['all', 'unassigned'].includes(organization) && !isOurOrganizationId(organization)) throw new ApiError(400, 'Неизвестная наша организация.');
   const settlement = params.get('settlement') ?? 'all';
   if (!['all', 'cashless', 'cash', 'f2', 'unspecified'].includes(settlement)) throw new ApiError(400, 'Неизвестная форма оплаты.');
   const type = params.get('type') ?? 'all';
@@ -307,12 +312,13 @@ export function shipmentPage(snapshot: Snapshot, params: URLSearchParams): Shipm
   const companyId = params.get('companyId');
   const filters = parseFilters(params);
   const baseRows = snapshot.shipments.filter(row =>
+    (organization === 'all' || (organization === 'unassigned' ? shipmentOrganizationId(row) === null : shipmentOrganizationId(row) === organization)) &&
     (type === 'all' || (row.fields.shipment_type ?? 'tanker') === type) &&
     (period === 'all' || row.date?.startsWith(period)) &&
     (manager === 'all' || (manager === 'none' ? row.manager === null : row.manager !== null && normalizeName(row.manager) === normalizeName(manager))) &&
     (settlement === 'all' || shipmentSettlement(row) === settlement) &&
     (!companyId || row.customerId === companyId || row.supplierId === companyId || row.carrierId === companyId) &&
-    (!query || normalizeName([...Object.values(row.fields), row.sourceSheet, row.sourceRow, row.id].join(' ')).includes(query))
+    (!query || normalizeName([...Object.values(row.fields), organizationName(shipmentOrganizationId(row)), row.sourceSheet, row.sourceRow, row.id].join(' ')).includes(query))
   );
   const rows = sortShipments(baseRows.filter(row => Object.entries(filters).every(([key,filter]) => matchesColumn(row,key,filter))), params);
   const facet = params.get('facet');
@@ -355,7 +361,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   if (previous && type !== (previous.fields.shipment_type ?? 'tanker')) throw new ApiError(400, 'Изменять тип существующей отгрузки нельзя. Создайте отдельную операцию нужного типа.');
   const azs = type === 'azs';
   if (azs) {
-    const editable = new Set(['shipment_type', 'document_number', 'date', 'customer_id', 'supplier_id', 'manager_id', 'product_id', 'payment_form_id', 'quantity_litres', 'customer_amount', 'purchase_amount']);
+    const editable = new Set(['shipment_type', 'organization_id', 'document_number', 'date', 'customer_id', 'supplier_id', 'manager_id', 'product_id', 'payment_form_id', 'quantity_litres', 'customer_amount', 'purchase_amount']);
     for (const key of Object.keys(data)) if (!editable.has(key)) throw new ApiError(400, `Поле ${key} недоступно для отгрузки АЗС.`);
   }
   data.shipment_type = type;

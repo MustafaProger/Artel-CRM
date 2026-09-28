@@ -7,6 +7,7 @@ import { calculateShipment, TEMPLATE_PROFIT_RULE, today } from './shipment-calcu
 import { number, monthName, formatDate } from './utils'
 import ShipmentTripEditor from './ShipmentTripEditor'
 import ShipmentAzsEditor from './ShipmentAzsEditor'
+import { ourOrganizations } from './our-organizations'
 
 export interface ShipmentEditorProps {
   shipmentType?: ShipmentType; shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void
@@ -16,7 +17,7 @@ export default function ShipmentEditor(props: ShipmentEditorProps) {
   return !props.shipment || props.shipment.fields.trip_id ? <ShipmentTripEditor {...props}/> : <LegacyShipmentEditor {...props}/>
 }
 
-const manualKeys = ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_tonnes','quantity_litres','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','loading_address_id','unloading_address_id','driver_id','vehicle_id','transport_amount','additional_costs']
+const manualKeys = ['organization_id','date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_tonnes','quantity_litres','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','loading_address_id','unloading_address_id','driver_id','vehicle_id','transport_amount','additional_costs']
 function LegacyShipmentEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved }: ShipmentEditorProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const initial = useMemo(() => {
@@ -64,8 +65,9 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
     <header className="shipment-editor-heading"><div><span>{shipment?'РЕДАКТИРОВАНИЕ':'НОВАЯ ОПЕРАЦИЯ'}</span><h2 id="shipment-editor-title">{shipment?'Изменить отгрузку':'Добавить отгрузку'}</h2></div><button type="button" className="icon-button" aria-label="Закрыть редактор" onClick={close} disabled={saving}><X size={23}/></button></header>
     <div className="shipment-editor-body"><p className="shipment-editor-note">Выбирайте готовые записи из справочников. Tab — следующее поле, стрелки и Enter — выбор из списка.</p>
       <fieldset className="shipment-fieldset group-operation"><legend>Основное</legend><div className="shipment-field-grid">
+        {select('Наша организация','organization_id',ourOrganizations.map(organization=>({...organization})),{required:true})}
         {input('Дата операции','date','date',true)}{select('Менеджер','manager_id',directories.managers,{required:true,legacy:shipment?.manager})}{select('Форма оплаты','payment_form_id',directories.paymentForms,{required:true,legacy:shipment?.fields.payment_form})}{select('Товар','product_id',directories.products,{required:true,legacy:shipment?.product})}{input('Количество тонн','quantity_tonnes','text',true)}{input('Количество литров','quantity_litres','text',true)}
-      </div><div className="shipment-calculation-strip">{output('Месяц',calculation.fields.month?monthName(calculation.fields.month):null)}</div></fieldset>
+      </div>{shipment&&!fields.organization_id&&<p className="shipment-editor-note">Организация старой отгрузки не указана. Выберите её только при подтверждённой принадлежности.</p>}<div className="shipment-calculation-strip">{output('Месяц',calculation.fields.month?monthName(calculation.fields.month):null)}</div></fieldset>
       <fieldset className="shipment-fieldset group-sale"><legend>Продажа</legend><div className="shipment-field-grid">
         {select('Контрагент','customer_id',companyEntries('customer',fields.customer_id).filter(company => availableShipmentCustomer(directories, company.id, fields.customer_id)),{required:true})}{select('Адрес выгрузки','unloading_address_id',directories.addresses.filter(a=>a.kind==='delivery'&&a.companyId===fields.customer_id),{disabled:!fields.customer_id,legacy:fields.customer_id===initial.customer_id?shipment?.fields.unloading_address:null})}{input(shipment?.calculationRules?.sale==='tonnes'?'Цена продажи за тонну, ₽ (исходник)':'Цена продажи за литр, ₽','sale_price_per_litre','text',true)}
       </div><div className="shipment-calculation-strip">{output('ИНН контрагента',customer?.inn??(fields.customer_id===initial.customer_id?shipment?.fields.customer_inn:null))}{output('Цена продажи за тонну, ₽',calculation.fields.sale_price_per_tonne,true)}{output('Сумма покупателя, ₽',calculation.fields.customer_amount,true)}</div></fieldset>

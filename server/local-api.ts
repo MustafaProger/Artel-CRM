@@ -30,6 +30,7 @@ import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
 import { currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
 import { buildSettlements } from './settlements';
+import { buildOrganizationSettlements, organizationSettlementsForActor } from './organization-settlements';
 import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
@@ -450,7 +451,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const stored = await operations.read(base.provenance.sourceSha256);
         const snapshot = currentSnapshot(base, stored, false);
         const report = buildSettlements(snapshot.shipments, snapshot.companies, stored).report;
-        return write(response, 200, JSON.stringify(actor ? scopeSettlements(report, snapshot, authorized(stored)) : { ...includeIdleCustomers(report, snapshot), scope: 'all' }));
+        const currentActor = actor ? authorized(stored) : null;
+        const scoped = currentActor ? scopeSettlements(report, snapshot, currentActor) : { ...includeIdleCustomers(report, snapshot), scope: 'all' };
+        const { organizations } = buildOrganizationSettlements(snapshot.shipments, snapshot.companies, stored);
+        return write(response, 200, JSON.stringify({ ...scoped, ...organizationSettlementsForActor(organizations, snapshot, currentActor) }));
       }
       if (pathname.startsWith('/api/push/')) {
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');

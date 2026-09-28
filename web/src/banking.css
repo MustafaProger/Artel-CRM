@@ -258,3 +258,9 @@ to{transform:translateX(0);opacity:1}
  .bank-account-panel .bank-heading-actions .button{font-size:12px;padding-inline:10px}
 }
 @media(max-width:380px){.bank-account-panel .bank-heading-actions .button,.bank-account-panel .bank-period label{flex-basis:100%}}
+/* Settlement trace uses saved records from the same organization ledger as Overview. */
+.bank-supplier-trace { min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 12px; margin: 16px 0; }
+.bank-supplier-trace h3 { margin: 0 0 10px; }
+.bank-supplier-trace > p { line-height: 1.6; overflow-wrap: anywhere; }
+.bank-supplier-trace .bank-details-grid dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.bank-supplier-trace .bank-table-scroll { max-width: 100%; }

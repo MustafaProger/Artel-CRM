@@ -1,5 +1,6 @@
 import { bankConnections, type BankOperation } from '../web/src/banking-model';
 import { decimal } from '../web/src/shipment-calculations';
+import { organizationForConnection } from '../web/src/our-organizations';
 import type { SettlementSource } from '../web/src/settlements-model';
 import { sberConnections } from './banking/sber-connections';
 import { SBER_CONNECTION } from './banking/sber-domain';
@@ -54,11 +55,14 @@ export function settlementSources(store: OperationsData) {
     row.payer.inn?.replace(/\s/g, '') ?? '', row.payer.account ?? '',
     row.payee.inn?.replace(/\s/g, '') ?? '', row.payee.account ?? '',
   ]);
-  const operations: BankOperation[] = [], conflicts: BankOperation[] = [];
+  const operations: BankOperation[] = [], conflicts: BankOperation[] = [], organizationConflicts: BankOperation[] = [];
   for (const rows of byIdentity.values()) {
+    // The global ledger need not choose an organization. Organization ledgers
+    // must not infer ownership from the order of connector slots.
+    if (new Set(rows.map(row => organizationForConnection(row.connectionId))).size > 1) organizationConflicts.push(...new Map(rows.map(row => [row.id, row])).values());
     if (new Set(rows.map(signature)).size > 1) conflicts.push(...new Map(rows.map(row => [row.id, row])).values());
     else operations.push(rows[0]);
   }
   operations.sort((a, b) => a.statementDate.localeCompare(b.statementDate) || a.id.localeCompare(b.id));
-  return { operations, conflicts, sources, ownAccounts, ownInns };
+  return { operations, conflicts, organizationConflicts, sources, ownAccounts, ownInns };
 }

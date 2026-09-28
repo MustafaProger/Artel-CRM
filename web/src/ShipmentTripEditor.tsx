@@ -7,6 +7,7 @@ import { calculateShipment, daysSinceShipment, today, unpaidShipmentDays } from 
 import { customerManagerId, availableShipmentCustomer } from './customer-manager'
 import { allocateTrip } from './trip-calculations'
 import { number } from './utils'
+import { isOurOrganizationId, ourOrganizations } from './our-organizations'
 
 interface CustomerDraft {
   key: string
@@ -44,7 +45,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '' },
   })
   const [draft, setDraft] = useState<TripDraft>(() => ({
-    fields: { date: today(), supplier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0' },
+    fields: { organization_id: '', date: today(), supplier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0' },
     customers: [newCustomer()],
   }))
   const [initial, setInitial] = useState(() => serialize(draft))
@@ -152,6 +153,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const close = () => { if (!saving) { if (dirty) setConfirmClose(true); else onClose() } }
 
   const validate = () => {
+    if (!tripId && !isOurOrganizationId(fields.organization_id)) return 'Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.'
     if (!fields.date) return 'Укажите дату отгрузки.'
     if (!companies.some(company => company.id === fields.supplier_id)) return 'Выберите поставщика из списка.'
     if (!numericValue(fields.purchase_price_unspecified_unit)?.gt(0)) return 'Укажите цену поставщика за тонну больше нуля.'
@@ -214,13 +216,14 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
           <p className="shipment-editor-note shipment-trip-intro">Одна машина — одна отгрузка. Укажите общий тоннаж, затем литры и условия для каждого клиента.</p>
           {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
           <fieldset className="shipment-fieldset group-purchase"><legend>Отгрузка и поставщик</legend><div className="shipment-field-grid">
+            {select('Наша организация', 'organization_id', ourOrganizations.map(organization => ({ ...organization })), { required: !tripId })}
             {input('Дата отгрузки', 'date', { type: 'date', required: true })}
             {select('Поставщик', 'supplier_id', companyEntries('supplier', draft.fields.supplier_id), { required: true })}
             {select('Место загрузки', 'loading_address_id', directories.addresses.filter(address => address.kind === 'loading' && address.companyId === fields.supplier_id), { disabled: !fields.supplier_id })}
             {input('Цена поставщика за тонну, ₽', 'purchase_price_unspecified_unit', { required: true })}
             {input('Тоннаж всей машины, т', 'quantity_tonnes', { required: true })}
             {select('Товар', 'product_id', directories.products, { required: true })}
-          </div></fieldset>
+          </div>{tripId&&!fields.organization_id&&<p className="shipment-editor-note">Организация старой отгрузки не указана. Выберите её только при подтверждённой принадлежности.</p>}</fieldset>
 
           <section className="shipment-trip-customers" aria-labelledby="shipment-trip-customers-title"><div className="shipment-trip-section-heading"><div><h3 id="shipment-trip-customers-title">Клиенты машины</h3><p>Тоннаж каждого клиента рассчитывается пропорционально его литрам.</p></div><span className="shipment-trip-count">{draft.customers.length}</span></div>
             {draft.customers.map((customer, index) => {

@@ -37,10 +37,12 @@ try {
   assert.deepEqual(await page.locator('.shipment-column-headings th').evaluateAll(items=>items.slice(0,3).map(item=>item.dataset.field)),['document_number','month','date']);
   await expect(page.locator('th[data-field="purchase_unit"]')).toHaveCount(0);
   await page.getByRole('tab',{name:'АЗС',exact:true}).click();await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','0');
-  const expected=['date','customer_name','document_number','month','customer_inn','manager_label','payment_form','product','quantity_litres','customer_amount','purchase_amount','sale_price_per_litre','supplier_name','supplier_inn','kvp_source','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment'];
+  const expected=['date','customer_name','organization_id','document_number','month','customer_inn','manager_label','payment_form','product','quantity_litres','customer_amount','purchase_amount','sale_price_per_litre','supplier_name','supplier_inn','kvp_source','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment'];
   assert.deepEqual(await page.locator('.shipment-column-headings th').evaluateAll(items=>items.map(item=>item.dataset.field)),expected);
   await expect(page.getByLabel('Вид таблицы')).toHaveCount(0);await expect(page.getByLabel('Форма расчёта').locator('option[value="f2"]')).toHaveCount(0);check('separate workspaces, tanker UPD/month/date, exact AZS table, no F2');
   await page.getByRole('button',{name:'Добавить отгрузку',exact:true}).click();let editor=page.getByRole('dialog',{name:'Добавить отгрузку АЗС',exact:true});
+  await expect(editor.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('');
+  await choose(editor,'Наша организация','АРТЕЛЬ');
   await editor.getByLabel('УПД',{exact:true}).fill('AZS-QA-001');await editor.getByLabel('Дата',{exact:true}).fill('2026-09-01');
   await choose(editor,'Контрагент',customer.name);await expect(editor.getByRole('combobox',{name:/^Менеджер/})).toHaveValue(manager.name);
   await choose(editor,'Поставщик',supplier.name);await choose(editor,'Товар',product.name);await choose(editor,'Форма оплаты','б/нал');
@@ -51,22 +53,26 @@ try {
   await choose(editor,'Форма оплаты','нал');assert.equal(await outputText('Прибыль, ₽'),'33600');await choose(editor,'Форма оплаты','б/нал');
   for(const width of [1440,768,390,320]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));assert.ok(await editor.evaluate(element=>element.scrollWidth<=element.clientWidth+1));await screenshot(`editor-${width}`)}
   await page.setViewportSize({width:1440,height:1000});await editor.getByRole('button',{name:'Сохранить отгрузку',exact:true}).click();await expect(editor).toHaveCount(0);await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','1');
-  let rows=(await request('GET','/api/shipments?type=azs')).items;assert.equal(rows.length,1);let row=rows[0];assert.equal(row.fields.document_number,'AZS-QA-001');assert.equal(row.fields.profit_source,'20000');assert.equal(row.cost,'80000');check('AZS create UI, optional UPD, role-based companies, automatic manager, both profit previews, exact persistence');
+  let rows=(await request('GET','/api/shipments?type=azs')).items;assert.equal(rows.length,1);let row=rows[0];assert.equal(row.fields.organization_id,'artel');assert.equal(row.fields.document_number,'AZS-QA-001');assert.equal(row.fields.profit_source,'20000');assert.equal(row.cost,'80000');check('AZS create UI, optional UPD, role-based companies, automatic manager, both profit previews, exact persistence');
   for(const width of [1440,1024,768,390,320]){await page.setViewportSize({width,height:1000});const measurement=await page.evaluate(()=>({width:innerWidth,doc:document.documentElement.scrollWidth,tableHeight:document.querySelector('.shipment-grid-scroll').clientHeight,rowHeight:document.querySelector('[data-testid="shipment-row"]').getBoundingClientRect().height}));assert.ok(measurement.doc<=width+1);assert.equal(measurement.rowHeight,38);assert.ok(measurement.tableHeight>500);report.measurements.push(measurement);await screenshot(`table-${width}`)}
   await page.setViewportSize({width:1440,height:1000});
+  await page.getByLabel('Наша организация в отгрузках').selectOption('nk-artel');await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','0');
+  await page.getByLabel('Наша организация в отгрузках').selectOption('artel');await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','1');
+  await page.getByLabel('Наша организация в отгрузках').selectOption('unassigned');await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','0');
+  await page.getByLabel('Наша организация в отгрузках').selectOption('all');await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','1');check('organization filter isolates assigned and unknown shipments');
   await page.getByLabel('Формат таблицы АЗС').selectOption('small');
-  const small=['date','customer_name','manager_label','payment_form','quantity_litres','customer_amount','purchase_amount','supplier_name','profit_source','paid_amount_source'];
+  const small=['date','customer_name','organization_id','manager_label','payment_form','quantity_litres','customer_amount','purchase_amount','supplier_name','profit_source','paid_amount_source'];
   assert.deepEqual(await page.locator('.shipment-column-headings th').evaluateAll(items=>items.map(item=>item.dataset.field)),small);
   await expect(page.locator('.shipment-actions-heading')).toHaveCount(0);
-  await expect(page.getByTestId('shipment-row').locator('td')).toHaveCount(10);
+  await expect(page.getByTestId('shipment-row').locator('td')).toHaveCount(11);
   await page.getByRole('button',{name:`Редактировать отгрузку ${row.id}`,exact:true}).click();
   await expect(page.getByRole('dialog')).toBeVisible(); await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).click();
   for(const width of [1440,768,390,320]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await screenshot(`small-${width}`)}
-  const smallDownload=page.waitForEvent('download');await page.getByRole('button',{name:'CSV',exact:true}).click();const smallCsv=await readFile(await(await smallDownload).path(),'utf8');assert.equal(smallCsv.split('\n')[0].split(';').length,10);
+  const smallDownload=page.waitForEvent('download');await page.getByRole('button',{name:'CSV',exact:true}).click();const smallCsv=await readFile(await(await smallDownload).path(),'utf8');assert.equal(smallCsv.split('\n')[0].split(';').length,11);
   await page.reload();await page.getByRole('tab',{name:'АЗС',exact:true}).click();await expect(page.getByLabel('Формат таблицы АЗС')).toHaveValue('small');
-  await page.getByLabel('Формат таблицы АЗС').selectOption('medium');await expect(page.locator('.shipment-column-headings th')).toHaveCount(19);
+  await page.getByLabel('Формат таблицы АЗС').selectOption('medium');await expect(page.locator('.shipment-column-headings th')).toHaveCount(20);
   await page.setViewportSize({width:1440,height:1000});
-  check('AZS medium/small switch, exact 10 columns including CSV, date opens editor, preference persists and mobile fits');
+  check('AZS medium/small switch, exact 11 columns including CSV, date opens editor, preference persists and mobile fits');
   await page.getByRole('button',{name:`Редактировать отгрузку ${row.id}`,exact:true}).click();editor=page.getByRole('dialog',{name:'Изменить отгрузку АЗС',exact:true});await choose(editor,'Форма оплаты','нал');await editor.getByRole('button',{name:'Сохранить отгрузку',exact:true}).click();await expect(editor).toHaveCount(0);
   await page.reload();await page.getByRole('tab',{name:'АЗС',exact:true}).click();await expect(page.getByTestId('shipments-loaded-count')).toHaveAttribute('data-total','1');row=(await request('GET',`/api/shipments/${row.id}`)).shipment;assert.equal(row.fields.profit_source,'33600');assert.equal(row.fields.sale_price_per_litre,null);
   const downloadEvent=page.waitForEvent('download');await page.getByRole('button',{name:'CSV',exact:true}).click();const csv=await readFile(await(await downloadEvent).path(),'utf8');assert.ok(csv.includes('AZS-QA-001'));assert.ok(csv.includes('33600'));assert.ok(csv.includes('Сумма поставщика'));assert.ok(!csv.includes('Сумма перевозки'));check('responsive table/editor, cash edit persists after reload and AZS CSV excludes tanker fields');

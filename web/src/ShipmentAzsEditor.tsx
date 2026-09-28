@@ -6,8 +6,9 @@ import { customerManagerId, availableShipmentCustomer } from './customer-manager
 import { calculateAzsShipment, today } from './shipment-calculations'
 import { settlementKind } from './shipment-settlement'
 import { formatDate, monthName, number } from './utils'
+import { isOurOrganizationId, ourOrganizations } from './our-organizations'
 
-const manualKeys = ['document_number','date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','customer_amount','purchase_amount']
+const manualKeys = ['organization_id','document_number','date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','customer_amount','purchase_amount']
 export default function ShipmentAzsEditor({shipment,companies,directories,defaultPaymentForm='б/нал',onClose,onSaved}:ShipmentEditorProps) {
   const dialog=useRef<HTMLDialogElement>(null), savingRef=useRef(false)
   const initial=useMemo<Record<string,string>>(()=>({...Object.fromEntries(manualKeys.map(key=>[key,shipment?.fields[key]??''])),date:shipment?.date??today(),payment_form_id:shipment?.fields.payment_form_id??directories.paymentForms.find(entry=>entry.name===defaultPaymentForm&&['cash','cashless'].includes(settlementKind(entry.name)))?.id??''}),[shipment,directories,defaultPaymentForm])
@@ -21,7 +22,9 @@ export default function ShipmentAzsEditor({shipment,companies,directories,defaul
   const calculated=calculateAzsShipment({...shipment?.fields,...fields,payment_form:paymentForm,opening_paid_amount:shipment?.fields.paid_amount_source??null},{historical:!!shipment})
   const customer=companies.find(entry=>entry.id===fields.customer_id),supplier=companies.find(entry=>entry.id===fields.supplier_id)
   const save=async(event:FormEvent)=>{
-    event.preventDefault();if(savingRef.current)return;savingRef.current=true;setSaving(true);setError('')
+    event.preventDefault();if(savingRef.current)return
+    if(!shipment&&!isOurOrganizationId(fields.organization_id)){setError('Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.');return}
+    savingRef.current=true;setSaving(true);setError('')
     const changed=Object.fromEntries(manualKeys.filter(key=>!shipment||fields[key]!==initial[key]).map(key=>[key,fields[key].trim()||null]))
     try {
       const response=await fetch(shipment?`/api/shipments/${encodeURIComponent(shipment.id)}`:'/api/shipments',{method:shipment?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields:{...changed,shipment_type:'azs'},...(shipment?{version:shipment.version??0}:{})})})
@@ -35,6 +38,7 @@ export default function ShipmentAzsEditor({shipment,companies,directories,defaul
   return <dialog ref={dialog} className="shipment-editor shipment-azs-editor" aria-labelledby="shipment-azs-title" onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
     <header className="shipment-editor-heading"><div><span>АЗС</span><h2 id="shipment-azs-title">{shipment?'Изменить отгрузку АЗС':'Добавить отгрузку АЗС'}</h2></div><button type="button" className="icon-button" aria-label="Закрыть редактор" disabled={saving} onClick={close}><X size={23}/></button></header>
     <div className="shipment-editor-body">
+      <fieldset className="shipment-fieldset group-operation"><legend>Наша организация</legend><div className="shipment-field-grid"><DirectorySelect label="Наша организация" value={fields.organization_id} entries={ourOrganizations.map(organization=>({...organization}))} onChange={id=>update('organization_id',id)} required={!shipment} disabled={saving}/></div>{shipment&&!fields.organization_id&&<p className="shipment-editor-note">Организация старой отгрузки не указана. Выберите её только при подтверждённой принадлежности.</p>}</fieldset>
       <fieldset className="shipment-fieldset group-operation"><legend>Основное</legend><div className="shipment-field-grid">{input('УПД','document_number','text',false)}{input('Дата','date','date')}{select('Менеджер','manager_id',directories.managers)}{select('Форма оплаты','payment_form_id',directories.paymentForms.filter(entry=>['cash','cashless'].includes(settlementKind(entry.name))))}{select('Товар','product_id',directories.products)}</div><div className="shipment-calculation-strip">{output('Месяц',calculated.fields.month?monthName(calculated.fields.month):null)}</div></fieldset>
       <fieldset className="shipment-fieldset group-sale"><legend>Контрагент и количество</legend><div className="shipment-field-grid">{select('Контрагент','customer_id',companyEntries('customer',fields.customer_id))}{input('Количество литров','quantity_litres')}{input('Сумма покупателя, ₽','customer_amount')}</div><div className="shipment-calculation-strip">{output('ИНН контрагента',customer?.inn)}{output('Цена продажи за литр, ₽',calculated.fields.sale_price_per_litre,true)}</div><p className="shipment-calculation-warning">Цена продажи за литр: формула ожидает согласования.</p></fieldset>
       <fieldset className="shipment-fieldset group-purchase"><legend>Поставщик</legend><div className="shipment-field-grid">{select('Поставщик','supplier_id',companyEntries('supplier',fields.supplier_id))}{input('Сумма поставщика, ₽','purchase_amount')}</div><div className="shipment-calculation-strip">{output('ИНН поставщика',supplier?.inn)}</div></fieldset>

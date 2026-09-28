@@ -61,7 +61,7 @@ test('AZS uses existing allocation, debt sign and days logic, preserving payment
 test('AZS schema has exact requested columns and tanker expanded starts UPD, month, date', () => {
   assert.deepEqual(shipmentTemplates.expanded.columns.slice(0,3).map(column=>column.key),['document_number','month','date']);
   assert.ok(!shipmentTemplates.expanded.columns.some(column=>column.key==='purchase_unit'));
-  assert.deepEqual(azsShipmentColumns.map(column=>column.key),['date','customer_name','document_number','month','customer_inn','manager_label','payment_form','product','quantity_litres','customer_amount','purchase_amount','sale_price_per_litre','supplier_name','supplier_inn','kvp_source','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment']);
+  assert.deepEqual(azsShipmentColumns.map(column=>column.key),['date','customer_name','organization_id','document_number','month','customer_inn','manager_label','payment_form','product','quantity_litres','customer_amount','purchase_amount','sale_price_per_litre','supplier_name','supplier_inn','kvp_source','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment']);
   assert.equal(azsShipmentColumns.find(column=>column.key==='purchase_amount')!.title,'Сумма поставщика');
 });
 

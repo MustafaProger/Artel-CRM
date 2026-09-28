@@ -1,4 +1,5 @@
 import type { Shipment } from './model'
+import { organizationName } from './our-organizations'
 
 export type TemplateId = 'expanded' | 'standard' | 'reduced'
 export type FieldKind = 'text' | 'number' | 'date' | 'company' | 'inn'
@@ -9,6 +10,7 @@ export const shipmentColumns: ShipmentColumn[] = [
   column('document_number', 'УПД', 'operation', 'text', 64),
   column('month', 'Месяц', 'operation', 'text', 92),
   column('date', 'Дата', 'operation', 'date', 88),
+  column('organization_id', 'Наша организация', 'operation', 'text', 136),
   column('customer_name', 'Контрагент', 'operation', 'company', 156),
   column('customer_inn', 'ИНН Контрагент', 'operation', 'inn', 110),
   column('manager_label', 'Менеджер', 'operation', 'text', 90),
@@ -42,6 +44,7 @@ export const shipmentColumns: ShipmentColumn[] = [
 export const azsShipmentColumns: ShipmentColumn[] = [
   column('date', 'Дата', 'operation', 'date', 88),
   column('customer_name', 'Контрагент', 'operation', 'company', 156),
+  column('organization_id', 'Наша организация', 'operation', 'text', 136),
   column('document_number', 'УПД', 'operation', 'text', 64),
   column('month', 'Месяц', 'operation', 'text', 92),
   column('customer_inn', 'ИНН контрагента', 'operation', 'inn', 110),
@@ -60,10 +63,10 @@ export const azsShipmentColumns: ShipmentColumn[] = [
   column('debt_overpayment_source', 'Долг/переплата', 'settlement', 'number', 116),
   column('days_since_shipment', 'Дней с отгрузки', 'settlement', 'number', 80),
 ]
-const azsSmallKeys = ['date','customer_name','manager_label','payment_form','quantity_litres','customer_amount','purchase_amount','supplier_name','profit_source','paid_amount_source'];
+const azsSmallKeys = ['date','customer_name','organization_id','manager_label','payment_form','quantity_litres','customer_amount','purchase_amount','supplier_name','profit_source','paid_amount_source'];
 export const azsShipmentTemplates = { medium: { title: 'Средний', columns: azsShipmentColumns }, small: { title: 'Малый', columns: azsSmallKeys.map(key => azsShipmentColumns.find(column => column.key === key)!) } };
-const standard = ['date','customer_name','manager_label','payment_form','product','quantity_tonnes','quantity_litres','sale_price_per_tonne','sale_price_per_litre','customer_amount','supplier_name','purchase_price_unspecified_unit','purchase_amount','carrier_name','vehicle_plate','transport_amount','costs_breakdown','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment']
-const reduced = ['date','customer_name','manager_label','product','quantity_litres','customer_amount','supplier_name','purchase_amount','carrier_name','profit_source','days_since_shipment']
+const standard = ['date','customer_name','organization_id','manager_label','payment_form','product','quantity_tonnes','quantity_litres','sale_price_per_tonne','sale_price_per_litre','customer_amount','supplier_name','purchase_price_unspecified_unit','purchase_amount','carrier_name','vehicle_plate','transport_amount','costs_breakdown','profit_source','paid_amount_source','debt_overpayment_source','days_since_shipment']
+const reduced = ['date','customer_name','organization_id','manager_label','product','quantity_litres','customer_amount','supplier_name','purchase_amount','carrier_name','profit_source','days_since_shipment']
 export const shipmentTemplates: Record<TemplateId, { title: string; columns: ShipmentColumn[] }> = {
   expanded: { title: 'Расширенный', columns: shipmentColumns.filter(column => !['kvp_source','additional_costs','costs_breakdown'].includes(column.key)).flatMap(column => column.key === 'transport_amount' ? [column, shipmentColumns.find(item => item.key === 'costs_breakdown')!] : [column]) },
   standard: { title: 'Стандарт', columns: standard.map(key => shipmentColumns.find(c => c.key === key)!) },
@@ -71,6 +74,7 @@ export const shipmentTemplates: Record<TemplateId, { title: string; columns: Shi
 }
 export const groupTitles: Record<ColumnGroup, string> = { operation:'Операция', sale:'Продажа', purchase:'Закупка', delivery:'Доставка и расходы', settlement:'Расчёты' }
 export function fieldValue(shipment: Shipment, key: string): string | null {
+  if (key === 'organization_id') return organizationName(shipment.fields.organization_id)
   if (key === 'costs_breakdown') {
     const kvp = shipment.fields.kvp_source, extra = shipment.fields.additional_costs;
     return kvp == null && extra == null ? null : `КВП: ${kvp ?? '—'} · Допзатраты: ${extra ?? '—'}`;

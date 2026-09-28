@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, ChevronRight, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
-import type { BankParty } from './banking-model'
+import { bankConnections, type BankParty } from './banking-model'
+import SupplierPaymentTrace from './SupplierPaymentTrace'
 import type { SberOperation, SberStatementsResult } from './sber-model'
 import BankConnectionHeader from './BankConnectionHeader'
 import './sber-statements.css'
@@ -215,12 +216,13 @@ function OperationDetails({ endpoint, initial, available, onUpdate, onClose }: {
   }
   const field = (label: string, value?: string) => <div className="bank-detail-field" key={label}><dt>{label}</dt><dd><span className="sber-raw-value">{value ?? 'Не передано банком'}</span></dd></div>
   return <dialog ref={dialog} className="bank-payment-panel sber-payment-panel" aria-labelledby="sber-payment-title" onCancel={onClose} onClick={event => { if (event.target === dialog.current) { const bounds = dialog.current.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose() } }}>
-    <div className="bank-panel-header"><div><h2 id="sber-payment-title">{row.documentNumber ? `Документ № ${row.documentNumber}` : 'Подробности операции'}</h2><p>ООО «НК АРТЭЛЬ» · {displayDate(row.statementDate)}</p></div><button autoFocus className="icon-button" aria-label="Закрыть подробности операции" onClick={onClose}><X size={21}/></button></div>
+    <div className="bank-panel-header"><div><h2 id="sber-payment-title">{row.documentNumber ? `Документ № ${row.documentNumber}` : 'Подробности операции'}</h2><p>{bankConnections.find(connection => connection.id === row.connectionId)?.company ?? 'Организация не определена'} · {displayDate(row.statementDate)}</p></div><button autoFocus className="icon-button" aria-label="Закрыть подробности операции" onClick={onClose}><X size={21}/></button></div>
     <div className="bank-panel-body">
       {error && <div className="bank-notice bank-error" role="alert"><p>{error}</p><p>Показаны ранее сохранённые сведения операции.</p></div>}
       {loading && <div className="bank-loading-line" role="status"><LoaderCircle size={14} className="spin"/>Загружаем сохранённые реквизиты…</div>}
       <div className="sber-detail-refresh"><button className="button" disabled={refreshing || loading || !available} onClick={() => void refresh()}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/>{refreshing ? 'Получаем подробности…' : row.detailsFetchedAt ? 'Обновить подробности из банка' : 'Загрузить подробности из банка'}</button><p>{row.detailsFetchedAt ? `Подробности получены ${displayTimestamp(row.detailsFetchedAt)}` : 'Показаны сведения из выписки. Дополнительные поля доступны при загрузке подробностей из банка.'}</p></div>
       <div className={`bank-payment-sum ${row.direction === 'incoming' ? 'bank-incoming' : ''}`}><span>{row.direction === 'incoming' ? 'Поступление на наш счёт' : 'Списание с нашего счёта'}</span><strong>{sberMoney(row.amount, row.currency)}</strong></div>
+      <SupplierPaymentTrace operation={row}/>
       <section className="bank-payment-purpose"><h3>Полное назначение платежа</h3><p>{row.purpose ?? 'Не передано банком'}</p></section>
       <dl className="bank-details-grid">{field('Наш счёт', row.account)}{field('Идентификатор операции банка', row.bankOperationId)}{field('Номер документа', row.documentNumber)}{field('Дата документа', row.documentDate ? displayDate(row.documentDate) : undefined)}{field('Дата выписки', displayDate(row.statementDate))}{field('Дата и время проведения', row.bookedAt)}{field('Статус банка', row.status)}{field('Валюта', row.currency)}</dl>
       <div className="bank-parties">{([['payer', 'Плательщик'], ['payee', 'Получатель']] as const).map(([key, title]) => <section key={key}><h3>{title}</h3><dl>{partyFields.map(([property, label]) => field(label, row[key][property]))}</dl></section>)}</div>

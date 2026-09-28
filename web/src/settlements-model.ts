@@ -1,3 +1,5 @@
+import type { OrganizationSettlement } from './organization-settlements-model';
+
 export interface SettlementAllocation {
   shipmentId: string
   paymentId: string
@@ -17,6 +19,10 @@ export interface SettlementShipment {
 }
 export interface SettlementReceipt {
   id: string
+  bankOperationId?: string
+  documentNumber?: string | null
+  /** Amount is the visible allocation slice; the original total/advance is private. */
+  amountIsScoped?: boolean
   date: string
   connectionId: string
   bank: string
@@ -67,6 +73,9 @@ export interface SettlementSource {
 }
 export interface SettlementsReport {
   scope?: 'all' | 'own'
+  /** Root-only extension; companies/totals retain the legacy global customer view. */
+  organizations?: OrganizationSettlement[]
+  unassignedShipmentCount?: number
   companies: SettlementCompany[]
   review: SettlementReview[]
   totals: { shipped: string; incoming: string; debt: string; advance: string; allocated: string }

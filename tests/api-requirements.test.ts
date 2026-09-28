@@ -177,9 +177,9 @@ test('cleanup refuses document/work dependencies, stale previews and failed back
   } finally { await r.close(); await failing.close(); }
 });
 
-test('AZS small table has precisely ten requested columns; tanker expense presentation leaves source values intact', () => {
-  assert.deepEqual(azsShipmentTemplates.small.columns.map(column=>column.title),['Дата','Контрагент','Менеджер','Форма оплаты','Количество литров','Сумма покупателя','Сумма поставщика','Поставщик','Прибыль','Оплата']);
-  assert.equal(azsShipmentTemplates.medium.columns.length,19);
+test('AZS tables include our organization alongside existing financial columns; tanker expense presentation leaves source values intact', () => {
+  assert.deepEqual(azsShipmentTemplates.small.columns.map(column=>column.title),['Дата','Контрагент','Наша организация','Менеджер','Форма оплаты','Количество литров','Сумма покупателя','Сумма поставщика','Поставщик','Прибыль','Оплата']);
+  assert.equal(azsShipmentTemplates.medium.columns.length,20);
   assert.ok(shipmentTemplates.expanded.columns.some(column=>column.key==='costs_breakdown'));
   assert.ok(!shipmentTemplates.expanded.columns.some(column=>['kvp_source','additional_costs'].includes(column.key)));
   const row=structuredClone(base.shipments[0]); row.fields.kvp_source='125.5'; row.fields.additional_costs='80.25'; const before=JSON.stringify(row);

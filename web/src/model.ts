@@ -57,7 +57,9 @@ export interface Shipment {
   sourceRow: number;
   sourceSheet: string;
   flags: string[];
-  /** Original exported values, including nulls and Excel error strings. */
+  /** Original exported values, including nulls and Excel error strings.
+   * organization_id is an explicit our-organizations ID; missing/null history is unassigned.
+   */
   fields: Record<string, string | null>;
 }
 

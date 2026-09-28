@@ -7,7 +7,7 @@ import type { OperationsData } from './operations-store';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { currentSnapshot, prepareShipmentFields } from './shipment-operations';
 
-const sharedFields = ['date', 'supplier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs'] as const;
+const sharedFields = ['organization_id', 'date', 'supplier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs'] as const;
 const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'] as const;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const pick = (fields: Record<string, string | null>, keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, fields[key] ?? null]));
@@ -57,6 +57,9 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   if (existingId && !previousRows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
   if (existingId) checkTripVersions(body.versions, previousRows);
   const fields = inputFields(body.fields, sharedFields);
+  // An older client may omit this new shared input while adding a customer.
+  // Preserve the explicit trip identity for every row rather than creating a mixed trip.
+  if (!Object.hasOwn(fields, 'organization_id') && previousRows.length) fields.organization_id = previousRows[0].fields.organization_id ?? null;
   if (!fields.driver_id) throw new ApiError(400, 'Выберите водителя.');
   if (!Array.isArray(body.customers) || !body.customers.length || body.customers.length > 100) throw new ApiError(400, 'Добавьте от 1 до 100 клиентов.');
   const customers = body.customers.map(value => {
