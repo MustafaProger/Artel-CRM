@@ -11,7 +11,7 @@ function AuthBrand() {
     <span className="auth-brand-mark" aria-hidden="true">
       <svg viewBox="0 0 32 32" width="32" height="32"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor" /></svg>
     </span>
-    <span><strong>Артель CRM</strong><small>управление поставками топлива</small></span>
+    <span><strong>Артэль CRM</strong><small>управление поставками топлива</small></span>
   </div>;
 }
 
@@ -89,7 +89,7 @@ export default function AuthGate({ children }: { children: (user: AccountUser, o
 
   const needsSetup = session?.needsSetup;
   return <main className="auth-screen">
-    <section className="auth-story" aria-label="Об Артель CRM">
+    <section className="auth-story" aria-label="Об Артэль CRM">
       <div className="auth-story-rings" aria-hidden="true" />
       <div className="auth-story-content">
         <AuthBrand />
@@ -112,7 +112,7 @@ export default function AuthGate({ children }: { children: (user: AccountUser, o
         <h1 id="auth-title">{needsSetup ? 'Первый вход' : 'Вход'}</h1>
         <p className="auth-form-lead">{needsSetup
           ? 'Создайте учётную запись директора, чтобы начать работу с CRM.'
-          : 'С возвращением. Войдите, чтобы продолжить работу в Артель CRM.'}</p>
+          : 'С возвращением. Войдите, чтобы продолжить работу в Артэль CRM.'}</p>
 
         {!session ? <div className="auth-connection">
           {checking ? <p className="auth-loading" role="status"><LoaderCircle size={20} aria-hidden="true" /> Проверяем доступ…</p>

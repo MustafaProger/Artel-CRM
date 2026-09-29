@@ -1,21 +1,23 @@
 import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { tsImport } from 'tsx/esm/api';
 import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
+import { writeTripsQaSnapshot, startTripsQaServer } from './qa-trips-runtime.mjs';
 
 const root = resolve(import.meta.dirname, '..'), port = 5199, base = `http://127.0.0.1:${port}`;
 const temporary = await mkdtemp(resolve(tmpdir(), 'artel-trips-ui-'));
 const output = resolve(root, 'qa/trips-2026-09-28'); await mkdir(output, { recursive: true });
 const { OperationsStore } = await tsImport('../server/operations-store.ts', import.meta.url);
 const { loadSnapshot } = await tsImport('../server/local-api.ts', import.meta.url);
-const snapshot = await loadSnapshot();
+const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'store');
+await writeTripsQaSnapshot(snapshotDirectory);
+const snapshot = await loadSnapshot(snapshotDirectory);
 const company = (id, name, role) => ({ id, name, roles: [role], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] });
-await new OperationsStore(temporary).mutate(snapshot.provenance.sourceSha256, data => {
+await new OperationsStore(operationsDirectory).mutate(snapshot.provenance.sourceSha256, data => {
   data.sourceOperationsCleared = true; data.shipments = {}; data.paymentAllocations = [];
   data.companies = [company('qa-supplier', 'QA Склад', 'supplier'), company('qa-customer-a', 'QA Клиент А', 'customer'), company('qa-customer-b', 'QA Клиент Б', 'customer')];
   data.directories = {
@@ -27,18 +29,15 @@ await new OperationsStore(temporary).mutate(snapshot.provenance.sourceSha256, da
   };
   return { result: null, changed: true };
 });
-const workingFile = resolve(root, 'data/local-operations/operations.json');
-const workingSnapshot = async () => { const value = JSON.parse(await readFile(workingFile, 'utf8')).data; delete value.revision; if (value.push) delete value.push.lastRunAt; return JSON.stringify(value); };
-const before = await workingSnapshot();
-const report = { checks: [], errors: [], screenshots: [], overflows: [], workingStoreUnchanged: false };
+const report = { fixtureOnly: true, workingStoreAccessed: false, checks: [], errors: [], screenshots: [], overflows: [] };
 const check = text => { report.checks.push(text); console.log('PASS', text); };
 let server, browser, page;
 try {
   await assert.rejects(fetch(base, { signal: AbortSignal.timeout(500) }));
-  const environment = { ...process.env, ARTEL_STORE_DIR: temporary, ARTEL_BANK_SYNC_ENABLED: 'false', ARTEL_BANK_REQUESTS_ENABLED: 'false', CHECKO_API_KEY: '', VAPID_PUBLIC_KEY: '', VAPID_PRIVATE_KEY: '' };
-  for (const key of Object.keys(environment)) if (/SABY|SBIS|SBISS/i.test(key)) delete environment[key];
-  server = spawn(process.execPath, [resolve(root, 'node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: root, env: environment, stdio: 'ignore' });
-  for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(base + '/api/auth/session')).ok) break; } catch {} await new Promise(done => setTimeout(done, 100)); }
+  // An explicitly unconfigured injected client prevents ambient Saby credentials from being read.
+  const { SabyClient, sabyConfigFromEnv } = await tsImport('../server/saby-client.ts', import.meta.url);
+  const sabyClient = new SabyClient(sabyConfigFromEnv({}), async () => { throw new Error('No Saby network allowed in unconfigured UI QA'); });
+  ({ server } = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient, port }));
   const { cookie } = await bootstrapQaAuth(base);
   browser = await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
   const admin = await browser.newContext({ viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
@@ -102,11 +101,26 @@ try {
   await dialog.getByRole('button', { name: 'Загрузить актуальный рейс', exact: true }).click(); await expect(dialog.getByLabel('Примечание к рейсу')).toHaveValue('Изменено другим сотрудником'); await dialog.getByRole('button', { name: 'Закрыть редактор', exact: true }).click();
   check('Concurrent PATCH conflicts require an explicit reload and cannot silently overwrite newer changes');
   check('Reusable locations are created in the editor and edited in Directories; historical route snapshots survive both directory and trip edits');
-  await page.goto(base + '/#trips'); if (await page.getByRole('button', { name: 'Saby', exact: true }).getAttribute('aria-expanded') !== 'true') await page.getByRole('button', { name: 'Saby', exact: true }).click(); await expect(page.getByRole('region', { name: 'Передача рейса в Saby' })).toContainText('Подключение не настроено'); await expect(page.getByRole('button', { name: 'Передать в Saby', exact: true })).toBeDisabled();
-  const syntheticSaby = { saby: { status: 'unknown', updatedAt: null, lastError: null, documents: [] }, readiness: { ready: true, blockers: [] } }; let transmissions = 0;
-  await page.route('**/api/shipment-trips/*/saby', async route => { if (route.request().method() === 'POST') { transmissions++; syntheticSaby.saby = { status: 'draft', updatedAt: new Date().toISOString(), lastError: null, documents: [{ shipmentId: trip.customers[0].id, id: 'synthetic-document', status: 'draft', url: 'https://saby.ru/' }] }; } await route.fulfill({ json: syntheticSaby }); });
-  await page.getByRole('button', { name: 'Проверить статус', exact: true }).click(); await page.getByRole('button', { name: 'Сверить с Saby', exact: true }).click(); await expect(page.getByRole('region', { name: 'Передача рейса в Saby' })).toContainText('Создано в Saby, ожидает подписания'); await expect(page.getByRole('button', { name: 'Передать в Saby', exact: true })).toBeDisabled(); assert.equal(transmissions, 1); await page.unroute('**/api/shipment-trips/*/saby');
-  check('Saby UI reports configuration blockers and allows reconciliation of an unknown result and distinguishes mocked draft creation from signing or confirmed transmission; repeat creation is disabled');
+  await page.goto(base + '/#trips'); if (await page.getByRole('button', { name: 'Saby', exact: true }).getAttribute('aria-expanded') !== 'true') await page.getByRole('button', { name: 'Saby', exact: true }).click();
+  const etrnPanel = page.getByRole('region', { name: 'ЭТрН в Saby', exact: true });
+  await expect(etrnPanel).toContainText('Подключение не настроено');
+  for (const button of await etrnPanel.getByRole('button', { name: 'Создать ЭТрН в Saby', exact: true }).all()) await expect(button).toBeDisabled();
+  const syntheticEtrn = await (await admin.request.get(base + `/api/shipment-trips/${trip.id}/etrn`)).json();
+  syntheticEtrn.configured = true; syntheticEtrn.configurationBlockers = [];
+  syntheticEtrn.deliveries[0].document = { id: null, revision: null, status: 'unknown', url: null, remoteStatus: null, lastError: null, updatedAt: new Date().toISOString(), files: [], signatureStatus: 'unknown', gisStatus: null, availableActions: [] };
+  let reconciliations = 0;
+  await page.route('**/api/shipment-trips/*/etrn**', async route => {
+    if (route.request().method() === 'POST') {
+      assert.ok(route.request().url().endsWith('/refresh')); assert.equal(route.request().postDataJSON().shipmentId, trip.customers[0].id); reconciliations++;
+      syntheticEtrn.deliveries[0].document = { ...syntheticEtrn.deliveries[0].document, id: 'synthetic-document', revision: 'synthetic-revision', status: 'draft', remoteStatus: 'Черновик', signatureStatus: 'not_signed', url: 'https://saby.ru/' };
+    }
+    await route.fulfill({ json: syntheticEtrn });
+  });
+  await page.getByRole('button', { name: 'Saby', exact: true }).click(); await page.getByRole('button', { name: 'Saby', exact: true }).click();
+  await etrnPanel.getByRole('button', { name: 'Сверить с Saby', exact: true }).click(); await expect(etrnPanel).toContainText('Создано в Saby'); await expect(etrnPanel).toContainText('Подпись не получена'); assert.equal(reconciliations, 1);
+  await expect(etrnPanel.getByTestId('etrn-delivery').first().getByRole('button', { name: 'Создать ЭТрН в Saby', exact: true })).toHaveCount(0);
+  await page.unroute('**/api/shipment-trips/*/etrn**');
+  check('ETRN UI exposes configuration blockers and reconciles an unknown result without another creation; synthetic draft, signature and GIS are displayed separately');
   for (const width of [1440, 390, 320]) { await page.setViewportSize({ width, height: 1000 }); const dimensions = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth })); if (dimensions.scroll > width + 1) report.overflows.push(dimensions); await shot(`trips-${width}`); }
   await page.setViewportSize({ width: 1440, height: 1050 }); await page.goto(base + '/#accounts'); await page.getByRole('button', { name: 'Добавить пользователя', exact: true }).click();
   const credentials = { login: 'qa.trips', password: randomUUID() };
@@ -125,6 +139,6 @@ try {
   if (page) { await page.screenshot({ path: resolve(output, 'failure.png'), fullPage: true }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '')); }
   throw error;
 } finally {
-  await browser?.close(); if (server && server.exitCode === null) { server.kill('SIGTERM'); await new Promise(done => server.once('exit', done)); }
-  await rm(temporary, { recursive: true, force: true }); report.workingStoreUnchanged = before === await workingSnapshot(); await writeFile(resolve(output, 'browser.json'), JSON.stringify(report, null, 2)); assert.equal(report.workingStoreUnchanged, true);
+  await browser?.close(); await server?.close();
+  await rm(temporary, { recursive: true, force: true }); await writeFile(resolve(output, 'browser.json'), JSON.stringify(report, null, 2));
 }

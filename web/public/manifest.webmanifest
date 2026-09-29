@@ -1,5 +1,5 @@
 {
-  "id": "/", "name": "Артель CRM", "short_name": "Артель", "lang": "ru",
+  "id": "/", "name": "Артэль CRM", "short_name": "Артэль", "lang": "ru",
   "description": "Рабочее пространство Артели: задачи, отгрузки и расчёты",
   "categories": ["business", "productivity"],
   "start_url": "/#work", "scope": "/", "display": "standalone",

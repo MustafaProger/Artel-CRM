@@ -8,6 +8,7 @@ import { currentSnapshot } from './shipment-operations';
 import { getShipmentTrip } from './shipment-trips';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
 import { buildSabyTransportDocument, sabyTransportBlockers, type SabyTransportSnapshot } from './saby-transport-order';
+import { hasEtrnDocuments } from './etrn-service';
 
 export interface SabyDocumentRecord extends SabyDocumentSummary {
   marker: string;
@@ -36,7 +37,7 @@ export function validateSabyData(value: unknown): asserts value is SabyData | un
     }
   }
 }
-export function hasSabyDocuments(data: OperationsData, tripId: string): boolean { return !!data.saby?.trips[tripId]?.documents.some(doc => doc.status !== 'error' || !!doc.id); }
+export function hasSabyDocuments(data: OperationsData, tripId: string): boolean { return hasEtrnDocuments(data, tripId) || !!data.saby?.trips[tripId]?.documents.some(doc => doc.status !== 'error' || !!doc.id); }
 
 function snapshots(snapshot: Snapshot, trip: ShipmentTrip, config: SabyConfig): SabyTransportSnapshot[] {
   return trip.customers.map(customer => {

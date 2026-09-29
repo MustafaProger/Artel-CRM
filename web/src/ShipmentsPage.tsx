@@ -103,7 +103,7 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
         if(more && result.nextOffset <= offset) throw new Error('Сервер не вернул следующую часть выгрузки')
         offset = result.nextOffset
       }
-      downloadCsv(`Артель-отгрузки-${chosen.title}.csv`,chosen.columns.map(c => c.title),all.map(item => chosen.columns.map(c => fieldValue(item,c.key))))
+      downloadCsv(`Артэль-отгрузки-${chosen.title}.csv`,chosen.columns.map(c => c.title),all.map(item => chosen.columns.map(c => fieldValue(item,c.key))))
       setNotice(`Экспортировано операций: ${number(all.length)}`)
     } catch(e) {if(!controller.signal.aborted) setExportError(e instanceof Error ? e.message : 'Не удалось подготовить экспорт')}
     finally {setExporting(false)}

@@ -16,7 +16,9 @@
     "test": "npm run test:api",
     "test:shipments-ui": "node scripts/verify_shipments_excel.mjs",
     "test:trips-ui": "node --import tsx scripts/verify_trips.mjs",
+    "test:trips-saby-ui": "node --import tsx scripts/verify_trips_etrn_runtime.mjs",
     "test:directories-ui": "node scripts/verify_directories.mjs",
+    "test:customer-creation-ui": "node --import tsx scripts/verify_customer_creation.mjs",
     "test:azs-ui": "node scripts/verify_azs.mjs",
     "test:work-ui": "node scripts/verify_work.mjs",
     "test:auth-ui": "node scripts/verify_navigation_auth.mjs",
@@ -25,7 +27,12 @@
     "test:push-ui": "node scripts/verify_push.mjs",
     "test:employee-access-ui": "node --import tsx scripts/verify_employee_access.mjs",
     "test:settlements-ui": "node --import tsx scripts/verify_settlements.mjs",
-    "test:customer-reconciliation": "tsx scripts/verify-customer-reconciliation.ts"
+    "test:customer-reconciliation": "tsx scripts/verify-customer-reconciliation.ts",
+    "test:etrn-replay": "python3 -m unittest discover -s tests -p \"test_etrn_replay*.py\" -v",
+    "replay:etrn": "node scripts/run_etrn_replay.mjs",
+    "test:etrn": "tsx --test tests/api-etrn.test.ts tests/saby-consignment-note.test.ts tests/saby-client-workflow.test.ts",
+    "test:trips-etrn-ui": "node --import tsx scripts/verify_trips_etrn.mjs",
+    "test:trips-etrn-runtime": "node --import tsx scripts/verify_trips_etrn_runtime.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

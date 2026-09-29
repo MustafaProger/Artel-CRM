@@ -105,7 +105,9 @@ function DirectoryEditor({tab,id,data,onClose,onSaved}:{tab:Tab;id?:string;data:
       if(updating)payload.version=entry?.version??0;else payload.kind=kind
       const response=await fetch(updating?`/api/directories/${kind}/${encodeURIComponent(id!)}`:'/api/directories',{method:updating?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
       const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить запись')
-      if(!id && tab!=='customerManagers' && !result.created)throw new Error('Такая запись уже есть. Найдите её в списке для редактирования.')
+      // Company POST can restore an archived card or add a role to its existing ID.
+      // Those committed changes have created:false; actual duplicates return 409.
+      if(!id && !companyTab(tab) && tab!=='customerManagers' && !result.created)throw new Error('Такая запись уже есть. Найдите её в списке для редактирования.')
       onSaved()
     }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{setSaving(false)}
   }

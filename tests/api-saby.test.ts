@@ -8,7 +8,7 @@ import type { Snapshot, Company } from '../web/src/model';
 import { emptyDirectories } from '../server/directory-operations';
 import { OperationsStore } from '../server/operations-store';
 import { saveShipmentTrip } from '../server/shipment-trips';
-import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, type SabyConfig, type SabyObject } from '../server/saby-client';
+import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, type SabyConfig, type SabyObject } from '../server/saby-client';
 import { serializeSabyTransportOrder, sabyTransportBlockers, encodeWindows1251, type SabyTransportSnapshot, type SabyTransportProfile } from '../server/saby-transport-order';
 import { submitSabyTrip, getSabyTrip, validateSabyData, hasSabyDocuments } from '../server/saby-service';
 import { ApiError } from '../server/api-error';
@@ -44,6 +44,37 @@ function fakeApi(options: { write?: (request: Rpc) => Promise<Response> | Respon
     throw new Error('Unexpected method');
   };
   return { calls, docs, json, send, count: (method: string) => calls.filter(call => call.method === method).length };
+}
+const separateAccountConfig = (): SabyConfig => ({ ...config(), login: 'private-login', password: 'private-password', accountNumber: 'customer-account', carrierAccountNumber: 'carrier-account' });
+function separateAccountApi(configured: SabyConfig, organizations: Partial<Record<'customer' | 'carrier', SabyObject>> = {}) {
+  const api = fakeApi();
+  const calls: { request: Rpc; session: string | null }[] = [];
+  const sessions = new Map<string, 'customer' | 'carrier'>();
+  const expiredSessions = new Set<string>();
+  if (configured.sessionId) sessions.set(configured.sessionId, 'customer');
+  const send: typeof fetch = async (url, init) => {
+    const request = JSON.parse(String(init!.body)) as Rpc;
+    const session = new Headers(init!.headers).get('X-SBISSessionID'); calls.push({ request, session });
+    if (request.method === 'СБИС.Аутентифицировать') {
+      assert.equal(session, null);
+      assert.equal(request.params.Параметр.Логин, configured.login); assert.equal(request.params.Параметр.Пароль, configured.password);
+      const account = request.params.Параметр.НомерАккаунта;
+      assert.ok(account === configured.accountNumber || account === configured.carrierAccountNumber);
+      const next = `private-session-${calls.length}`;
+      sessions.set(next, account === configured.accountNumber ? 'customer' : 'carrier');
+      return api.json(request, next);
+    }
+    const role = session ? sessions.get(session) : undefined;
+    assert.ok(role, 'Every non-authentication call must use an account-bound session');
+    if (session && expiredSessions.has(session)) return new Response('', { status: 401 });
+    if (request.method === 'СБИС.СписокНашихОрганизаций') {
+      const org = configured[role];
+      return api.json(request, { НашаОрганизация: [organizations[role] ?? { СвЮЛ: { ИНН: org.inn, КПП: org.kpp }, ДокументооборотПодключен: 'Да' }] });
+    }
+    assert.equal(role, 'customer', 'Document methods must never use the carrier session');
+    return api.send(url, init);
+  };
+  return { ...api, calls, send, sessions, expiredSessions };
 }
 const authorize = () => undefined;
 const transportSnapshot = (): SabyTransportSnapshot => ({ tripId: 'trip-test', shipmentId: 'shipment-test', version: 1, fields: { date: '2026-09-28', product_id: 'product', vehicle_id: 'vehicle', quantity_litres: '8000', quantity_tonnes: '6.718', loading_address: 'Площадка <погрузки> & склад', unloading_address: 'Площадка доставки', loading_planned_at: '2026-09-28T09:30', unloading_planned_at: '2026-09-28T15:00' }, customer: { inn: '7736050003', kpp: '773601001', name: 'Тестовый клиент', address: 'Юридический адрес клиента' }, supplier: { inn: '7707083893', kpp: '770701001', name: 'Тестовый поставщик', address: 'Юридический адрес поставщика' }, driver: { name: 'Тестов Тест', phone: '+79990000003' }, vehicle: { plate: 'Т001ЕЕ777', type: '' }, customerOrganization: config().customer, carrierOrganization: config().carrier, profile: structuredClone(profile) });
@@ -149,6 +180,111 @@ test('Saby authorization and wrong organization block all writes; HTTP401 renews
   const blocked = await runtime(); const deny: typeof fetch = async () => new Response('', { status: 403 });
   try { const result = await submitSabyTrip({ ...blocked, authorize, client: new SabyClient(config(), deny) }); assert.equal(result.saby.status, 'error'); assert.ok(!hasSabyDocuments(await blocked.store.read(source), blocked.tripId)); }
   finally { await blocked.close(); }
+});
+
+test('Saby verifies separate account organizations with isolated cached sessions and keeps all documents in the customer account', async () => {
+  for (const withCustomerSession of [true, false]) {
+    const configured = separateAccountConfig(); if (!withCustomerSession) delete configured.sessionId;
+    const rt = await runtime(); const api = separateAccountApi(configured); const client = new SabyClient(configured, api.send);
+    try {
+      // Customer-only reads must not eagerly authenticate the carrier account.
+      await client.findDocuments('absent-marker', '28.09.2026');
+      assert.equal(api.calls.filter(call => call.request.method === 'СБИС.Аутентифицировать' && call.request.params.Параметр.НомерАккаунта === configured.carrierAccountNumber).length, 0);
+      assert.equal((await submitSabyTrip({ ...rt, authorize, client })).saby.status, 'draft');
+      await Promise.all([client.verifyOrganizations(), client.verifyOrganizations()]);
+      await client.findDocuments('absent-marker', '28.09.2026');
+      const authAccounts = api.calls.filter(call => call.request.method === 'СБИС.Аутентифицировать').map(call => call.request.params.Параметр.НомерАккаунта);
+      assert.deepEqual(authAccounts, withCustomerSession ? ['carrier-account'] : ['customer-account', 'carrier-account']);
+      for (const call of api.calls.filter(call => call.request.method === 'СБИС.СписокНашихОрганизаций')) {
+        const org = call.request.params.Фильтр.НашаОрганизация as SabyObject;
+        const inn = (org.СвЮЛ as SabyObject).ИНН;
+        assert.equal(api.sessions.get(call.session!), inn === configured.customer.inn ? 'customer' : 'carrier');
+      }
+      assert.equal(api.count('СБИС.ЗаписатьДокумент'), 2); assert.equal(api.count('СБИС.ПрочитатьДокумент'), 2);
+      const raw = await readFile(resolve(rt.directory, 'operations.json'), 'utf8');
+      assert.ok(!raw.includes('private-session')); assert.ok(!raw.includes('private-password')); assert.ok(!raw.includes('carrier-account'));
+    } finally { await rt.close(); }
+  }
+});
+
+test('Saby concurrent carrier checks share authentication and carrier expiration renews only its own session', async () => {
+  const configured = separateAccountConfig(); const api = separateAccountApi(configured); const client = new SabyClient(configured, api.send);
+  await Promise.all([client.verifyOrganizations(), client.verifyOrganizations()]);
+  const carrierSessions = [...api.sessions].filter(([, role]) => role === 'carrier').map(([session]) => session);
+  assert.equal(carrierSessions.length, 1); api.expiredSessions.add(carrierSessions[0]);
+  await client.verifyOrganizations();
+  await client.findDocuments('absent-marker', '28.09.2026');
+  const authAccounts = api.calls.filter(call => call.request.method === 'СБИС.Аутентифицировать').map(call => call.request.params.Параметр.НомерАккаунта);
+  assert.deepEqual(authAccounts, ['carrier-account', 'carrier-account']);
+  assert.equal(api.calls.at(-1)!.session, configured.sessionId);
+});
+
+test('Saby rejects wrong INN/KPP or disabled EDO in either account before writing', async () => {
+  for (const role of ['customer', 'carrier'] as const) {
+    for (const failure of ['inn', 'kpp', 'edo'] as const) {
+      const configured = separateAccountConfig(); const org = configured[role]; const rt = await runtime();
+      const row = { СвЮЛ: { ИНН: failure === 'inn' ? '0000000000' : org.inn, КПП: failure === 'kpp' ? '000000000' : org.kpp }, ДокументооборотПодключен: failure === 'edo' ? 'Нет' : 'Да' };
+      const api = separateAccountApi(configured, { [role]: row });
+      try {
+        const result = await submitSabyTrip({ ...rt, authorize, client: new SabyClient(configured, api.send) });
+        assert.equal(result.saby.status, 'error', `${role}/${failure}`);
+        assert.ok(result.saby.documents.every(doc => doc.lastError?.includes(role === 'customer' ? 'заказчика' : 'перевозчика')));
+        assert.equal(api.count('СБИС.ЗаписатьДокумент'), 0); assert.ok(!hasSabyDocuments(await rt.store.read(source), rt.tripId));
+      } finally { await rt.close(); }
+    }
+  }
+});
+
+test('Saby separate carrier account requires login and password even when a customer session is configured', async () => {
+  for (const [missing, value] of (['login', 'password'] as const).flatMap(key => [undefined, '', ' '].map(value => [key, value] as const))) {
+    const configured = separateAccountConfig(); configured[missing] = value;
+    const rt = await runtime(); const api = fakeApi(); const client = new SabyClient(configured, api.send);
+    try {
+      assert.ok(sabyCredentialBlockers(configured).some(message => message.includes('перевозчика')));
+      assert.equal(getSabyTrip(rt.base, await rt.store.read(source), rt.tripId, configured).readiness.ready, false);
+      await assert.rejects(client.verifyOrganizations(), error => error instanceof SabyError && error.kind === 'configuration');
+      await assert.rejects(submitSabyTrip({ ...rt, authorize, client }), error => error instanceof ApiError && error.status === 422);
+      assert.equal(api.calls.length, 0);
+    } finally { await rt.close(); }
+  }
+});
+
+test('Saby failed carrier authentication never falls back to customer session and can be retried on the same client', async () => {
+  const configured = separateAccountConfig(); const api = separateAccountApi(configured); let rejectCarrier = true;
+  const send: typeof fetch = async (url, init) => {
+    const request = JSON.parse(String(init!.body)) as Rpc; const response = await api.send(url, init);
+    if (request.method === 'СБИС.Аутентифицировать' && request.params.Параметр.НомерАккаунта === configured.carrierAccountNumber && rejectCarrier) return new Response('', { status: 403 });
+    return response;
+  };
+  const client = new SabyClient(configured, send);
+  await assert.rejects(client.verifyOrganizations(), error => error instanceof SabyError && error.kind === 'permission');
+  assert.equal(api.calls.filter(call => call.request.method === 'СБИС.СписокНашихОрганизаций').length, 1);
+  assert.equal(api.count('СБИС.ЗаписатьДокумент'), 0);
+  rejectCarrier = false; await client.verifyOrganizations();
+  assert.deepEqual(api.calls.filter(call => call.request.method === 'СБИС.Аутентифицировать').map(call => call.request.params.Параметр.НомерАккаунта), ['carrier-account', 'carrier-account']);
+});
+
+test('Saby missing carrier credentials blocks reconciliation without changing existing unknown documents', async () => {
+  const rt = await runtime(); const api = fakeApi({ read: () => new Response('', { status: 401 }) });
+  try {
+    assert.equal((await submitSabyTrip({ ...rt, authorize, client: new SabyClient(config(), api.send) })).saby.status, 'unknown');
+    const before = await rt.store.read(source); const configured = separateAccountConfig(); delete configured.password;
+    const calls = api.calls.length;
+    assert.equal(getSabyTrip(rt.base, before, rt.tripId, configured).readiness.ready, false);
+    await assert.rejects(submitSabyTrip({ ...rt, authorize, client: new SabyClient(configured, api.send) }), error => error instanceof ApiError && error.status === 422);
+    assert.equal(api.calls.length, calls); assert.deepEqual((await rt.store.read(source)).saby, before.saby);
+  } finally { await rt.close(); }
+});
+
+test('Saby absent or matching carrier account preserves same-account session-only configuration', async () => {
+  for (const carrierAccountNumber of [undefined, ' shared-account ']) {
+    const configured = { ...config(), accountNumber: 'shared-account', carrierAccountNumber }; const api = fakeApi();
+    assert.deepEqual(sabyCredentialBlockers(configured), []);
+    await new SabyClient(configured, api.send).verifyOrganizations();
+    assert.equal(api.count('СБИС.СписокНашихОрганизаций'), 2); assert.equal(api.count('СБИС.Аутентифицировать'), 0);
+  }
+  assert.equal(sabyConfigFromEnv({ SABY_CARRIER_ACCOUNT_NUMBER: ' carrier-account ' }).carrierAccountNumber, 'carrier-account');
+  assert.equal(sabyConfigFromEnv({ SABY_CARRIER_ACCOUNT_NUMBER: ' ' }).carrierAccountNumber, undefined);
 });
 
 test('Saby expired persisted lease recovers pending as unknown and config profile removal does not prevent reconciliation', async () => {

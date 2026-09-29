@@ -40,21 +40,38 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   if (input.inn !== undefined && typeof input.inn !== 'string') throw new ApiError(400, 'Проверьте ИНН.');
   const inn = (input.inn as string | undefined)?.trim() || undefined;
   if (inn && !validInn(inn)) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр.');
-  // Explicitly adding the same legal entity restores its stable historical identity.
-  const archived = !id ? snapshot.companies.filter(company => company.directoryArchived && (inn ? company.inn === inn : !company.inn && normalizeName(company.name) === normalizeName(name))) : [];
-  if (archived.length === 1 && Array.isArray(input.addresses) && Array.isArray(input.roles)) {
-    const company = archived[0];
-    const addresses = snapshot.directories!.addresses.filter(address => address.companyId === company.id).map(({ id, name, kind }) => ({ id, name, kind }));
-    const added = input.addresses.filter(raw => !raw || typeof raw !== 'object' || !addresses.some(address => address.kind === raw.kind && normalizeName(address.name) === normalizeName(String(raw.name))));
-    const restored = saveCompany({ ...input, version: company.version ?? 0, roles: [...new Set([...company.roles.filter(role => ['customer', 'supplier', 'carrier'].includes(role)), ...input.roles])], addresses: [...addresses, ...added] }, snapshot, data, company.id);
+  if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier'].includes(String(role)) && !(role === 'carrier' && previous?.roles.includes('carrier')))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
+  if (!input.roles.some(role => ['customer', 'supplier'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
+  // Adding a cleared client or another role reuses the exact historical identity.
+  // A name-only record is never merged with a submitted INN without verification.
+  const matching = !id ? snapshot.companies.filter(company => inn ? company.inn === inn : !company.inn && normalizeName(company.name) === normalizeName(name)) : [];
+  const reusable = matching.length === 1 ? matching[0] : undefined;
+  if (reusable && (reusable.directoryArchived || input.roles.some(role => !reusable.roles.includes(role))) && Array.isArray(input.addresses)) {
+    const company = reusable;
+    const existingAddresses = snapshot.directories!.addresses.filter(address => address.companyId === company.id).map(({ id, name, kind }) => ({ id, name, kind }));
+    const incomingAddresses = input.addresses.map(raw => {
+      if (raw && typeof raw === 'object' && !Array.isArray(raw) && !raw.id && typeof raw.name === 'string') {
+        const address = existingAddresses.find(address => address.kind === raw.kind && normalizeName(address.name) === normalizeName(raw.name));
+        if (address) return { ...raw, id: address.id };
+      }
+      return raw;
+    });
+    const addresses = [...incomingAddresses, ...existingAddresses.filter(address => !incomingAddresses.some(raw => raw && typeof raw === 'object' && raw.id === address.id))];
+    // Blank fields in the new-card form are not instructions to erase a hidden card.
+    // Explicit edits of an existing card still support clearing these details.
+    const fields = { ...input };
+    for (const [key] of companyFields) if (fields[key] === undefined || fields[key] === null || typeof fields[key] === 'string' && !fields[key].trim()) delete fields[key];
+    const managerId = input.managerId || snapshot.directories!.customerManagers?.find(row => row.companyId === company.id)?.managerId || null;
+    const restored = saveCompany({ ...fields, managerId, version: company.version ?? 0, roles: [...new Set([...company.roles.filter(role => ['customer', 'supplier', 'carrier'].includes(role)), ...input.roles])], addresses }, snapshot, data, company.id);
     restored.entry.directoryArchived = false;
     return restored;
   }
   if (snapshot.companies.some(company => company.id !== id && inn && company.inn === inn)) throw new ApiError(409, 'Компания с таким ИНН уже есть в справочнике.');
-  if (!previous && snapshot.companies.some(company => normalizeName(company.name) === normalizeName(name) && (!inn || !company.inn))) throw new ApiError(409, 'Компания с таким названием уже есть. Откройте её карточку.');
-  if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier'].includes(String(role)) && !(role === 'carrier' && previous?.roles.includes('carrier')))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
-  if (!input.roles.some(role => ['customer', 'supplier'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
   const roles = [...new Set([...(input.roles as string[]), ...(previous?.roles.filter(role => !['customer', 'supplier'].includes(role)) ?? [])])];
+  // A new INN identifies a separate entity; hidden name-only history must not block
+  // creation or be reassigned to it. Visible entries in the requested role still conflict.
+  if (!previous && snapshot.companies.some(company => normalizeName(company.name) === normalizeName(name) &&
+    (!inn || !company.inn && !company.directoryArchived && roles.some(role => company.roles.includes(role))))) throw new ApiError(409, 'Компания с таким названием уже есть. Откройте её карточку.');
   if (previous?.roles.includes('supplier') && !roles.includes('supplier') && data.china?.days.some(day => day.fuels.some(fuel => fuel.supplierId === previous.id))) throw new ApiError(409, 'Нельзя убрать тип «Поставщик»: компания используется в заправках Китая.');
   if (previous) for (const role of ['customer', 'supplier'] as const) if (previous.roles.includes(role) && !roles.includes(role) && companyRoleUsed(snapshot, previous, role)) throw new ApiError(409, `Нельзя убрать тип «${role === 'customer' ? 'Клиент' : 'Поставщик'}»: компания используется в отгрузках.`);
   const managerId = input.managerId || null;

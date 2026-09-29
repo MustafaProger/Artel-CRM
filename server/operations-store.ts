@@ -1,5 +1,6 @@
 import { locationDetails } from './location-details';
 import { validateSabyData, type SabyData } from './saby-service';
+import { validateEtrnData, type EtrnData } from './etrn-service';
 import { companyFields, driverFields } from '../web/src/directory-fields';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, rename, unlink } from 'node:fs/promises';
@@ -36,6 +37,7 @@ export interface OperationsData {
   paymentAllocations?: PaymentAllocation[];
   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
   saby?: SabyData;
+  etrn?: EtrnData;
   /** Explicit reset: source operations must never be imported again. */
   sourceOperationsCleared?: boolean;
   work?: WorkData;
@@ -62,6 +64,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
     for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
   }
   try { validateSabyData(data.saby); } catch { throw new StoreError('Invalid Saby storage'); }
+  try { validateEtrnData(data.etrn); } catch { throw new StoreError('Invalid ETRN storage'); }
   validateChina(data.china);
   try { validateBanking(data.banking as BankingData | undefined); } catch { throw new StoreError('Invalid banking storage'); }
   try { validateSber(data.sber as SberData | undefined); validateSber(data.sberArtel as SberData | undefined, sberConnections['sber-artel']); } catch { throw new StoreError('Invalid Sber storage'); }

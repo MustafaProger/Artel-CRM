@@ -37,6 +37,7 @@ import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
 import { getSabyTrip, submitSabyTrip } from './saby-service';
+import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile } from './etrn-service';
 import type { SabyClient } from './saby-client';
 import { dispatchReminders, dispatchTaskAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
@@ -445,7 +446,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       const authorized = (data: import('./operations-store').OperationsData) => {
         const user = requireUser(data, request);
-        if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, pathname.endsWith('/saby') || pathname === '/api/shipment-trips' && request.method === 'GET');
+        if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
         if (section) requireSection(user, section);
         return user;
@@ -596,6 +597,35 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
+      const etrnMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/etrn(?:\/(submit|refresh)|\/xml\/([^/]+)|\/files\/([^/]+)\/([^/]+))?$/);
+      if (etrnMatch) {
+        const tripId = decodeURIComponent(etrnMatch[1]);
+        const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => {
+          if (actor) requireWholeTrip(authorized(data), snapshot, tripId);
+        };
+        const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
+        if (request.method === 'GET' && !etrnMatch[2]) {
+          const data = await operations.read(base.provenance.sourceSha256);
+          authorize(currentSnapshot(base, data), data);
+          if (!etrnMatch[3] && !etrnMatch[4]) return write(response, 200, JSON.stringify(getEtrnTrip(base, data, tripId, options.sabyClient?.config)));
+          const file = etrnMatch[3]
+            ? (() => { const value = preparedEtrnXml(base, data, tripId, decodeURIComponent(etrnMatch[3]), options.sabyClient?.config); return { bytes: value.xml, name: value.name, extension: 'xml' }; })()
+            : await downloadEtrnFile(context, decodeURIComponent(etrnMatch[4]), decodeURIComponent(etrnMatch[5]));
+          response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin', 'Content-Disposition': `attachment; filename="etrn.${/^[a-z0-9]{1,8}$/i.test(file.extension) ? file.extension : 'bin'}"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/'/g, '%27')}` });
+          return response.end(file.bytes);
+        }
+        if (request.method === 'PUT' && !etrnMatch[2] && !etrnMatch[3] && !etrnMatch[4]) {
+          const body = await jsonBody(request);
+          if (Object.keys(body).some(key => !['shipmentId', 'profile'].includes(key)) || typeof body.shipmentId !== 'string') throw new ApiError(400, 'Укажите доставку и сведения ЭТрН.');
+          return write(response, 200, JSON.stringify(await saveEtrnProfile(context, body.shipmentId, body.profile)));
+        }
+        if (request.method === 'POST' && etrnMatch[2]) {
+          const body = await jsonBody(request);
+          if (Object.keys(body).some(key => key !== 'shipmentId') || typeof body.shipmentId !== 'string') throw new ApiError(400, 'Выберите доставку для ЭТрН.');
+          return write(response, 200, JSON.stringify(await exchangeEtrn(context, body.shipmentId, etrnMatch[2] === 'refresh')));
+        }
+        throw new ApiError(405, 'Метод не поддерживается.');
+      }
       const sabyTripMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby$/);
       if (sabyTripMatch) {
         if (!['GET', 'POST'].includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
@@ -659,7 +689,9 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
               : updateDirectoryEntry(directoryMatch[1], decodeURIComponent(directoryMatch[2]), body, snapshot, data)
             : body.kind === 'companies' ? saveCompany(body, snapshot, data) : addDirectoryEntry(body, snapshot, data);
           currentSnapshot(base, data);
-          return { result, changed: !!directoryMatch || result.created };
+          // A successful company POST can restore a historical ID or add a role
+          // without creating a new entity. Its changes must still be committed.
+          return { result, changed: !!directoryMatch || body.kind === 'companies' || result.created };
         });
         return write(response, result.created ? 201 : 200, JSON.stringify(result));
       }
