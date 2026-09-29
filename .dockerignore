@@ -1,0 +1,11 @@
+# Production images use prebuilt code only (ops/production/Dockerfile).
+# Keep private data, QA archives, credentials, and dependencies out of the context.
+**
+!app-dist/
+!app-dist/**
+!server-render/
+!server-render/production.mjs
+!ops/
+!ops/production/
+!ops/production/Dockerfile
+!ops/production/entrypoint.sh

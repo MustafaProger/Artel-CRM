@@ -74,7 +74,7 @@
 - `/Users/mustafa/Library/Application Support/Artel-CRM/private/mnpz-verified-2026-09-25/` — проверенный реестр и копии.
 - `/Users/mustafa/Library/Application Support/Artel-CRM/private/trips-driver-import-2026-09-28/` — импорт и приватный конфликт ВУ Петра.
 - `/Users/mustafa/Library/Application Support/Artel-CRM/private/saby/contracts-2026-09-28/` — два уже сохранённых договора (аренда В700 и перевозка НК Артэль). Содержание/подписи/применимость не подтверждены; повторно не просить, автоматически контрагентам не загружать.
-- Локальная папка `saby данные/` — в том числе XML заказа Петра, исключена из Git.
+- Приватные исходники `/Users/mustafa/Library/Application Support/Artel-CRM/private/saby/source-documents/` — в том числе XML заказа Петра; перенесены из `saby данные/` 29.09.2026 с проверкой SHA-256, вне Git.
 - Второй мозг: `Работа/Отгрузки — разбор сообщений Telegram.md` и `Работа/Отгрузки — работа в Saby.md` в `/Users/mustafa/Library/Mobile Documents/iCloud~md~obsidian/Documents/Заметки/Второй Мозг/`. Читать при уточнении требований; эта задача не разрешает редактировать vault.
 
 ## Что должен видеть водитель — сохранённый следующий этап

@@ -1,18 +1,25 @@
-.venv/
-__pycache__/
-*.pyc
-.DS_Store
-.env
-.env.*
-!.env.example
-data/
-qa/
-
-node_modules/
-app-dist/
-*.log
-.vercel/
-server-render/
-.playwright/
-.vercel
+# Private configuration, working data, and source documents.
 .env*
+!.env.example
+/data/
+/saby данные/
+/.local/
+/.vercel/
+
+# Dependencies and generated builds.
+node_modules/
+.venv/
+/app-dist/
+/server-render/
+*.tsbuildinfo
+
+# Test output and local caches.
+/qa/
+/test-results/
+/playwright-report/
+/coverage/
+.playwright/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store

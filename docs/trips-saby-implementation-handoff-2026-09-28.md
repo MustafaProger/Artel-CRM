@@ -40,7 +40,7 @@
 
 ## ЭТрН, водители и уже переданные материалы
 
-Приватный образец: `/Users/mustafa/Library/Application Support/Artel-CRM/private/saby/etrn-7-2026-09-15/` (`originals/`, `extracted/`, `manifest.json`). Приватная сверка: `/Users/mustafa/Library/Application Support/Artel-CRM/private/mnpz-verified-2026-09-25/` (включая `Актуальный контекст — машины и Saby.md`, `verified-fields.json`, `oleg-etrn-confirmed.json`). Исходники также в `saby данные/` проекта, не публиковать их. Старые выводы сверки не имеют приоритета над исправлением 28.09.
+Приватный образец: `/Users/mustafa/Library/Application Support/Artel-CRM/private/saby/etrn-7-2026-09-15/` (`originals/`, `extracted/`, `manifest.json`). Приватная сверка: `/Users/mustafa/Library/Application Support/Artel-CRM/private/mnpz-verified-2026-09-25/` (включая `Актуальный контекст — машины и Saby.md`, `verified-fields.json`, `oleg-etrn-confirmed.json`). Исходники перенесены 29.09.2026 из `saby данные/` проекта в `/Users/mustafa/Library/Application Support/Artel-CRM/private/saby/source-documents/`; не публиковать их. Старые выводы сверки не имеют приоритета над исправлением 28.09.
 
 Требуется отдельный итог **«по каким водителям не хватает каких конкретных данных для выбранного сценария на основании ЭТрН Олега»**. Различать «есть в исходниках», «занесено в CRM» и «подтверждено обязательным API». По последней проверке чата от 28.09:
 
