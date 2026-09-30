@@ -1,3 +1,4 @@
+import { validLoadingDate } from '../web/src/trip-input-rules';
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { CalculationRules, Company, Metric, Shipment, ShipmentsResponse, Snapshot } from '../web/src/model';
@@ -12,6 +13,7 @@ import { validInn } from './checko';
 import { StoreError, type OperationsData } from './operations-store';
 import { shipmentSettlementAllocations } from './organization-settlements';
 import { isOurOrganizationId, organizationName, shipmentOrganizationId } from '../web/src/our-organizations';
+import { readIntermediateStops } from '../web/src/trip-route';
 
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 export const SHIPMENT_FIELDS = [
@@ -21,9 +23,9 @@ export const SHIPMENT_FIELDS = [
   'kvp_source', 'profit_source', 'paid_amount_source', 'debt_overpayment_source', 'term_source', 'unlabelled_note',
   'customer_inn', 'supplier_inn', 'loading_address', 'unloading_address', 'additional_costs', 'payment_date',
   // Explicit picker identities, separate from the workbook's visible columns.
-  'customer_id', 'supplier_id', 'carrier_id',
+  'customer_id', 'supplier_id', 'carrier_id', 'oil_depot_id',
   'manager_id', 'product_id', 'payment_form_id', 'driver_id', 'vehicle_id', 'driver_name', 'vehicle_plate',
-  'trip_notes', 'delivery_notes', 'invoice_not_required',
+  'trip_notes', 'delivery_notes', 'invoice_not_required', 'intermediate_stops_after', 'intermediate_stops_in_order', 'trip_delivery_order', 'quantity_gross_tonnes',
   'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude',
   'loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at',
   'trip_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
@@ -79,9 +81,12 @@ export function validateShipmentFields(input: unknown, previous: Shipment | unde
     // Unchanged saved Excel errors and historical values are permitted and preserved.
     if (previous && raw === previous.fields[key]) continue;
     let value = raw === null ? null : raw.trim() || null;
-    if (value !== null && key === 'invoice_not_required' && !['true', 'false'].includes(value)) throw new ApiError(400, 'Пометка «счёт не нужен» должна быть true или false.');
+    if (key === 'intermediate_stops_after' && value) {
+      try { value = JSON.stringify(readIntermediateStops(value)); } catch { throw new ApiError(400, 'Проверьте названия и адреса промежуточных остановок.'); }
+    }
+    if (value !== null && ['invoice_not_required', 'intermediate_stops_in_order'].includes(key) && !['true', 'false'].includes(value)) throw new ApiError(400, 'Значение переключателя должно быть true или false.');
     if (value !== null && ['loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at'].includes(key)) {
-      if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(value) || !day(value.slice(0, 10))) throw new ApiError(400, 'Укажите корректные дату и время площадки (московское время).');
+      if (!validLoadingDate(value)) throw new ApiError(400, 'Укажите корректные дату и время площадки (московское время).');
     }
     if (value !== null && key === 'organization_id' && !isOurOrganizationId(value)) throw new ApiError(400, 'Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.');
     if (value !== null && (key === 'date' || key === 'payment_date' || key === 'payment_due_date')) {
@@ -136,12 +141,15 @@ function validateStoredTrips(shipments: Shipment[]) {
       continue;
     }
     if (!/^shipment-trip-[a-f0-9-]+$/.test(row.fields.trip_id)) throw new StoreError('Invalid trip identity');
+    try { readIntermediateStops(row.fields.intermediate_stops_after); } catch { throw new StoreError('Invalid intermediate stops'); }
     const members = groups.get(row.fields.trip_id) ?? [];
     members.push(row); groups.set(row.fields.trip_id, members);
   }
-  const shared = ['organization_id', 'date', 'supplier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs'];
+  const shared = ['organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order', 'quantity_gross_tonnes'];
   for (const rows of groups.values()) {
     const first = rows[0].fields;
+    const ordered = rows.filter(row => row.fields.trip_delivery_order);
+    if (ordered.length && (ordered.length !== rows.length || new Set(ordered.map(row => row.fields.trip_delivery_order)).size !== rows.length || ordered.some(row => !/^[1-9]\d{0,2}$/.test(row.fields.trip_delivery_order!)))) throw new StoreError('Invalid trip delivery order');
     if (!numeric(first.trip_total_tonnes) || !new Exact(first.trip_total_tonnes!).gt(0) || !numeric(first.trip_additional_costs) || new Exact(first.trip_additional_costs!).lt(0)) throw new StoreError('Invalid trip totals');
     if (rows.some(row => row.fields.purchase_unit !== 'tonnes' || row.fields.calculation_mode !== 'automatic' || shared.some(key => (row.fields[key] ?? null) !== (first[key] ?? null)))) throw new StoreError('Inconsistent trip fields');
     for (const [field, total] of [['quantity_tonnes', 'trip_total_tonnes'], ['additional_costs', 'trip_additional_costs']] as const) {
@@ -196,6 +204,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBa
     for (const [key,role,kind] of [['loading_address_id','supplier','loading'],['unloading_address_id','customer','delivery']] as const) {
       if (fields[key] && !directories.addresses.some(a => a.id === fields[key] && a.companyId === row[`${role}Id`] && a.kind === kind)) throw new StoreError('Invalid shipment address');
     }
+    if (fields.oil_depot_id && !directories.oilDepots?.some(depot => depot.id === fields.oil_depot_id)) throw new StoreError('Invalid shipment oil depot');
     if (fields.shipment_type && !['tanker','azs'].includes(fields.shipment_type)) throw new StoreError('Invalid shipment type');
     const azs = fields.shipment_type === 'azs';
     if (azs && fields.trip_id) throw new StoreError('AZS cannot belong to a tanker trip');
@@ -360,7 +369,7 @@ export function inferCalculationRules(cells: Record<string, { formula?: string |
   };
 }
 
-export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot) {
+export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot, options: { historicalCarrierId?: string | null } = {}) {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400,'Укажите поля операции.');
   const data = { ...input }, catalog = snapshot.directories!;
   if (Object.hasOwn(data, 'shipment_type') && !['tanker', 'azs'].includes(data.shipment_type as string)) throw new ApiError(400, 'Выберите тип отгрузки: бензовозы или АЗС.');
@@ -373,7 +382,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   }
   data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
-  automatic.push('loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
+  automatic.push('trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);
@@ -395,9 +404,28 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
       data[labelKey] = item.name;
     } else if (Object.hasOwn(data,labelKey)) throw new ApiError(400,`Используйте справочник: ${labelKey}.`);
   }
-  if (Object.hasOwn(data,'carrier_name') || Object.hasOwn(data,'carrier_id')) throw new ApiError(400,'Выберите водителя из справочника.');
+  if (Object.hasOwn(data, 'carrier_name')) throw new ApiError(400, 'Выберите перевозчика из справочника.');
+  if (Object.hasOwn(data, 'carrier_id')) {
+    const carrier = snapshot.companies.find(company => company.id === data.carrier_id);
+    if (data.carrier_id && data.carrier_id !== previous?.fields.carrier_id && data.carrier_id !== options.historicalCarrierId && (!carrier || carrier.directoryArchived || !carrier.roles.includes('carrier'))) throw new ApiError(400, 'Выберите действующего перевозчика из справочника.');
+    data.carrier_name = carrier?.name ?? null;
+  }
+  const depotId = Object.hasOwn(data, 'oil_depot_id') ? data.oil_depot_id : previous?.fields.oil_depot_id;
+  if (depotId) {
+    const depot = catalog.oilDepots?.find(row => row.id === depotId);
+    if (!depot) throw new ApiError(400, 'Выберите нефтебазу из справочника.');
+    if (data.loading_address_id && data.loading_address_id !== previous?.fields.loading_address_id) throw new ApiError(400, 'Место погрузки задаётся выбранной нефтебазой.');
+    data.loading_address_id = null;
+    const sameDepot = previous?.fields.oil_depot_id === depot.id;
+    for (const [field, value] of [['loading_address', depot.address], ['loading_map_url', depot.mapUrl], ['loading_latitude', depot.latitude], ['loading_longitude', depot.longitude]] as const) data[field] = sameDepot && previous!.fields[field] ? previous!.fields[field] : value || null;
+  } else if (Object.hasOwn(data, 'oil_depot_id') && previous?.fields.oil_depot_id) {
+    data.loading_address_id = null;
+    for (const field of ['loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude']) data[field] = null;
+  }
+
   const changedCompany = (role: 'customer'|'supplier') => Object.hasOwn(data,`${role}_id`) && data[`${role}_id`] !== previous?.[`${role}Id`];
   for (const [key,role,kind] of [['loading_address','supplier','loading'],['unloading_address','customer','delivery']] as const) {
+    if (key === 'loading_address' && (depotId || Object.hasOwn(data, 'oil_depot_id') && previous?.fields.oil_depot_id)) continue;
     if (Object.hasOwn(data,key)) throw new ApiError(400,'Выберите адрес из справочника.');
     if (changedCompany(role) && !Object.hasOwn(data,`${key}_id`)) { data[`${key}_id`] = null; data[key] = null; }
     if (data[`${key}_id`]) {
@@ -425,6 +453,15 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
     if (data.vehicle_id && !vehicle) throw new ApiError(400, 'Автомобиль отсутствует в справочнике.');
     const driver = catalog.drivers.find(d => d.id === (data.driver_id ?? previous?.fields.driver_id));
     data.vehicle_id = vehicle?.id ?? driver?.vehicleId ?? null;
+  }
+  const selectedCarrier = Object.hasOwn(data, 'carrier_id') ? data.carrier_id : previous?.fields.carrier_id;
+  if (selectedCarrier && selectedCarrier !== previous?.fields.carrier_id && selectedCarrier !== options.historicalCarrierId) {
+    for (const [key, rows, label] of [['driver_id', catalog.drivers, 'Водитель'], ['vehicle_id', catalog.vehicles, 'Автомобиль']] as const) {
+      const selected = Object.hasOwn(data, key) ? data[key] : previous?.fields[key];
+      // Only an explicitly changed legal company selection constrains the fleet.
+      // Ordinary driver/vehicle changes preserve the old legal link as history.
+      if (selected && !rows.some(row => row.id === selected && row.carrierId === selectedCarrier)) throw new ApiError(400, `${label} не связан с выбранным перевозчиком.`);
+    }
   }
   const fields = validateShipmentFields(data, previous, snapshot.companies);
   if (azs) {

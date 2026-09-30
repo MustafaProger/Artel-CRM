@@ -215,6 +215,18 @@ export class SabyClient {
   async writeDocument(document: SabyObject): Promise<SabyObject> {
     return this.document(await this.call('СБИС.ЗаписатьДокумент', { Документ: document }, true), true);
   }
+  /** Saby assigns a number using the selected registry when both number and XML are absent.
+   * Persist its ID before reading or uploading; never reserve again after an uncertain response.
+   */
+  async reserveNumberedDocument(metadata: SabyObject): Promise<SabyObject> {
+    if (!['TransportOrder', 'ConsignmentNote'].includes(String(metadata.Тип)) || Object.hasOwn(metadata, 'Номер') || Object.hasOwn(metadata, 'Вложение') || Object.hasOwn(metadata, 'Идентификатор')) throw new SabyError('validation', 'Некорректный запрос номера документа Saby.');
+    return this.writeDocument(metadata);
+  }
+  async readTransportOrder(id: string): Promise<SabyObject> {
+    const document = await this.readDocument(id, 'Расширение,ЭПД,Стороны,ТекущиеЭтапы');
+    if (document.Идентификатор !== id || document.Тип !== 'TransportOrder') throw new SabyError('protocol', 'Saby вернул другой документ вместо запрошенной заявки.');
+    return document;
+  }
   async readConsignmentNote(id: string): Promise<SabyObject> {
     const document = await this.readDocument(id, 'Расширение,ЭПД,Стороны,ТекущиеЭтапы');
     if (document.Идентификатор !== id || document.Тип !== 'ConsignmentNote') throw new SabyError('protocol', 'Saby вернул другой документ вместо запрошенной ЭТрН.');
@@ -245,10 +257,15 @@ export class SabyClient {
 
   /** Fresh read resolves the file from a document ID, never from a caller-supplied URL. */
   async downloadAttachment(documentId: string, attachmentId: string, expectedRevision?: string | null): Promise<SabyDownloadedAttachment> {
-    const document = await this.readConsignmentNote(documentId);
-    if (expectedRevision !== undefined && sabyDocumentWorkflow(document).revision !== expectedRevision) throw new SabyError('validation', 'Редакция ЭТрН изменилась. Обновите состояние документа перед скачиванием.');
+    return this.downloadDocumentAttachment(await this.readConsignmentNote(documentId), attachmentId, expectedRevision);
+  }
+  async downloadTransportOrderAttachment(documentId: string, attachmentId: string, expectedRevision?: string | null): Promise<SabyDownloadedAttachment> {
+    return this.downloadDocumentAttachment(await this.readTransportOrder(documentId), attachmentId, expectedRevision);
+  }
+  private async downloadDocumentAttachment(document: SabyObject, attachmentId: string, expectedRevision?: string | null): Promise<SabyDownloadedAttachment> {
+    if (expectedRevision !== undefined && sabyDocumentWorkflow(document).revision !== expectedRevision) throw new SabyError('validation', 'Редакция документа изменилась. Обновите состояние перед скачиванием.');
     const file = documentFiles(document).find(row => row.id === attachmentId);
-    if (!file) throw new SabyError('validation', 'Вложение отсутствует в текущей редакции ЭТрН.');
+    if (!file) throw new SabyError('validation', 'Вложение отсутствует в текущей редакции документа.');
     const { url, ...info } = file;
     if (!url) throw new SabyError('protocol', 'Saby не вернул безопасную ссылку на файл.');
     // These are the documented/observed download hosts, not arbitrary Saby subdomains.
@@ -284,7 +301,7 @@ export class SabyClient {
   async findDocuments(marker: string, date: string, organization = this.config.customer, number?: string, type: SabyDocumentType = 'TransportOrder'): Promise<SabyObject[]> {
     const found: SabyObject[] = [];
     for (let page = 0; page < 20; page++) {
-      const result = await this.call('СБИС.СписокДокументов', { Фильтр: { Тип: type, Направление: 'Исходящий', ДатаС: date, ДатаПо: date, Маска: number ?? marker, НашаОрганизация: { СвЮЛ: { ИНН: organization.inn, КПП: organization.kpp } }, Навигация: { РазмерСтраницы: '200', Страница: String(page) } } }, false, true);
+      const result = await this.call('СБИС.СписокДокументов', { Фильтр: { Тип: type, Направление: 'Исходящий', ДатаС: date, ДатаПо: date, ...(number ? { Маска: number } : {}), НашаОрганизация: { СвЮЛ: { ИНН: organization.inn, КПП: organization.kpp } }, Навигация: { РазмерСтраницы: '200', Страница: String(page) } } }, false, true);
       if (!sabyObject(result) || !Array.isArray(result.Документ)) throw new SabyError('protocol', 'Saby вернул некорректный список документов. Повторная запись запрещена.');
       found.push(...result.Документ.filter(sabyObject).filter(doc => doc.Примечание === marker));
       if (!sabyObject(result.Навигация) || result.Навигация.ЕстьЕще !== 'Да') return found;

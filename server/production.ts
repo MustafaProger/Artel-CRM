@@ -10,6 +10,8 @@ import { sberRequest, type SberRequest } from './banking/sber-client';
 import { dispatchBanks } from './banking/scheduler';
 import { BANK_SYNC_TICK_MS } from './banking/schedule';
 import { dispatchReminders, pushReady, type PushConfig } from './push';
+import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
+import { dispatchTripSaby, SABY_WORKFLOW_TICK_MS } from './trip-saby-scheduler';
 
 type Environment = Record<string, string | undefined>;
 const pausedBankMessage = 'Обновление банков на этом сервере пока выключено. Сохранённые данные доступны.';
@@ -136,6 +138,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
   await store.read(base.provenance.sourceSha256);
   const bankEnvironment = { ...env, ARTEL_BANK_SYNC_ENABLED: configuration.bankRequestsEnabled ? env.ARTEL_BANK_SYNC_ENABLED : 'false' };
   const transports = productionBankTransports(env);
+  const saby = sabyConfigFromEnv(env);
   const push: PushConfig = {
     publicKey: env.VAPID_PUBLIC_KEY ?? '', privateKey: env.VAPID_PRIVATE_KEY ?? '',
     subject: env.VAPID_SUBJECT ?? '', schedule: env.PUSH_SCHEDULE_ENABLED === 'true',
@@ -145,6 +148,8 @@ export async function createProductionRuntime(env: Environment = process.env) {
     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
     setupToken: env.ARTEL_SETUP_TOKEN, cronSecret: env.CRON_SECRET, checkoApiKey: env.CHECKO_API_KEY,
+    sabyClient: new SabyClient(saby),
+    sabyWorkflowMonitoringEnabled: env.SABY_WORKFLOW_ENABLED === 'true' && !sabyCredentialBlockers(saby).length,
   });
   const server = createServer((request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -207,6 +212,9 @@ export async function createProductionRuntime(env: Environment = process.env) {
         schedule(BANK_SYNC_TICK_MS, () => dispatchBanks(store, base.provenance.sourceSha256, bankEnvironment, transports.bankRequest, transports.sberRequest), true);
       }
       if (pushReady(push)) schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
+      if (env.SABY_WORKFLOW_ENABLED === 'true' && !sabyCredentialBlockers(saby).length) {
+        schedule(SABY_WORKFLOW_TICK_MS, () => dispatchTripSaby({ base, store, config: saby, enabled: true }), true);
+      }
     },
     stop() {
       return stopPromise ??= (async () => {

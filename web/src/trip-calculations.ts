@@ -27,12 +27,12 @@ function split(total: Decimal, weights: Decimal[], sum: Decimal, precision: numb
 
 /** Whole-truck tonnes and expenses are distributed according to customer litres. */
 export function allocateTrip(totalTonnes: string, litres: string[], additionalCosts = '0'): { totalLitres: string; tonnes: string[]; additionalCosts: string[] } {
-  const total = amount(totalTonnes, 'Тоннаж машины', true);
+  const total = amount(totalTonnes, 'Плановая масса груза', true);
   const costs = amount(additionalCosts, 'Дополнительные затраты', false);
   if (!Array.isArray(litres) || !litres.length || litres.length > 100) throw new Error('Добавьте от 1 до 100 клиентов.');
   const weights = litres.map((value, index) => amount(value, `Литры клиента ${index + 1}`, true));
   const totalLitres = weights.reduce((sum, value) => sum.plus(value), new Exact(0));
   const tonnes = split(total, weights, totalLitres, Math.max(6, total.decimalPlaces()));
-  if (tonnes.some(value => new Exact(value).isZero())) throw new Error('Доля тоннажа клиента слишком мала. Уточните тоннаж машины или разбивку литров.');
+  if (tonnes.some(value => new Exact(value).isZero())) throw new Error('Доля массы груза клиента слишком мала. Уточните массу груза или разбивку литров.');
   return { totalLitres: totalLitres.toFixed(), tonnes, additionalCosts: split(costs, weights, totalLitres, Math.max(2, costs.decimalPlaces())) };
 }

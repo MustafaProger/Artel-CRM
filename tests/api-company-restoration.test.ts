@@ -166,7 +166,7 @@ test('restoration rejects malformed roles and matching address inputs without re
     const persisted = await readFile(r.store.path, 'utf8');
     const address = { name: 'Площадка QA', kind: 'delivery' };
     for (const invalid of [
-      { roles: [] }, { roles: ['carrier'] },
+      { roles: [] }, { roles: ['unknown-role'] },
       { addresses: [{ ...address, mapUrl: 'https://example.invalid/map' }] },
       { addresses: [{ ...address, id: 'address-other-company' }] },
       { addresses: [{ ...address, unexpected: 'field' }] },

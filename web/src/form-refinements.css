@@ -1,0 +1,269 @@
+/* Form-only refinements. Keep these selectors out of the shipments table. */
+.shipment-editor.shipment-trip-editor,
+.detail-dialog.directory-editor {
+  border-radius: 24px;
+  border: 1px solid var(--border, #dce5df);
+  box-shadow: 0 28px 90px #203c3033, 0 2px 10px #203c3010;
+  max-height: calc(100dvh - 40px);
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+}
+.shipment-editor.shipment-trip-editor { width: min(1060px, calc(100vw - 40px)); }
+.detail-dialog.directory-editor { width: min(880px, calc(100vw - 40px)); }
+.shipment-trip-editor > form,
+.directory-editor > form {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 42px);
+  min-height: 0;
+}
+.shipment-trip-editor .shipment-editor-heading,
+.directory-editor .directory-editor-heading {
+  position: relative;
+  flex: none;
+  padding: 24px 28px;
+  gap: 20px;
+  background: var(--surface, #fff);
+}
+.shipment-trip-editor .shipment-editor-heading h2,
+.directory-editor .directory-editor-heading h2 {
+  font-size: clamp(21px, 2vw, 27px);
+  line-height: 1.2;
+  letter-spacing: -.025em;
+}
+.shipment-trip-editor .shipment-editor-heading > div > span {
+  font-size: 10px;
+  letter-spacing: .1em;
+  margin-bottom: 7px;
+}
+.shipment-trip-editor .shipment-editor-heading > .icon-button,
+.directory-editor .directory-editor-heading > .icon-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 50%;
+  background: #eef4f0;
+  color: #52665b;
+  border: 0;
+}
+.shipment-trip-editor .shipment-editor-body,
+.directory-editor .directory-editor-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 24px 28px 30px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.shipment-trip-editor .shipment-editor-footer,
+.directory-editor .directory-editor-footer {
+  position: relative;
+  flex: none;
+  padding: 16px 28px;
+  gap: 10px;
+  background: var(--surface-soft, #fafcfb);
+}
+.shipment-trip-editor .button,
+.directory-editor .button {
+  min-height: 42px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  gap: 8px;
+}
+.shipment-trip-editor .button:active:not(:disabled),
+.directory-editor .button:active:not(:disabled) { transform: scale(.98); }
+.shipment-trip-editor .shipment-field-grid,
+.directory-editor .shipment-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+.shipment-trip-editor .form-field-wide,
+.directory-editor .form-field-wide { grid-column: 1 / -1; min-width: 0; }
+.shipment-trip-editor .shipment-field,
+.shipment-trip-editor .company-picker,
+.directory-editor .shipment-field,
+.directory-editor .company-picker { display: flex; flex-direction: column; min-width: 0; gap: 8px; }
+.shipment-trip-editor .shipment-field > span,
+.shipment-trip-editor .company-picker > label,
+.directory-editor .shipment-field > span,
+.directory-editor .company-picker > label {
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.45;
+  margin: 0;
+}
+.shipment-trip-editor .shipment-field input,
+.shipment-trip-editor .shipment-field select,
+.shipment-trip-editor .shipment-field textarea,
+.shipment-trip-editor .company-combobox,
+.directory-editor .shipment-field input,
+.directory-editor .shipment-field select,
+.directory-editor .shipment-field textarea,
+.directory-editor .company-combobox {
+  min-height: 44px;
+  border: 1px solid var(--border, #dce5df);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  color: var(--text, #243c34);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.shipment-trip-editor .company-combobox,
+.directory-editor .company-combobox { gap: 9px; padding-block: 0; }
+.shipment-trip-editor .company-combobox > input,
+.directory-editor .company-combobox > input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  padding: 10px 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
+  min-height: 42px;
+  background: transparent;
+}
+.shipment-trip-editor .company-combobox > svg,
+.directory-editor .company-combobox > svg { flex-shrink: 0; }
+.shipment-trip-editor .company-combobox > .icon-button,
+.directory-editor .company-combobox > .icon-button { width: 28px; height: 32px; min-width: 28px; padding: 4px; margin-right: -5px; }
+.shipment-trip-editor .shipment-field textarea,
+.directory-editor .shipment-field textarea { resize: vertical; min-height: 76px; }
+.shipment-trip-editor .company-options,
+.directory-editor .company-options {
+  border-radius: 14px;
+  padding: 5px;
+  box-shadow: 0 12px 36px #203c3020;
+  max-height: min(260px, 38dvh);
+}
+.shipment-trip-editor .company-options button,
+.directory-editor .company-options button { border-radius: 9px; min-height: 44px; align-items: flex-start; }
+.shipment-trip-editor .company-options button > span,
+.directory-editor .company-options button > span { overflow-wrap: anywhere; white-space: normal; min-width: 0; }
+.shipment-trip-editor .company-options button > svg,
+.directory-editor .company-options button > svg { flex-shrink: 0; margin-top: 3px; }
+.shipment-trip-editor .shipment-fieldset {
+  border-radius: 18px;
+  padding: 22px;
+  margin-bottom: 24px;
+}
+.shipment-trip-editor .shipment-fieldset > legend { padding-inline: 8px; font-size: 16px; font-weight: 650; letter-spacing: -.015em; }
+.shipment-trip-editor .shipment-trip-intro { margin: 0 0 24px; font-size: 13px; line-height: 1.6; }
+.shipment-trip-editor .trip-date-input { display: flex; width: 100%; min-width: 0; align-self: start; align-items: stretch; text-align: left; gap: 8px; }
+.shipment-trip-editor .trip-date-controls { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 10px; }
+.shipment-trip-editor .trip-date-controls > label {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  text-align: left;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+.shipment-trip-editor .trip-date-controls .form-control-caption { font-size: 11px; line-height: 1.4; color: #52665b; font-weight: 400; }
+.shipment-trip-editor .trip-date-controls input { width: 100%; min-width: 0; min-inline-size: 0; text-align: left; padding-inline: 9px; }
+.shipment-trip-editor .shipment-field-grid:has(> .trip-date-input) > .directory-select:first-child { padding-top: 0; }
+.shipment-trip-editor .group-purchase > .shipment-field-grid > .directory-select:first-child .company-combobox { margin-top: 21px; }
+.shipment-trip-editor .shipment-trip-delivery-fields { margin-top: 22px; border-top: 1px solid #d1e5d8; padding-top: 20px; }
+.shipment-trip-editor .shipment-trip-delivery-fields > h4 { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: #276143; }
+.shipment-trip-editor .trip-invoice-option { gap: 10px; line-height: 1.5; font-size: 13px; padding: 0; min-height: 32px; align-self: end; }
+.shipment-trip-editor .trip-invoice-option input { flex-shrink: 0; accent-color: #176849; }
+.shipment-trip-editor .shipment-trip-fleet > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; width: 100%; }
+.shipment-trip-editor .group-purchase .shipment-trip-fleet > div > p:first-child { grid-column: 1 / -1; }
+.shipment-trip-editor .shipment-trip-fleet p { margin: 0; }
+.shipment-trip-editor .shipment-trip-client-totals { gap: 18px 28px; padding-top: 20px; }
+.shipment-trip-editor .trip-intermediate-stops { grid-template-columns: minmax(0, 1fr); min-width: 0; margin-top: 20px; padding-top: 20px; border-top: 1px solid #d1e5d8; }
+.shipment-trip-editor .trip-intermediate-stops > strong { font-size: 13px; }
+.shipment-trip-editor .trip-intermediate-stops > .shipment-field-grid { margin-block: 16px; }
+.shipment-trip-editor .trip-intermediate-stops > .shipment-field-grid > .button { justify-self: start; }
+.shipment-trip-editor .shipment-trip-add { border-radius: 14px; border-style: solid; min-height: 46px; }
+.shipment-trip-editor .shipment-trip-extras { border-radius: 16px; }
+.shipment-trip-editor .shipment-trip-extras > summary { padding: 16px 18px; min-height: 60px; }
+.shipment-trip-editor .shipment-trip-section-heading h3 { font-size: 18px; }
+.directory-editor .directory-form-section { min-width: 0; }
+.directory-editor .directory-form-section + .directory-form-section { border-top: 1px solid var(--border, #dce5df); padding-top: 22px; }
+.directory-editor .directory-form-section-heading { margin-bottom: 18px; }
+.directory-editor .directory-form-section-heading h3 { margin: 0; font-size: 15px; font-weight: 650; color: #264c37; }
+.directory-editor .directory-form-section-heading p { margin: 6px 0 0; color: #52665b; font-size: 13px; line-height: 1.55; }
+.directory-editor .directory-participants { display: grid; gap: 20px; }
+.directory-editor .directory-participants .loading-party-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.directory-editor .directory-participants .loading-party-field > .button { margin: 0; min-height: 44px; white-space: nowrap; }
+.directory-editor .directory-owner-address { display: grid; gap: 5px; margin: -8px 0 0; font-size: 13px; line-height: 1.6; color: #52665b; overflow-wrap: anywhere; padding: 12px 14px; border-radius: 12px; background: #f1f7f3; }
+.directory-editor .directory-owner-address > span { font-size: 11px; font-weight: 550; }
+.directory-editor .directory-extra-fields { border: 1px solid var(--border, #dce5df); border-radius: 16px; padding: 0; margin-top: 22px; overflow: visible; }
+.directory-editor .directory-map-fields { margin-top: 0; }
+.directory-editor .directory-extra-fields > summary { list-style: none; padding: 16px 18px; border-radius: 15px; min-height: 52px; font-size: 14px; line-height: 1.5; display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+.directory-editor .directory-extra-fields > summary::-webkit-details-marker { display: none; }
+.directory-editor .directory-extra-fields > summary::after { content: ''; width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); flex-shrink: 0; margin: -4px 2px 0 0; }
+.directory-editor .directory-extra-fields[open] > summary::after { transform: rotate(225deg); margin-top: 4px; }
+.directory-editor .directory-extra-fields > .shipment-field-grid { padding: 2px 18px 18px; margin-top: 0; }
+.directory-editor .directory-extra-fields > .muted,
+.directory-editor .directory-extra-fields > .shipment-field,
+.directory-editor .directory-extra-fields > .directory-extra-fields { margin: 0 18px 18px; }
+.directory-editor .directory-context-note { margin: 20px 0 0; color: #52665b; font-size: 12px; line-height: 1.55; }
+.directory-editor .company-lookup-actions { align-self: end; }
+.directory-editor .company-role-options { align-self: end; padding-bottom: 6px; }
+.directory-editor .company-address-row { align-items: flex-start; }
+.directory-editor .company-address-row > .shipment-field-grid { flex: 1; min-width: 0; }
+.directory-editor .company-address-row > .icon-button { flex-shrink: 0; margin-top: 29px; }
+.directory-editor .company-address-group .muted { font-size: 12px; line-height: 1.6; margin-top: 12px; }
+.shipment-trip-editor :is(button, summary, input, select, textarea):focus:not(:focus-visible),
+.directory-editor :is(button, summary, input, select, textarea):focus:not(:focus-visible) { outline: none; }
+.shipment-trip-editor :is(button, summary, input, select, textarea):focus-visible,
+.directory-editor :is(button, summary, input, select, textarea):focus-visible { outline: 2px solid #176849; outline-offset: 3px; }
+.shipment-trip-editor .company-combobox:focus-within,
+.directory-editor .company-combobox:focus-within { border-color: #176849; outline: none; box-shadow: 0 0 0 3px #17684914; }
+.shipment-trip-editor .company-combobox > input:focus-visible,
+.directory-editor .company-combobox > input:focus-visible { outline: none; }
+@media (max-width: 700px) {
+  .shipment-editor.shipment-trip-editor,
+  .detail-dialog.directory-editor { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); border-radius: 20px; }
+  .shipment-trip-editor > form,
+  .directory-editor > form { max-height: calc(100dvh - 22px); }
+  .shipment-trip-editor .shipment-editor-heading,
+  .directory-editor .directory-editor-heading { padding: 20px; }
+  .shipment-trip-editor .shipment-editor-body,
+  .directory-editor .directory-editor-body { padding: 20px 18px 24px; scrollbar-gutter: auto; }
+  .shipment-trip-editor .shipment-editor-footer,
+  .directory-editor .directory-editor-footer { padding: 14px 18px max(14px, env(safe-area-inset-bottom)); }
+  .shipment-trip-editor .shipment-field-grid,
+  .directory-editor .shipment-field-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .shipment-trip-editor .shipment-fieldset { padding: 18px 16px; border-radius: 16px; }
+  .shipment-trip-editor .group-purchase > .shipment-field-grid > .directory-select:first-child .company-combobox { margin-top: 0; }
+  .shipment-trip-editor .shipment-trip-fleet > div { grid-template-columns: minmax(0, 1fr); }
+  .shipment-trip-editor .company-combobox > input,
+  .directory-editor .company-combobox > input,
+  .shipment-trip-editor .shipment-field :is(input, select, textarea),
+  .directory-editor .shipment-field :is(input, select, textarea) { font-size: 16px; }
+  .directory-editor .directory-participants .loading-party-field { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .directory-editor .directory-participants .loading-party-field > .button { justify-self: start; min-height: 36px; font-size: 12px; }
+  .directory-editor .directory-extra-fields > summary { padding: 15px; }
+  .directory-editor .directory-extra-fields > .shipment-field-grid { padding-inline: 15px; }
+  .directory-editor .directory-editor-footer > .button { flex: 1; justify-content: center; }
+  .directory-editor .company-address-row { gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shipment-trip-editor .button:active:not(:disabled),
+  .directory-editor .button:active:not(:disabled) { transform: none; }
+}
+/* Selected participant names stay readable; focusing the same combobox opens search. */
+.directory-editor .company-combobox.has-wrapped-selection { position: relative; padding-block: 10px; align-items: center; }
+.directory-editor .directory-selection-value { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.45; pointer-events: none; }
+.directory-editor .company-combobox.has-wrapped-selection > input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: text; }
+.directory-editor .company-combobox.has-wrapped-selection > .icon-button { position: relative; z-index: 1; }
+
+.shipment-trip-editor .trip-intermediate-stops > .button { max-width: 100%; min-width: 0; white-space: normal; text-align: left; justify-self: start; }
+.shipment-trip-editor .trip-intermediate-stops > .button > svg { flex-shrink: 0; }
+@media (max-width: 360px) {
+  .shipment-trip-editor .trip-date-controls { grid-template-columns: minmax(0, 1fr); }
+}

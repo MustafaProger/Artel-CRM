@@ -37,7 +37,7 @@ export function validateSabyData(value: unknown): asserts value is SabyData | un
     }
   }
 }
-export function hasSabyDocuments(data: OperationsData, tripId: string): boolean { return hasEtrnDocuments(data, tripId) || !!data.saby?.trips[tripId]?.documents.some(doc => doc.status !== 'error' || !!doc.id); }
+export function hasSabyDocuments(data: OperationsData, tripId: string): boolean { return !!data.tripSaby?.trips[tripId] || hasEtrnDocuments(data, tripId) || !!data.saby?.trips[tripId]?.documents.some(doc => doc.status !== 'error' || !!doc.id); }
 
 function snapshots(snapshot: Snapshot, trip: ShipmentTrip, config: SabyConfig): SabyTransportSnapshot[] {
   return trip.customers.map(customer => {
@@ -110,6 +110,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
   const claimed = await store.mutate(source, data => {
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId);
+    if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Для рейса уже запущена общая заявка Saby. Используйте обновление общего обмена.');
     const existing = data.saby?.trips[tripId];
     if (existing?.documents.every(doc => doc.status === 'draft')) return { result: null, changed: false };
     if (existing?.leaseId && existing.leaseUntil && Date.parse(existing.leaseUntil) > Date.now()) throw new ApiError(409, 'Передача рейса в Saby уже выполняется. Обновите состояние немного позже.');

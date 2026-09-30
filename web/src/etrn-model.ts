@@ -1,6 +1,8 @@
 /** Facts confirmed for one selected customer delivery. No historical sample defaults. */
 export interface EtrnParty {
   name: string; inn: string; kpp: string; address: string; phone: string; edoId: string;
+  /** Legal name of an individual entrepreneur. Never serialize a 12-digit INN as a legal entity. */
+  person?: EtrnName;
 }
 export interface EtrnDocumentBasis { name: string; number: string; date: string; issuerInns: string[] }
 export interface EtrnName { surname: string; name: string; patronymic: string }
@@ -30,8 +32,13 @@ export interface SabyConsignmentProfile {
     dangerousGoods?: EtrnDangerousGoods | null;
     dimensions?: { heightMetres: string; lengthMetres: string; widthMetres: string };
   };
-  /** Actual mass of this delivery, separately confirmed from CRM allocation. */
+  /** Planned delivery mass; legacy profiles without massSource explicitly confirmed it as actual too. */
   deliveryMassTonnes: string;
+  /** Calculated allocation is not evidence of an actual weighing or loading event. */
+  massSource?: 'calculated' | 'confirmed';
+  /** Explicit net mass must never be serialized as the schema's mandatory planned gross. */
+  plannedMassKind?: 'net' | 'gross';
+  plannedGrossMassTonnes?: string;
   vehicle: {
     type: string; brand: string; payloadTonnes: string; capacityCubicMetres: string;
     ownershipType: string; ownershipDocument?: EtrnDocumentBasis;
@@ -40,6 +47,8 @@ export interface SabyConsignmentProfile {
   loading: {
     /** Moscow civil times; CRM loading_actual_at has insufficient event semantics. */
     arrivedAt: string; departedAt: string;
+    /** Separately confirmed loading facts; required for a complete title when massSource is calculated. */
+    grossMassTonnes?: string; massMethod?: string;
   };
   loadingActor: EtrnLoadingParty;
   infrastructureOwner: EtrnLoadingParty;

@@ -345,3 +345,251 @@ h1 { color: #1D1D1F; font-size: clamp(1.9rem, 2.7vw, 2.5rem); font-weight: 700; 
 
 .shipments-focus .sidebar-account { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 8px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
 .shipments-focus .sidebar-account > span { flex: 1; overflow-wrap: anywhere; }
+
+/* September interface refinement.
+ * Keep the shipment ledger pixel-stable: no root/body/main, inherited workspace,
+ * table or shipment-toolbar changes here. Shared controls explicitly exclude
+ * the whole shipments workspace; its editors have their own scoped styles.
+ * Existing semantic colours and all root tokens remain the source of truth.
+ */
+.app-shell .sidebar {
+  background: rgb(250 250 252 / 96%);
+  border-right-color: rgb(29 29 31 / 8%);
+  box-shadow: 1px 0 0 rgb(255 255 255 / 75%);
+  backdrop-filter: blur(24px) saturate(120%);
+  -webkit-backdrop-filter: blur(24px) saturate(120%);
+}
+.sidebar .sidebar-heading { margin-bottom: 24px; }
+.sidebar .nav-item {
+  min-height: 46px;
+  margin-block: 4px;
+  border-radius: 13px;
+  font-weight: 550;
+  line-height: 1.3;
+  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+.sidebar .nav-item.active {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 65%), 0 2px 5px rgb(23 102 71 / 5%);
+  font-weight: 650;
+}
+.sidebar .nav-item > svg { stroke-width: 1.8; }
+.sidebar .nav-item small { border-radius: 7px; padding: 3px 6px; }
+.sidebar .nav-label { font-size: 11px; letter-spacing: .07em; }
+.sidebar .sidebar-profile { padding-top: 18px; border-color: rgb(29 29 31 / 8%); }
+.page-heading-compact { align-items: center; margin-bottom: 26px; }
+.page-heading-compact h1 { font-size: clamp(1.85rem, 2.4vw, 2.35rem); line-height: 1.14; letter-spacing: -.035em; font-weight: 700; }
+
+/* A consistent action shape, with unchanged ledger controls and dimensions. */
+.button:not(:where(.shipments-workspace *, .shipment-grid *)) {
+  border-radius: 11px;
+  min-height: 42px;
+  padding: 10px 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  box-shadow: 0 1px 2px rgb(29 29 31 / 3%), inset 0 1px 0 rgb(255 255 255 / 75%);
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.button.primary:not(:where(.shipments-workspace *, .shipment-grid *)) {
+  box-shadow: 0 2px 5px rgb(23 102 71 / 12%), inset 0 1px 0 rgb(255 255 255 / 12%);
+}
+.button:not(:where(.shipments-workspace *, .shipment-grid *)):disabled { box-shadow: none; }
+.icon-button:not(:where(.shipments-workspace *, .shipment-grid *)) { border-radius: 10px; }
+:is(.button, .icon-button, .nav-item, .directory-record-open, .overview-company-button):not(.shipments-workspace *, .shipment-grid *):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.button:not(:where(.shipments-workspace *, .shipment-grid *)) > svg { flex-shrink: 0; }
+
+/* Segments are a single control: quieter inactive options, a raised selection. */
+:is(.directory-tabs, .payroll-tabs, .bank-source-tabs, .overview-ledger-tabs) {
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px;
+  border: 1px solid rgb(29 29 31 / 4%);
+  border-radius: 15px;
+  background: #EDEDF1;
+  align-items: stretch;
+}
+:is(.directory-tabs, .payroll-tabs, .bank-source-tabs, .overview-ledger-tabs) > button {
+  min-height: 38px;
+  margin: 0;
+  padding: 9px 15px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+:is(.directory-tabs, .payroll-tabs, .bank-source-tabs, .overview-ledger-tabs) > button:is(.primary, [aria-selected="true"], [aria-pressed="true"]) {
+  background: var(--surface);
+  color: var(--accent);
+  border-color: rgb(29 29 31 / 6%);
+  box-shadow: 0 2px 5px rgb(29 29 31 / 7%), 0 1px 2px rgb(29 29 31 / 3%);
+  font-weight: 650;
+}
+:is(.directory-tabs, .payroll-tabs, .bank-source-tabs, .overview-ledger-tabs) > button:is(.primary, [aria-selected="true"], [aria-pressed="true"]):hover {
+  background: var(--surface);
+  border-color: rgb(29 29 31 / 10%);
+}
+.directory-tabs { flex-wrap: wrap; margin-bottom: 22px; }
+.payroll-tabs { margin-bottom: 22px; }
+
+/* Surfaces keep a quiet solid canvas; only navigation and dialog chrome blur. */
+:is(.overview-card, .trip-card, .directory-list, .account-panel, .bank-ledger, .team-stats, .team-role-list, .team-role-detail, .team-source-panel, .china-page, .archive-ledger) {
+  border-color: var(--border);
+  border-radius: 20px;
+  box-shadow: 0 2px 4px rgb(29 29 31 / 2%), 0 8px 24px rgb(29 29 31 / 3%);
+}
+.bank-card { border-radius: 20px; box-shadow: 0 2px 4px rgb(29 29 31 / 2%), 0 8px 24px rgb(29 29 31 / 3%); }
+.bank-card:hover { transform: none; box-shadow: 0 4px 18px rgb(29 29 31 / 7%); }
+.overview-organization-picker > button { border-radius: 17px; min-height: 80px; }
+.overview-organization-picker > button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px #519277, 0 3px 8px rgb(23 102 71 / 5%); }
+.overview-heading h2, .bank-section-heading h2, .archive-heading h2 { font-weight: 650; letter-spacing: -.025em; }
+.overview-card-heading h3 { font-size: 16px; letter-spacing: -.015em; }
+.overview-company-button { padding-block: 20px; }
+.overview-company-identity > strong { font-size: 14px; }
+.overview-company-identity > small { font-size: 12px; line-height: 1.55; }
+.overview-company-avatar { border-radius: 12px; }
+.overview-list-caption { font-size: 11px; }
+.trip-card-heading h2 { font-size: 21px; letter-spacing: -.02em; font-weight: 650; }
+.trip-origin { padding: 18px; border: 1px solid rgb(29 29 31 / 4%); border-radius: 14px; }
+.trip-card-footer { padding-top: 4px; }
+.directory-list .directory-record-count { padding-block: 18px 14px; font-size: 12px; }
+.directory-list .directory-record { border-bottom-color: rgb(29 29 31 / 7%); padding-inline: 10px; }
+.directory-list .directory-record-open { padding-block: 20px; border-radius: 9px; }
+.directory-list .directory-record-main { gap: 5px; }
+.directory-list .directory-record-main strong { font-weight: 600; line-height: 1.4; }
+.directory-list .directory-record-main small { font-size: 12px; line-height: 1.6; }
+.directory-list .directory-record-manager { font-size: 13px; }
+.directory-list .directory-pagination { padding-top: 20px; }
+
+/* Search and filters share the same rhythm outside the shipment ledger. */
+:is(.directory-toolbar, .trips-toolbar) .shipment-search,
+:is(.overview-search, .team-search, .bank-search, .table-search):not(.shipments-workspace *) {
+  min-height: 44px;
+  border-radius: 12px;
+  border-color: var(--border);
+  background: var(--surface);
+  box-shadow: inset 0 1px 2px rgb(29 29 31 / 2%);
+}
+:is(.directory-toolbar, .trips-toolbar) .shipment-search:focus-within,
+:is(.overview-search, .team-search, .bank-search, .table-search):not(.shipments-workspace *):focus-within {
+  border-color: var(--accent);
+  outline: 2px solid rgb(23 102 71 / 22%);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.overview-page select, .bank-filters select, .work-toolbar .filter-select { border-radius: 11px; min-height: 42px; }
+.overview-page select { font-size: 13px; }
+.bank-filters select { border-color: var(--border); }
+
+/* Work spaces retain their established layouts, with clearer card hierarchy. */
+.work-page .work-toolbar, .work-page .work-calendar, .work-page .work-lane { border-radius: 17px; }
+.work-page .work-toolbar { box-shadow: 0 2px 4px rgb(29 29 31 / 2%); }
+.work-page .work-lane { border-color: rgb(29 29 31 / 7%); }
+.work-page .work-card { border-radius: 12px; box-shadow: 0 1px 3px rgb(29 29 31 / 4%); }
+.work-page .work-card strong { font-size: 14px; font-weight: 600; line-height: 1.45; }
+.work-page .work-card p { color: var(--muted); }
+.work-page .work-company-list .work-card { border-radius: 0; box-shadow: none; }
+.work-page .work-company-list .work-card:last-child { border-radius: 0 0 17px 17px; }
+.work-page .work-lane > header { padding: 17px 15px 14px; }
+.work-page .work-cards { padding: 0 10px 11px; }
+.work-page :is(.work-weekday, .work-calendar-legend) { color: var(--muted); }
+.work-page .work-day.outside > span { color: var(--muted); }
+.work-page .work-day.today > span { background: #3d669a; }
+
+/* Native dialogs keep their existing focus trap, close behaviour and scrolling. */
+.detail-dialog:not(.directory-editor, .directory-delete-dialog),
+.account-delete-dialog {
+  border-radius: 24px;
+  border-color: rgb(29 29 31 / 10%);
+  box-shadow: 0 24px 80px rgb(29 29 31 / 20%), 0 0 0 1px rgb(255 255 255 / 60%);
+}
+.detail-dialog:not(.directory-editor, .directory-delete-dialog)::backdrop,
+.account-delete-dialog::backdrop,
+.bank-payment-panel::backdrop {
+  background: rgb(29 29 31 / 32%);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+.detail-dialog:not(.directory-editor, .directory-delete-dialog) .dialog-inner { padding: 30px; }
+.detail-dialog .dialog-heading > .icon-button,
+.work-editor-heading > .icon-button,
+.bank-panel-header > .icon-button { background: #F5F5F7; border: 1px solid rgb(29 29 31 / 5%); border-radius: 50%; }
+.detail-dialog .dialog-heading > .icon-button:hover,
+.work-editor-heading > .icon-button:hover,
+.bank-panel-header > .icon-button:hover { background: #EDEDF1; }
+.detail-dialog .info-item > span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.detail-dialog .info-item > strong { color: #343439; font-size: 14px; line-height: 1.6; }
+.detail-dialog .about-grid { gap: 23px 26px; }
+.detail-dialog .dialog-tabs { gap: 18px; }
+.detail-dialog .dialog-tabs button { font-size: 13px; font-weight: 600; min-height: 44px; }
+.detail-dialog .dialog-records > button { padding-block: 17px; }
+.work-editor .work-editor-heading { padding: 23px 26px; }
+.work-editor .work-editor-heading h2 { font-size: 20px; letter-spacing: -.02em; }
+.work-editor .work-editor-body { padding: 24px 26px; gap: 20px; }
+.work-editor .work-editor-footer { padding: 18px 26px; }
+.work-editor .work-field > span { font-size: 13px; }
+.work-editor .work-field input, .work-editor .work-field select, .work-editor .work-field textarea { border-radius: 11px; padding-inline: 12px; }
+.work-editor .work-field :is(input, select, textarea):focus-visible { border-color: var(--accent); outline: 2px solid rgb(23 102 71 / 22%); outline-offset: 2px; }
+.work-editor .work-editor-heading, .work-editor .work-editor-footer,
+.bank-payment-panel .bank-panel-header {
+  background: rgb(250 250 252 / 96%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+.bank-payment-panel .bank-panel-header h2 { font-weight: 650; letter-spacing: -.025em; }
+.toast { border: 1px solid rgb(255 255 255 / 15%); box-shadow: 0 8px 28px rgb(29 29 31 / 18%); }
+
+@media (max-width: 760px) {
+  .page-heading-compact { margin-bottom: 22px; }
+  .page-heading-compact h1 { font-size: 30px; }
+  :is(.directory-tabs, .payroll-tabs, .bank-source-tabs, .overview-ledger-tabs) { border-radius: 13px; }
+  .directory-tabs { width: 100%; margin-bottom: 18px; gap: 4px; }
+  .directory-tabs > button { flex: 1 1 auto; padding-inline: 12px; min-height: 40px; }
+  :is(.overview-card, .trip-card, .directory-list, .account-panel, .bank-ledger, .team-stats, .team-role-list, .team-role-detail, .team-source-panel, .china-page, .archive-ledger, .bank-card) { border-radius: 17px; }
+  .directory-list .directory-record { padding-inline: 0; }
+  .directory-list .directory-record-open { padding-block: 17px; }
+  .overview-company-button { padding-block: 17px; }
+  .overview-company-identity > strong { font-size: 13px; }
+  .overview-company-identity > small { font-size: 11px; }
+  .detail-dialog:not(.directory-editor, .directory-delete-dialog), .account-delete-dialog { border-radius: 20px; }
+  .detail-dialog:not(.directory-editor, .directory-delete-dialog) .dialog-inner { padding: 22px; }
+  .work-editor .work-editor-heading, .work-editor .work-editor-body { padding: 20px; }
+  .work-editor .work-editor-footer { padding: 16px 20px; }
+  .detail-dialog .dialog-tabs { gap: 12px; }
+  .detail-dialog .dialog-tabs button { font-size: 12px; }
+}
+@media (max-width: 390px) {
+  .directory-tabs > button { font-size: 12px; padding-inline: 10px; }
+  .bank-source-tabs > button { padding-inline: 10px; font-size: 12px; }
+  .detail-dialog:not(.directory-editor, .directory-delete-dialog) .dialog-inner { padding: 18px; }
+  .work-editor .work-editor-heading, .work-editor .work-editor-body { padding: 17px; }
+  .work-editor .work-editor-footer { padding: 14px 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar .nav-item, .button:not(:where(.shipments-workspace *, .shipment-grid *)), .bank-card { transition: none; }
+  .bank-card:active { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell .sidebar,
+  .work-editor .work-editor-heading, .work-editor .work-editor-footer,
+  .bank-payment-panel .bank-panel-header { background: #FAFAFC; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .detail-dialog:not(.directory-editor, .directory-delete-dialog)::backdrop,
+  .account-delete-dialog::backdrop,
+  .bank-payment-panel::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  .app-shell .sidebar { background: #FAFAFC; border-color: var(--border); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .work-editor .work-editor-heading, .work-editor .work-editor-footer,
+  .bank-payment-panel .bank-panel-header { background: #FAFAFC; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  :is(.directory-tabs, .payroll-tabs, .bank-source-tabs, .overview-ledger-tabs) > button:is(.primary, [aria-selected="true"], [aria-pressed="true"]) { border-color: var(--accent); box-shadow: none; }
+  :is(.directory-toolbar, .trips-toolbar) .shipment-search:focus-within,
+  :is(.overview-search, .team-search, .bank-search, .table-search):not(.shipments-workspace *):focus-within,
+  .work-editor .work-field :is(input, select, textarea):focus-visible { outline-color: var(--accent); }
+}

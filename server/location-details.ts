@@ -1,7 +1,10 @@
 import { ApiError } from './api-error';
+import { validPhone } from './fleet-directory';
+import type { Company, ShipmentAddress } from '../web/src/model';
 
-export const locationDetailKeys = ['address', 'mapUrl', 'latitude', 'longitude'] as const;
-export function locationDetails(input: Record<string, unknown>) {
+export const loadingRoleKeys = ['loadingActorCompanyId', 'infrastructureOwnerCompanyId'] as const;
+export const locationDetailKeys = ['address', 'mapUrl', 'latitude', 'longitude', 'receiverName', 'receiverPhone', ...loadingRoleKeys] as const;
+export function locationDetails(input: Record<string, unknown>, selection?: { companies: readonly Company[]; previous?: ShipmentAddress }) {
   const result: Partial<Record<typeof locationDetailKeys[number], string>> = {};
   for (const key of locationDetailKeys) {
     const raw = input[key];
@@ -19,5 +22,11 @@ export function locationDetails(input: Record<string, unknown>) {
     if (result[key] && (!/^[+-]?\d+(?:\.\d+)?$/.test(result[key]!) || Math.abs(Number(result[key])) > limit)) throw new ApiError(400, 'Проверьте координаты площадки.');
   }
   if (!!result.latitude !== !!result.longitude) throw new ApiError(400, 'Укажите обе координаты площадки.');
+  if (result.receiverPhone && !validPhone(result.receiverPhone)) throw new ApiError(400, 'Проверьте телефон приёмщика площадки.');
+  if (selection) for (const key of loadingRoleKeys) {
+    const id = result[key]; if (!id) continue;
+    const company = selection.companies.find(row => row.id === id);
+    if (!company || company.directoryArchived && selection.previous?.[key] !== id) throw new ApiError(400, 'Выберите действующую компанию из справочника для погрузчика и владельца площадки.');
+  }
   return result;
 }

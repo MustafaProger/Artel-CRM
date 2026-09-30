@@ -1,157 +1,177 @@
-// Browser -> authenticated HTTP -> real OperationsStore / SabyClient -> injected synthetic provider.
-// No working records, credentials, Saby connection or bank requests.
+// Browser -> real authenticated HTTP/workflow/store/client -> synthetic Saby transport.
+// No production data. Reported signatures below are synthetic bytes, not valid CMS signatures.
 import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { OperationsStore } from '../server/operations-store.ts';
 import { SabyClient } from '../server/saby-client.ts';
-import { emptyDirectories } from '../server/directory-operations.ts';
-import { carrier, sender, syntheticEtrnFixture } from '../tests/helpers/etrn-fixture.ts';
+import { integrationRuntime, integrationApi, integrationConfig, integrationSettings } from '../tests/helpers/trip-saby-integration.ts';
 import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
-import { writeTripsQaSnapshot, startTripsQaServer } from './qa-trips-runtime.mjs';
+import { startTripsQaServer } from './qa-trips-runtime.mjs';
 
-const root = resolve(import.meta.dirname, '..'), temporary = await mkdtemp(resolve(tmpdir(), 'artel-etrn-runtime-ui-'));
-const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'store'), output = resolve(root, 'qa/trips-etrn-runtime-2026-09-29');
-await mkdir(output, { recursive: true });
-const source = await writeTripsQaSnapshot(snapshotDirectory), store = new OperationsStore(operationsDirectory);
-const fixture = syntheticEtrnFixture();
-const profile = { ...fixture.profile, recipient: { ...fixture.profile.recipient, inn: '7728168971', kpp: '772801001' }, consignorPhone: sender.phone, carrierPhone: carrier.phone };
-const config = { login: 'synthetic-login', password: 'synthetic-password', accountNumber: 'synthetic-customer-account', carrierAccountNumber: 'synthetic-carrier-account', customer: { ...sender, phone: '' }, carrier: { ...carrier, phone: '' } };
-const company = (id, name, role, details = {}) => ({ id, name, roles: [role], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [], ...details });
-await store.mutate(source, data => {
-  data.sourceOperationsCleared = true;
-  data.companies = [company('supplier-synthetic', 'Синтетический склад', 'supplier'), company('customer-synthetic', profile.recipient.name, 'customer', profile.recipient)];
-  data.directories = {
-    ...emptyDirectories(), fleetSeedApplied: true,
-    managers: [{ id: 'qa-manager', name: 'Синтетический сотрудник' }], products: [{ id: 'product-synthetic', name: 'Синтетический продукт' }], paymentForms: [{ id: 'qa-payment', name: 'б/нал' }],
-    drivers: [{ ...fixture.source.directories.drivers[0], vehicleId: 'vehicle-synthetic' }], vehicles: fixture.source.directories.vehicles,
-    addresses: [{ id: 'qa-loading', companyId: 'supplier-synthetic', kind: 'loading', name: 'Синтетическая погрузка', address: 'Синтетическая площадка погрузки' }, { id: 'qa-unloading', companyId: 'customer-synthetic', kind: 'delivery', name: 'Синтетическая доставка', address: 'Синтетическая площадка получателя' }],
-    customerManagers: [{ companyId: 'customer-synthetic', managerId: 'qa-manager' }],
-  };
-  return { result: undefined, changed: true };
-});
-const report = { fixtureOnly: true, workingStoreAccessed: false, realSabyRequests: 0, bankRequests: 0, checks: [], errors: [], unexpectedRequests: [], screenshots: [], providerMethods: {} };
-const check = name => { report.checks.push(name); console.log('PASS', name); };
-const calls = [], documents = new Map(), sessions = new Map(), downloaded = [];
-let loseNextWrite = false;
-const bytes = Buffer.from('<synthetic-etrn>Authenticated artifact</synthetic-etrn>', 'utf8');
-const provider = async (url, init) => {
-  const address = String(url), session = new Headers(init.headers).get('X-SBISSessionID');
-  if (init.method === 'GET') {
-    assert.equal(sessions.get(session), 'customer'); assert.ok(address.startsWith('https://disk.saby.ru/synthetic/')); downloaded.push(address);
-    return new Response(bytes, { headers: { 'content-type': 'application/xml' } });
+const root=resolve(import.meta.dirname,'..'),output=resolve(root,'qa/trips-etrn-runtime-2026-09-30');
+await mkdir(output,{recursive:true});
+const rt=await integrationRuntime(),transport=integrationApi(),config=integrationConfig(),blobs=new Map(),downloads=[];
+const previousSettings=process.env.SABY_AUTOFILL_PROFILE_JSON;
+process.env.SABY_AUTOFILL_PROFILE_JSON=JSON.stringify(integrationSettings);
+const report={fixtureOnly:true,workingStoreAccessed:false,realSabyRequests:0,bankRequests:0,mockedHttpResponses:false,delayedWorkflowResponses:0,syntheticProvider:true,checks:[],errors:[],unexpectedRequests:[],screenshots:[],providerMethods:{}};
+const check=name=>{report.checks.push(name);console.log('PASS',name);};
+let enteredReservation,releaseReservation,pauseReservation=true;
+const reservationStarted=new Promise(resolve=>{enteredReservation=resolve;});
+const reservationGate=new Promise(resolve=>{releaseReservation=resolve;});
+const provider=async(url,init)=>{
+  if(init?.method==='GET'){
+    assert.equal(new Headers(init.headers).get('X-SBISSessionID'),config.sessionId);
+    const address=String(url);downloads.push(address);
+    if(blobs.has(address))return new Response(blobs.get(address));
+    assert.equal(address,'https://disk.saby.ru/carrier.xml');return transport.send(url,init);
   }
-  assert.ok(['https://online.sbis.ru/auth/service/', 'https://online.sbis.ru/service/?srv=1', 'https://tms.saby.ru/service/'].includes(address));
-  const rpc = JSON.parse(init.body), result = body => new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: body }));
-  calls.push({ method: rpc.method, account: rpc.params.Параметр?.НомерАккаунта });
-  if (rpc.method === 'СБИС.Аутентифицировать') {
-    assert.equal(rpc.params.Параметр.Логин, config.login); assert.equal(rpc.params.Параметр.Пароль, config.password);
-    const role = rpc.params.Параметр.НомерАккаунта === config.accountNumber ? 'customer' : rpc.params.Параметр.НомерАккаунта === config.carrierAccountNumber ? 'carrier' : null;
-    assert.ok(role); const token = `synthetic-${role}-${sessions.size}`; sessions.set(token, role); return result(token);
+  const rpc=JSON.parse(String(init?.body));
+  if(pauseReservation&&rpc.method==='СБИС.ЗаписатьДокумент'&&!rpc.params.Документ.Идентификатор){pauseReservation=false;enteredReservation();await reservationGate;}
+  const result=await transport.send(url,init);
+  if(rpc.method==='СБИС.ЗаписатьДокумент'&&rpc.params.Документ.Вложение){
+    const document=rpc.params.Документ;blobs.set(`https://disk.saby.ru/${document.Идентификатор}.xml`,Buffer.from(document.Вложение[0].Файл.ДвоичныеДанные,'base64'));
   }
-  const role = sessions.get(session); assert.ok(role);
-  if (rpc.method === 'СБИС.СписокНашихОрганизаций') {
-    const organization = config[role]; assert.deepEqual(rpc.params.Фильтр.НашаОрганизация.СвЮЛ, { ИНН: organization.inn, КПП: organization.kpp });
-    return result({ НашаОрганизация: [{ СвЮЛ: { ИНН: organization.inn, КПП: organization.kpp }, ДокументооборотПодключен: 'Да' }] });
-  }
-  assert.equal(role, 'customer');
-  if (rpc.method === 'СБИС.ЗаписатьДокумент') {
-    const sent = rpc.params.Документ, xml = new TextDecoder('windows-1251').decode(Buffer.from(sent.Вложение[0].Файл.ДвоичныеДанные, 'base64'));
-    assert.equal(sent.Тип, 'ConsignmentNote'); assert.match(xml, /КНД="1110339"/); assert.doesNotMatch(xml, /1110361|Подпись|NEVER-COPY/);
-    const id = `synthetic-etrn-${documents.size + 1}`;
-    const document = { ...sent, Идентификатор: id, Редакция: [{ Идентификатор: `${id}-revision`, Актуален: 'Да' }], СсылкаДляНашаОрганизация: `https://online.saby.ru/document/${id}`, Состояние: { Название: 'Черновик' }, Стороны: { Отправитель: sent.Грузоотправитель, Получатель: sent.Грузополучатель, Перевозчик: sent.ТранспортнаяКомпания }, Вложение: [{ Идентификатор: `${id}-file`, Подтип: '1110339', ВерсияФормата: '5.01', Файл: { Имя: 'Синтетическая ЭТрН.xml', Ссылка: `https://disk.saby.ru/synthetic/${id}.xml` } }], ТекущиеЭтапы: [{ Действие: [{ Название: 'Подписать и отправить' }] }] };
-    documents.set(id, document);
-    if (loseNextWrite) { loseNextWrite = false; throw new Error('Synthetic lost response'); }
-    return result(document);
-  }
-  if (rpc.method === 'СБИС.ПрочитатьДокумент') { assert.ok(documents.has(rpc.params.Документ.Идентификатор)); return result(documents.get(rpc.params.Документ.Идентификатор)); }
-  if (rpc.method === 'СБИС.СписокДокументов') {
-    assert.equal(rpc.params.Фильтр.Тип, 'ConsignmentNote');
-    return result({ Документ: [...documents.values()].filter(document => document.Номер === rpc.params.Фильтр.Маска), Навигация: { ЕстьЕще: 'Нет' } });
-  }
-  throw new Error(`Unexpected synthetic provider method: ${rpc.method}`);
+  return result;
 };
-const count = method => calls.filter(call => call.method === method).length;
-let runtime, browser, page;
-try {
-  runtime = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient: new SabyClient(config, provider) });
-  const { base } = runtime, { cookie } = await bootstrapQaAuth(base);
-  browser = await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'Europe/Moscow' });
-  await context.route('**/*', route => {
-    if (new URL(route.request().url()).origin === base) return route.continue();
-    report.unexpectedRequests.push(route.request().url()); return route.abort();
+const uploads=type=>transport.writes(type).filter(call=>call.params.Документ.Вложение).map(call=>call.params.Документ);
+const decode=document=>new TextDecoder('windows-1251').decode(Buffer.from(document.Вложение[0].Файл.ДвоичныеДанные,'base64'));
+let runtime,browser,page,releaseStaleRead=()=>{};
+try{
+  runtime=await startTripsQaServer({root,snapshotDirectory:rt.snapshotDirectory,operationsDirectory:resolve(rt.directory,'store'),sabyClient:new SabyClient(config,provider)});
+  const {base}=runtime,{cookie}=await bootstrapQaAuth(base);
+  browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  const context=await browser.newContext({viewport:{width:1440,height:1050},reducedMotion:'reduce',serviceWorkers:'block',timezoneId:'Europe/Moscow'});
+  await context.route('**/*',route=>{
+    if(new URL(route.request().url()).origin===base)return route.continue();
+    report.unexpectedRequests.push(route.request().url());return route.abort();
   });
-  await authenticateContext(context, base, cookie);
-  const api = async (path, method = 'GET', data) => {
-    const response = await context.request.fetch(base + path, { method, ...(data === undefined ? {} : { data }) });
-    assert.ok(response.ok(), `${method} ${path}: ${response.status()} ${await response.text()}`); return response.json();
+  await authenticateContext(context,base,cookie);
+  const api=async(path,method='GET',data)=>{
+    const response=await context.request.fetch(base+path,{method,...(data===undefined?{}:{data})});
+    assert.ok(response.ok(),`${method} ${path}: ${response.status()} ${await response.text()}`);return response.json();
   };
-  const tripBody = note => ({ idempotencyKey: randomUUID(), fields: { organization_id: 'artel', date: '2025-04-01', supplier_id: 'supplier-synthetic', product_id: 'product-synthetic', driver_id: 'driver-synthetic', vehicle_id: 'vehicle-synthetic', quantity_tonnes: '5.123125', purchase_price_unspecified_unit: '50000', loading_address_id: 'qa-loading', loading_planned_at: '2025-04-01T08:15', trip_notes: note }, customers: [{ fields: { customer_id: 'customer-synthetic', payment_form_id: 'qa-payment', manager_id: 'qa-manager', quantity_litres: '7125', sale_price_per_litre: '70', transport_amount: '1000', unloading_address_id: 'qa-unloading', unloading_planned_at: '2025-04-01T14:00' } }] });
-  const trip = (await api('/api/shipment-trips', 'POST', tripBody('Основная синтетическая ЭТрН'))).trip;
-  const shipmentId = trip.customers[0].id, endpoint = `/api/shipment-trips/${trip.id}/etrn`;
-  const initial = await api(endpoint); assert.equal(initial.configured, true); assert.equal(initial.deliveries[0].profile.confirmed, false); assert.ok(initial.deliveries[0].blockers.length);
-  assert.equal(initial.deliveries[0].profile.recipient.inn, profile.recipient.inn); assert.equal(initial.deliveries[0].profile.loading.arrivedAt, ''); assert.equal(initial.deliveries[0].profile.deliveryMassTonnes, '');
-  assert.equal(calls.length, 0);
-  const prepared = await api(endpoint, 'PUT', { shipmentId, profile }); assert.deepEqual(prepared.deliveries[0].blockers, []);
-  page = await context.newPage(); page.on('pageerror', reason => report.errors.push(reason.message));
-  await page.goto(base + '/#trips'); await page.getByRole('button', { name: 'Saby', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'ЭТрН в Saby', exact: true }), delivery = page.getByTestId('etrn-delivery');
-  await expect(delivery).toContainText('Данные проверены'); await expect(delivery.getByLabel('Телефон грузоотправителя', { exact: true })).toHaveValue(sender.phone);
-  await delivery.getByLabel('Номер заявки на перевозку', { exact: true }).fill('SYNTHETIC-UI-ORDER');
-  await expect(delivery.getByRole('checkbox', { name: /Данные проверены/ })).not.toBeChecked();
-  await expect(delivery.getByRole('button', { name: 'Создать ЭТрН в Saby', exact: true })).toBeDisabled();
-  await delivery.getByRole('checkbox', { name: /Данные проверены/ }).check(); await delivery.getByRole('button', { name: 'Сохранить и проверить', exact: true }).click();
-  const submit = delivery.getByRole('button', { name: 'Создать ЭТрН в Saby', exact: true }); await expect(submit).toBeEnabled();
-  assert.equal((await api(endpoint)).deliveries[0].profile.order.number, 'SYNTHETIC-UI-ORDER');
-  const xmlResponse = await context.request.get(base + `${endpoint}/xml/${shipmentId}`); assert.equal(xmlResponse.status(), 200); assert.match(new TextDecoder('windows-1251').decode(await xmlResponse.body()), /КНД="1110339"/);
-  check('Authenticated trip GET derives only known directory facts; ordinary UI edits save/validate a full per-delivery profile and download a generated sender XML through the real API');
-  const accounting = (await store.read(source)).shipments;
-  await submit.evaluate(button => { button.click(); button.click(); }); await expect(delivery).toContainText('Создано в Saby');
-  assert.equal(count('СБИС.ЗаписатьДокумент'), 1); assert.equal(count('СБИС.ПрочитатьДокумент'), 1);
-  const confirmed = await api(endpoint), document = confirmed.deliveries[0].document;
-  assert.equal(document.status, 'draft'); assert.ok(document.id); assert.equal(document.signatureStatus, 'not_signed'); assert.equal(document.gisStatus, null);
-  await expect(delivery.getByRole('link', { name: 'Открыть для подписания в Saby' })).toBeVisible(); await expect(delivery).toContainText('Подпись не получена'); await expect(delivery).toContainText('Подтверждение не получено');
-  assert.deepEqual((await store.read(source)).shipments, accounting);
-  const beforeRepeat = calls.length;
-  assert.equal((await api(endpoint + '/submit', 'POST', { shipmentId })).deliveries[0].document.id, document.id); assert.equal(calls.length, beforeRepeat);
-  check('Browser double click creates one ConsignmentNote through two account sessions, separately reads it, persists the link and makes repeated submission idempotent without accounting changes');
-  const fileLink = delivery.getByRole('link', { name: 'Синтетическая ЭТрН.xml', exact: true });
-  const fileUrl = await fileLink.getAttribute('href'); const file = await context.request.get(base + fileUrl); assert.equal(file.status(), 200); assert.ok((await file.body()).equals(bytes));
-  const downloadCount = downloaded.length; assert.ok((await (await context.request.get(base + fileUrl)).body()).equals(bytes)); assert.equal(downloaded.length, downloadCount);
-  const afterFile = await api(endpoint); assert.equal(afterFile.deliveries[0].document.files[0].size, bytes.length); assert.match(afterFile.deliveries[0].document.files[0].sha256, /^[a-f0-9]{64}$/);
-  check('Artifact links download with CRM authorization; immutable bytes and checksum persist privately, and a repeat download is served without another provider request');
-  const remote = documents.get(document.id); remote.Состояние = { Название: 'Ожидается действие перевозчика' }; remote.Вложение[0].Подпись = [{ Сертификат: { Отпечаток: 'SYNTHETIC-REPORTED-ONLY' } }]; remote.ГИС_УИД = 'SYNTHETIC-GIS-ID'; remote.ТекущиеЭтапы = [{ Действие: [{ Название: 'Открыть' }] }];
-  await delivery.getByRole('button', { name: 'Обновить из Saby', exact: true }).click(); await expect(delivery).toContainText('Saby сообщает о наличии подписи'); await expect(delivery).toContainText('Saby вернул идентификатор ГИС ЭПД'); await expect(delivery).toContainText('Ожидается действие перевозчика');
-  assert.equal(count('СБИС.ЗаписатьДокумент'), 1);
-  check('Explicit read-back updates remote state, reported signature and GIS evidence separately without asserting local signature validation or full participant completion');
-  runtime.replaceMiddleware(new SabyClient(config, provider)); await page.reload(); await page.getByRole('button', { name: 'Saby', exact: true }).click();
-  await expect(delivery).toContainText('Saby сообщает о наличии подписи'); assert.equal((await api(endpoint)).deliveries[0].document.id, document.id);
-  const patch = { fields: trip.fields, customers: trip.customers.map(({ id, fields }) => ({ id, fields })), versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) };
-  assert.equal((await context.request.patch(base + `/api/shipment-trips/${trip.id}`, { data: patch })).status(), 409);
-  assert.equal((await context.request.delete(base + `/api/shipment-trips/${trip.id}`, { data: { versions: patch.versions } })).status(), 409);
-  check('Fresh middleware/store and browser reload preserve all document evidence; transmitted trip editing/deletion is rejected by the server');
-  const retryTrip = (await api('/api/shipment-trips', 'POST', tripBody('Потерянный ответ ЭТрН'))).trip, retryId = retryTrip.customers[0].id, retryEndpoint = `/api/shipment-trips/${retryTrip.id}/etrn`;
-  await api(retryEndpoint, 'PUT', { shipmentId: retryId, profile }); loseNextWrite = true; await page.reload();
-  const retryCard = page.getByTestId('trip-card').filter({ hasText: 'Потерянный ответ ЭТрН' }); await retryCard.getByRole('button', { name: 'Saby', exact: true }).click();
-  await retryCard.getByRole('button', { name: 'Создать ЭТрН в Saby', exact: true }).click(); await expect(retryCard).toContainText('Результат требует сверки');
-  assert.equal(count('СБИС.ЗаписатьДокумент'), 2); await retryCard.getByRole('button', { name: 'Сверить с Saby', exact: true }).click(); await expect(retryCard).toContainText('Создано в Saby');
-  assert.equal(count('СБИС.ЗаписатьДокумент'), 2); assert.equal(count('СБИС.СписокДокументов'), 1); assert.equal((await api(retryEndpoint)).deliveries[0].document.id, 'synthetic-etrn-2');
-  check('A lost write response remains unknown; browser reconciliation finds and reads the existing ConsignmentNote with zero duplicate writes');
-  const persisted = await readFile(resolve(operationsDirectory, 'operations.json'), 'utf8'), publicResponse = JSON.stringify(await api(endpoint));
-  for (const secret of [config.login, config.password, config.accountNumber, config.carrierAccountNumber, ...sessions.keys()]) { assert.ok(!persisted.includes(secret)); assert.ok(!publicResponse.includes(secret)); }
-  assert.ok(!publicResponse.includes('ДвоичныеДанные')); assert.ok(!publicResponse.includes('NEVER-COPY')); assert.deepEqual(report.errors, []); assert.deepEqual(report.unexpectedRequests, []);
-  await page.setViewportSize({ width: 390, height: 1000 }); await retryCard.scrollIntoViewIfNeeded();
-  const path = resolve(output, 'reconciled-etrn-mobile.png'); await page.screenshot({ path, fullPage: false }); report.screenshots.push(path);
-  check('No real provider/network calls, account secrets, sessions or file bytes escape into the browser response or persisted connector records');
-  void panel;
-} catch (reason) {
-  report.failure = reason.message; await page?.screenshot({ path: resolve(output, 'failure.png'), fullPage: false }).catch(() => {}); throw reason;
-} finally {
-  for (const call of calls) report.providerMethods[call.method] = (report.providerMethods[call.method] ?? 0) + 1;
-  await browser?.close(); await runtime?.server.close(); await rm(temporary, { recursive: true, force: true });
-  await writeFile(resolve(output, 'browser.json'), JSON.stringify(report, null, 2));
+  const workflowPath=`/api/shipment-trips/${rt.tripId}/saby-workflow`,etrnPath=`/api/shipment-trips/${rt.tripId}/etrn`;
+  const ready=await api(workflowPath);assert.equal(ready.ready,true,ready.blockers.join(' '));assert.equal(ready.phase,'preparation');assert.equal(transport.calls.length,0);
+  const initialData=await rt.store.read(rt.source),accounting=structuredClone(initialData.shipments),recipientInn=initialData.companies.find(row=>row.id==='customer').inn;
+  page=await context.newPage();await page.clock.install();page.on('pageerror',reason=>report.errors.push(reason.message));
+  const shot=async name=>{const path=resolve(output,`${name}.png`);await page.screenshot({path,fullPage:true});report.screenshots.push(path);};
+  await page.goto(base+'/#trips');await page.getByRole('button',{name:'Изменить рейс',exact:true}).click();
+  const tripEditor=page.getByRole('dialog');await expect(tripEditor.getByRole('combobox',{name:'Водитель *',exact:true})).toBeEnabled();await expect(tripEditor.getByRole('combobox',{name:'Водитель *',exact:true})).not.toHaveValue('');await expect(tripEditor.getByRole('combobox',{name:/^Перевозчик/})).toHaveCount(0);await expect(tripEditor.getByRole('combobox',{name:'Автомобиль *',exact:true})).toBeEnabled();
+  await tripEditor.getByRole('button',{name:'Отмена',exact:true}).click();await expect(tripEditor).toHaveCount(0);
+  await page.getByRole('button',{name:'Saby',exact:true}).click();
+  const panel=page.getByRole('region',{name:'Документы рейса в Saby',exact:true}),send=panel.getByRole('button',{name:'Создать заявку в Saby',exact:true});
+  await expect(send).toBeEnabled();await expect(send).toHaveCount(1);assert.equal(transport.calls.length,0);
+  await send.evaluate(button=>{button.click();button.click();});await reservationStarted;await expect(send).toBeDisabled();releaseReservation();
+  await expect(panel).toContainText('АРТЕЛЬ · подпись и отправка');await expect(panel.getByRole('heading',{name:'№ 41',exact:true})).toBeVisible();
+  assert.equal(transport.reserves('TransportOrder').length,1);assert.equal(transport.writes('TransportOrder').length,2);assert.equal(transport.writes('ConsignmentNote').length,0);
+  assert.match(decode(uploads('TransportOrder')[0]),/КНД="1110361"/);assert.match(decode(uploads('TransportOrder')[0]),/Точка только общей заявки/);
+  assert.equal((await api(workflowPath)).phase,'awaiting_carrier');await expect(panel.getByRole('heading',{name:'Фактическая погрузка'})).toHaveCount(0);
+  check('One browser action reserves one order number and uploads one whole-trip order; double-click is safe and no CN precedes carrier acceptance');
+
+  await expect(panel).toHaveAttribute('aria-busy','false');
+  const beforePoll=transport.calls.length,postRequests=[],readRequests=[];
+  page.on('request',request=>{if(request.url().endsWith(workflowPath)){if(request.method()==='POST')postRequests.push(request.url());if(request.method()==='GET')readRequests.push(request.url());}});
+  await page.clock.fastForward(60001);
+  await expect.poll(()=>readRequests.length).toBe(1);
+  await expect.poll(async()=>await panel.getAttribute('aria-busy')).toBe('false');
+  await page.waitForTimeout(100);assert.equal(postRequests.length,0);assert.equal(transport.calls.length,beforePoll);
+  assert.equal((await api(workflowPath)).status,'not_sent');
+  check('Minute browser polling only reads durable state, never POSTs or mislabels a draft as sent');
+
+  // Hold the real pre-confirmation GET response while the manual POST advances the workflow.
+  // Only delivery timing changes: the delayed response body comes from the authenticated API.
+  let staleWorkflow=null,delayNextRead=true;
+  const staleReadGate=new Promise(resolve=>{releaseStaleRead=resolve;});
+  const workflowUrl=base+workflowPath;
+  const delayWorkflowRead=async route=>{
+    if(route.request().method()!=='GET'||!delayNextRead)return route.fallback();
+    delayNextRead=false;
+    const response=await route.fetch();staleWorkflow=await response.json();
+    await staleReadGate;
+    await route.fulfill({response});report.delayedWorkflowResponses++;
+  };
+  await page.route(workflowUrl,delayWorkflowRead);
+  const delayedResponse=page.waitForResponse(response=>response.url()===workflowUrl&&response.request().method()==='GET');
+  void delayedResponse.catch(()=>{}); // Cleanup may close the page before a failed precondition releases the response.
+  await page.clock.fastForward(60001);
+  await expect.poll(()=>staleWorkflow?.phase).toBe('awaiting_carrier');
+  assert.equal(staleWorkflow.carrierConfirmed,false);
+  const postsBeforeAcceptance=postRequests.length;
+  transport.accept();await panel.getByRole('button',{name:'Обновить из Saby',exact:true}).click();
+  await expect(panel.getByRole('heading',{name:'Фактическая погрузка',exact:true})).toBeVisible();
+  await expect(panel).toHaveAttribute('aria-busy','false');
+  assert.equal(postRequests.length,postsBeforeAcceptance+1);
+  assert.equal((await api(workflowPath)).phase,'awaiting_loading');assert.equal(transport.writes('ConsignmentNote').length,0);
+  releaseStaleRead();await(await delayedResponse).finished();
+  // Flush response parsing and the next render frames before asserting the accepted UI survives.
+  await page.clock.runFor(100);
+  await expect(panel.locator('.workflow-current strong')).toHaveText('Заявка подтверждена · нужны факты погрузки');
+  await expect(panel.getByRole('heading',{name:'Фактическая погрузка',exact:true})).toBeVisible();
+  await expect(panel.locator('.etrn-loading-facts')).toHaveCount(1);
+  await expect(panel).toHaveAttribute('aria-busy','false');
+  assert.equal(report.delayedWorkflowResponses,1);
+  assert.equal(postRequests.length,postsBeforeAcceptance+1);
+  await page.unroute(workflowUrl,delayWorkflowRead);
+  check('A delayed pre-confirmation GET cannot overwrite the manual POST acceptance or hide the actual-loading form');
+  const form=panel.locator('.etrn-loading-facts');
+  await expect(form.getByLabel('Прибытие на погрузку · Москва',{exact:true})).toBeEmpty();await expect(form.getByLabel('Убытие с погрузки · Москва',{exact:true})).toBeEmpty();
+  for(const field of await form.getByLabel('Фактическая масса груза, т',{exact:true}).all())await expect(field).toBeEmpty();
+  await expect(form.getByRole('button',{name:'Сохранить погрузку и продолжить',exact:true})).toBeDisabled();
+  for(const width of [1440,390]){await page.setViewportSize({width,height:1050});assert.ok(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth+1));await shot(`awaiting-actual-loading-${width}`);}
+  const facts=rt.facts();await form.getByLabel('Прибытие на погрузку · Москва',{exact:true}).fill(facts.arrivedAt);await form.getByLabel('Убытие с погрузки · Москва',{exact:true}).fill(facts.departedAt);
+  for(const [index,row] of rt.trip.customers.entries()){
+    const value=facts.deliveries[row.id],delivery=form.locator('fieldset').nth(index);
+    await delivery.getByLabel('Фактическая масса груза, т',{exact:true}).fill(value.grossMassTonnes);await delivery.getByLabel('Способ определения массы').selectOption(value.massMethod);
+  }
+  await form.getByRole('checkbox',{name:'Подтверждаю фактические сведения погрузки всего рейса'}).check();await form.getByRole('button',{name:'Сохранить погрузку и продолжить',exact:true}).click();
+  await expect(panel).toContainText('ЭТрН созданы · ожидают обработки');await expect(panel.locator('.etrn-delivery')).toHaveCount(2);
+  const completed=await api(workflowPath);assert.equal(completed.phase,'completed');assert.equal(completed.order.number,'41');
+  assert.equal(transport.reserves('ConsignmentNote').length,2);assert.equal(transport.writes('ConsignmentNote').length,4);
+  const cnUploads=uploads('ConsignmentNote');assert.deepEqual(cnUploads.map(row=>row.Номер),['100','101']);assert.equal(new Set(cnUploads.map(row=>row.Идентификатор)).size,2);
+  for(const [index,document] of cnUploads.entries()){
+    const xml=decode(document);assert.match(xml,new RegExp(`<СвИП ИННФЛ="${recipientInn}"`));assert.match(xml,/НомЗак="41"/);assert.doesNotMatch(xml,/Точка только общей заявки|Собственная остановка/);
+    assert.match(xml,new RegExp(`Объем="${index?'6':'8'}"`));assert.match(xml,new RegExp(`МасБрутОтгр="${index?'5200':'7000'}"`));assert.equal(document.Грузополучатель.СвЮЛ,undefined);
+  }
+  const etrn=await api(etrnPath);assert.ok(etrn.deliveries.every(row=>row.document.signatureStatus==='not_signed'));assert.deepEqual((await rt.store.read(rt.source)).shipments,accounting);
+  check('A signed synthetic carrier title is verified via real HTTP; staff loading facts create two numbered IP CNs for repeated recipients, linked to the one order and excluding intermediate stops');
+
+  for(const [index,row] of etrn.deliveries.entries()){
+    const file=row.document.files.find(file=>file.extension==='xml');assert.ok(file);
+    const link=panel.locator('.etrn-delivery').nth(index).getByRole('link',{name:file.name,exact:true});await expect(link).toBeVisible();assert.equal(await link.getAttribute('href'),file.url);
+    assert.equal((await fetch(base+file.url)).status,401);
+    const response=await context.request.get(base+file.url);assert.equal(response.status(),200);const bytes=await response.body();assert.ok(bytes.equals(blobs.get(`https://disk.saby.ru/${row.document.id}.xml`)));
+    const count=downloads.length;assert.ok((await(await context.request.get(base+file.url)).body()).equals(bytes));assert.equal(downloads.length,count);
+    const refreshed=(await api(etrnPath)).deliveries[index].document.files.find(saved=>saved.id===file.id);assert.equal(refreshed.size,bytes.length);assert.equal(refreshed.sha256,createHash('sha256').update(bytes).digest('hex'));
+  }
+  check('Authenticated XML downloads match uploaded bytes, persist SHA-256, and use private cache on repeat; anonymous downloads are denied');
+
+  for(const row of etrn.deliveries){
+    const document=transport.docs.get(row.document.id),fileUrl=`https://disk.saby.ru/${row.document.id}.sig`;
+    document.Вложение[0].Подпись=[{Сертификат:{Отпечаток:'SYNTHETIC-REPORTED-ONLY'},Файл:{Имя:`${row.document.id}.sig`,Ссылка:fileUrl}}];document.ГИС_УИД=`SYNTHETIC-GIS-${row.document.id}`;document.Состояние={Название:'Синтетическое ожидание участника'};
+    blobs.set(fileUrl,Buffer.from(`Synthetic signature for ${row.document.id}; not a valid cryptographic signature`));
+  }
+  const writesBeforeRefresh=transport.writes().length;await panel.getByRole('button',{name:'Обновить из Saby',exact:true}).click();
+  await expect(panel.getByText(/Подпись: Saby сообщает о наличии подписи/)).toHaveCount(2);await expect(panel.getByText(/ГИС ЭПД: Saby вернул идентификатор/)).toHaveCount(2);assert.equal(transport.writes().length,writesBeforeRefresh);
+  const signed=await api(etrnPath);
+  for(const row of signed.deliveries){
+    assert.equal(row.document.signatureStatus,'reported_by_saby');const signature=row.document.files.find(file=>file.extension==='sig');assert.ok(signature);
+    const response=await context.request.get(base+signature.url);assert.equal(response.status(),200);assert.ok((await response.body()).equals(blobs.get(`https://disk.saby.ru/${row.document.id}.sig`)));
+  }
+  check('Global refresh reads both CNs and signature files; provider signature/GIS evidence remains separate from cryptographic verification or participant completion');
+
+  runtime.replaceMiddleware(new SabyClient(config,provider));await page.reload();await page.getByRole('button',{name:'Saby',exact:true}).click();await expect(panel.getByText(/Подпись: Saby сообщает о наличии подписи/)).toHaveCount(2);
+  const repeated=await api(workflowPath,'POST',{});assert.equal(repeated.phase,'completed');assert.equal(transport.writes().length,writesBeforeRefresh);assert.deepEqual((await api(etrnPath)).deliveries.map(row=>row.document.id),signed.deliveries.map(row=>row.document.id));
+  const edit={fields:rt.trip.fields,customers:rt.trip.customers.map(({id,fields})=>({id,fields})),versions:Object.fromEntries(rt.trip.customers.map(row=>[row.id,row.version]))};
+  assert.equal((await context.request.patch(base+`/api/shipment-trips/${rt.tripId}`,{data:edit})).status(),409);assert.equal((await context.request.delete(base+`/api/shipment-trips/${rt.tripId}`,{data:{versions:edit.versions}})).status(),409);
+  for(const width of [1440,390]){await page.setViewportSize({width,height:1050});assert.ok(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth+1));await shot(`created-cns-reported-signatures-${width}`);}
+  const persisted=await readFile(resolve(rt.directory,'store','operations.json'),'utf8'),publicResponse=JSON.stringify({workflow:await api(workflowPath),etrn:await api(etrnPath)});
+  assert.ok(!persisted.includes(config.sessionId));assert.ok(!publicResponse.includes(config.sessionId));assert.ok(!publicResponse.includes('https://disk.saby.ru/'));assert.ok(!publicResponse.includes('ДвоичныеДанные'));assert.deepEqual(report.errors,[]);assert.deepEqual(report.unexpectedRequests,[]);
+  check('Middleware/browser restart preserves IDs and evidence; repeats create no duplicates, sent trips reject edits/deletion, and credentials/vendor URLs stay private');
+}catch(reason){report.failure=reason.message;await page?.screenshot({path:resolve(output,'failure.png'),fullPage:false}).catch(()=>{});throw reason;}
+finally{
+  releaseReservation();releaseStaleRead();for(const call of transport.calls)report.providerMethods[call.method]=(report.providerMethods[call.method]??0)+1;
+  await browser?.close();await runtime?.server.close();await rt.close();if(previousSettings===undefined)delete process.env.SABY_AUTOFILL_PROFILE_JSON;else process.env.SABY_AUTOFILL_PROFILE_JSON=previousSettings;
+  await writeFile(resolve(output,'browser.json'),JSON.stringify(report,null,2));
 }

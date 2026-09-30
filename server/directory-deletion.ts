@@ -1,3 +1,4 @@
+import { deleteOilDepot, oilDepotRoleKeys } from './oil-depots';
 import type { Company, Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
@@ -20,6 +21,7 @@ export function companyRoleUsed(snapshot: Snapshot, company: Company, role: 'cus
 /** Called only inside the API storage transaction after its normal authorization check. */
 export function deleteDirectoryEntry(kind: string, id: string, input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
   const catalog = snapshot.directories!;
+  if (kind === 'oilDepots') return deleteOilDepot(id, input, snapshot, data);
   if (kind === 'customerManagers') {
     if (Object.keys(input).some(key => key !== 'managerId')) throw new ApiError(400, 'Неизвестное поле удаления связи.');
     const previous = catalog.customerManagers?.find(row => row.companyId === id);
@@ -29,7 +31,7 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
     return { created: false as const, deleted: true as const, id };
   }
   if (Object.keys(input).some(key => key !== 'version')) throw new ApiError(400, 'Неизвестное поле удаления.');
-  const role = kind === 'customers' ? 'customer' : kind === 'suppliers' ? 'supplier' : undefined;
+  const role = kind === 'customers' ? 'customer' : kind === 'suppliers' ? 'supplier' : kind === 'carriers' ? 'carrier' : undefined;
   const key = role ? 'companies' : kind as DirectoryKind;
   if (!kinds.includes(key)) throw new ApiError(400, 'Неизвестный справочник.');
   const previous = key === 'companies' ? snapshot.companies.find(row => row.id === id) : catalog[key].find(row => row.id === id);
@@ -40,6 +42,7 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
     const company = previous as Company;
     if (data.china?.days.some(day => day.fuels.some(fuel => fuel.supplierId === id)) && (!role || role === 'supplier')) blocked(name, 'в заправках Китая');
     if (role && companyRoleUsed(snapshot, company, role)) blocked(name, role === 'customer' ? 'в отгрузках клиента' : 'в отгрузках поставщика');
+    if ((!role || role === 'carrier') && (catalog.vehicles.some(row => row.carrierId === id) || catalog.drivers.some(row => row.carrierId === id))) blocked(name, 'в карточках транспорта или водителей');
     const roles = role ? company.roles.filter(value => value !== role) : [];
     // One legal entity can remain in the other directory and in historical carrier data.
     if (role && roles.length) {
@@ -52,6 +55,7 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
     if (snapshot.payments.some(row => row.counterpartyId === id || !row.counterpartyId && sameName(row.counterparty, name))) blocked(name, 'в платежах');
     if (snapshot.stocks.some(row => row.counterpartyId === id)) blocked(name, 'в складских записях');
     if (data.work?.tasks.some(row => row.companyId === id) || data.work?.companyRecords.some(row => row.companyId === id)) blocked(name, 'в рабочем пространстве сотрудников');
+    if (catalog.oilDepots?.some(row => oilDepotRoleKeys.some(key => row[key] === id))) blocked(name, 'в справочнике нефтебаз');
     if (catalog.addresses.some(row => row.companyId === id)) blocked(name, 'в справочнике адресов');
     if (catalog.customerManagers?.some(row => row.companyId === id)) blocked(name, 'в назначении менеджера компании');
     data.companies = data.companies.filter(row => row.id !== id);
@@ -63,6 +67,7 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
     };
     const [ids, labels] = fields[key];
     if (snapshot.shipments.some(row => ids.some(field => row.fields[field] === id) || labels.some(field => sameName(row.fields[field], name) || ['managers', 'products', 'paymentForms'].includes(key) && !!row.fields[field] && directoryEntryId(key, row.fields[field]!) === id))) blocked(name, 'в отгрузках');
+    if (key === 'vehicles' && snapshot.companies.some(row => row.defaultVehicleId === id) || key === 'drivers' && snapshot.companies.some(row => row.defaultDriverId === id)) blocked(name, 'как вариант по умолчанию у перевозчика');
     if (key === 'vehicles' && catalog.drivers.some(row => row.vehicleId === id)) blocked(name, 'в карточке водителя');
     if (key === 'managers' && catalog.customerManagers?.some(row => row.managerId === id)) blocked(name, 'в назначении менеджера компании');
     if (key === 'managers' && data.accounts?.users.some(row => row.managerId === id)) blocked(name, 'в учётной записи сотрудника');

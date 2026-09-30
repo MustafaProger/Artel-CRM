@@ -6,11 +6,15 @@ import type { ShipmentEditorProps } from './ShipmentEditor'
 import type { ShipmentAddress } from './model'
 import TripLocationPicker from './TripLocationPicker'
 import './trips.css'
+import './form-refinements.css'
 import { calculateShipment, daysSinceShipment, today, unpaidShipmentDays } from './shipment-calculations'
 import { customerManagerId, availableShipmentCustomer } from './customer-manager'
 import { allocateTrip } from './trip-calculations'
 import { number } from './utils'
 import { isOurOrganizationId, ourOrganizations } from './our-organizations'
+import { type TripIntermediateStop } from './trip-route'
+import { isUnpackagedDiesel } from './trip-input-rules'
+import { driverVehicleId, initialUnloadingFields, loadingDateFields } from './trip-editor-rules'
 
 interface CustomerDraft {
   key: string
@@ -38,7 +42,9 @@ const numericValue = (value: string) => {
 const serialize = (draft: TripDraft) => JSON.stringify(draft)
 const numericKeys = new Set(['purchase_price_unspecified_unit', 'quantity_tonnes', 'additional_costs', 'quantity_litres', 'sale_price_per_litre', 'transport_amount'])
 const comparable = (key: string, value: string | null | undefined) => numericKeys.has(key) && value ? numericValue(value)?.toFixed() ?? value : value?.trim() || null
-const sameFields = (expected: Record<string, string | null>, actual: Record<string, string | null>) => Object.entries(expected).every(([key, value]) => comparable(key, value) === comparable(key, actual[key]))
+const sameFields = (expected: Record<string, string | null>, actual: Record<string, string | null>) => Object.entries(expected).every(([key, value]) => key === 'loading_at'
+  ? actual.date === value?.slice(0, 10) && actual.loading_planned_at === value && actual.loading_actual_at === value
+  : comparable(key, value) === comparable(key, actual[key]))
 
 interface TripEditorProps extends ShipmentEditorProps { tripId?: string; tripMode?: boolean; canManagePlaces?: boolean; onDirectoriesChanged?: () => void }
 
@@ -54,13 +60,14 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const dialog = useRef<HTMLDialogElement>(null)
   const errorElement = useRef<HTMLDivElement>(null)
   const pendingCustomerFocus = useRef<string | null>(null)
+  const manuallyEditedUnloading = useRef(new Set<string>())
   const defaultPaymentId = directories.paymentForms.find(p => p.name === defaultPaymentForm)?.id ?? ''
-  const newCustomer = (): CustomerDraft => ({
+  const newCustomer = (loadingAt = today()): CustomerDraft => ({
     key: crypto.randomUUID(),
-    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', delivery_notes: '', unloading_planned_at: '', unloading_actual_at: '' },
+    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', delivery_notes: '', ...initialUnloadingFields(loadingAt) },
   })
   const [draft, setDraft] = useState<TripDraft>(() => ({
-    fields: { organization_id: '', date: today(), supplier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', loading_planned_at: '', loading_actual_at: '' },
+    fields: { organization_id: tripMode ? 'artel' : '', ...loadingDateFields(today()), supplier_id: '', oil_depot_id: '', carrier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', intermediate_stops_in_order: '' },
     customers: [newCustomer()],
   }))
   const [initial, setInitial] = useState(() => serialize(draft))
@@ -144,19 +151,36 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const capacity = vehicle?.capacityLitres == null ? null : numericValue(String(vehicle.capacityLitres))
   const overCapacity = capacity != null && capacity.gt(0) && totalLitres.gt(capacity)
   const companyEntries = (role: 'customer' | 'supplier', current: string) => companies.filter(company => (!company.directoryArchived && company.roles.includes(role)) || company.id === current).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))
+  const product = directories.products.find(entry => entry.id === fields.product_id)
+  const unifiedCargoMass = isUnpackagedDiesel(product)
+  const depot = directories.oilDepots?.find(entry => entry.id === fields.oil_depot_id)
   const vehicleEntries = directories.vehicles.map(entry => ({ id: entry.id, name: entry.name || entry.plate, detail: [entry.name && entry.name !== entry.plate ? entry.plate : '', entry.capacityLitres ? `${number(entry.capacityLitres)} л` : ''].filter(Boolean).join(' · ') }))
 
   const changed = () => { setConfirmClose(false); setError('') }
   const update = (key: string, value: string) => {
-    setDraft(previous => ({ ...previous, fields: { ...previous.fields, [key]: value, ...(key === 'loading_address_id' ? { loading_address: '', loading_map_url: '' } : {}), ...(key === 'supplier_id' ? { loading_address_id: '', loading_address: '', loading_map_url: '' } : key === 'driver_id' ? { vehicle_id: directories.drivers.find(entry => entry.id === value)?.vehicleId ?? '' } : {}) } }))
+    setDraft(previous => {
+      const next = { ...previous.fields, [key]: value }
+      if (key === 'loading_at') Object.assign(next, loadingDateFields(value))
+      if (key === 'oil_depot_id') Object.assign(next, { loading_address_id: '', loading_address: '', loading_map_url: '' })
+      if (key === 'driver_id' && previous.fields.driver_id !== value) {
+        next.vehicle_id = driverVehicleId(directories, value)
+      }
+      if ((key === 'quantity_tonnes' || key === 'product_id') && isUnpackagedDiesel(directories.products.find(entry => entry.id === next.product_id))) next.quantity_gross_tonnes = next.quantity_tonnes
+      const customers = key === 'loading_at' ? previous.customers.map(customer => ({ ...customer, fields: {
+        ...customer.fields,
+        ...Object.fromEntries(['unloading_planned_at', 'unloading_actual_at'].filter(field => (!customer.fields[field] || !tripId && customer.fields[field] === (previous.fields.loading_at || previous.fields.loading_planned_at || previous.fields.date)) && !manuallyEditedUnloading.current.has(`${customer.key}:${field}`)).map(field => [field, value])),
+      } })) : previous.customers
+      return { ...previous, fields: next, customers }
+    })
     changed()
   }
   const updateCustomer = (customerKey: string, key: string, value: string) => {
+    if (key === 'unloading_planned_at' || key === 'unloading_actual_at') manuallyEditedUnloading.current.add(`${customerKey}:${key}`)
     setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'unloading_address_id' ? { unloading_address: '', unloading_map_url: '' } : {}), ...(key === 'customer_id' ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
     changed()
   }
   const addCustomer = () => {
-    const customer = newCustomer()
+    const customer = newCustomer(fields.loading_at || fields.loading_planned_at || fields.date)
     pendingCustomerFocus.current = customer.key
     setDraft(previous => ({ ...previous, customers: [...previous.customers, customer] }))
     changed()
@@ -167,6 +191,10 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     setDraft(previous => ({ ...previous, customers: previous.customers.filter(customer => customer.key !== key) }))
     changed()
   }
+  const stopsAfter = (customer: CustomerDraft): TripIntermediateStop[] => {
+    try { return JSON.parse(customer.fields.intermediate_stops_after || '[]') as TripIntermediateStop[] } catch { return [] }
+  }
+  const changeStops = (customer: CustomerDraft, stops: TripIntermediateStop[]) => updateCustomer(customer.key, 'intermediate_stops_after', stops.length ? JSON.stringify(stops) : '')
   const close = () => { if (uncertain) { setError('Результат сохранения пока неизвестен. Повторите сохранение, чтобы получить результат без дублей.'); return } if (!saving) { if (dirty) setConfirmClose(true); else onClose() } }
 
   const validate = () => {
@@ -174,7 +202,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     if (!fields.date) return 'Укажите дату отгрузки.'
     if (!companies.some(company => company.id === fields.supplier_id)) return 'Выберите поставщика из списка.'
     if (!numericValue(fields.purchase_price_unspecified_unit)?.gt(0)) return 'Укажите цену поставщика за тонну больше нуля.'
-    if (!numericValue(fields.quantity_tonnes)?.gt(0)) return 'Укажите тоннаж всей машины больше нуля.'
+    if (!numericValue(fields.quantity_tonnes)?.gt(0)) return 'Укажите плановую массу груза больше нуля.'
     if (!directories.products.some(product => product.id === fields.product_id)) return 'Выберите товар из списка.'
     for (const [index, customer] of draft.customers.entries()) {
       const values = customer.fields
@@ -254,10 +282,19 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
 
   const select = (label: string, key: string, entries: SelectEntry[], options: { required?: boolean; disabled?: boolean; customer?: CustomerDraft } = {}) => <DirectorySelect label={label} value={(options.customer?.fields ?? fields)[key] ?? ''} entries={entries} required={options.required} disabled={disabled || options.disabled} onChange={value => options.customer ? updateCustomer(options.customer.key, key, value) : update(key, value)}/>
   const input = (label: string, key: string, options: { required?: boolean; type?: string; customer?: CustomerDraft; text?: boolean } = {}) => <label className="shipment-field"><span>{label}{options.required && ' *'}</span><input type={options.type ?? 'text'} inputMode={options.type === 'date' || options.type === 'datetime-local' || options.text ? undefined : 'decimal'} autoFocus={key === 'date'} value={(options.customer?.fields ?? fields)[key] ?? ''} required={options.required} disabled={disabled} onChange={event => options.customer ? updateCustomer(options.customer.key, key, event.target.value) : update(key, event.target.value)}/></label>
-  const location = (customer?: CustomerDraft) => {
-    const values = customer?.fields ?? fields, prefix = customer ? 'unloading' : 'loading'
-    return <TripLocationPicker label={customer ? 'Место выгрузки' : 'Место загрузки'} kind={customer ? 'delivery' : 'loading'} companyId={values[customer ? 'customer_id' : 'supplier_id']} value={values[`${prefix}_address_id`] ?? ''} addresses={addresses} addressSnapshot={values[`${prefix}_address`] || undefined} mapSnapshot={values[`${prefix}_map_url`] || undefined} disabled={disabled} canManage={canManagePlaces} onChange={id => customer ? updateCustomer(customer.key, `${prefix}_address_id`, id) : update(`${prefix}_address_id`, id)} onCreated={address => { setAddedAddresses(previous => [...previous.filter(item => item.id !== address.id), address]); onDirectoriesChanged?.() }}/>
+  const location = (customer: CustomerDraft) => {
+    const values = customer.fields
+    return <TripLocationPicker label="Место выгрузки" kind="delivery" companyId={values.customer_id} value={values.unloading_address_id ?? ''} addresses={addresses} addressSnapshot={values.unloading_address || undefined} mapSnapshot={values.unloading_map_url || undefined} disabled={disabled} canManage={canManagePlaces} onChange={id => updateCustomer(customer.key, 'unloading_address_id', id)} onCreated={address => { setAddedAddresses(previous => [...previous.filter(item => item.id !== address.id), address]); onDirectoriesChanged?.() }}/>
   }
+  const loadingValue = fields.loading_at ?? (fields.loading_planned_at || fields.date || '')
+  const dateTimeInput = (label: string, value: string, onChange: (value: string) => void, required = false) => <div className="shipment-field trip-date-input">
+    <span>{label}{required && ' *'}</span>
+    <div className="trip-date-controls">
+      <label><span className="form-control-caption">Дата</span><input aria-label={label} type="date" value={value.slice(0, 10)} required={required} disabled={disabled} onChange={event => onChange(event.target.value ? `${event.target.value}${value.includes('T') ? `T${value.split('T')[1]}` : ''}` : '')}/></label>
+      <label><span className="form-control-caption" title="Время можно не указывать">Время</span><input aria-label={`${label} — время`} type="time" value={value.split('T')[1]?.slice(0, 5) ?? ''} disabled={disabled || !value.slice(0, 10)} onChange={event => onChange(`${value.slice(0, 10)}${event.target.value ? `T${event.target.value}` : ''}`)}/></label>
+    </div>
+  </div>
+  const companyName = (id: string | undefined) => companies.find(company => company.id === id)?.name || 'Не указано'
   const output = (label: string, value: string | number | null | undefined, digits = 2) => <div className="shipment-calculated"><span>{label}</span><output aria-label={label}>{value == null || value === '' ? '—' : number(value, digits)}</output></div>
 
   return <dialog ref={dialog} className="shipment-editor shipment-trip-editor" aria-labelledby="shipment-trip-title" onCancel={event => { event.preventDefault(); close() }}>
@@ -277,15 +314,19 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
           {conflict && <button type="button" className="button" disabled={saving} onClick={() => setReload(value => value + 1)}>Загрузить актуальный рейс</button>}
           <fieldset className="shipment-fieldset group-purchase"><legend>Отгрузка и поставщик</legend><div className="shipment-field-grid">
             {select('Наша организация', 'organization_id', ourOrganizations.map(organization => ({ ...organization })), { required: !tripId })}
-            {input('Дата отгрузки', 'date', { type: 'date', required: true })}
+            {dateTimeInput('Дата отгрузки / погрузки', loadingValue, value => update('loading_at', value), true)}
+            {tripMode && <label className="trip-invoice-option form-field-wide"><input type="checkbox" checked={fields.organization_id === 'nk-artel'} disabled={disabled} onChange={event => update('organization_id', event.target.checked ? 'nk-artel' : 'artel')}/>Собственный клиент НК Артэль — НК отправитель и перевозчик</label>}
             {select('Поставщик', 'supplier_id', companyEntries('supplier', draft.fields.supplier_id), { required: true })}
-            {location()}
-            {input('Плановая погрузка', 'loading_planned_at', { type: 'datetime-local' })}
-            {input('Фактическая погрузка', 'loading_actual_at', { type: 'datetime-local' })}
-            {input('Цена поставщика за тонну, ₽', 'purchase_price_unspecified_unit', { required: true })}
-            {input('Тоннаж всей машины, т', 'quantity_tonnes', { required: true })}
+            {select('Нефтебаза', 'oil_depot_id', (directories.oilDepots ?? []).map(entry => ({ id: entry.id, name: entry.name, detail: entry.address })))}
             {select('Товар', 'product_id', directories.products, { required: true })}
-          </div>{tripId&&!fields.organization_id&&<p className="shipment-editor-note">Организация старой отгрузки не указана. Выберите её только при подтверждённой принадлежности.</p>}</fieldset>
+            {input('Цена поставщика за тонну, ₽', 'purchase_price_unspecified_unit', { required: true })}
+            {input('Плановая масса груза, т', 'quantity_tonnes', { required: true })}
+            {tripMode && !unifiedCargoMass && input('Плановая масса брутто по документам, т', 'quantity_gross_tonnes')}
+          </div>
+          {unifiedCargoMass && <p className="shipment-editor-note">Дизельное топливо без упаковки: одна масса груза используется как нетто и брутто.</p>}
+          {tripId && !fields.loading_at && (fields.loading_actual_at && fields.loading_actual_at !== fields.loading_planned_at || fields.loading_planned_at && fields.loading_planned_at.slice(0, 10) !== fields.date) && <p className="shipment-editor-note">Сохранены исторические даты: отгрузка {fields.date || 'не указана'}, плановая погрузка {fields.loading_planned_at || 'не указана'}, фактическая погрузка {fields.loading_actual_at || 'не указана'}. Они останутся разными, пока вы не измените общую дату погрузки.</p>}
+          {depot ? <div className="shipment-trip-fleet"><div><p><span>Пункт подачи / место погрузки</span><strong>{fields.loading_address || depot.address || 'Заполните фактический адрес нефтебазы'}</strong></p><p><span>Владелец нефтебазы</span><strong>{companyName(depot.ownerCompanyId)}</strong></p><p><span>Юридический адрес владельца</span><strong>{companies.find(company => company.id === depot.ownerCompanyId)?.address || 'Не указан'}</strong></p><p><span>Лицо, осуществляющее погрузку</span><strong>{companyName(depot.loadingActorCompanyId)}</strong></p><p><span>Владелец инфраструктуры погрузки</span><strong>{companyName(depot.infrastructureOwnerCompanyId)}</strong></p></div></div> : fields.loading_address && <p className="shipment-editor-note">Историческое место погрузки: {fields.loading_address}. Для нового места выберите нефтебазу.</p>}
+          {tripId&&!fields.organization_id&&<p className="shipment-editor-note">Организация старой отгрузки не указана. Выберите её только при подтверждённой принадлежности.</p>}</fieldset>
 
           <section className="shipment-trip-customers" aria-labelledby="shipment-trip-customers-title"><div className="shipment-trip-section-heading"><div><h3 id="shipment-trip-customers-title">Клиенты машины</h3><p>Тоннаж каждого клиента рассчитывается пропорционально его литрам.</p></div><span className="shipment-trip-count">{draft.customers.length}</span></div>
             {draft.customers.map((customer, index) => {
@@ -301,27 +342,40 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                   {input('Количество литров, л', 'quantity_litres', { required: true, customer })}
                   {input('Цена за литр, ₽', 'sale_price_per_litre', { required: true, customer })}
                   {input('Сумма перевозки, ₽', 'transport_amount', { customer })}
-                  {location(customer)}
-                  {input('Плановая выгрузка', 'unloading_planned_at', { type: 'datetime-local', customer })}
-                  {input('Фактическая выгрузка', 'unloading_actual_at', { type: 'datetime-local', customer })}
-                  {input('Примечание к доставке', 'delivery_notes', { text: true, customer })}
-                  <label className="trip-invoice-option"><input type="checkbox" checked={customer.fields.invoice_not_required === 'true'} disabled={disabled} onChange={event => updateCustomer(customer.key, 'invoice_not_required', String(event.target.checked))}/>Счёт не нужен</label>
                   {select('Менеджер', 'manager_id', directories.managers, { required: true, customer })}
                 </div>
+                <div className="shipment-trip-delivery-fields"><h4>Доставка</h4><div className="shipment-field-grid">
+                  <div className="form-field-wide">{location(customer)}</div>
+                  {dateTimeInput('Плановая выгрузка', customer.fields.unloading_planned_at || '', value => updateCustomer(customer.key, 'unloading_planned_at', value))}
+                  {dateTimeInput('Фактическая выгрузка', customer.fields.unloading_actual_at || '', value => updateCustomer(customer.key, 'unloading_actual_at', value))}
+                  <label className="shipment-field form-field-wide"><span>Примечание к доставке</span><textarea rows={2} value={customer.fields.delivery_notes ?? ''} disabled={disabled} onChange={event => updateCustomer(customer.key, 'delivery_notes', event.target.value)}/></label>
+                  <label className="trip-invoice-option"><input type="checkbox" checked={customer.fields.invoice_not_required === 'true'} disabled={disabled} onChange={event => updateCustomer(customer.key, 'invoice_not_required', String(event.target.checked))}/>Счёт не нужен</label>
+                </div></div>
                 <div className="shipment-calculation-strip shipment-trip-client-totals">{output('Тоннаж клиента, т', allocation?.tonnes[index], 6)}{output('Сумма клиента, ₽', litres && price ? litres.times(price).toFixed(2) : null)}{output('Прибыль, ₽', calculation?.fields.profit_source)}<span className="shipment-trip-auto">Тоннаж · автоматически</span></div>
                 {calculation?.warnings.map(w => <p key={w} className="shipment-calculation-warning">{w}</p>)}
+                <div className="trip-intermediate-stops"><strong>Остановки после доставки {index + 1}</strong><p className="shipment-editor-note">Для собственных нужд бензовоза. В ЭТрН не включаются.</p>
+                  {stopsAfter(customer).map((stop, stopIndex) => <div className="shipment-field-grid" key={stop.id}>
+                    <label className="shipment-field"><span>Название остановки {stopIndex + 1}</span><input value={stop.name} maxLength={200} disabled={disabled} onChange={event => changeStops(customer, stopsAfter(customer).map(item => item.id === stop.id ? { ...item, name: event.target.value } : item))}/></label>
+                    <label className="shipment-field"><span>Адрес остановки {stopIndex + 1}</span><input value={stop.address} maxLength={500} disabled={disabled} onChange={event => changeStops(customer, stopsAfter(customer).map(item => item.id === stop.id ? { ...item, address: event.target.value } : item))}/></label>
+                    <button type="button" className="button" disabled={disabled} onClick={() => changeStops(customer, stopsAfter(customer).filter(item => item.id !== stop.id))}>Удалить остановку {stopIndex + 1}</button>
+                  </div>)}
+                  <button type="button" className="button" disabled={disabled || stopsAfter(customer).length >= 10} onClick={() => changeStops(customer, [...stopsAfter(customer), { id: crypto.randomUUID(), name: '', address: '' }])}><Plus size={15}/>Добавить промежуточную остановку</button>
+                </div>
               </fieldset>
             })}
             <button type="button" className="button shipment-trip-add" disabled={disabled || draft.customers.length >= 100} onClick={addCustomer}><Plus size={18}/>Добавить клиента</button>
-            <div className="shipment-trip-distribution"><div className="shipment-calculation-strip">{output('Литров по клиентам, л', totalLitres.toString(), 3)}{output('Тоннаж машины, т', numericValue(fields.quantity_tonnes)?.toString(), 6)}{output('Дней с отгрузки', unpaidDays, 0)}</div><p>{allocation ? 'Тоннаж клиента = тоннаж машины × литры клиента ÷ все литры.' : 'Заполните тоннаж машины и литры каждого клиента — распределение рассчитается автоматически.'} Дни отображаются, пока есть неоплаченные отгрузки клиентов.</p></div>
+            {draft.customers.some(customer => stopsAfter(customer).length > 0) && <label className="shipment-field"><span>Промежуточные остановки в заявке Saby</span><select value={fields.intermediate_stops_in_order || ''} disabled={disabled} onChange={event => update('intermediate_stops_in_order', event.target.value)}><option value="">Выберите перед отправкой</option><option value="true">Включать в заявку</option><option value="false">Только маршрут CRM</option></select></label>}
+            <div className="shipment-trip-distribution"><div className="shipment-calculation-strip">{output('Литров по клиентам, л', totalLitres.toString(), 3)}{output('Масса груза, т', numericValue(fields.quantity_tonnes)?.toString(), 6)}{output('Дней с отгрузки', unpaidDays, 0)}</div><p>{allocation ? 'Масса груза клиента = масса груза рейса × литры клиента ÷ все литры.' : 'Заполните массу груза и литры каждого клиента — распределение рассчитается автоматически.'} Дни отображаются, пока есть неоплаченные отгрузки клиентов.</p></div>
           </section>
 
-          <fieldset className="shipment-fieldset group-delivery"><legend>Перевозчик и автомобиль</legend><div className="shipment-field-grid">
-            {select('Перевозчик / водитель', 'driver_id', directories.drivers.map(entry => ({ id: entry.id, name: entry.name, detail: [entry.phone, directories.vehicles.find(item => item.id === entry.vehicleId)?.name || directories.vehicles.find(item => item.id === entry.vehicleId)?.plate].filter(Boolean).join(' · ') })), { required: true })}
+          <fieldset className="shipment-fieldset group-delivery"><legend>Водитель и автомобиль</legend><div className="shipment-field-grid">
+            {select('Водитель', 'driver_id', directories.drivers.map(entry => ({ id: entry.id, name: entry.name, detail: [entry.phone, directories.vehicles.find(item => item.id === entry.vehicleId)?.name || directories.vehicles.find(item => item.id === entry.vehicleId)?.plate].filter(Boolean).join(' · ') })), { required: true })}
             {select('Автомобиль', 'vehicle_id', vehicleEntries, { required: true })}
           </div>
+            {vehicle && <div className="shipment-trip-fleet"><div><p><span>Тип транспортного средства</span><strong>{vehicle.transportVehicleType || vehicle.vehicleType || 'Не указан в карточке автомобиля'}</strong></p><p><span>Марка и модель</span><strong>{[vehicle.brand, vehicle.model].filter(Boolean).join(' ') || 'Не указаны в карточке автомобиля'}</strong></p><p><span>Грузоподъёмность</span><strong>{vehicle.payloadTonnes ? `${number(vehicle.payloadTonnes)} т` : 'Не указана в карточке автомобиля'}</strong></p></div></div>}
             {(driver || vehicle) && <div className="shipment-trip-fleet"><Truck size={20}/><div>{driver?.phone && <p><span>Телефон водителя</span><a href={`tel:${driver.phone.replace(/[^+\d]/g, '')}`}>{driver.phone}</a></p>}{vehicle && <p><span>Объём автомобиля</span><strong>{vehicle.capacityLitres == null ? 'Не указан' : `${number(vehicle.capacityLitres)} л`}</strong></p>}{!!vehicle?.compartmentsLitres?.length && <p><span>Разбивка по секциям</span><strong>{vehicle.compartmentsLitres.map(value => number(value)).join(' + ')} л</strong></p>}</div></div>}
-            <p className="shipment-trip-field-note">При выборе водителя подставляется его автомобиль. При необходимости выберите другой.</p>
+            <p className="shipment-trip-field-note">При выборе водителя подставляется автомобиль из его карточки. При необходимости выберите другую машину из справочника.</p>
+            {driver && !driverVehicleId(directories, driver.id) && <p className="shipment-editor-note">В карточке водителя не указан доступный автомобиль. Выберите машину из справочника.</p>}
             {overCapacity && <p className="shipment-calculation-warning" role="status">Литры клиентов превышают объём выбранного автомобиля на {number(totalLitres.minus(capacity!).toString(), 3)} л. Проверьте объём и автомобиль.</p>}
           </fieldset>
 

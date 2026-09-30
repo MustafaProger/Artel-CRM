@@ -37,8 +37,11 @@ import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
 import { getSabyTrip, submitSabyTrip } from './saby-service';
-import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile } from './etrn-service';
-import type { SabyClient } from './saby-client';
+import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile, saveTripLoadingFacts, exchangePreparedEtrn } from './etrn-service';
+import { getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
+import { prepareTripSaby } from './trip-saby-preparation';
+import { sabyConfigFromEnv, sabyCredentialBlockers, type SabyClient } from './saby-client';
+import { dispatchTripSaby, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS } from './trip-saby-scheduler';
 import { dispatchReminders, dispatchTaskAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
@@ -309,6 +312,8 @@ export interface LocalApiOptions {
   fetcher?: typeof fetch;
   /** Provider adapter injection for isolated integration tests only. */
   sabyClient?: SabyClient;
+  /** True only when this runtime has actually registered the authorized background scheduler. */
+  sabyWorkflowMonitoringEnabled?: boolean;
 }
 
 async function jsonBody(request: IncomingMessage, optional = false, limit = 128 * 1024): Promise<Record<string, unknown>> {
@@ -446,7 +451,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       const authorized = (data: import('./operations-store').OperationsData) => {
         const user = requireUser(data, request);
-        if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
+        if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
         if (section) requireSection(user, section);
         return user;
@@ -596,6 +601,23 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           catch { console.error('Задача сохранена. Не удалось отправить уведомление о назначении; планировщик повторит попытку.'); }
         }
         return write(response,result.created?201:200,JSON.stringify(result));
+      }
+      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(loading-facts))?$/);
+      if (workflowMatch) {
+        const tripId = decodeURIComponent(workflowMatch[1]);
+        const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
+        const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
+        const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
+        const read = (latest: import('./operations-store').OperationsData) => ({ ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled }), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+        if (request.method === 'GET' && !workflowMatch[2]) return write(response, 200, JSON.stringify(read(data)));
+        if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+        const body = await jsonBody(request);
+        if (workflowMatch[2] === 'loading-facts') await saveTripLoadingFacts(context, body, actor?.id || 'local-operator');
+        else if (Object.keys(body).length) throw new ApiError(400, 'Данные отправки берутся из сохранённого рейса.');
+        const workflow = await runTripSabyWorkflow({ ...context, initiatorId: actor?.id, prepare: prepareTripSaby, createDelivery: input => exchangePreparedEtrn(context, input) });
+        if (workflow.phase === 'completed') for (const delivery of workflow.deliveries) if (delivery.id) await refreshTripSabyDelivery(context, delivery.shipmentId);
+        const latest = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, latest), latest);
+        return write(response, 200, JSON.stringify(read(latest)));
       }
       const etrnMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/etrn(?:\/(submit|refresh)|\/xml\/([^/]+)|\/files\/([^/]+)\/([^/]+))?$/);
       if (etrnMatch) {
@@ -776,7 +798,27 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
 
 /** The source directory remains outside Vite's web root and is never a static asset. */
 export default function localApi(options: LocalApiOptions = {}): Plugin {
-  const middleware = createSnapshotMiddleware(defaultDataDirectory, { ...options, pushIntervalSeconds: 30 });
+  const runtimeOptions = { ...options, pushIntervalSeconds: 30, sabyWorkflowMonitoringEnabled: false };
+  const middleware = createSnapshotMiddleware(defaultDataDirectory, runtimeOptions);
+  const sabyDisposers = new Set<() => void>();
+  function startSaby(server: { httpServer: import('node:events').EventEmitter | null }) {
+    const enabled = options.sabyWorkflowMonitoringEnabled ?? process.env.SABY_WORKFLOW_ENABLED === 'true';
+    const config = options.sabyClient?.config ?? sabyConfigFromEnv();
+    if (!enabled || sabyCredentialBlockers(config).length || !server.httpServer) return;
+    const store = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(defaultDataDirectory, '../local-operations'));
+    let running = false, disposed = false;
+    const check = async () => {
+      if (running || disposed) return;
+      running = true;
+      try { await dispatchTripSaby({ base: await loadSnapshot(), store, config, enabled: !disposed }); }
+      catch { /* Provider messages and private document data must never enter process logs. */ }
+      finally { running = false; }
+    };
+    const timer = setInterval(() => { void check(); }, SABY_WORKFLOW_TICK_MS);
+    const dispose = () => { disposed = true; clearInterval(timer); sabyDisposers.delete(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = sabyDisposers.size > 0; };
+    timer.unref(); sabyDisposers.add(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = true;
+    server.httpServer.once('close', dispose); void check();
+  }
   function startReminders(server: { httpServer: import('node:events').EventEmitter | null }) {
     const config = options.pushConfig ?? pushConfig();
     if (!pushReady(config)) return;
@@ -811,7 +853,8 @@ export default function localApi(options: LocalApiOptions = {}): Plugin {
   }
   return {
     name: 'artel-local-operations-api',
-    configureServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); },
-    configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); },
+    configureServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); startSaby(server); },
+    configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); startSaby(server); },
+    closeBundle() { for (const dispose of [...sabyDisposers]) dispose(); },
   };
 }

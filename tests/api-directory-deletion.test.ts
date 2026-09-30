@@ -69,7 +69,8 @@ test('shared company is stored once, deleting customer role retains supplier and
     assert.ok(saved[0].roles.includes('carrier'));
     await runtime.remove('suppliers', company.id, saved[0].version);
     assert.deepEqual((await runtime.snapshot()).companies.find(row => row.id === company.id)!.roles, ['carrier']);
-    await assert.rejects(runtime.mutate((snapshot, data) => saveCompany({ name: 'Новый перевозчик', roles: ['carrier'], addresses: [], managerId: null }, snapshot, data)), /клиент или поставщик/);
+    const carrier = await runtime.mutate((snapshot, data) => saveCompany({ name: 'Новый перевозчик', roles: ['carrier'], addresses: [], managerId: null }, snapshot, data));
+    assert.deepEqual(carrier.entry.roles, ['carrier']);
   } finally { await runtime.close(); }
 });
 

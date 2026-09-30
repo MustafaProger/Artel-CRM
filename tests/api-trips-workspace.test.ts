@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore, decodeOperations, encodeOperations } from '../server/operations-store';
+import { currentSnapshot } from '../server/shipment-operations';
+import { getShipmentTrip } from '../server/shipment-trips';
 import type { ShipmentTrip, Snapshot } from '../web/src/model';
 import { driverTransportDetails } from '../server/driver-transport-details';
 
@@ -64,27 +66,27 @@ test('trip create retries are durable and concurrent, changed payload and delete
   } finally { await r.close(); }
 });
 
-test('actual places and maps persist as historical snapshots, validate URLs and preserve company-card edits', async () => {
+test('oil depot places and maps persist as historical snapshots and validate URLs', async () => {
   const r = await runtime();
   try {
-    const location = { kind: 'addresses', companyId: 'trip-supplier', addressKind: 'loading', name: 'Terminal', address: 'Physical site, gate 1', mapUrl: 'https://yandex.ru/maps/?ll=37.6%2C55.7', latitude: '55.7', longitude: '37.6' };
+    const location = { kind: 'oilDepots', ownerCompanyId: 'trip-supplier', name: 'Terminal', address: 'Physical site, gate 1', mapUrl: 'https://yandex.ru/maps/?ll=37.6%2C55.7', latitude: '55.7', longitude: '37.6' };
     for (const invalid of [{ mapUrl: 'javascript:alert(1)' }, { mapUrl: 'https://evil.example/' }, { latitude: '91' }, { longitude: '' }]) assert.equal((await r.request('/api/directories','POST',{ ...location, ...invalid },r.admin)).status,400);
     const added = await (await r.request('/api/directories','POST',location,r.admin)).json();
     const duplicate = await (await r.request('/api/directories','POST',location,r.admin)).json();
     assert.equal(added.entry.id, duplicate.entry.id);
-    const body = { ...r.sample(), fields: { ...r.sample().fields, loading_address_id: added.entry.id } };
+    const body = { ...r.sample(), fields: { ...r.sample().fields, oil_depot_id: added.entry.id } };
     const created = await (await r.request('/api/shipment-trips','POST',body,r.admin)).json();
     assert.equal(created.trip.fields.loading_address, location.address);
     assert.equal(created.trip.fields.loading_map_url, location.mapUrl);
     assert.equal(created.trip.customers[0].fields.invoice_not_required, 'true');
     const { kind: _kind, ...locationEdit } = location; void _kind;
-    assert.equal((await r.request(`/api/directories/addresses/${added.entry.id}`, 'PATCH', { ...locationEdit, version: 0, address: 'Changed physical site', mapUrl: 'https://yandex.ru/maps/' }, r.admin)).status, 200);
+    assert.equal((await r.request(`/api/directories/oilDepots/${added.entry.id}`, 'PATCH', { ...locationEdit, version: 0, address: 'Changed physical site', mapUrl: 'https://yandex.ru/maps/' }, r.admin)).status, 200);
     const updated = await r.request(`/api/shipment-trips/${created.trip.id}`, 'PATCH', edit(created.trip), r.admin);
     assert.equal(updated.status,200,await updated.clone().text());
     const trip = (await updated.json()).trip;
     assert.equal(trip.fields.loading_address, location.address);
     assert.equal(trip.fields.loading_map_url, location.mapUrl);
-    assert.equal((await r.request(`/api/directories/addresses/${added.entry.id}`, 'DELETE', { version: 1 }, r.admin)).status,409);
+    assert.equal((await r.request(`/api/directories/oilDepots/${added.entry.id}`, 'DELETE', { version: 1 }, r.admin)).status,409);
     const bad = edit(trip); bad.fields.loading_address = 'Forged site';
     assert.equal((await r.request(`/api/shipment-trips/${trip.id}`, 'PATCH', bad, r.admin)).status,400);
     for (const fields of [{ loading_actual_at: '2026-02-31T10:00' }, { loading_planned_at: 'tomorrow' }]) assert.equal((await r.request('/api/shipment-trips','POST',{ ...r.sample(), fields: { ...r.sample().fields, ...fields } },r.admin)).status,400);
@@ -126,5 +128,142 @@ test('trips-only permissions preserve manager isolation, exclude mixed groups, a
     const relogin = await r.request('/api/auth/login','POST',{ login: userBody.login, password: r.password });
     const denied = relogin.headers.get('set-cookie')!.split(';')[0];
     for (const path of ['/api/shipment-trips',`/api/shipment-trips/${own.trip.id}`,`/api/shipment-trips/${own.trip.id}/saby`]) assert.equal((await r.request(path,'GET',undefined,denied)).status,403);
+  } finally { await r.close(); }
+});
+
+test('intermediate stops and repeated recipients remain separate deliveries, retaining their route order across restart and legacy edits', async () => {
+  const r = await runtime();
+  try {
+    const addressResponse = await r.request('/api/directories', 'POST', { kind: 'addresses', companyId: 'trip-client-a', addressKind: 'delivery', name: 'Repeated synthetic recipient site', address: 'Synthetic road, 1' }, r.admin);
+    assert.equal(addressResponse.status, 201);
+    const addressId = (await addressResponse.json()).entry.id;
+    const sample = r.sample(['a', 'a']);
+    const stops = [{ id: 'synthetic-stop-1', name: ' Tank service ', address: ' Synthetic service road, 2 ' }];
+    const body = { ...sample, fields: { ...sample.fields, organization_id: 'artel', intermediate_stops_in_order: 'false' }, customers: sample.customers.map((row, index) => ({ fields: { ...row.fields, unloading_address_id: addressId, delivery_notes: `Delivery ${index + 1}`, intermediate_stops_after: index === 0 ? JSON.stringify(stops) : '' } })) };
+    const response = await r.request('/api/shipment-trips', 'POST', body, r.admin);
+    assert.equal(response.status, 201, await response.clone().text());
+    const result = await response.json();
+    const trip = result.trip as ShipmentTrip;
+    assert.equal(trip.customers.length, 2);
+    assert.notEqual(trip.customers[0].id, trip.customers[1].id);
+    assert.equal(trip.customers[0].fields.unloading_address_id, trip.customers[1].fields.unloading_address_id);
+    assert.deepEqual(JSON.parse(trip.customers[0].fields.intermediate_stops_after!), [{ id: 'synthetic-stop-1', name: 'Tank service', address: 'Synthetic service road, 2' }]);
+    assert.equal(trip.customers[1].fields.intermediate_stops_after, null);
+    assert.equal(trip.fields.intermediate_stops_in_order, 'false');
+    const stored = await new OperationsStore(r.folder).read(r.base.provenance.sourceSha256);
+    assert.deepEqual(getShipmentTrip(currentSnapshot(r.base, decodeOperations(encodeOperations(stored), r.base.provenance.sourceSha256)), trip.id), trip);
+    assert.deepEqual(result.shipments.map((row: { fields: Record<string, string> }) => row.fields.trip_delivery_order), ['1', '2']);
+    assert.equal(stored.saby, undefined);
+    assert.equal(stored.etrn, undefined);
+    assert.equal(stored.tripSaby, undefined);
+    const replay = await (await r.request('/api/shipment-trips', 'POST', body, r.admin)).json();
+    assert.deepEqual(replay.trip.customers.map((row: { id: string }) => row.id), trip.customers.map(row => row.id));
+    const reordered = edit(trip);
+    reordered.customers.reverse();
+    delete reordered.fields.intermediate_stops_in_order;
+    for (const row of reordered.customers) delete row.fields.intermediate_stops_after;
+    const patched = await r.request(`/api/shipment-trips/${trip.id}`, 'PATCH', reordered, r.admin);
+    assert.equal(patched.status, 200, await patched.clone().text());
+    const updated = (await patched.json()).trip as ShipmentTrip;
+    assert.deepEqual(updated.customers.map(row => row.id), [...trip.customers].reverse().map(row => row.id));
+    assert.equal(updated.customers[0].fields.intermediate_stops_after, null);
+    assert.equal(updated.customers[1].fields.intermediate_stops_after, trip.customers[0].fields.intermediate_stops_after);
+    assert.equal(updated.fields.intermediate_stops_in_order, 'false');
+    assert.deepEqual(updated.customers.map(row => row.fields.delivery_notes), ['Delivery 2', 'Delivery 1']);
+    assert.ok(updated.customers.every(row => row.fields.invoice_not_required === 'true' && row.fields.transport_amount === '8000'));
+    const loaded = await new OperationsStore(r.folder).read(r.base.provenance.sourceSha256);
+    assert.deepEqual(getShipmentTrip(currentSnapshot(r.base, loaded), trip.id).customers.map(row => row.id), updated.customers.map(row => row.id));
+    assert.equal(Object.values(loaded.shipments).filter(row => !row.deleted).length, 2);
+    const beforeRead = encodeOperations(loaded);
+    const workflow = await r.request(`/api/shipment-trips/${trip.id}/saby-workflow`, 'GET', undefined, r.admin);
+    assert.equal(workflow.status, 200);
+    assert.equal((await workflow.json()).ready, false);
+    assert.equal(encodeOperations(await r.store.read(r.base.provenance.sourceSha256)), beforeRead);
+  } finally { await r.close(); }
+});
+
+test('intermediate route rejects malformed stops atomically and permits an unsent trip with undecided order inclusion', async () => {
+  const r = await runtime();
+  try {
+    const sample = r.sample();
+    const validStop = { id: 'stop-1', name: 'Synthetic service stop', address: 'Synthetic address' };
+    const before = encodeOperations(await r.store.read(r.base.provenance.sourceSha256));
+    const invalidStops = ['{', '{}', 'null', JSON.stringify([{ ...validStop, name: '' }]), JSON.stringify([{ ...validStop, address: 'bad\nline' }]), JSON.stringify([validStop, validStop]), JSON.stringify([{ ...validStop, lat: '55' }]), JSON.stringify([{ ...validStop, id: '../bad' }]), JSON.stringify(Array.from({ length: 11 }, (_, index) => ({ ...validStop, id: `stop-${index}` })))];
+    for (const intermediate_stops_after of invalidStops) {
+      const request = { ...sample, idempotencyKey: randomUUID(), customers: [{ fields: { ...sample.customers[0].fields, intermediate_stops_after } }] };
+      assert.equal((await r.request('/api/shipment-trips', 'POST', request, r.admin)).status, 400);
+    }
+    assert.equal((await r.request('/api/shipment-trips', 'POST', { ...sample, fields: { ...sample.fields, intermediate_stops_in_order: 'yes' } }, r.admin)).status, 400);
+    assert.equal(encodeOperations(await r.store.read(r.base.provenance.sourceSha256)), before);
+    const valid = { ...sample, customers: [{ fields: { ...sample.customers[0].fields, intermediate_stops_after: JSON.stringify([validStop]) } }] };
+    const response = await r.request('/api/shipment-trips', 'POST', valid, r.admin);
+    assert.equal(response.status, 201);
+    const created = (await response.json()).trip as ShipmentTrip;
+    assert.equal(created.fields.intermediate_stops_in_order, null);
+    const clearing = edit(created);
+    clearing.customers[0].fields.intermediate_stops_after = '';
+    const cleared = await r.request(`/api/shipment-trips/${created.id}`, 'PATCH', clearing, r.admin);
+    assert.equal(cleared.status, 200);
+    assert.equal((await cleared.json()).trip.customers[0].fields.intermediate_stops_after, null);
+  } finally { await r.close(); }
+});
+
+test('loading defaults to selected date without inventing time and old trips retain organization and financial inputs', async () => {
+  const r = await runtime();
+  try {
+    const sample = r.sample(['a', 'a']);
+    const fields: Record<string, string> = { ...sample.fields, organization_id: 'nk-artel', date: '2027-01-15' };
+    delete fields.loading_planned_at;
+    const response = await r.request('/api/shipment-trips', 'POST', { ...sample, fields }, r.admin);
+    assert.equal(response.status, 201);
+    const trip = (await response.json()).trip as ShipmentTrip;
+    assert.equal(trip.fields.loading_planned_at, '2027-01-15');
+    assert.equal(trip.fields.loading_actual_at, '2027-01-15');
+    await r.store.mutate(r.base.provenance.sourceSha256, data => {
+      for (const row of Object.values(data.shipments)) { delete row.fields.trip_delivery_order; delete row.fields.intermediate_stops_after; delete row.fields.intermediate_stops_in_order; }
+      return { changed: true, result: null };
+    });
+    const previous = (await (await r.request(`/api/shipment-trips/${trip.id}`, 'GET', undefined, r.admin)).json()).trip as ShipmentTrip;
+    assert.deepEqual(previous.customers.map(row => row.id), trip.customers.map(row => row.id));
+    const legacy = edit(previous);
+    delete legacy.fields.organization_id;
+    delete legacy.fields.loading_planned_at;
+    delete legacy.fields.intermediate_stops_in_order;
+    const updated = await r.request(`/api/shipment-trips/${trip.id}`, 'PATCH', legacy, r.admin);
+    assert.equal(updated.status, 200, await updated.clone().text());
+    const result = (await updated.json()).trip as ShipmentTrip;
+    assert.equal(result.fields.organization_id, 'nk-artel');
+    assert.equal(result.fields.loading_planned_at, '2027-01-15');
+    assert.equal(result.fields.purchase_price_unspecified_unit, sample.fields.purchase_price_unspecified_unit);
+    assert.equal(result.fields.quantity_tonnes, sample.fields.quantity_tonnes);
+    assert.deepEqual(result.customers.map(row => row.fields), previous.customers.map(row => row.fields));
+  } finally { await r.close(); }
+});
+
+test('new supplier loading selections are rejected while untouched historical supplier snapshots survive', async () => {
+  const r = await runtime();
+  try {
+    const location = await (await r.request('/api/directories', 'POST', { kind: 'addresses', companyId: 'trip-supplier', addressKind: 'loading', name: 'Legacy terminal', address: 'Legacy physical loading site' }, r.admin)).json();
+    const sample = r.sample();
+    const rejected = await r.request('/api/shipment-trips', 'POST', { ...sample, fields: { ...sample.fields, loading_address_id: location.entry.id } }, r.admin);
+    assert.equal(rejected.status, 400);
+    assert.match((await rejected.json()).error, /нефтебаз/);
+    const created = await (await r.request('/api/shipment-trips', 'POST', r.sample(), r.admin)).json();
+    await r.store.mutate(r.base.provenance.sourceSha256, data => {
+      for (const row of Object.values(data.shipments).filter(row => row.fields.trip_id === created.trip.id)) {
+        row.fields.loading_address_id = location.entry.id;
+        row.fields.loading_address = 'Historical saved loading site';
+      }
+      return { result: null, changed: true };
+    });
+    const oldTrip = getShipmentTrip(currentSnapshot(r.base, await r.store.read(r.base.provenance.sourceSha256)), created.trip.id);
+    const input = edit(oldTrip); input.fields.trip_notes = 'Only a historical note changed';
+    const saved = await r.request(`/api/shipment-trips/${oldTrip.id}`, 'PATCH', input, r.admin);
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.equal((await saved.json()).trip.fields.loading_address, 'Historical saved loading site');
+    const second = await (await r.request('/api/directories', 'POST', { kind: 'addresses', companyId: 'trip-supplier', addressKind: 'loading', name: 'Another legacy terminal' }, r.admin)).json();
+    const latest = getShipmentTrip(currentSnapshot(r.base, await r.store.read(r.base.provenance.sourceSha256)), oldTrip.id);
+    const changed = edit(latest); changed.fields.loading_address_id = second.entry.id;
+    assert.equal((await r.request(`/api/shipment-trips/${oldTrip.id}`, 'PATCH', changed, r.admin)).status, 400);
   } finally { await r.close(); }
 });

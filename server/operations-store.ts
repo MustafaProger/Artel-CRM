@@ -1,6 +1,10 @@
+import { oilDepotDetails } from './oil-depots';
+import { migrateOilDepots } from './migrations/003-oil-depots';
 import { locationDetails } from './location-details';
+import { productTransportDetails, vehicleTransportDetails } from './directory-transport-details';
 import { validateSabyData, type SabyData } from './saby-service';
 import { validateEtrnData, type EtrnData } from './etrn-service';
+import { validateTripSabyData, type TripSabyData } from './trip-saby-workflow';
 import { companyFields, driverFields } from '../web/src/directory-fields';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, rename, unlink } from 'node:fs/promises';
@@ -38,6 +42,7 @@ export interface OperationsData {
   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
   saby?: SabyData;
   etrn?: EtrnData;
+  tripSaby?: TripSabyData;
   /** Explicit reset: source operations must never be imported again. */
   sourceOperationsCleared?: boolean;
   work?: WorkData;
@@ -65,6 +70,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   }
   try { validateSabyData(data.saby); } catch { throw new StoreError('Invalid Saby storage'); }
   try { validateEtrnData(data.etrn); } catch { throw new StoreError('Invalid ETRN storage'); }
+  try { validateTripSabyData(data.tripSaby); } catch { throw new StoreError('Invalid trip Saby storage'); }
   validateChina(data.china);
   try { validateBanking(data.banking as BankingData | undefined); } catch { throw new StoreError('Invalid banking storage'); }
   try { validateSber(data.sber as SberData | undefined); validateSber(data.sberArtel as SberData | undefined, sberConnections['sber-artel']); } catch { throw new StoreError('Invalid Sber storage'); }
@@ -76,7 +82,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
     if (object(directories) && directories.fleetSeedApplied !== undefined && typeof directories.fleetSeedApplied !== 'boolean') throw new StoreError('Invalid fleet migration');
     if (object(directories) && directories.deletedEntries !== undefined) {
       if (!object(directories.deletedEntries)) throw new StoreError('Invalid directory deletions');
-      for (const [kind, ids] of Object.entries(directories.deletedEntries)) if (!['companies','managers','products','paymentForms','vehicles','drivers','addresses'].includes(kind) || !strings(ids) || ids.some(id=>!id) || new Set(ids).size!==ids.length) throw new StoreError('Invalid directory deletions');
+      for (const [kind, ids] of Object.entries(directories.deletedEntries)) if (!['companies','managers','products','paymentForms','vehicles','drivers','addresses','oilDepots'].includes(kind) || !strings(ids) || ids.some(id=>!id) || new Set(ids).size!==ids.length) throw new StoreError('Invalid directory deletions');
     }
     if (!object(directories) || !object(directories.defaults) || ![null,'template-payment-form','simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
     if (directories.customerManagers !== undefined) {
@@ -87,6 +93,15 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
         customers.add(row.companyId);
       }
     }
+    if (directories.oilDepots !== undefined) {
+      if (!Array.isArray(directories.oilDepots)) throw new StoreError('Invalid oil depots');
+      const seen = new Set<string>();
+      for (const depot of directories.oilDepots) {
+        if (!object(depot) || typeof depot.id !== 'string' || !depot.id || seen.has(depot.id) || depot.version !== undefined && (!Number.isSafeInteger(depot.version) || Number(depot.version) < 0)) throw new StoreError('Invalid oil depot');
+        try { oilDepotDetails(depot); } catch { throw new StoreError('Invalid oil depot details'); }
+        seen.add(depot.id);
+      }
+    }
     for (const key of ['managers','products','paymentForms','vehicles','drivers','addresses']) {
       const rows = directories[key];
       if (!Array.isArray(rows)) throw new StoreError('Invalid directory');
@@ -94,7 +109,9 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
       for (const row of rows) {
         if (!object(row) || typeof row.id !== 'string' || !row.id || seen.has(row.id) || typeof row[key === 'vehicles' ? 'plate' : 'name'] !== 'string' || !(row[key === 'vehicles' ? 'plate' : 'name'] as string).trim()) throw new StoreError('Invalid directory entry');
         seen.add(row.id);
+        if (['vehicles','drivers'].includes(key) && row.carrierId !== undefined && (typeof row.carrierId !== 'string' || (row.carrierId as string).length > 500)) throw new StoreError('Invalid fleet carrier');
         if (key === 'vehicles' && !validVehicleMetadata(row)) throw new StoreError('Invalid vehicle metadata');
+        if (key === 'vehicles' || key === 'products') { try { (key === 'vehicles' ? vehicleTransportDetails : productTransportDetails)(row); } catch { throw new StoreError('Invalid directory transport profile'); } }
         if (key === 'drivers' && driverFields.some(([key])=>row[key] !== undefined && (typeof row[key] !== 'string' || (row[key] as string).length > 500))) throw new StoreError('Invalid driver details');
         if (key === 'drivers' && row.phone !== undefined && !validPhone(row.phone)) throw new StoreError('Invalid driver phone');
         if (key === 'drivers' && (typeof row.vehicleId !== 'string' || !(directories.vehicles as {id:string}[]).some(v => v.id === row.vehicleId))) throw new StoreError('Invalid driver vehicle');
@@ -117,6 +134,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   for (const company of data.companies) {
     if (!object(company) || (company.directoryArchived !== undefined && typeof company.directoryArchived !== 'boolean') || typeof company.id !== 'string' || !company.id || typeof company.name !== 'string' || !company.name || !strings(company.roles) || !strings(company.managerLabels) || !strings(company.shipmentIds) || !strings(company.paymentIds) || !strings(company.flags) || (company.inn !== undefined && (typeof company.inn !== 'string' || !/^\d{10}(?:\d{2})?$/.test(company.inn) || inns.has(company.inn))) || (company.registrySource !== undefined && (company.registrySource !== 'checko' || typeof company.registryCheckedAt !== 'string')) || ids.has(company.id)) throw new StoreError('Invalid company metadata');
     if (companyFields.some(([key])=>company[key] !== undefined && company[key] !== null && (typeof company[key] !== 'string' || (company[key] as string).length > 500))) throw new StoreError('Invalid company details');
+    if (['defaultDriverId','defaultVehicleId'].some(key => company[key] !== undefined && (typeof company[key] !== 'string' || (company[key] as string).length > 500))) throw new StoreError('Invalid carrier defaults');
     ids.add(company.id); if (typeof company.inn === 'string') inns.add(company.inn);
   }
 }
@@ -126,7 +144,7 @@ export function decodeOperations(raw: string, sourceSha256: string): OperationsD
     const envelope = JSON.parse(raw) as { sha256?: unknown; data?: unknown };
     if (!object(envelope) || envelope.sha256 !== hash(JSON.stringify(envelope.data))) throw new StoreError('Operations checksum mismatch');
     validate(envelope.data, sourceSha256);
-    const data = migrateShipmentDirectories(envelope.data);
+    const data = migrateOilDepots(migrateShipmentDirectories(envelope.data));
     return { ...data, directories: withFleetDirectories(data.directories!) };
   } catch { throw new StoreError('Operations store is damaged or belongs to another source'); }
 }
@@ -166,7 +184,7 @@ export class OperationsStore {
       } finally { await handle.close(); }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        const data = migrateShipmentDirectories({ schemaVersion: 1, sourceSha256, revision: 0, shipments: {}, companies: [] });
+        const data = migrateOilDepots(migrateShipmentDirectories({ schemaVersion: 1, sourceSha256, revision: 0, shipments: {}, companies: [] }));
         return { ...data, directories: withFleetDirectories(data.directories!) };
       }
       throw new StoreError('Cannot read operations store');

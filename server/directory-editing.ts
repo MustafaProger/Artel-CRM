@@ -1,5 +1,5 @@
 import { locationDetailKeys, locationDetails } from './location-details';
-import { companyFields } from '../web/src/directory-fields';
+import { companyFields, productTransportFields, vehicleTransportFields } from '../web/src/directory-fields';
 import { randomUUID } from 'node:crypto';
 import type { Company, Directories, ShipmentAddress, Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
@@ -7,20 +7,29 @@ import { ApiError } from './api-error';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { validInn } from './checko';
 import { companyRoleUsed } from './directory-deletion';
+import { saveOilDepot } from './oil-depots';
 
 export type EditableDirectory = 'managers' | 'products' | 'paymentForms' | 'vehicles' | 'drivers' | 'addresses';
 export function updateDirectoryEntry(kind: string, id: string, input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
+  if (kind === 'oilDepots') return saveOilDepot(input, snapshot, data, id);
   if (!['managers', 'products', 'paymentForms', 'vehicles', 'drivers', 'addresses'].includes(kind)) throw new ApiError(400, 'Неизвестный справочник.');
   const key = kind as EditableDirectory;
   const previous = snapshot.directories![key].find(row => row.id === id);
   if (!previous) throw new ApiError(404, 'Запись не найдена.');
   if (input.version !== (previous.version ?? 0)) throw new ApiError(409, 'Запись уже изменена. Закройте карточку и откройте её снова.');
   const { version: _version, ...fields } = input;
+  if ((key === 'vehicles' || key === 'drivers') && Object.hasOwn(fields, 'carrierId') && fields.carrierId !== ('carrierId' in previous ? previous.carrierId : undefined)) {
+    const defaultKey = key === 'vehicles' ? 'defaultVehicleId' : 'defaultDriverId';
+    if (snapshot.companies.some(company => company[defaultKey] === id && company.id !== fields.carrierId)) throw new ApiError(409, 'Сначала измените вариант по умолчанию в карточке прежнего перевозчика.');
+    if (key === 'vehicles' && fields.carrierId && snapshot.directories!.drivers.some(driver => driver.vehicleId === id && driver.carrierId && driver.carrierId !== fields.carrierId)) throw new ApiError(409, 'Автомобиль связан с водителем другого перевозчика. Сначала согласуйте связи в карточках.');
+  }
   if (key === 'addresses' && 'companyId' in previous && (fields.companyId !== previous.companyId || fields.addressKind !== previous.kind) && snapshot.shipments.some(row => [row.fields.loading_address_id, row.fields.unloading_address_id].includes(id))) throw new ApiError(409, 'Адрес используется в отгрузке. Нельзя изменить его компанию или тип.');
   // Reuse creation validation, excluding only the record being edited.
   const catalog = { ...snapshot.directories!, [key]: snapshot.directories![key].filter(row => row.id !== id) };
   const draft = structuredClone(data);
-  const result = addDirectoryEntry({ ...(key === 'addresses' ? Object.fromEntries(locationDetailKeys.map(key => [key, (previous as ShipmentAddress)[key]])) : {}), ...fields, kind }, { ...snapshot, directories: catalog }, draft);
+  const preservedKeys = key === 'addresses' ? locationDetailKeys : key === 'products' ? productTransportFields.map(([key]) => key) : key === 'vehicles' ? [...vehicleTransportFields.map(([key]) => key), 'carrierId'] : key === 'drivers' ? ['carrierId'] : [];
+  const preserved = Object.fromEntries(preservedKeys.map(key => [key, (previous as unknown as Record<string, unknown>)[key]]));
+  const result = addDirectoryEntry({ ...preserved, ...fields, kind }, { ...snapshot, directories: catalog }, draft, key === 'addresses' ? previous as ShipmentAddress : undefined);
   if (!result.created) throw new ApiError(409, 'Такая запись уже есть в справочнике.');
   const entry = { ...result.entry, id, version: (previous.version ?? 0) + 1 } as Directories[typeof key][number];
   const rows = data.directories![key] as (typeof entry)[];
@@ -31,7 +40,7 @@ export function updateDirectoryEntry(kind: string, id: string, input: Record<str
 }
 
 export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData, id?: string): { entry: Company; created: boolean } {
-  if (Object.keys(input).some(key => !['kind', 'version', 'name', 'inn', 'roles', 'managerId', 'addresses', ...companyFields.map(([key])=>key)].includes(key))) throw new ApiError(400, 'Неизвестное поле компании.');
+  if (Object.keys(input).some(key => !['kind', 'version', 'name', 'inn', 'roles', 'managerId', 'addresses', 'defaultDriverId', 'defaultVehicleId', ...companyFields.map(([key])=>key)].includes(key))) throw new ApiError(400, 'Неизвестное поле компании.');
   const previous = id ? snapshot.companies.find(company => company.id === id) : undefined;
   if (id && !previous) throw new ApiError(404, 'Компания не найдена.');
   if (previous && input.version !== (previous.version ?? 0)) throw new ApiError(409, 'Компания уже изменена. Закройте карточку и откройте её снова.');
@@ -40,8 +49,8 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   if (input.inn !== undefined && typeof input.inn !== 'string') throw new ApiError(400, 'Проверьте ИНН.');
   const inn = (input.inn as string | undefined)?.trim() || undefined;
   if (inn && !validInn(inn)) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр.');
-  if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier'].includes(String(role)) && !(role === 'carrier' && previous?.roles.includes('carrier')))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
-  if (!input.roles.some(role => ['customer', 'supplier'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании: клиент или поставщик.');
+  if (!Array.isArray(input.roles) || input.roles.some(role => !['customer', 'supplier', 'carrier', 'other'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании: клиент, поставщик, перевозчик или другая компания.');
+  if (!input.roles.some(role => ['customer', 'supplier', 'carrier', 'other'].includes(String(role)))) throw new ApiError(400, 'Выберите тип компании: клиент, поставщик, перевозчик или другая компания.');
   // Adding a cleared client or another role reuses the exact historical identity.
   // A name-only record is never merged with a submitted INN without verification.
   const matching = !id ? snapshot.companies.filter(company => inn ? company.inn === inn : !company.inn && normalizeName(company.name) === normalizeName(name)) : [];
@@ -52,7 +61,11 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
     const incomingAddresses = input.addresses.map(raw => {
       if (raw && typeof raw === 'object' && !Array.isArray(raw) && !raw.id && typeof raw.name === 'string') {
         const address = existingAddresses.find(address => address.kind === raw.kind && normalizeName(address.name) === normalizeName(raw.name));
-        if (address) return { ...raw, id: address.id };
+        if (address) {
+          const fields = { ...raw };
+          for (const key of locationDetailKeys) if (fields[key] === undefined || typeof fields[key] === 'string' && !fields[key].trim()) delete fields[key];
+          return { ...fields, id: address.id };
+        }
       }
       return raw;
     });
@@ -62,12 +75,12 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
     const fields = { ...input };
     for (const [key] of companyFields) if (fields[key] === undefined || fields[key] === null || typeof fields[key] === 'string' && !fields[key].trim()) delete fields[key];
     const managerId = input.managerId || snapshot.directories!.customerManagers?.find(row => row.companyId === company.id)?.managerId || null;
-    const restored = saveCompany({ ...fields, managerId, version: company.version ?? 0, roles: [...new Set([...company.roles.filter(role => ['customer', 'supplier', 'carrier'].includes(role)), ...input.roles])], addresses }, snapshot, data, company.id);
+    const restored = saveCompany({ ...fields, managerId, version: company.version ?? 0, roles: [...new Set([...company.roles.filter(role => ['customer', 'supplier', 'carrier', 'other'].includes(role)), ...input.roles])], addresses }, snapshot, data, company.id);
     restored.entry.directoryArchived = false;
     return restored;
   }
   if (snapshot.companies.some(company => company.id !== id && inn && company.inn === inn)) throw new ApiError(409, 'Компания с таким ИНН уже есть в справочнике.');
-  const roles = [...new Set([...(input.roles as string[]), ...(previous?.roles.filter(role => !['customer', 'supplier'].includes(role)) ?? [])])];
+  const roles = [...new Set([...(input.roles as string[]), ...(previous?.roles.filter(role => !['customer', 'supplier', 'other'].includes(role)) ?? [])])];
   // A new INN identifies a separate entity; hidden name-only history must not block
   // creation or be reassigned to it. Visible entries in the requested role still conflict.
   if (!previous && snapshot.companies.some(company => normalizeName(company.name) === normalizeName(name) &&
@@ -81,14 +94,15 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   const seen = new Set<string>();
   const oldAddresses = snapshot.directories!.addresses.filter(address => address.companyId === companyId);
   const addresses: ShipmentAddress[] = input.addresses.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['id', 'name', 'kind', ...locationDetailKeys].includes(key)) || typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 500 || !['loading', 'delivery'].includes(raw.kind)) throw new ApiError(400, 'Проверьте адрес и его тип.');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['id', 'name', 'kind', 'version', ...locationDetailKeys].includes(key)) || typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 500 || !['loading', 'delivery'].includes(raw.kind)) throw new ApiError(400, 'Проверьте адрес и его тип.');
     if (raw.id && (typeof raw.id !== 'string' || !oldAddresses.some(address => address.id === raw.id && address.kind === raw.kind))) throw new ApiError(400, 'Адрес не принадлежит компании или имеет другой тип.');
     const name = raw.name.normalize('NFKC').trim().replace(/\s+/g, ' ');
     const key = `${raw.kind}:${normalizeName(name)}`;
     if (seen.has(key) || raw.id && seen.has(raw.id)) throw new ApiError(400, 'Адрес указан дважды.');
     seen.add(key); if (raw.id) seen.add(raw.id);
     const previousAddress = oldAddresses.find(row => row.id === raw.id);
-    const details = locationDetails({ ...previousAddress, ...raw });
+    if (Object.hasOwn(raw, 'version') && (raw.version !== (previousAddress?.version ?? 0))) throw new ApiError(409, 'Адрес компании уже изменён. Закройте карточку и откройте её снова.');
+    const details = locationDetails({ ...previousAddress, ...raw }, { companies: snapshot.companies, previous: previousAddress });
     return { ...details, id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => previousAddress[key] === details[key]) ? 0 : 1) } : {}) };
   });
   const removed = oldAddresses.filter(address => !addresses.some(row => row.id === address.id));
@@ -102,6 +116,14 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
     delete company.registrySource; delete company.registryCheckedAt;
     if (previous.inn !== inn) { delete company.kpp; delete company.ogrn; delete company.fullName; delete company.address; delete company.status; }
   }
+  for (const [field, rows] of [['defaultDriverId', snapshot.directories!.drivers], ['defaultVehicleId', snapshot.directories!.vehicles]] as const) {
+    if (!Object.hasOwn(input, field)) continue;
+    const value = input[field];
+    if (value === null || value === '') { delete company[field]; continue; }
+    if (typeof value !== 'string' || !roles.includes('carrier') || !rows.some(row => row.id === value && row.carrierId === companyId)) throw new ApiError(400, 'Вариант по умолчанию должен быть связан с этим перевозчиком.');
+    company[field] = value;
+  }
+  if (previous?.roles.includes('carrier') && !roles.includes('carrier') && (snapshot.directories!.vehicles.some(row => row.carrierId === companyId) || snapshot.directories!.drivers.some(row => row.carrierId === companyId) || snapshot.shipments.some(row => row.carrierId === companyId))) throw new ApiError(409, 'Перевозчик используется в рейсах или связан с транспортом и водителями.');
   Object.assign(company, details);
   const index = data.companies.findIndex(row => row.id === companyId);
   if (index >= 0) data.companies[index] = company;

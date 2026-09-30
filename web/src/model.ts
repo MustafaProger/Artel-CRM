@@ -1,4 +1,4 @@
-import type { CompanyDetails, DriverDetails, VehicleDetails } from './directory-fields';
+import type { CompanyDetails, DriverDetails, VehicleDetails, VehicleTransportDetails, ProductTransportDetails } from './directory-fields';
 /** Money and quantities retain the exported decimal precision. Null is never zero. */
 export type DecimalValue = string | null;
 
@@ -27,6 +27,8 @@ export interface Company extends CompanyDetails {
   fullName?: string | null;
   registrySource?: 'checko';
   registryCheckedAt?: string;
+  defaultDriverId?: string;
+  defaultVehicleId?: string;
 }
 
 export type ShipmentType = 'tanker' | 'azs';
@@ -192,9 +194,11 @@ export interface Snapshot {
 }
 
 export interface NamedEntry { id: string; name: string; version?: number }
-export interface Vehicle extends VehicleDetails { id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
-export interface Driver extends NamedEntry, DriverDetails { vehicleId: string; phone?: string }
-export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string }
+export interface Product extends NamedEntry, ProductTransportDetails {}
+export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
+export interface Driver extends NamedEntry, DriverDetails { carrierId?: string; vehicleId: string; phone?: string }
+export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string }
+export interface OilDepot extends NamedEntry { address?: string; mapUrl?: string; latitude?: string; longitude?: string; ownerCompanyId?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string }
 export type ProfitRule = 'azs-payment-form' | 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
 export interface CalculationRules {
   sale: 'litres' | 'tonnes' | null;
@@ -211,9 +215,10 @@ export interface Directories {
   /** Derived per authenticated manager; never stored as role assignments. */
   assignedCustomerIds?: string[];
   fleetSeedApplied?: boolean;
-  deletedEntries?: Partial<Record<'companies'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses', string[]>>;
-  managers: NamedEntry[]; products: NamedEntry[]; paymentForms: NamedEntry[];
+  deletedEntries?: Partial<Record<'companies'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses'|'oilDepots', string[]>>;
+  managers: NamedEntry[]; products: Product[]; paymentForms: NamedEntry[];
   vehicles: Vehicle[]; drivers: Driver[]; addresses: ShipmentAddress[];
+  oilDepots?: OilDepot[];
   defaults: { profit: ProfitRule | null };
   duplicates: DuplicateCandidate[];
   customerManagers?: { companyId: string; managerId: string }[];

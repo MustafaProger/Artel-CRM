@@ -13,6 +13,21 @@ export const vehicleFields = [
 export const stsFields = [['stsSeries','Серия СТС'],['stsNumber','Номер СТС'],['stsIssuedAt','Дата выдачи СТС'],['stsIssuedBy','Кем выдано СТС'],['stsSpecialMarks','Особые отметки и дополнительные данные СТС']] as const
 export const ptsFields = [['ptsSeries','Серия ПТС'],['ptsNumber','Номер ПТС / ЭПТС'],['ptsIssuedAt','Дата выдачи ПТС'],['ptsIssuedBy','Кем выдан ПТС'],['ptsCustomsDocument','Таможенный документ'],['ptsRestrictions','Таможенные ограничения'],['ptsSpecialMarks','Особые отметки и дополнительные данные ПТС']] as const
 export const allVehicleFields = [...vehicleFields,...stsFields,...ptsFields] as const
+/** Confirmed transport facts are separate from the vehicle's gross/unladen mass. */
+export const vehicleTransportFields = [
+  ['transportVehicleType','Тип ТС для транспортных документов'],['bodyType','Тип кузова'],['loadingMethod','Способ погрузки'],
+  ['payloadTonnes','Подтверждённая грузоподъёмность, т'],['payloadSource','Источник грузоподъёмности (ПТС / СТС)'],
+  ['ownershipType','Основание владения'],['leaseDocumentName','Наименование договора'],['leaseDocumentNumber','Номер договора'],['leaseDocumentDate','Дата договора'],['leaseDocumentIssuerInn','ИНН составителей договора'],
+  ['cargoDistributable','Распределение груза по платформе'],
+] as const
+export const productTransportFields = [
+  ['documentName','Полное наименование для документов'],['transportProductKind','Автоматизация транспортных документов'],['cargoPackaging','Способ перевозки груза'],
+  ['dangerousGoodsUnNumber','Номер ООН'],['dangerousGoodsShippingName','Наименование опасного груза'],['dangerousGoodsClass','Класс опасности'],
+  ['dangerousGoodsClassificationCode','Классификационный код'],['dangerousGoodsPackingGroup','Группа упаковки'],['dangerousGoodsHazardSign','Знаки опасности'],
+  ['dangerousGoodsTunnelCode','Код ограничения проезда через тоннели'],['dangerousGoodsSource','Источник характеристик опасного груза'],
+] as const
 export type CompanyDetails = Partial<Record<(typeof companyFields)[number][0], string | null>>
 export type DriverDetails = Partial<Record<(typeof driverFields)[number][0], string>>
 export type VehicleDetails = Partial<Record<(typeof allVehicleFields)[number][0], string>>
+export type VehicleTransportDetails = Partial<Record<Exclude<(typeof vehicleTransportFields)[number][0], 'cargoDistributable'>, string>> & { cargoDistributable?: '0' | '1' }
+export type ProductTransportDetails = Partial<Record<Exclude<(typeof productTransportFields)[number][0], 'transportProductKind' | 'cargoPackaging'>, string>> & { transportProductKind?: 'diesel'; cargoPackaging?: 'bulk' | 'packaged' }

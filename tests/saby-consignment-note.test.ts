@@ -95,3 +95,84 @@ test('foreign delivery and malformed attempt identifiers cannot produce document
   const { source, trip, profile, snapshot } = fixture(); assert.throws(() => buildSabyConsignmentSnapshot(source, trip, 'wrong-delivery', sender, carrier, profile));
   assert.throws(() => serializeSabyConsignmentNote(snapshot, '../bad-id', createdAt)); assert.throws(() => serializeSabyConsignmentNote(snapshot, attemptId, 'bad-date'));
 });
+test('entrepreneur recipient uses SvIP with a legal personal name in XML and SvFL in JSON', () => {
+  const { snapshot } = fixture();
+  snapshot.customer.inn = '026194738501';
+  snapshot.profile.recipient = { ...snapshot.profile.recipient, inn: '026194738501', kpp: '', name: 'ИП ПредпринимательТестовый ИмяТестовое', person: { surname: 'ПредпринимательТестовый', name: 'ИмяТестовое', patronymic: '' } };
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []);
+  const xml = xmlOf(snapshot);
+  assert.match(xml, /<СвИП ИННФЛ="026194738501"><ФИО Фамилия="ПредпринимательТестовый" Имя="ИмяТестовое"\/><\/СвИП>/);
+  assert.doesNotMatch(xml, /ИННЮЛ="026194738501"/);
+  const doc = buildSabyConsignmentDocument(snapshot, 'TEST', attemptId, createdAt);
+  assert.deepEqual(doc.Грузополучатель, { СвФЛ: { ИНН: '026194738501', Фамилия: 'ПредпринимательТестовый', Имя: 'ИмяТестовое', Отчество: '', ЧастноеЛицо: 'Нет' } });
+  validateXsd(snapshot);
+});
+test('entrepreneur names are taken from unambiguous directory names without inventing missing parts', () => {
+  const { source, trip } = fixture();
+  source.companies[0].inn = '026194738501'; source.companies[0].kpp = ''; source.companies[0].fullName = 'ИП ПредпринимательТестовый ИмяТестовое';
+  const snapshot = buildSabyConsignmentSnapshot(source, trip, trip.customers[0].id, sender, carrier, null);
+  assert.deepEqual(snapshot.profile.recipient.person, { surname: 'ПредпринимательТестовый', name: 'ИмяТестовое', patronymic: '' });
+  source.companies[0].fullName = 'ИП ПредпринимательТестовый';
+  assert.equal(buildSabyConsignmentSnapshot(source, trip, trip.customers[0].id, sender, carrier, null).profile.recipient.person, undefined);
+});
+test('entrepreneur identities require names and cannot retain a legal-entity KPP', () => {
+  for (const extra of [{ person: undefined, kpp: '' }, { person: { surname: 'Тестовый', name: 'Тест', patronymic: '' }, kpp: '026101001' }]) {
+    const { snapshot } = fixture(); snapshot.customer.inn = '026194738501'; snapshot.profile.recipient = { ...snapshot.profile.recipient, inn: '026194738501', ...extra };
+    assert.ok(sabyConsignmentBlockers(snapshot).some(value => value.includes('грузополучателя'))); assert.throws(() => xmlOf(snapshot));
+  }
+});
+test('Saby-assigned numbers are used consistently while old persisted attempts keep their legacy number', () => {
+  const { snapshot } = fixture();
+  const generated = serializeSabyConsignmentNote(snapshot, attemptId, createdAt, '008-А');
+  assert.equal(generated.number, '008-А'); assert.match(new TextDecoder('windows-1251').decode(generated.xml), /НомерТрН="008-А"/);
+  assert.equal(buildSabyConsignmentDocument(snapshot, 'TEST', attemptId, createdAt, '008-А').Номер, '008-А');
+  assert.equal(serializeSabyConsignmentNote(snapshot, attemptId, createdAt).number, `CRM-${attemptId}`);
+  assert.throws(() => serializeSabyConsignmentNote(snapshot, attemptId, createdAt, ''));
+});
+test('calculated delivery mass cannot become actual loading mass without separate confirmation', () => {
+  const { snapshot } = fixture(); snapshot.profile.massSource = 'calculated';
+  assert.ok(sabyConsignmentBlockers(snapshot).some(value => value.includes('фактическую массу брутто')));
+  assert.ok(sabyConsignmentBlockers(snapshot).some(value => value.includes('способ определения фактической массы')));
+  assert.throws(() => xmlOf(snapshot));
+  snapshot.profile.loading.grossMassTonnes = '5.2'; snapshot.profile.loading.massMethod = '03';
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []);
+  const xml = xmlOf(snapshot); assert.match(xml, /МасБрутЗнач="5123.125"/); assert.match(xml, /МасБрутОтгр="5200" МетОпрМасс="03"/);
+  validateXsd(snapshot);
+});
+test('preparation accepts future loading facts being absent but a complete title never does', () => {
+  const { snapshot } = fixture(); const p = snapshot.profile;
+  p.massSource = 'calculated'; p.order.number = ''; p.loading.arrivedAt = ''; p.loading.departedAt = '';
+  assert.deepEqual(sabyConsignmentBlockers(snapshot, { stage: 'preparation' }), []);
+  assert.ok(sabyConsignmentBlockers(snapshot).length >= 4); assert.throws(() => xmlOf(snapshot));
+  p.loading.arrivedAt = '2025-99-99T09:00';
+  assert.ok(sabyConsignmentBlockers(snapshot, { stage: 'preparation' }).some(value => value.includes('фактические')));
+  p.instructions.regulatory = '';
+  assert.ok(sabyConsignmentBlockers(snapshot, { stage: 'preparation' }).some(value => value.includes('указания')));
+});
+test('explicit loading facts survive closed normalization; malformed mass source does not downgrade to legacy', () => {
+  const profile = readSabyConsignmentProfile({ massSource: 'invalid', loading: { arrivedAt: '', departedAt: '', grossMassTonnes: '5.2', massMethod: '03', fake: true } });
+  assert.equal(profile.massSource, 'calculated'); assert.deepEqual(profile.loading, { arrivedAt: '', departedAt: '', grossMassTonnes: '5.2', massMethod: '03' });
+});
+test('unspecified transshipment restriction is omitted and remains XSD-valid', () => {
+  const { snapshot } = fixture(); snapshot.profile.instructions.transshipmentForbidden = '';
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []); assert.doesNotMatch(xmlOf(snapshot), /ЗапрПерегруз=/); validateXsd(snapshot);
+});
+test('explicit net mass needs separate planned gross and cannot supply actual loading gross', () => {
+  const { snapshot } = fixture(); const p = snapshot.profile;
+  p.plannedMassKind = 'net';
+  assert.ok(sabyConsignmentBlockers(snapshot, { stage: 'preparation' }).some(value => value.includes('плановую массу груза')));
+  assert.throws(() => xmlOf(snapshot));
+  p.plannedGrossMassTonnes = '5.2';
+  assert.ok(sabyConsignmentBlockers(snapshot).some(value => value.includes('фактическую массу брутто')));
+  p.loading.grossMassTonnes = '5.3'; p.loading.massMethod = '03';
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []);
+  const xml = xmlOf(snapshot);
+  assert.match(xml, /<ПлМасГруз МасНетЗнач="5123.125" МасБрутЗнач="5200"/);
+  assert.match(xml, /МасБрутОтгр="5300"/); validateXsd(snapshot);
+  p.plannedGrossMassTonnes = '5';
+  assert.ok(sabyConsignmentBlockers(snapshot).some(value => value.includes('меньше указанного нетто')));
+});
+test('mass kind normalization preserves net and rejects silent legacy fallback', () => {
+  const p = readSabyConsignmentProfile({ plannedMassKind: 'invalid', plannedGrossMassTonnes: '5.2' });
+  assert.equal(p.plannedMassKind, 'net'); assert.equal(p.plannedGrossMassTonnes, '5.2');
+});

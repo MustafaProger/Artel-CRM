@@ -22,10 +22,10 @@ function base(): Snapshot {
 async function runtime() {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-etrn-service-')); const store = new OperationsStore(directory); const snapshot = base();
   await store.mutate(source, data => {
-    data.directories = { ...emptyDirectories(), fleetSeedApplied: true, managers: [{ id: 'manager', name: 'Тест' }], products: [{ id: 'product', name: 'Синтетический груз' }], paymentForms: [{ id: 'payment', name: 'б/нал' }], vehicles: [{ id: 'vehicle', plate: 'Т000ТТ00', vehicleType: 'Синтетический тип', capacityLitres: '12340' }], drivers: [{ id: 'driver', name: 'ВодительТестовый Тест', fullName: 'ВодительТестовый Тест', vehicleId: 'vehicle', phone: '+70000000005', inn: '048172639504' }], addresses: [{ id: 'loading', companyId: 'supplier', kind: 'loading', name: 'Погрузка', address: 'Синтетический адрес погрузки' }, { id: 'delivery', companyId: 'customer', kind: 'delivery', name: 'Доставка', address: 'Синтетический адрес доставки' }] };
+    data.directories = { ...emptyDirectories(), fleetSeedApplied: true, managers: [{ id: 'manager', name: 'Тест' }], products: [{ id: 'product', name: 'Синтетический груз' }], paymentForms: [{ id: 'payment', name: 'б/нал' }], vehicles: [{ id: 'vehicle', plate: 'Т000ТТ00', vehicleType: 'Синтетический тип', capacityLitres: '12340' }], drivers: [{ id: 'driver', name: 'ВодительТестовый Тест', fullName: 'ВодительТестовый Тест', vehicleId: 'vehicle', phone: '+70000000005', inn: '048172639504' }], oilDepots: [{ id: 'depot', name: 'Погрузка', address: 'Синтетический адрес погрузки', ownerCompanyId: 'supplier' }], addresses: [{ id: 'loading', companyId: 'supplier', kind: 'loading', name: 'Погрузка', address: 'Синтетический адрес погрузки' }, { id: 'delivery', companyId: 'customer', kind: 'delivery', name: 'Доставка', address: 'Синтетический адрес доставки' }] };
     return { result: undefined, changed: true };
   });
-  const created = await store.mutate(source, data => ({ result: saveShipmentTrip(snapshot, data, { fields: { organization_id: 'artel', date: '2025-04-01', supplier_id: 'supplier', product_id: 'product', purchase_price_unspecified_unit: '50000', quantity_tonnes: '5.123125', driver_id: 'driver', vehicle_id: 'vehicle', loading_address_id: 'loading', loading_planned_at: '2025-04-01T08:15', additional_costs: '0' }, customers: [{ fields: { customer_id: 'customer', manager_id: 'manager', payment_form_id: 'payment', quantity_litres: '7125', sale_price_per_litre: '60', transport_amount: '1000', unloading_address_id: 'delivery', unloading_planned_at: '2025-04-01T14:00' } }] }), changed: true }));
+  const created = await store.mutate(source, data => ({ result: saveShipmentTrip(snapshot, data, { fields: { organization_id: 'artel', date: '2025-04-01', supplier_id: 'supplier', product_id: 'product', purchase_price_unspecified_unit: '50000', quantity_tonnes: '5.123125', driver_id: 'driver', vehicle_id: 'vehicle', oil_depot_id: 'depot', loading_planned_at: '2025-04-01T08:15', additional_costs: '0' }, customers: [{ fields: { customer_id: 'customer', manager_id: 'manager', payment_form_id: 'payment', quantity_litres: '7125', sale_price_per_litre: '60', transport_amount: '1000', unloading_address_id: 'delivery', unloading_planned_at: '2025-04-01T14:00' } }] }), changed: true }));
   return { directory, store, base: snapshot, tripId: created.trip.id, shipmentId: created.trip.customers[0].id, profile: syntheticEtrnFixture().profile, authorize: () => undefined, close: () => rm(directory, { recursive: true, force: true }) };
 }
 type Rpc = { method: string; params: Record<string, SabyObject>; id: number };
@@ -168,11 +168,12 @@ test('ETRN refuses bytes if the saved revision changes during download', async (
   try { await saveEtrnProfile(options, rt.shipmentId, rt.profile); const response = await exchangeEtrn(options, rt.shipmentId); await assert.rejects(downloadEtrnFile(options, rt.shipmentId, response.deliveries[0].document!.files[0].id), conflict); const data = await rt.store.read(source); assert.equal(data.etrn!.trips[rt.tripId].deliveries[rt.shipmentId].document!.artifacts[0].content, undefined); }
   finally { await rt.close(); }
 });
-test('ETRN cannot send a different organization or a delivery outside the selected trip', async () => {
+test('ETRN cannot send an unsupported organization or a delivery outside the selected trip', async () => {
   const rt = await runtime(); const api = fakeApi(); const options = { ...rt, client: new SabyClient(config(), api.send) };
   try {
     await assert.rejects(saveEtrnProfile(options, 'unrelated-shipment', rt.profile), error => error instanceof ApiError && error.status === 404);
-    await rt.store.mutate(source, data => { data.shipments[rt.shipmentId].fields.organization_id = 'nk-artel'; return { result: undefined, changed: true }; });
-    const response = await saveEtrnProfile(options, rt.shipmentId, rt.profile); assert.ok(response.deliveries[0].blockers.some(value => value.includes('Первый сценарий'))); await assert.rejects(exchangeEtrn(options, rt.shipmentId), error => error instanceof ApiError && error.status === 422); assert.equal(api.calls.length, 0);
+    await rt.store.mutate(source, data => { data.shipments[rt.shipmentId].fields.organization_id = 'unsupported-organization'; return { result: undefined, changed: true }; });
+    await assert.rejects(saveEtrnProfile(options, rt.shipmentId, rt.profile), /Invalid shipment organization/);
+    await assert.rejects(exchangeEtrn(options, rt.shipmentId), /Invalid shipment organization/); assert.equal(api.calls.length, 0);
   } finally { await rt.close(); }
 });

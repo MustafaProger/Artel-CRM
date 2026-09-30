@@ -1,0 +1,38 @@
+/* Document workflow only; shipment accounting grid is deliberately outside this scope. */
+.etrn-panel .trip-saby-heading { align-items: center; gap: 1rem; }
+.etrn-panel .trip-saby-heading h3 { margin: .25rem 0 0; font-size: 1.1rem; line-height: 1.3; letter-spacing: -.02em; }
+.etrn-panel .workflow-eyebrow { font-size: .66rem; font-weight: 650; letter-spacing: .09em; color: var(--text-secondary, #63776b); }
+.etrn-panel .workflow-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; padding: 0; margin: 1.5rem 0; gap: .45rem; }
+.etrn-panel .workflow-steps li { display: flex; align-items: center; flex-direction: column; text-align: center; gap: .6rem; font-size: .76rem; line-height: 1.35; color: var(--text-secondary, #63776b); position: relative; min-width: 0; }
+.etrn-panel .workflow-step-number { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border: 1px solid var(--line, #dce5de); background: var(--surface, #fff); border-radius: 50%; font-size: .75rem; font-weight: 650; z-index: 1; }
+.etrn-panel .workflow-steps li:not(:last-child)::after { content: ''; position: absolute; top: .95rem; left: calc(50% + 1rem); width: calc(100% - 1.55rem); height: 1px; background: var(--line, #dce5de); }
+.etrn-panel .workflow-steps .is-current { color: var(--primary, #176448); font-weight: 650; }
+.etrn-panel .is-current .workflow-step-number { background: var(--primary, #176448); color: white; border-color: transparent; box-shadow: 0 0 0 4px rgb(23 100 72 / 8%); }
+.etrn-panel .is-done .workflow-step-number { background: var(--green-soft, #edf6f0); color: var(--primary, #176448); }
+.etrn-panel .workflow-current { border: 1px solid var(--line, #dce5de); border-radius: 16px; background: var(--surface, #fff); padding: 1rem 1.15rem; }
+.etrn-panel .workflow-current strong { font-size: 1rem; }
+.etrn-panel .workflow-current p { margin: .4rem 0 0; font-size: .875rem; line-height: 1.6; color: var(--text-secondary, #63776b); }
+.etrn-panel .workflow-monitor { display: flex; gap: .7rem; margin: 1rem .1rem; font-size: .78rem; line-height: 1.65; }
+.etrn-panel .workflow-monitor svg { flex: 0 0 auto; margin-top: .22rem; color: var(--primary, #176448); }
+.etrn-panel .workflow-monitor span { display: block; color: var(--text-secondary, #63776b); }
+.etrn-panel .workflow-order { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+.etrn-panel .workflow-order h4 { font-size: 1.1rem; margin: .25rem 0; }
+.etrn-panel .workflow-order p { margin: .25rem 0 0; font-size: .875rem; }
+.etrn-panel :is(.workflow-handoff, .workflow-history) { margin: 1rem 0 0; border: 1px solid var(--line, #dce5de); border-radius: 14px; background: var(--surface, #fff); padding: .85rem 1rem; }
+.etrn-panel :is(.workflow-handoff, .workflow-history) summary { cursor: pointer; font-size: .875rem; font-weight: 600; line-height: 1.5; padding: .15rem 0; }
+.etrn-panel .workflow-handoff dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+.etrn-panel .workflow-handoff dt { font-size: .73rem; color: var(--text-secondary, #63776b); }
+.etrn-panel .workflow-handoff dd { margin: .3rem 0 0; font-size: .875rem; overflow-wrap: anywhere; }
+.etrn-panel .workflow-history summary span { color: var(--text-secondary, #63776b); margin-left: .4rem; font-size: .75rem; }
+.etrn-panel .workflow-history ol { margin: .8rem 0 0; padding: 0; list-style: none; }
+.etrn-panel .workflow-history li { display: flex; justify-content: space-between; gap: .8rem; padding: .7rem 0; border-top: 1px solid var(--line, #dce5de); font-size: .78rem; }
+.etrn-panel .workflow-history time { flex: 0 0 auto; color: var(--text-secondary, #63776b); }
+.etrn-panel .workflow-sync-warning { font-size: .85rem; line-height: 1.5; background: var(--surface, #fff); padding: .8rem; border: 1px solid var(--line, #dce5de); border-radius: 12px; }
+@media (max-width: 540px) {
+  .etrn-panel .workflow-steps { gap: .65rem; grid-template-columns: 1fr; }
+  .etrn-panel .workflow-steps li { flex-direction: row; text-align: left; }
+  .etrn-panel .workflow-steps li:not(:last-child)::after { top: 1.9rem; left: .95rem; width: 1px; height: .7rem; }
+  .etrn-panel .workflow-handoff dl { grid-template-columns: 1fr; }
+  .etrn-panel .workflow-history li { flex-direction: column; gap: .2rem; }
+  .etrn-panel .workflow-order > a { width: 100%; justify-content: center; }
+}
