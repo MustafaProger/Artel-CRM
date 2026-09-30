@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { dispatchTripSaby, SABY_COMPLETED_REFRESH_MS } from '../server/trip-saby-scheduler';
+import { dispatchTripSaby, SABY_COMPLETED_REFRESH_MS, SABY_WORKFLOW_TICK_MS } from '../server/trip-saby-scheduler';
 import { getTripSabyWorkflow, runTripSabyWorkflow } from '../server/trip-saby-workflow';
 import { exchangePreparedEtrn, saveTripLoadingFacts } from '../server/etrn-service';
 import { integrationApi, integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
@@ -45,7 +45,8 @@ test('background waits for carrier then facts and creates each delivery once wit
     const calls = f.api.calls.length; await f.tick(); assert.equal(f.api.calls.length, calls);
     const result = await f.tick({ now: Date.now() + SABY_COMPLETED_REFRESH_MS + 1_000 });
     assert.equal(result.refreshed, 2); assert.equal(f.api.reserves('ConsignmentNote').length, 2);
-    assert.equal(SABY_COMPLETED_REFRESH_MS, 60_000);
+    assert.equal(SABY_WORKFLOW_TICK_MS, 300_000);
+    assert.equal(SABY_COMPLETED_REFRESH_MS, 300_000);
     assert.ok((await f.store.read(f.source)).tripSaby!.trips[f.tripId].lastCheckedAt);
   } finally { await f.close(); }
 });
@@ -100,7 +101,7 @@ test('monitoring status reflects runtime switch and revoked rights; terminal fai
     assert.equal((await response(true)).monitoring.enabled, false);
     await f.start();
     assert.equal((await response(false)).monitoring.enabled, false);
-    assert.deepEqual((await response(true)).monitoring, { enabled: true, intervalSeconds: 60 });
+    assert.deepEqual((await response(true)).monitoring, { enabled: true, intervalSeconds: 300 });
     const doc = [...f.api.docs.values()].find(row => row.Тип === 'TransportOrder')!;
     delete doc.Код; doc.Состояние = { Код: '22', Название: 'Аннулировано' };
     await f.tick(); const stopped = await response(true);

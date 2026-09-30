@@ -10,9 +10,9 @@ import { SabyClient, sabyCredentialBlockers, type SabyConfig } from './saby-clie
 import { prepareTripSaby } from './trip-saby-preparation';
 import { runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
 
-export const SABY_WORKFLOW_TICK_MS = 60_000;
+export const SABY_WORKFLOW_TICK_MS = 5 * 60_000;
 // A created ETRN and even one signature do not prove that all participants finished.
-export const SABY_COMPLETED_REFRESH_MS = 60_000;
+export const SABY_COMPLETED_REFRESH_MS = 5 * 60_000;
 export interface TripSabySchedulerOptions {
   base: Snapshot; store: OperationsStorage; config: SabyConfig; enabled: boolean;
   prepare?: PrepareTripSaby; send?: typeof fetch; now?: number;

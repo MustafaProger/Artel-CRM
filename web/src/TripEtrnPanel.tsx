@@ -76,10 +76,10 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     const refresh = async () => {
       if (document.visibilityState !== 'visible' || lock.current || refreshing) return
       refreshing = true
-      try { await read() } catch { if (active) setRefreshError('Нет связи с CRM. Показаны последние полученные сведения; проверим ещё раз через минуту.') }
+      try { await read() } catch { if (active) setRefreshError('Нет связи с CRM. Показаны последние полученные сведения; проверим ещё раз через 5 минут.') }
       finally { refreshing = false }
     }
-    const timer = window.setInterval(() => { void refresh() }, 60000)
+    const timer = window.setInterval(() => { void refresh() }, 5 * 60_000)
     const onVisible = () => { void refresh() }
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
@@ -106,7 +106,7 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     {result && <>
       <ol className="workflow-steps" aria-label="Этапы обмена">{steps.map((step, index) => <li key={step} className={index < view!.step ? 'is-done' : index === view!.step ? 'is-current' : ''} aria-current={index === view!.step ? 'step' : undefined}><span className="workflow-step-number">{index < view!.step ? <Check size={14}/> : index + 1}</span><span>{step}</span></li>)}</ol>
       <div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
-      {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Проверка Saby каждую минуту' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'Работает и после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span><span>Последняя проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
+      {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Проверка Saby каждые 5 минут' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'Работает и после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span><span>Последняя проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
       {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
       {result.lastError && <p className="shipment-error" role="alert">{result.lastError}</p>}
       {!result.locked && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || !result.ready} onClick={() => void perform()}><FilePlus2 size={16}/>Создать заявку в Saby</button><button type="button" className="button" disabled={busy} onClick={() => { void read().catch(reason => setError(String(reason))) }}><RefreshCw size={15}/>Проверить готовность</button></div>}

@@ -106,7 +106,7 @@ function monitoringStatus(enabled: boolean, record: TripSabyRecord | undefined, 
     const actor = publicUser(user); requireTripSection(actor, true); requireWholeTrip(actor, snapshot, tripId);
   } catch { return disabled('Автопроверка приостановлена: у инициатора нет доступа к рейсу.'); }
   if (record.phase === 'error') return disabled('Автопроверка приостановлена после ошибки. Исправьте документ и выполните сверку.');
-  return { enabled: true, intervalSeconds: 60 };
+  return { enabled: true, intervalSeconds: 300 };
 }
 export function getTripSabyWorkflow({ base, data, tripId, prepare, config = sabyConfigFromEnv(), monitoringEnabled = false }: GetOptions): TripSabyResponse {
   const snapshot = currentSnapshot(base, data); const trip = getShipmentTrip(snapshot, tripId);
