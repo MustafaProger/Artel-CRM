@@ -1,0 +1,2600 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- created by  Sbis 3.0 -->
+<xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified" xmlns:sch="http://purl.oclc.org/dsdl/schematron" xmlns:usch="http://www.unisoftware.ru/schematron-extensions" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:element name="Файл">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element maxOccurs="unbounded" minOccurs="0" name="ИдПолИной"/>
+        <xs:element minOccurs="1" name="Документ">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element maxOccurs="1" minOccurs="0" name="ОснДовОргСост">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element maxOccurs="unbounded" minOccurs="1" name="ИдРекСост">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:choice>
+                            <xs:element minOccurs="0" name="ИННЮЛ"/>
+                            <xs:element minOccurs="0" name="ИННФЛ"/>
+                            <xs:element minOccurs="0" name="ДаннИно">
+                              <xs:complexType>
+                                <xs:sequence>
+                                  <xs:element minOccurs="0" name="УдЛичнИГ">
+                                    <xs:complexType>
+                                      <xs:attribute name="ВидДок" use="required">
+                                        <xs:simpleType>
+                                          <xs:restriction base="xs:string">
+                                            <xs:minLength value="1"/>
+                                            <xs:maxLength value="1000"/>
+                                          </xs:restriction>
+                                        </xs:simpleType>
+                                      </xs:attribute>
+                                      <xs:attribute name="НомДок" use="required">
+                                        <xs:simpleType>
+                                          <xs:restriction base="xs:string">
+                                            <xs:minLength value="1"/>
+                                            <xs:maxLength value="100"/>
+                                          </xs:restriction>
+                                        </xs:simpleType>
+                                      </xs:attribute>
+                                      <xs:attribute name="ДатаДок" use="required">
+                                        <xs:simpleType>
+                                          <xs:restriction base="xs:string">
+                                            <xs:maxLength value="10"/>
+                                            <xs:minLength value="10"/>
+                                            <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                          </xs:restriction>
+                                        </xs:simpleType>
+                                      </xs:attribute>
+                                    </xs:complexType>
+                                  </xs:element>
+                                </xs:sequence>
+                                <xs:attribute name="ИдСтат" use="required">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(@ИдСтат='ИО' and count(@Стран)!=0) or (@ИдСтат!='ИО' and (count(@Стран)=0 or count(@Стран)!=0))">
+                                            <usch:error>0001.006.406.011</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(@ИдСтат='ИГ' and count(@Наим)!=0) or (@ИдСтат!='ИГ' and (count(@Наим)=0 or count(@Наим)!=0))">
+                                            <usch:error>0001.006.406.012</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(@ИдСтат='ИГ' and count(УдЛичнИГ)!=0) or (@ИдСтат!='ИГ' and (count(УдЛичнИГ)=0 or count(УдЛичнИГ)!=0))">
+                                            <usch:error>0001.006.406.013</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:simpleType>
+                                    <xs:restriction base="xs:string">
+                                      <xs:minLength value="1"/>
+                                      <xs:maxLength value="25"/>
+                                      <xs:enumeration value="ИО"/>
+                                      <xs:enumeration value="ИГ"/>
+                                    </xs:restriction>
+                                  </xs:simpleType>
+                                </xs:attribute>
+                                <xs:attribute name="Стран" use="optional">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="@ИдСтат='ИО'">
+                                            <usch:error>0001.10002.003</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:simpleType>
+                                    <xs:restriction base="xs:string">
+                                      <xs:minLength value="1"/>
+                                      <xs:maxLength value="255"/>
+                                    </xs:restriction>
+                                  </xs:simpleType>
+                                </xs:attribute>
+                                <xs:attribute name="Наим" use="optional">
+                                  <xs:simpleType>
+                                    <xs:restriction base="xs:string">
+                                      <xs:minLength value="1"/>
+                                      <xs:maxLength value="1000"/>
+                                    </xs:restriction>
+                                  </xs:simpleType>
+                                </xs:attribute>
+                                <xs:attribute name="Идентиф" use="optional">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@ИныеСвед)=0">
+                                            <usch:error>0001.10002.003</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:simpleType>
+                                    <xs:restriction base="xs:string">
+                                      <xs:minLength value="1"/>
+                                      <xs:maxLength value="255"/>
+                                    </xs:restriction>
+                                  </xs:simpleType>
+                                </xs:attribute>
+                                <xs:attribute name="ИныеСвед" use="optional">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@Идентиф)=0">
+                                            <usch:error>0001.10002.003</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:simpleType>
+                                    <xs:restriction base="xs:string">
+                                      <xs:minLength value="1"/>
+                                      <xs:maxLength value="255"/>
+                                    </xs:restriction>
+                                  </xs:simpleType>
+                                </xs:attribute>
+                              </xs:complexType>
+                            </xs:element>
+                            <xs:element minOccurs="0" name="НаимОИВ"/>
+                          </xs:choice>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
+                  <xs:attribute name="НаимДок" use="optional">
+                    <xs:annotation>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="count(@ИдДок)=0">
+                              <usch:error>0001.10002.003</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="255"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="НомерДок" use="optional">
+                    <xs:annotation>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="count(@ИдДок)=0">
+                              <usch:error>0001.10002.003</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="255"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ДатаДок" use="optional">
+                    <xs:annotation>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="count(@ИдДок)=0">
+                              <usch:error>0001.10002.003</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:maxLength value="10"/>
+                        <xs:minLength value="10"/>
+                        <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ИдДок" use="optional">
+                    <xs:annotation>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="count(@НаимДок)=0 and count(@НомерДок)=0 and count(@ДатаДок)=0">
+                              <usch:error>0001.10002.003</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="255"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ДопСведДок" use="optional">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="2000"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                </xs:complexType>
+              </xs:element>
+              <xs:element minOccurs="1" name="ИдИнфГО">
+                <xs:complexType>
+                  <xs:attribute name="ИдФайлИнфГО" use="required">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="255"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ДатФайлИнфГО" use="required">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:maxLength value="10"/>
+                        <xs:minLength value="10"/>
+                        <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ВрФайлИнфГО" use="required">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="8"/>
+                        <xs:maxLength value="8"/>
+                        <xs:pattern value="(([0-1]{1}[0-9]{1}|2[0-3]{1}):([0-5]{1}[0-9]{1}):([0-5]{1}[0-9]{1}))"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ЭП" use="required">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                </xs:complexType>
+              </xs:element>
+              <xs:element minOccurs="1" name="СодИнфПрв">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element minOccurs="0" name="СвЛицОргПрвз">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element maxOccurs="unbounded" minOccurs="1" name="Тлф"/>
+                          <xs:element minOccurs="1" name="ФИО">
+                            <xs:complexType>
+                              <xs:attribute name="Фамилия" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Имя" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Отчество" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element maxOccurs="unbounded" minOccurs="0" name="СвВодит">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element maxOccurs="unbounded" minOccurs="1" name="Тлф"/>
+                          <xs:element minOccurs="1" name="ФИО">
+                            <xs:complexType>
+                              <xs:attribute name="Фамилия" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Имя" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Отчество" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                        <xs:attribute name="НомВУ" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="20"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="СерВУ" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="20"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ДатаВыдВУ" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:maxLength value="10"/>
+                              <xs:minLength value="10"/>
+                              <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ИННФЛ" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="12"/>
+                              <xs:maxLength value="12"/>
+                              <xs:pattern value="(([0-9]{1}[1-9]{1}|[1-9]{1}[0-9]{1})[0-9]{10})"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element minOccurs="0" name="СвЛицПрв">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element maxOccurs="1" minOccurs="1" name="РеквДовер">
+                            <xs:annotation>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдДок)=0 and count(@НаимДок)!=0) or (count(@ИдДок)!=0 and (count(@НаимДок)=0 or count(@НаимДок)!=0))">
+                                      <usch:error>0001.006.406.003</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдДок)=0 and count(@НомерДок)!=0) or (count(@ИдДок)!=0 and (count(@НомерДок)=0 or count(@НомерДок)!=0))">
+                                      <usch:error>0001.006.406.004</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдДок)=0 and count(@ДатаДок)!=0) or (count(@ИдДок)!=0 and (count(@ДатаДок)=0 or count(@ДатаДок)!=0))">
+                                      <usch:error>0001.006.406.005</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдДок)=0 and count(@НаимДок)!=0 and count(@НомерДок)!=0 and count(@ДатаДок)!=0) or (count(@ИдДок)!=0 and count(@НаимДок)=0 and count(@НомерДок)=0 and count(@ДатаДок)=0) or (count(@ИдДок)!=0 and count(@НаимДок)!=0 and count(@НомерДок)!=0 and count(@ДатаДок)!=0)">
+                                      <usch:error>0001.006.406.006</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                            </xs:annotation>
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element maxOccurs="unbounded" minOccurs="1" name="ИдРекСост">
+                                  <xs:complexType>
+                                    <xs:sequence>
+                                      <xs:choice>
+                                        <xs:element minOccurs="0" name="ИННЮЛ"/>
+                                        <xs:element minOccurs="0" name="ИННФЛ"/>
+                                        <xs:element minOccurs="0" name="ДаннИно">
+                                          <xs:complexType>
+                                            <xs:sequence>
+                                              <xs:element minOccurs="0" name="УдЛичнИГ">
+                                                <xs:complexType>
+                                                  <xs:attribute name="ВидДок" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="1000"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="НомДок" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="100"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="ДатаДок" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:maxLength value="10"/>
+                                                        <xs:minLength value="10"/>
+                                                        <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                            </xs:sequence>
+                                            <xs:attribute name="ИдСтат" use="required">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="(@ИдСтат='ИО' and count(@Стран)!=0) or (@ИдСтат!='ИО' and (count(@Стран)=0 or count(@Стран)!=0))">
+                                                        <usch:error>0001.006.406.011</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="(@ИдСтат='ИГ' and count(@Наим)!=0) or (@ИдСтат!='ИГ' and (count(@Наим)=0 or count(@Наим)!=0))">
+                                                        <usch:error>0001.006.406.012</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="(@ИдСтат='ИГ' and count(УдЛичнИГ)!=0) or (@ИдСтат!='ИГ' and (count(УдЛичнИГ)=0 or count(УдЛичнИГ)!=0))">
+                                                        <usch:error>0001.006.406.013</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="25"/>
+                                                  <xs:enumeration value="ИО"/>
+                                                  <xs:enumeration value="ИГ"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Стран" use="optional">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="@ИдСтат='ИО'">
+                                                        <usch:error>0001.10002.003</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Наим" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="1000"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Идентиф" use="optional">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@ИныеСвед)=0">
+                                                        <usch:error>0001.10002.003</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ИныеСвед" use="optional">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@Идентиф)=0">
+                                                        <usch:error>0001.10002.003</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                        <xs:element minOccurs="0" name="НаимОИВ"/>
+                                      </xs:choice>
+                                    </xs:sequence>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                              <xs:attribute name="НаимДок" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="НомерДок" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ДатаДок" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:maxLength value="10"/>
+                                    <xs:minLength value="10"/>
+                                    <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ИдДок" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ДопСведДок" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="2000"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                          <xs:element minOccurs="1" name="РеквЛицПрв">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element maxOccurs="unbounded" minOccurs="0" name="ИнфДляУчаст">
+                                  <xs:complexType>
+                                    <xs:attribute name="ИННУчаст" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="10"/>
+                                          <xs:maxLength value="12"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ИнфУчаст" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                                <xs:element minOccurs="1" name="ИдСв">
+                                  <xs:complexType>
+                                    <xs:sequence>
+                                      <xs:choice>
+                                        <xs:element minOccurs="0" name="СвИП">
+                                          <xs:complexType>
+                                            <xs:sequence>
+                                              <xs:element minOccurs="1" name="ФИО">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Фамилия" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="60"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Имя" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="60"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Отчество" use="optional">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="60"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                            </xs:sequence>
+                                            <xs:attribute name="ИННФЛ" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="12"/>
+                                                  <xs:maxLength value="12"/>
+                                                  <xs:pattern value="(([0-9]{1}[1-9]{1}|[1-9]{1}[0-9]{1})[0-9]{10})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ОГРНИП" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="15"/>
+                                                  <xs:maxLength value="15"/>
+                                                  <xs:pattern value="([0-9]{15})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ИныеСвед" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                        <xs:element minOccurs="0" name="СвЮЛУч">
+                                          <xs:complexType>
+                                            <xs:attribute name="НаимОрг" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="1000"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ИННЮЛ" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="10"/>
+                                                  <xs:maxLength value="10"/>
+                                                  <xs:pattern value="(([0-9]{1}[1-9]{1}|[1-9]{1}[0-9]{1})[0-9]{8})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="КПП" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="9"/>
+                                                  <xs:maxLength value="9"/>
+                                                  <xs:pattern value="(([0-9]{1}[1-9]{1}|[1-9]{1}[0-9]{1})([0-9]{2})([0-9A-Z]{2})([0-9]{3}))"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                        <xs:element minOccurs="0" name="СвИнНеУч">
+                                          <xs:complexType>
+                                            <xs:sequence>
+                                              <xs:element minOccurs="0" name="УдЛичнИГ">
+                                                <xs:complexType>
+                                                  <xs:attribute name="ВидДок" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="1000"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="НомДок" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="100"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="ДатаДок" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:maxLength value="10"/>
+                                                        <xs:minLength value="10"/>
+                                                        <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                            </xs:sequence>
+                                            <xs:attribute name="ИдСтат" use="required">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="(@ИдСтат='ИО' and count(@Стран)!=0) or (@ИдСтат!='ИО' and (count(@Стран)=0 or count(@Стран)!=0))">
+                                                        <usch:error>0001.006.406.011</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="(@ИдСтат='ИГ' and count(@Наим)!=0) or (@ИдСтат!='ИГ' and (count(@Наим)=0 or count(@Наим)!=0))">
+                                                        <usch:error>0001.006.406.012</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="(@ИдСтат='ИГ' and count(УдЛичнИГ)!=0) or (@ИдСтат!='ИГ' and (count(УдЛичнИГ)=0 or count(УдЛичнИГ)!=0))">
+                                                        <usch:error>0001.006.406.013</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="25"/>
+                                                  <xs:enumeration value="ИО"/>
+                                                  <xs:enumeration value="ИГ"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Стран" use="optional">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="@ИдСтат='ИО'">
+                                                        <usch:error>0001.10002.003</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Наим" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="1000"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Идентиф" use="optional">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@ИныеСвед)=0">
+                                                        <usch:error>0001.10002.003</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ИныеСвед" use="optional">
+                                              <xs:annotation>
+                                                <xs:appinfo>
+                                                  <sch:pattern>
+                                                    <sch:rule>
+                                                      <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@Идентиф)=0">
+                                                        <usch:error>0001.10002.003</usch:error>
+                                                      </sch:assert>
+                                                    </sch:rule>
+                                                  </sch:pattern>
+                                                </xs:appinfo>
+                                              </xs:annotation>
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                        <xs:element minOccurs="0" name="СвФЛУчаст">
+                                          <xs:complexType>
+                                            <xs:sequence>
+                                              <xs:element minOccurs="1" name="ФИО">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Фамилия" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="60"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Имя" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="60"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Отчество" use="optional">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="60"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                            </xs:sequence>
+                                            <xs:attribute name="ИННФЛ" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="12"/>
+                                                  <xs:maxLength value="12"/>
+                                                  <xs:pattern value="(([0-9]{1}[1-9]{1}|[1-9]{1}[0-9]{1})[0-9]{10})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ИныеСвед" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                      </xs:choice>
+                                    </xs:sequence>
+                                  </xs:complexType>
+                                </xs:element>
+                                <xs:element minOccurs="0" name="Адрес">
+                                  <xs:complexType>
+                                    <xs:sequence>
+                                      <xs:choice>
+                                        <xs:element minOccurs="0" name="АдрРФ">
+                                          <xs:complexType>
+                                            <xs:attribute name="Индекс" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="6"/>
+                                                  <xs:maxLength value="6"/>
+                                                  <xs:pattern value="([0-9]{6})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="КодРегион" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="2"/>
+                                                  <xs:maxLength value="2"/>
+                                                  <xs:pattern value="([0-9]{2})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Район" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Город" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="НаселПункт" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Улица" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="255"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Дом" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="20"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Корпус" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="20"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Кварт" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="20"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="ИныеСвед" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="1000"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                        <xs:element minOccurs="0" name="АдрФИАС">
+                                          <xs:complexType>
+                                            <xs:sequence>
+                                              <xs:element maxOccurs="1" minOccurs="1" name="Регион"/>
+                                              <xs:element maxOccurs="1" minOccurs="0" name="МуниципРайон">
+                                                <xs:annotation>
+                                                  <xs:appinfo>
+                                                    <sch:pattern>
+                                                      <sch:rule>
+                                                        <sch:assert test="Регион!=99">
+                                                          <usch:error>0001.10002.003</usch:error>
+                                                        </sch:assert>
+                                                      </sch:rule>
+                                                    </sch:pattern>
+                                                  </xs:appinfo>
+                                                </xs:annotation>
+                                                <xs:complexType>
+                                                  <xs:attribute name="ВидКод" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="1"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="ГородСелПоселен">
+                                                <xs:complexType>
+                                                  <xs:attribute name="ВидКод" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="1"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="НаселенПункт">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Вид" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="50"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="ЭлПланСтруктур">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Тип" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="50"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="ЭлУлДорСети">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Тип" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="50"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element maxOccurs="1" minOccurs="0" name="ЗемелУчасток"/>
+                                              <xs:element maxOccurs="3" minOccurs="0" name="Здание">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Тип" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="50"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Номер" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="ПомещЗдания">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Тип" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="50"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Номер" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="ПомещКвартиры">
+                                                <xs:complexType>
+                                                  <xs:attribute name="Тип" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="50"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Номер" use="required">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                            </xs:sequence>
+                                            <xs:attribute name="ИдНом" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="36"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="Индекс" use="optional">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="6"/>
+                                                  <xs:maxLength value="6"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                        <xs:element minOccurs="0" name="АдрИнф">
+                                          <xs:complexType>
+                                            <xs:attribute name="КодСтр" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="3"/>
+                                                  <xs:maxLength value="3"/>
+                                                  <xs:pattern value="([0-9]{3})"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                            <xs:attribute name="АдрТекст" use="required">
+                                              <xs:simpleType>
+                                                <xs:restriction base="xs:string">
+                                                  <xs:minLength value="1"/>
+                                                  <xs:maxLength value="1000"/>
+                                                </xs:restriction>
+                                              </xs:simpleType>
+                                            </xs:attribute>
+                                          </xs:complexType>
+                                        </xs:element>
+                                      </xs:choice>
+                                    </xs:sequence>
+                                  </xs:complexType>
+                                </xs:element>
+                                <xs:element minOccurs="1" name="Конт">
+                                  <xs:complexType>
+                                    <xs:sequence>
+                                      <xs:element maxOccurs="unbounded" minOccurs="1" name="Тлф"/>
+                                      <xs:element maxOccurs="unbounded" minOccurs="0" name="ЭлПочта"/>
+                                      <xs:element minOccurs="0" name="ИнКонт"/>
+                                    </xs:sequence>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element minOccurs="0" name="СвТС">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element minOccurs="1" name="ТС">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element minOccurs="1" name="ПарТС">
+                                  <xs:complexType>
+                                    <xs:attribute name="Тип" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="1000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Марка" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="1000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Грузопод" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:decimal">
+                                          <xs:totalDigits value="5"/>
+                                          <xs:fractionDigits value="2"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Вместим" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:decimal">
+                                          <xs:totalDigits value="5"/>
+                                          <xs:fractionDigits value="2"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                                <xs:element maxOccurs="unbounded" minOccurs="0" name="ОснАрЛиз">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@НаимДок)!=0) or (count(@ИдДок)!=0 and (count(@НаимДок)=0 or count(@НаимДок)!=0))">
+                                            <usch:error>0001.006.406.003</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@НомерДок)!=0) or (count(@ИдДок)!=0 and (count(@НомерДок)=0 or count(@НомерДок)!=0))">
+                                            <usch:error>0001.006.406.004</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@ДатаДок)!=0) or (count(@ИдДок)!=0 and (count(@ДатаДок)=0 or count(@ДатаДок)!=0))">
+                                            <usch:error>0001.006.406.005</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@НаимДок)!=0 and count(@НомерДок)!=0 and count(@ДатаДок)!=0) or (count(@ИдДок)!=0 and count(@НаимДок)=0 and count(@НомерДок)=0 and count(@ДатаДок)=0) or (count(@ИдДок)!=0 and count(@НаимДок)!=0 and count(@НомерДок)!=0 and count(@ДатаДок)!=0)">
+                                            <usch:error>0001.006.406.006</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:complexType>
+                                    <xs:sequence>
+                                      <xs:element maxOccurs="unbounded" minOccurs="1" name="ИдРекСост">
+                                        <xs:complexType>
+                                          <xs:sequence>
+                                            <xs:choice>
+                                              <xs:element minOccurs="0" name="ИННЮЛ"/>
+                                              <xs:element minOccurs="0" name="ИННФЛ"/>
+                                              <xs:element minOccurs="0" name="ДаннИно">
+                                                <xs:complexType>
+                                                  <xs:sequence>
+                                                    <xs:element minOccurs="0" name="УдЛичнИГ">
+                                                      <xs:complexType>
+                                                        <xs:attribute name="ВидДок" use="required">
+                                                          <xs:simpleType>
+                                                            <xs:restriction base="xs:string">
+                                                              <xs:minLength value="1"/>
+                                                              <xs:maxLength value="1000"/>
+                                                            </xs:restriction>
+                                                          </xs:simpleType>
+                                                        </xs:attribute>
+                                                        <xs:attribute name="НомДок" use="required">
+                                                          <xs:simpleType>
+                                                            <xs:restriction base="xs:string">
+                                                              <xs:minLength value="1"/>
+                                                              <xs:maxLength value="100"/>
+                                                            </xs:restriction>
+                                                          </xs:simpleType>
+                                                        </xs:attribute>
+                                                        <xs:attribute name="ДатаДок" use="required">
+                                                          <xs:simpleType>
+                                                            <xs:restriction base="xs:string">
+                                                              <xs:maxLength value="10"/>
+                                                              <xs:minLength value="10"/>
+                                                              <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                                            </xs:restriction>
+                                                          </xs:simpleType>
+                                                        </xs:attribute>
+                                                      </xs:complexType>
+                                                    </xs:element>
+                                                  </xs:sequence>
+                                                  <xs:attribute name="ИдСтат" use="required">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="(@ИдСтат='ИО' and count(@Стран)!=0) or (@ИдСтат!='ИО' and (count(@Стран)=0 or count(@Стран)!=0))">
+                                                              <usch:error>0001.006.406.011</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="(@ИдСтат='ИГ' and count(@Наим)!=0) or (@ИдСтат!='ИГ' and (count(@Наим)=0 or count(@Наим)!=0))">
+                                                              <usch:error>0001.006.406.012</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="(@ИдСтат='ИГ' and count(УдЛичнИГ)!=0) or (@ИдСтат!='ИГ' and (count(УдЛичнИГ)=0 or count(УдЛичнИГ)!=0))">
+                                                              <usch:error>0001.006.406.013</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="25"/>
+                                                        <xs:enumeration value="ИО"/>
+                                                        <xs:enumeration value="ИГ"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Стран" use="optional">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="@ИдСтат='ИО'">
+                                                              <usch:error>0001.10002.003</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="optional">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="1000"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Идентиф" use="optional">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@ИныеСвед)=0">
+                                                              <usch:error>0001.10002.003</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="ИныеСвед" use="optional">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@Идентиф)=0">
+                                                              <usch:error>0001.10002.003</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="НаимОИВ"/>
+                                            </xs:choice>
+                                          </xs:sequence>
+                                        </xs:complexType>
+                                      </xs:element>
+                                    </xs:sequence>
+                                    <xs:attribute name="НаимДок" use="optional">
+                                      <xs:annotation>
+                                        <xs:appinfo>
+                                          <sch:pattern>
+                                            <sch:rule>
+                                              <sch:assert test="count(@ИдДок)=0">
+                                                <usch:error>0001.10002.003</usch:error>
+                                              </sch:assert>
+                                            </sch:rule>
+                                          </sch:pattern>
+                                        </xs:appinfo>
+                                      </xs:annotation>
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="НомерДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ДатаДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:maxLength value="10"/>
+                                          <xs:minLength value="10"/>
+                                          <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ИдДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ДопСведДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="2000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                              <xs:attribute name="НомСТС" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="10"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="НомерВИН" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="17"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="РегНомер" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="9"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ТипВлад" use="required">
+                                <xs:annotation>
+                                  <xs:appinfo>
+                                    <sch:pattern>
+                                      <sch:rule>
+                                        <sch:assert test="((@ТипВлад=3 or @ТипВлад=4 or @ТипВлад=5) and count(ОснАрЛиз)!=0 and count(ОснАрЛиз/ИдРекСост/ДаннИно)=0) or ((@ТипВлад=1 or @ТипВлад=2) and (count(ОснАрЛиз)!=0 or count(ОснАрЛиз)=0) and (count(ОснАрЛиз/ИдРекСост/ДаннИно)=0 or count(ОснАрЛиз/ИдРекСост/ДаннИно)!=0))">
+                                          <usch:error>0001.006.406.021</usch:error>
+                                        </sch:assert>
+                                      </sch:rule>
+                                    </sch:pattern>
+                                  </xs:appinfo>
+                                </xs:annotation>
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="1"/>
+                                    <xs:enumeration value="1"/>
+                                    <xs:enumeration value="2"/>
+                                    <xs:enumeration value="3"/>
+                                    <xs:enumeration value="4"/>
+                                    <xs:enumeration value="5"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                          <xs:element maxOccurs="unbounded" minOccurs="0" name="Прицеп">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element minOccurs="1" name="ПарТС">
+                                  <xs:complexType>
+                                    <xs:attribute name="Тип" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="1000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Марка" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="1000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Грузопод" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:decimal">
+                                          <xs:totalDigits value="5"/>
+                                          <xs:fractionDigits value="2"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Вместим" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:decimal">
+                                          <xs:totalDigits value="5"/>
+                                          <xs:fractionDigits value="2"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                                <xs:element maxOccurs="unbounded" minOccurs="0" name="ОснАрЛиз">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@НаимДок)!=0) or (count(@ИдДок)!=0 and (count(@НаимДок)=0 or count(@НаимДок)!=0))">
+                                            <usch:error>0001.006.406.003</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@НомерДок)!=0) or (count(@ИдДок)!=0 and (count(@НомерДок)=0 or count(@НомерДок)!=0))">
+                                            <usch:error>0001.006.406.004</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@ДатаДок)!=0) or (count(@ИдДок)!=0 and (count(@ДатаДок)=0 or count(@ДатаДок)!=0))">
+                                            <usch:error>0001.006.406.005</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@ИдДок)=0 and count(@НаимДок)!=0 and count(@НомерДок)!=0 and count(@ДатаДок)!=0) or (count(@ИдДок)!=0 and count(@НаимДок)=0 and count(@НомерДок)=0 and count(@ДатаДок)=0) or (count(@ИдДок)!=0 and count(@НаимДок)!=0 and count(@НомерДок)!=0 and count(@ДатаДок)!=0)">
+                                            <usch:error>0001.006.406.006</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:complexType>
+                                    <xs:sequence>
+                                      <xs:element maxOccurs="unbounded" minOccurs="1" name="ИдРекСост">
+                                        <xs:complexType>
+                                          <xs:sequence>
+                                            <xs:choice>
+                                              <xs:element minOccurs="0" name="ИННЮЛ"/>
+                                              <xs:element minOccurs="0" name="ИННФЛ"/>
+                                              <xs:element minOccurs="0" name="ДаннИно">
+                                                <xs:complexType>
+                                                  <xs:sequence>
+                                                    <xs:element minOccurs="0" name="УдЛичнИГ">
+                                                      <xs:complexType>
+                                                        <xs:attribute name="ВидДок" use="required">
+                                                          <xs:simpleType>
+                                                            <xs:restriction base="xs:string">
+                                                              <xs:minLength value="1"/>
+                                                              <xs:maxLength value="1000"/>
+                                                            </xs:restriction>
+                                                          </xs:simpleType>
+                                                        </xs:attribute>
+                                                        <xs:attribute name="НомДок" use="required">
+                                                          <xs:simpleType>
+                                                            <xs:restriction base="xs:string">
+                                                              <xs:minLength value="1"/>
+                                                              <xs:maxLength value="100"/>
+                                                            </xs:restriction>
+                                                          </xs:simpleType>
+                                                        </xs:attribute>
+                                                        <xs:attribute name="ДатаДок" use="required">
+                                                          <xs:simpleType>
+                                                            <xs:restriction base="xs:string">
+                                                              <xs:maxLength value="10"/>
+                                                              <xs:minLength value="10"/>
+                                                              <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                                            </xs:restriction>
+                                                          </xs:simpleType>
+                                                        </xs:attribute>
+                                                      </xs:complexType>
+                                                    </xs:element>
+                                                  </xs:sequence>
+                                                  <xs:attribute name="ИдСтат" use="required">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="(@ИдСтат='ИО' and count(@Стран)!=0) or (@ИдСтат!='ИО' and (count(@Стран)=0 or count(@Стран)!=0))">
+                                                              <usch:error>0001.006.406.011</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="(@ИдСтат='ИГ' and count(@Наим)!=0) or (@ИдСтат!='ИГ' and (count(@Наим)=0 or count(@Наим)!=0))">
+                                                              <usch:error>0001.006.406.012</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="(@ИдСтат='ИГ' and count(УдЛичнИГ)!=0) or (@ИдСтат!='ИГ' and (count(УдЛичнИГ)=0 or count(УдЛичнИГ)!=0))">
+                                                              <usch:error>0001.006.406.013</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="25"/>
+                                                        <xs:enumeration value="ИО"/>
+                                                        <xs:enumeration value="ИГ"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Стран" use="optional">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="@ИдСтат='ИО'">
+                                                              <usch:error>0001.10002.003</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Наим" use="optional">
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="1000"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="Идентиф" use="optional">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@ИныеСвед)=0">
+                                                              <usch:error>0001.10002.003</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                  <xs:attribute name="ИныеСвед" use="optional">
+                                                    <xs:annotation>
+                                                      <xs:appinfo>
+                                                        <sch:pattern>
+                                                          <sch:rule>
+                                                            <sch:assert test="@ИдСтат='ИО' and count(@Наим)=0 and count(@Идентиф)=0">
+                                                              <usch:error>0001.10002.003</usch:error>
+                                                            </sch:assert>
+                                                          </sch:rule>
+                                                        </sch:pattern>
+                                                      </xs:appinfo>
+                                                    </xs:annotation>
+                                                    <xs:simpleType>
+                                                      <xs:restriction base="xs:string">
+                                                        <xs:minLength value="1"/>
+                                                        <xs:maxLength value="255"/>
+                                                      </xs:restriction>
+                                                    </xs:simpleType>
+                                                  </xs:attribute>
+                                                </xs:complexType>
+                                              </xs:element>
+                                              <xs:element minOccurs="0" name="НаимОИВ"/>
+                                            </xs:choice>
+                                          </xs:sequence>
+                                        </xs:complexType>
+                                      </xs:element>
+                                    </xs:sequence>
+                                    <xs:attribute name="НаимДок" use="optional">
+                                      <xs:annotation>
+                                        <xs:appinfo>
+                                          <sch:pattern>
+                                            <sch:rule>
+                                              <sch:assert test="count(@ИдДок)=0">
+                                                <usch:error>0001.10002.003</usch:error>
+                                              </sch:assert>
+                                            </sch:rule>
+                                          </sch:pattern>
+                                        </xs:appinfo>
+                                      </xs:annotation>
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="НомерДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ДатаДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:maxLength value="10"/>
+                                          <xs:minLength value="10"/>
+                                          <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ИдДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="255"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="ДопСведДок" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="2000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                              <xs:attribute name="НомСТС" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="10"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="НомерВИН" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="17"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="РегНомер" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="9"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ТипВлад" use="required">
+                                <xs:annotation>
+                                  <xs:appinfo>
+                                    <sch:pattern>
+                                      <sch:rule>
+                                        <sch:assert test="((@ТипВлад=3 or @ТипВлад=4 or @ТипВлад=5) and count(ОснАрЛиз)!=0 and count(ОснАрЛиз/ИдРекСост/ДаннИно)=0) or ((@ТипВлад=1 or @ТипВлад=2) and (count(ОснАрЛиз)!=0 or count(ОснАрЛиз)=0) and (count(ОснАрЛиз/ИдРекСост/ДаннИно)=0 or count(ОснАрЛиз/ИдРекСост/ДаннИно)!=0))">
+                                          <usch:error>0001.006.406.021</usch:error>
+                                        </sch:assert>
+                                      </sch:rule>
+                                    </sch:pattern>
+                                  </xs:appinfo>
+                                </xs:annotation>
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="1"/>
+                                    <xs:enumeration value="1"/>
+                                    <xs:enumeration value="2"/>
+                                    <xs:enumeration value="3"/>
+                                    <xs:enumeration value="4"/>
+                                    <xs:enumeration value="5"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                          <xs:element maxOccurs="unbounded" minOccurs="0" name="СпецУслДвиж">
+                            <xs:annotation>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдСР)=0 and count(@НомСР)!=0) or (count(@ИдСР)!=0 and (count(@НомСР)=0 or count(@НомСР)!=0))">
+                                      <usch:error>0001.006.406.022</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдСР)=0 and count(@ДатаСР)!=0) or (count(@ИдСР)!=0 and (count(@ДатаСР)=0 or count(@ДатаСР)!=0))">
+                                      <usch:error>0001.006.406.023</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдСР)=0 and count(@СрокСР)!=0) or (count(@ИдСР)!=0 and (count(@СрокСР)=0 or count(@СрокСР)!=0))">
+                                      <usch:error>0001.006.406.024</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдСР)=0 and count(@ВидСР)!=0) or (count(@ИдСР)!=0 and (count(@ВидСР)=0 or count(@ВидСР)!=0))">
+                                      <usch:error>0001.006.406.025</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="(count(@ИдСР)=0 and count(@НаимОИВ)!=0) or (count(@ИдСР)!=0 and (count(@НаимОИВ)=0 or count(@НаимОИВ)!=0))">
+                                      <usch:error>0001.006.406.026</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                              <xs:appinfo>
+                                <sch:pattern>
+                                  <sch:rule>
+                                    <sch:assert test="((count(@ИдСР)=0 or count(@ИдСР)!=0) and (count(@НомСР)!=0 or count(@ДатаСР)!=0 or count(@СрокСР)!=0)) or (count(@ИдСР)!=0 and count(@НомСР)=0 and count(@ДатаСР)=0 and count(@СрокСР)=0)">
+                                      <usch:error>0001.006.406.027</usch:error>
+                                    </sch:assert>
+                                  </sch:rule>
+                                </sch:pattern>
+                              </xs:appinfo>
+                            </xs:annotation>
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element maxOccurs="1" minOccurs="0" name="СведМрш">
+                                  <xs:annotation>
+                                    <xs:appinfo>
+                                      <sch:pattern>
+                                        <sch:rule>
+                                          <sch:assert test="(count(@МршТекст)!=0 and count(@МршМашЧит)!=0) or (count(@МршТекст)=0 and count(@МршМашЧит)!=0) or (count(@МршТекст)!=0 and count(@МршМашЧит)=0)">
+                                            <usch:error>0001.006.406.030</usch:error>
+                                          </sch:assert>
+                                        </sch:rule>
+                                      </sch:pattern>
+                                    </xs:appinfo>
+                                  </xs:annotation>
+                                  <xs:complexType>
+                                    <xs:attribute name="МршТекст" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="2000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="МршМашЧит" use="optional">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="2000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                              <xs:attribute name="НомСР" use="optional">
+                                <xs:annotation>
+                                  <xs:appinfo>
+                                    <sch:pattern>
+                                      <sch:rule>
+                                        <sch:assert test="count(@ИдСР)=0">
+                                          <usch:error>0001.10002.003</usch:error>
+                                        </sch:assert>
+                                      </sch:rule>
+                                    </sch:pattern>
+                                  </xs:appinfo>
+                                </xs:annotation>
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ДатаСР" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:maxLength value="10"/>
+                                    <xs:minLength value="10"/>
+                                    <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="СрокСР" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="100"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ВидСР" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="НаимОИВ" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="ИдСР" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="255"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                          <xs:element maxOccurs="unbounded" minOccurs="0" name="ИнфПол">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element maxOccurs="unbounded" minOccurs="0" name="ТекстИнф">
+                                  <xs:complexType>
+                                    <xs:attribute name="Идентиф" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="50"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                    <xs:attribute name="Значение" use="required">
+                                      <xs:simpleType>
+                                        <xs:restriction base="xs:string">
+                                          <xs:minLength value="1"/>
+                                          <xs:maxLength value="2000"/>
+                                        </xs:restriction>
+                                      </xs:simpleType>
+                                    </xs:attribute>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                              <xs:attribute name="ИдФайлИнфПол" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="36"/>
+                                    <xs:maxLength value="36"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element maxOccurs="1" minOccurs="0" name="РазмПлатРасчет">
+                      <xs:annotation>
+                        <xs:appinfo>
+                          <sch:pattern>
+                            <sch:rule>
+                              <sch:assert test="(count(@СтТовБезНДС)!=0 and count(@Расчет)!=0) or (count(@СтТовБезНДС)=0 and count(@Расчет)!=0) or (count(@СтТовБезНДС)!=0 and count(@Расчет)=0)">
+                                <usch:error>0001.006.406.028</usch:error>
+                              </sch:assert>
+                            </sch:rule>
+                          </sch:pattern>
+                        </xs:appinfo>
+                        <xs:appinfo>
+                          <sch:pattern>
+                            <sch:rule>
+                              <sch:assert test="(count(@НалСт)!=0 and ( count(@СтТовБезНДС)!=0 or count(@СтТовУчНал)!=0 )) or ((not(@НалСт) or count(@НалСт)!=0) and not(@СтТовБезНДС) and not(@СтТовУчНал))">
+                                <usch:error>0001.006.406.029</usch:error>
+                              </sch:assert>
+                            </sch:rule>
+                          </sch:pattern>
+                        </xs:appinfo>
+                      </xs:annotation>
+                      <xs:complexType>
+                        <xs:attribute name="КодОКВ" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="3"/>
+                              <xs:maxLength value="3"/>
+                              <xs:pattern value="([0-9]{3})"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ВалНаим" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="100"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="СтТовБезНДС" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:decimal">
+                              <xs:totalDigits value="19"/>
+                              <xs:fractionDigits value="2"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="НалСт" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="35"/>
+                              <xs:enumeration value="0%"/>
+                              <xs:enumeration value="5%"/>
+                              <xs:enumeration value="7%"/>
+                              <xs:enumeration value="9,09%"/>
+                              <xs:enumeration value="10%"/>
+                              <xs:enumeration value="16,67%"/>
+                              <xs:enumeration value="18,03%"/>
+                              <xs:enumeration value="20%"/>
+                              <xs:enumeration value="22%"/>
+                              <xs:enumeration value="5/105"/>
+                              <xs:enumeration value="7/107"/>
+                              <xs:enumeration value="10/110"/>
+                              <xs:enumeration value="20/120"/>
+                              <xs:enumeration value="22/122"/>
+                              <xs:enumeration value="без НДС"/>
+                              <xs:enumeration value="НДС исчисляется налоговым агентом"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="СтТовУчНал" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:decimal">
+                              <xs:totalDigits value="19"/>
+                              <xs:fractionDigits value="2"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="Расчет" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="2000"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element maxOccurs="unbounded" minOccurs="0" name="ИнфПол">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element maxOccurs="unbounded" minOccurs="0" name="ТекстИнф">
+                            <xs:complexType>
+                              <xs:attribute name="Идентиф" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="50"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Значение" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="2000"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                        <xs:attribute name="ИдФайлИнфПол" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="36"/>
+                              <xs:maxLength value="36"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
+                  <xs:attribute name="УИД_Зак" use="required">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="36"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="СодОпер" use="required">
+                    <xs:annotation>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(@СодОпер=2 and count(@ПричОтк)!=0) or (@СодОпер!=2 and (count(@ПричОтк)=0 or count(@ПричОтк)!=0))">
+                              <usch:error>0001.006.406.016</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(@СодОпер=1 and count(СвЛицОргПрвз)!=0) or (@СодОпер!=1 and (count(СвЛицОргПрвз)=0 or count(СвЛицОргПрвз)!=0))">
+                              <usch:error>0001.006.406.017</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(@СодОпер=1 and count(СвВодит)!=0) or (@СодОпер!=1 and (count(СвВодит)=0 or count(СвВодит)!=0))">
+                              <usch:error>0001.006.406.018</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(@СодОпер=1 and count(СвТС)!=0) or (@СодОпер!=1 and (count(СвТС)=0 or count(СвТС)!=0))">
+                              <usch:error>0001.006.406.019</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(@СодОпер=1 and count(РазмПлатРасчет)!=0) or (@СодОпер!=1 and (count(РазмПлатРасчет)=0 or count(РазмПлатРасчет)!=0))">
+                              <usch:error>0001.006.406.020</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="1"/>
+                        <xs:enumeration value="1"/>
+                        <xs:enumeration value="2"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ПричОтк" use="optional">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="2000"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                </xs:complexType>
+              </xs:element>
+              <xs:element minOccurs="1" name="ПодпИнфПрв">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element minOccurs="1" name="ФИО">
+                      <xs:complexType>
+                        <xs:attribute name="Фамилия" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="60"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="Имя" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="60"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="Отчество" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="60"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element maxOccurs="unbounded" minOccurs="0" name="СвДоверЭл">
+                      <xs:complexType>
+                        <xs:attribute name="НомДовер" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="36"/>
+                              <xs:maxLength value="36"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ДатаДовер" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:maxLength value="10"/>
+                              <xs:minLength value="10"/>
+                              <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ВнНомДовер" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="50"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ДатаВнРегДовер" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:maxLength value="10"/>
+                              <xs:minLength value="10"/>
+                              <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ИдСистХран" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="500"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element maxOccurs="unbounded" minOccurs="0" name="СвДоверБум">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element minOccurs="0" name="ФИО">
+                            <xs:complexType>
+                              <xs:attribute name="Фамилия" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Имя" use="required">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                              <xs:attribute name="Отчество" use="optional">
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:minLength value="1"/>
+                                    <xs:maxLength value="60"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                        <xs:attribute name="ДатаДовер" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:maxLength value="10"/>
+                              <xs:minLength value="10"/>
+                              <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="ВнНомДовер" use="required">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="50"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                        <xs:attribute name="СвИдДовер" use="optional">
+                          <xs:simpleType>
+                            <xs:restriction base="xs:string">
+                              <xs:minLength value="1"/>
+                              <xs:maxLength value="1000"/>
+                            </xs:restriction>
+                          </xs:simpleType>
+                        </xs:attribute>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
+                  <xs:attribute name="Должн" use="required">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="255"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ТипПодпис" use="optional">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="1"/>
+                        <xs:enumeration value="1"/>
+                        <xs:enumeration value="2"/>
+                        <xs:enumeration value="3"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="СпосПодтПолном" use="required">
+                    <xs:annotation>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(count(СвДоверЭл)!=0 and @СпосПодтПолном='3') or (count(СвДоверЭл)=0 and @СпосПодтПолном!='3')">
+                              <usch:error>0001.006.406.009</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                      <xs:appinfo>
+                        <sch:pattern>
+                          <sch:rule>
+                            <sch:assert test="(count(СвДоверБум)!=0 and @СпосПодтПолном='5') or (count(СвДоверБум)=0 and @СпосПодтПолном!='5')">
+                              <usch:error>0001.006.406.010</usch:error>
+                            </sch:assert>
+                          </sch:rule>
+                        </sch:pattern>
+                      </xs:appinfo>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="1"/>
+                        <xs:enumeration value="1"/>
+                        <xs:enumeration value="2"/>
+                        <xs:enumeration value="3"/>
+                        <xs:enumeration value="4"/>
+                        <xs:enumeration value="5"/>
+                        <xs:enumeration value="6"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="ДопСведПодп" use="optional">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:minLength value="1"/>
+                        <xs:maxLength value="255"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+            <xs:attribute name="КНД" use="required">
+              <xs:simpleType>
+                <xs:restriction base="xs:string">
+                  <xs:minLength value="7"/>
+                  <xs:maxLength value="7"/>
+                </xs:restriction>
+              </xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="ДатИнфПрв" use="required">
+              <xs:simpleType>
+                <xs:restriction base="xs:string">
+                  <xs:maxLength value="10"/>
+                  <xs:minLength value="10"/>
+                  <xs:pattern value="(((0[1-9]{1}|[1-2]{1}[0-9]{1})\.(0[1-9]{1}|1[0-2]{1}))|((30)\.(01|0[3-9]{1}|1[0-2]{1}))|((31)\.(01|03|05|07|08|10|12)))\.(140[1-9]{1}|14[1-9]{1}[0-9]{1}|1[5-9]{1}[0-9]{2}|20[0-9]{2})"/>
+                </xs:restriction>
+              </xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="ВрИнфПрв" use="required">
+              <xs:simpleType>
+                <xs:restriction base="xs:string">
+                  <xs:minLength value="8"/>
+                  <xs:maxLength value="8"/>
+                  <xs:pattern value="(([0-1]{1}[0-9]{1}|2[0-3]{1}):([0-5]{1}[0-9]{1}):([0-5]{1}[0-9]{1}))"/>
+                </xs:restriction>
+              </xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="НаимЭкСубСост" use="required">
+              <xs:simpleType>
+                <xs:restriction base="xs:string">
+                  <xs:minLength value="1"/>
+                  <xs:maxLength value="1000"/>
+                </xs:restriction>
+              </xs:simpleType>
+            </xs:attribute>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="ИдФайл" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:minLength value="1"/>
+            <xs:maxLength value="255"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:attribute name="ВерсПрог" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:minLength value="1"/>
+            <xs:maxLength value="40"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:attribute name="ВерсФорм" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:minLength value="1"/>
+            <xs:maxLength value="5"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

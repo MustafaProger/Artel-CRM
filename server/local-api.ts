@@ -41,7 +41,7 @@ import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEt
 import { getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { sabyConfigFromEnv, sabyCredentialBlockers, type SabyClient } from './saby-client';
-import { dispatchTripSaby, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS } from './trip-saby-scheduler';
+import { dispatchTripSaby, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
 import { dispatchReminders, dispatchTaskAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
@@ -602,7 +602,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
-      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(loading-facts))?$/);
+      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(loading-facts|carrier-details))?$/);
       if (workflowMatch) {
         const tripId = decodeURIComponent(workflowMatch[1]);
         const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
@@ -614,7 +614,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const body = await jsonBody(request);
         if (workflowMatch[2] === 'loading-facts') await saveTripLoadingFacts(context, body, actor?.id || 'local-operator');
         else if (Object.keys(body).length) throw new ApiError(400, 'Данные отправки берутся из сохранённого рейса.');
-        const workflow = await runTripSabyWorkflow({ ...context, initiatorId: actor?.id, prepare: prepareTripSaby, createDelivery: input => exchangePreparedEtrn(context, input) });
+        const workflow = await runTripSabyWorkflow({ ...context, initiatorId: actor?.id, enableCarrierFill: workflowMatch[2] === 'carrier-details', prepare: prepareTripSaby, createDelivery: input => exchangePreparedEtrn(context, input) });
         if (workflow.phase === 'completed') for (const delivery of workflow.deliveries) if (delivery.id) await refreshTripSabyDelivery(context, delivery.shipmentId);
         const latest = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, latest), latest);
         return write(response, 200, JSON.stringify(read(latest)));
@@ -807,15 +807,16 @@ export default function localApi(options: LocalApiOptions = {}): Plugin {
     if (!enabled || sabyCredentialBlockers(config).length || !server.httpServer) return;
     const store = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(defaultDataDirectory, '../local-operations'));
     let running = false, disposed = false;
-    const check = async () => {
+    const check = async (carrierWaitingOnly = false) => {
       if (running || disposed) return;
       running = true;
-      try { await dispatchTripSaby({ base: await loadSnapshot(), store, config, enabled: !disposed }); }
+      try { await dispatchTripSaby({ base: await loadSnapshot(), store, config, enabled: !disposed, carrierWaitingOnly }); }
       catch { /* Provider messages and private document data must never enter process logs. */ }
       finally { running = false; }
     };
     const timer = setInterval(() => { void check(); }, SABY_WORKFLOW_TICK_MS);
-    const dispose = () => { disposed = true; clearInterval(timer); sabyDisposers.delete(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = sabyDisposers.size > 0; };
+    const fastTimer = setInterval(() => { void check(true); }, SABY_CARRIER_WAIT_TICK_MS); fastTimer.unref();
+    const dispose = () => { disposed = true; clearInterval(timer); clearInterval(fastTimer); sabyDisposers.delete(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = sabyDisposers.size > 0; };
     timer.unref(); sabyDisposers.add(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = true;
     server.httpServer.once('close', dispose); void check();
   }

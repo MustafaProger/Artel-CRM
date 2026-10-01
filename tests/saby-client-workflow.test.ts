@@ -145,3 +145,32 @@ test('certificate reads do not request activation, signature or write; registere
   assert.deepEqual(api.requests.map(request => request.method), ['СБИС.СписокСертификатов', 'sabyCertificate.List']);
   assert.equal(api.requests[1].params.Parameter.AddTrustedCertificates, true);
 });
+
+test('carrier draft read/write uses carrier session and existing document revision without signing actions', async () => {
+  const calls: Array<{ method: string; session: string | null; params: Record<string, SabyObject> }> = [];
+  const send: typeof fetch = async (_url, init) => {
+    const request = JSON.parse(String(init?.body)) as Rpc;
+    calls.push({ method: request.method, session: new Headers(init?.headers).get('X-SBISSessionID'), params: request.params });
+    const result = request.method === 'СБИС.Аутентифицировать' ? 'synthetic-carrier-session' : { Идентификатор: 'incoming', Тип: 'TransportOrder' };
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }));
+  };
+  const client = new SabyClient({ ...config, login: 'synthetic-login', password: 'synthetic-password', accountNumber: 'sender', carrierAccountNumber: 'carrier' }, send);
+  await client.readCarrierOrder('incoming');
+  await client.writeCarrierAttachment('incoming', 'revision', 'existing-attachment', 'draft.xml', Buffer.from('<synthetic/>'));
+  assert.equal(calls[0].params.Параметр.НомерАккаунта, 'carrier');
+  assert.deepEqual(calls.map(row => row.method), ['СБИС.Аутентифицировать', 'СБИС.ПрочитатьДокумент', 'СБИС.ЗаписатьВложение']);
+  assert.ok(calls.slice(1).every(row => row.session === 'synthetic-carrier-session'));
+  const doc = calls[2].params.Документ;
+  assert.equal(doc.Идентификатор, 'incoming'); assert.deepEqual(doc.Редакция, { Идентификатор: 'revision' });
+  assert.equal((doc.Вложение as SabyObject[])[0].Идентификатор, 'existing-attachment');
+});
+
+test('carrier responsible configuration is explicit, validated and independent of signer', async () => {
+  const { sabyConfigFromEnv } = await import('../server/saby-client');
+  const responsible = { surname: 'Ответственный', name: 'Тест', patronymic: 'Тестович', phone: '+79990000000' };
+  assert.equal(sabyConfigFromEnv({}).carrierResponsible, undefined);
+  assert.equal(sabyConfigFromEnv({ SABY_CARRIER_RESPONSIBLE_JSON: '{}' }).carrierResponsible, null);
+  assert.equal(sabyConfigFromEnv({ SABY_CARRIER_RESPONSIBLE_JSON: JSON.stringify({ ...responsible, phone: '' }) }).carrierResponsible, null);
+  const config = sabyConfigFromEnv({ SABY_CARRIER_RESPONSIBLE_JSON: JSON.stringify(responsible) });
+  assert.deepEqual(config.carrierResponsible, responsible); assert.equal(config.consignmentSigner, undefined);
+});

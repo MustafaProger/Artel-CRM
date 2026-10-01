@@ -5,15 +5,28 @@ import { readSabyTransportProfile, type SabyTransportProfile } from './saby-tran
 export type SabyObject = Record<string, unknown>;
 export interface SabyOrganization { inn: string; kpp: string; name: string; address: string; phone?: string; edoId?: string }
 export interface SabyConsignmentSigner { surname: string; name: string; patronymic: string; position: string }
+export interface SabyCarrierResponsible { surname: string; name: string; patronymic: string; phone: string }
 export interface SabyConfig {
   login?: string; password?: string; accountNumber?: string; carrierAccountNumber?: string; sessionId?: string;
   customer: SabyOrganization; carrier: SabyOrganization;
   timeoutMs?: number; transportProfile?: SabyTransportProfile; consignmentSigner?: SabyConsignmentSigner;
+  carrierResponsible?: SabyCarrierResponsible | null;
 }
 export const sabyObject = (value: unknown): value is SabyObject => !!value && typeof value === 'object' && !Array.isArray(value);
 export const sabyText = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
 export class SabyError extends Error {
   constructor(readonly kind: 'configuration' | 'authorization' | 'permission' | 'validation' | 'transport' | 'protocol' | 'unknown', message: string, readonly uncertain = false) { super(message); }
+}
+function carrierResponsibleFromEnv(raw: string | undefined): SabyCarrierResponsible | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || raw.length > 4000) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!sabyObject(value)) return null;
+    const responsible = Object.fromEntries(['surname', 'name', 'patronymic', 'phone'].map(key => [key, sabyText(value[key]) ?? ''])) as unknown as SabyCarrierResponsible;
+    if (!responsible.surname || !responsible.name || !responsible.patronymic || [responsible.surname, responsible.name, responsible.patronymic].some(value => value.length > 60 || [...value].some(char => char.charCodeAt(0) < 32)) || !/^\+\d{11,15}$/.test(responsible.phone)) return null;
+    return responsible;
+  } catch { return null; }
 }
 function consignmentSignerFromEnv(raw: string | undefined): SabyConsignmentSigner | undefined {
   if (!raw || raw.length > 4000) return undefined;
@@ -27,7 +40,7 @@ function consignmentSignerFromEnv(raw: string | undefined): SabyConsignmentSigne
 }
 export function sabyConfigFromEnv(env: NodeJS.ProcessEnv = process.env): SabyConfig {
   const organization = (prefix: string): SabyOrganization => ({ inn: env[`${prefix}_INN`]?.trim() ?? '', kpp: env[`${prefix}_KPP`]?.trim() ?? '', name: env[`${prefix}_NAME`]?.trim() ?? '', address: env[`${prefix}_ADDRESS`]?.trim() ?? '', phone: env[`${prefix}_PHONE`]?.trim(), edoId: env[`${prefix}_EDO_ID`]?.trim() });
-  return { login: env.SABY_LOGIN, password: env.SABY_PASSWORD, accountNumber: env.SABY_ACCOUNT_NUMBER, carrierAccountNumber: env.SABY_CARRIER_ACCOUNT_NUMBER?.trim() || undefined, sessionId: env.SABY_SESSION_ID, customer: organization('SABY_CUSTOMER'), carrier: organization('SABY_CARRIER'), transportProfile: readSabyTransportProfile(env.SABY_TRANSPORT_PROFILE_JSON), consignmentSigner: consignmentSignerFromEnv(env.SABY_CONSIGNMENT_SIGNER_JSON) };
+  return { login: env.SABY_LOGIN, password: env.SABY_PASSWORD, accountNumber: env.SABY_ACCOUNT_NUMBER, carrierAccountNumber: env.SABY_CARRIER_ACCOUNT_NUMBER?.trim() || undefined, sessionId: env.SABY_SESSION_ID, customer: organization('SABY_CUSTOMER'), carrier: organization('SABY_CARRIER'), transportProfile: readSabyTransportProfile(env.SABY_TRANSPORT_PROFILE_JSON), consignmentSigner: consignmentSignerFromEnv(env.SABY_CONSIGNMENT_SIGNER_JSON), carrierResponsible: carrierResponsibleFromEnv(env.SABY_CARRIER_RESPONSIBLE_JSON) };
 }
 const CARRIER_CREDENTIALS_ERROR = 'Для проверки отдельного кабинета перевозчика Saby нужны серверные логин и пароль.';
 function separateCarrierAccountNumber(config: SabyConfig): string | null {
@@ -226,6 +239,21 @@ export class SabyClient {
     const document = await this.readDocument(id, 'Расширение,ЭПД,Стороны,ТекущиеЭтапы');
     if (document.Идентификатор !== id || document.Тип !== 'TransportOrder') throw new SabyError('protocol', 'Saby вернул другой документ вместо запрошенной заявки.');
     return document;
+  }
+  /** Incoming order and its unsent carrier title exist in the carrier's own account. */
+  async readCarrierOrder(id: string): Promise<SabyObject> {
+    return this.carrierOrganizationClient().readTransportOrder(id);
+  }
+  async downloadCarrierOrderAttachment(id: string, attachmentId: string, revision: string): Promise<SabyDownloadedAttachment> {
+    return this.carrierOrganizationClient().downloadTransportOrderAttachment(id, attachmentId, revision);
+  }
+  /** Updates only an existing unsigned attachment. This never prepares or executes an action. */
+  async writeCarrierAttachment(id: string, revision: string, attachmentId: string, name: string, bytes: Uint8Array): Promise<void> {
+    if (![id, revision, attachmentId, name].every(value => typeof value === 'string' && value.trim())) throw new SabyError('validation', 'Не определены документ, редакция или вложение ответа НК.');
+    await this.carrierOrganizationClient().call('СБИС.ЗаписатьВложение', { Документ: {
+      Идентификатор: id, Редакция: { Идентификатор: revision },
+      Вложение: [{ Идентификатор: attachmentId, Файл: { Имя: name, ДвоичныеДанные: Buffer.from(bytes).toString('base64') } }],
+    } }, true);
   }
   async readConsignmentNote(id: string): Promise<SabyObject> {
     const document = await this.readDocument(id, 'Расширение,ЭПД,Стороны,ТекущиеЭтапы');

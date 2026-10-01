@@ -20,13 +20,13 @@ test('ETRN creation failure after carrier confirmation stays at the ETRN step an
   for (const state of [failedWorkflow('carrier_confirmed', true), failedWorkflow(undefined, true)]) {
     const view = workflowView(state);
     assert.equal(view.title, 'Создание ЭТрН приостановлено');
-    assert.equal(view.step, 3);
+    assert.equal(view.step, 4);
   }
 });
 
 test('terminal remote states retain their specific failure labels over prior confirmation', () => {
   const cases = [
-    ['rejected', 'НК АРТЕЛЬ отклонило заявку', 2],
+    ['rejected', 'НК АРТЕЛЬ отклонило заявку', 3],
     ['operator_error', 'Ошибка обработки Saby', 1],
     ['cancelled', 'Заявка аннулирована', 1],
   ] as const;

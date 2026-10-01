@@ -1,6 +1,6 @@
 import { SabyError } from './saby-client';
 
-interface XmlNode { name: string; attributes: Record<string, string>; children: Array<XmlNode | string> }
+export interface XmlNode { name: string; attributes: Record<string, string>; children: Array<XmlNode | string> }
 export interface SabySenderTitleIdentity { fileId: string; date: string; time: string }
 function failure(): never { throw new SabyError('unknown', 'Текущий титул заявки в Saby не подтверждает сохранённые сведения рейса. Новые ЭТрН не создаются; требуется сверка.', true); }
 const namePattern = /^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё.:-]*$/u;
@@ -17,7 +17,7 @@ function xmlText(value: string): string {
   return text;
 }
 /** A bounded closed XML reader: no DTD, entity expansion, network, or executable processing. */
-function parseXml(bytes: Uint8Array): XmlNode {
+export function parseXml(bytes: Uint8Array): XmlNode {
   if (!bytes.length || bytes.length > 2_000_000) failure();
   const prefix = new TextDecoder('ascii').decode(bytes.slice(0, 160));
   let text: string;

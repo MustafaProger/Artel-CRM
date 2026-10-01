@@ -11,7 +11,7 @@ import { dispatchBanks } from './banking/scheduler';
 import { BANK_SYNC_TICK_MS } from './banking/schedule';
 import { dispatchReminders, pushReady, type PushConfig } from './push';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
-import { dispatchTripSaby, SABY_WORKFLOW_TICK_MS } from './trip-saby-scheduler';
+import { dispatchTripSaby, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
 
 type Environment = Record<string, string | undefined>;
 const pausedBankMessage = 'Обновление банков на этом сервере пока выключено. Сохранённые данные доступны.';
@@ -214,6 +214,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
       if (pushReady(push)) schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
       if (env.SABY_WORKFLOW_ENABLED === 'true' && !sabyCredentialBlockers(saby).length) {
         schedule(SABY_WORKFLOW_TICK_MS, () => dispatchTripSaby({ base, store, config: saby, enabled: true }), true);
+        schedule(SABY_CARRIER_WAIT_TICK_MS, () => dispatchTripSaby({ base, store, config: saby, enabled: true, carrierWaitingOnly: true }));
       }
     },
     stop() {

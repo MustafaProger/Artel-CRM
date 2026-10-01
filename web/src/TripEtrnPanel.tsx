@@ -12,7 +12,7 @@ type Workflow = TripSabyResponse & { loadingFacts: LoadingFacts | null }
 const safeSabyUrl = (value: string | null | undefined) => {
   try { const url = new URL(value || ''); return url.protocol === 'https:' && !url.username && !url.password && ['saby.ru', 'sbis.ru'].some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ? url.href : null } catch { return null }
 }
-const steps = ['Подготовка', 'Отправка АРТЕЛЬ', 'Подтверждение НК', 'Создание ЭТрН', 'Отправка клиентам']
+const steps = ['Подготовка', 'Отправка АРТЕЛЬ', 'Водитель и машина', 'Подтверждение НК', 'Создание ЭТрН', 'Отправка клиентам']
 
 export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data: Snapshot }) {
   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
@@ -51,11 +51,11 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     void fetch(`/api/shipment-trips/${encodeURIComponent(trip.id)}/saby`).then(async response => { if (response.ok && mounted.current) setLegacy(await response.json()) }).catch(() => {})
     return () => { mounted.current = false; requestGeneration.current++ }
   }, [read, trip.id])
-  const perform = useCallback(async (loadingFacts?: LoadingFacts) => {
+  const perform = useCallback(async (loadingFacts?: LoadingFacts, carrierDetails = false) => {
     if (lock.current) return
     lock.current = true; const generation = ++requestGeneration.current; setBusy(true); setError('')
     try {
-      const response = await fetch(loadingFacts ? `${endpoint}/loading-facts` : endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(loadingFacts || {}) })
+      const response = await fetch(loadingFacts ? `${endpoint}/loading-facts` : carrierDetails ? `${endpoint}/carrier-details` : endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(loadingFacts || {}) })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error || 'Не удалось выполнить обмен с Saby')
       if (mounted.current && generation === requestGeneration.current) setResult(body)
@@ -79,12 +79,12 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
       try { await read() } catch { if (active) setRefreshError('Нет связи с CRM. Показаны последние полученные сведения; проверим ещё раз через 5 минут.') }
       finally { refreshing = false }
     }
-    const timer = window.setInterval(() => { void refresh() }, 5 * 60_000)
+    const timer = window.setInterval(() => { void refresh() }, (result.monitoring?.intervalSeconds || 300) * 1000)
     const onVisible = () => { void refresh() }
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
     return () => { active = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible) }
-  }, [result?.locked, read])
+  }, [result?.locked, result?.monitoring?.intervalSeconds, read])
   const title = (shipmentId: string, index: number) => {
     const row = trip.customers.find(customer => customer.id === shipmentId)
     return `Доставка ${index + 1} · ${data.companies.find(company => company.id === row?.fields.customer_id)?.name || 'Клиент'}`
@@ -106,13 +106,22 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     {result && <>
       <ol className="workflow-steps" aria-label="Этапы обмена">{steps.map((step, index) => <li key={step} className={index < view!.step ? 'is-done' : index === view!.step ? 'is-current' : ''} aria-current={index === view!.step ? 'step' : undefined}><span className="workflow-step-number">{index < view!.step ? <Check size={14}/> : index + 1}</span><span>{step}</span></li>)}</ol>
       <div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
-      {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Проверка Saby каждые 5 минут' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'Работает и после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span><span>Последняя проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
+      {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? result.monitoring.intervalSeconds === 15 ? 'Ожидаем готовность Saby · проверка каждые 15 секунд' : 'Проверка Saby каждые 5 минут' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'Работает и после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span><span>Последняя проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
       {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
       {result.lastError && <p className="shipment-error" role="alert">{result.lastError}</p>}
       {!result.locked && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || !result.ready} onClick={() => void perform()}><FilePlus2 size={16}/>Создать заявку в Saby</button><button type="button" className="button" disabled={busy} onClick={() => { void read().catch(reason => setError(String(reason))) }}><RefreshCw size={15}/>Проверить готовность</button></div>}
       {!!result.blockers.length && <div className="trip-saby-blockers"><p>Для создания заявки заполните:</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
       {result.order && <div className="etrn-result workflow-order"><div><span className="workflow-eyebrow">ОБЩАЯ ЗАЯВКА</span><h4>{result.order.number ? `№ ${result.order.number}` : 'Номер ожидается'}</h4><p>{result.order.remoteStatus || 'Состояние уточняется'}</p>{result.phase === 'completed' && <p className="etrn-note">Последнее состояние перед созданием ЭТрН. Дальше автоматически проверяются ЭТрН доставок.</p>}</div>{orderUrl && <a className="button" href={orderUrl} target="_blank" rel="noreferrer">Открыть заявку в Saby <ArrowUpRight size={14}/></a>}</div>}
-      {handoff && !result.carrierConfirmed && <details className="workflow-handoff" open={['carrier_details_required', 'carrier_action_required'].includes(result.order?.exchangeStage ?? '') || undefined}><summary>Данные водителя и автомобиля для НК АРТЕЛЬ</summary><p className="etrn-note">Сведения сохранённой заявки. В кабинете НК АРТЕЛЬ сверьте их с входящей заявкой. Черновик ответа перевозчика может быть виден только в его кабинете.</p><dl>{[['Водитель', handoff.driverName], ['Телефон', handoff.driverPhone], ['Госномер', handoff.vehiclePlate], ['Автомобиль', handoff.vehicleType]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Не указано'}</dd></div>)}</dl><button className="button" type="button" onClick={() => void copyHandoff()}><Copy size={14}/>{copied ? 'Скопировано' : 'Скопировать данные'}</button></details>}
+      {handoff && !result.carrierConfirmed && <details className="workflow-handoff" open={['carrier_details_required', 'carrier_action_required'].includes(result.order?.exchangeStage ?? '') || undefined}><summary>Данные водителя и автомобиля для НК АРТЕЛЬ</summary><p className="etrn-note">Сведения выбранного водителя и машины заполняются в ответе НК до подписи и утверждения.</p><dl>{[['Водитель', handoff.driverName], ['Телефон', handoff.driverPhone], ['Госномер', handoff.vehiclePlate], ['Автомобиль', handoff.vehicleType]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Не указано'}</dd></div>)}</dl><button className="button" type="button" onClick={() => void copyHandoff()}><Copy size={14}/>{copied ? 'Скопировано' : 'Скопировать данные'}</button></details>}
+      {result.locked && !result.carrierConfirmed && <section className="workflow-handoff" aria-label="Заполнение ответа НК">
+        <h4>Водитель и машина</h4>
+        {result.carrierFill ? <><p>{result.carrierFill.driverSaved ? 'Данные водителя сохранены в Saby.' : 'Данные водителя ещё не подтверждены в Saby.'} {result.carrierFill.vehicleSaved ? 'Данные машины сохранены в Saby.' : 'Данные машины ещё не подтверждены в Saby.'}</p>
+          {result.carrierFill.responsibleSaved !== undefined && <p>{result.carrierFill.responsibleSaved ? 'Ответственный и его телефон сохранены в Saby.' : 'Ответственный и его телефон ещё не подтверждены в Saby.'}</p>}
+          {!!result.carrierFill.blockers.length && <ul>{result.carrierFill.blockers.map(message => <li key={message}>{message}</li>)}</ul>}
+          {result.carrierFill.checkedAt && <p className="etrn-note">Проверка заполнения: {workflowTime(result.carrierFill.checkedAt)} · Москва.</p>}
+          {result.carrierFill.state === 'saved' && <p className="etrn-note">Следующий шаг — подтверждение НК уполномоченным подписантом после подключения подписи и МЧД.</p>}
+        </> : <><p className="etrn-note">Заполнить ответ НК сведениями выбранного водителя и автомобиля. CRM дождётся готовности входящей заявки и проверит результат.</p><button type="button" className="button primary" disabled={busy} onClick={() => void perform(undefined, true)}>Заполнить водителя и машину</button></>}
+      </section>}
       {result.carrierConfirmed && !result.loadingFacts && <form className="etrn-loading-facts" onSubmit={event => { event.preventDefault(); if (confirmed) void perform(facts) }}>
         <h3>Фактическая погрузка</h3><p className="etrn-note">Заполняется сотрудником по факту. Расчётный тоннаж автоматически сюда не переносится.</p>
         <div className="shipment-field-grid">{([['arrivedAt', 'Прибытие на погрузку · Москва'], ['departedAt', 'Убытие с погрузки · Москва']] as const).map(([key, label]) => <label className="shipment-field" key={key}><span>{label}</span><input type="datetime-local" required disabled={busy} value={facts[key]} onChange={event => setFacts(previous => ({ ...previous, [key]: event.target.value }))}/></label>)}</div>

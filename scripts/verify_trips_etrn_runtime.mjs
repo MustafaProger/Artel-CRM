@@ -73,12 +73,12 @@ try{
   await expect(panel).toHaveAttribute('aria-busy','false');
   const beforePoll=transport.calls.length,postRequests=[],readRequests=[];
   page.on('request',request=>{if(request.url().endsWith(workflowPath)){if(request.method()==='POST')postRequests.push(request.url());if(request.method()==='GET')readRequests.push(request.url());}});
-  await page.clock.fastForward(60001);
+  await page.clock.fastForward(((await api(workflowPath)).monitoring.intervalSeconds || 300) * 1000 + 1);
   await expect.poll(()=>readRequests.length).toBe(1);
   await expect.poll(async()=>await panel.getAttribute('aria-busy')).toBe('false');
   await page.waitForTimeout(100);assert.equal(postRequests.length,0);assert.equal(transport.calls.length,beforePoll);
   assert.equal((await api(workflowPath)).status,'not_sent');
-  check('Minute browser polling only reads durable state, never POSTs or mislabels a draft as sent');
+  check('Browser polling at the reported interval only reads durable state, never POSTs or mislabels a draft as sent');
 
   // Hold the real pre-confirmation GET response while the manual POST advances the workflow.
   // Only delivery timing changes: the delayed response body comes from the authenticated API.
@@ -95,7 +95,7 @@ try{
   await page.route(workflowUrl,delayWorkflowRead);
   const delayedResponse=page.waitForResponse(response=>response.url()===workflowUrl&&response.request().method()==='GET');
   void delayedResponse.catch(()=>{}); // Cleanup may close the page before a failed precondition releases the response.
-  await page.clock.fastForward(60001);
+  await page.clock.fastForward(((await api(workflowPath)).monitoring.intervalSeconds || 300) * 1000 + 1);
   await expect.poll(()=>staleWorkflow?.phase).toBe('awaiting_carrier');
   assert.equal(staleWorkflow.carrierConfirmed,false);
   const postsBeforeAcceptance=postRequests.length;

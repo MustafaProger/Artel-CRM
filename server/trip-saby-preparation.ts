@@ -43,6 +43,7 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   const product = directories?.products.find(row => row.id === trip.fields.product_id);
   const vehicle = directories?.vehicles.find(row => row.id === trip.fields.vehicle_id);
   const driver = directories?.drivers.find(row => row.id === trip.fields.driver_id);
+  if (vehicle?.maxWeight && /^\d+(?:\.\d+)?$/.test(vehicle.maxWeight) && vehicle.payloadTonnes && /^\d+(?:\.\d+)?$/.test(vehicle.payloadTonnes) && new Decimal(vehicle.payloadTonnes).mul(1000).gt(vehicle.maxWeight)) blockers.push('Укажите согласованное максимальное значение для Saby в тоннах. Проверьте единицы: килограммы нужно разделить на 1000.');
   const scenario = trip.fields.organization_id === 'nk-artel' ? 'nk_own_customer' : 'artel_customer';
   if (!['artel', 'nk-artel'].includes(trip.fields.organization_id ?? '')) blockers.push('Выберите нашу организацию рейса.');
   if (product?.transportProductKind !== 'diesel') blockers.push('Для отправки в Saby выберите товар с подтверждённым профилем дизельного топлива.');

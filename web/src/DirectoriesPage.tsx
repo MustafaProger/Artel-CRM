@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import type { Company, ShipmentAddress, Snapshot, Vehicle } from './model'
 import DirectorySelect from './DirectorySelect'
-import { companyFields, driverFields, vehicleFields, stsFields, ptsFields, allVehicleFields, productTransportFields, vehicleTransportFields } from './directory-fields'
+import { companyFields, driverFields, vehicleFields, stsFields, ptsFields, productTransportFields, vehicleTransportFields } from './directory-fields'
+import { directoryDraft, directoryEntry, directoryPayload, mergeDirectoryPayload, directoryFieldLabel, withCurrentAddressVersions, type EditorTab } from './directory-editor-data'
 import { customerManagerId } from './customer-manager'
 import './directories.css'
 import './form-refinements.css'
 
 const tabs = [{id:'customers',name:'Клиенты'}, {id:'suppliers',name:'Поставщики'}, {id:'oilDepots',name:'Нефтебазы'}, {id:'managers',name:'Менеджеры'}, {id:'products',name:'Товары'}, {id:'paymentForms',name:'Формы оплаты'}, {id:'vehicles',name:'Автомобили'}, {id:'drivers',name:'Водители'}, {id:'addresses',name:'Места погрузки и доставки'}, {id:'customerManagers',name:'Клиенты и менеджеры'}] as const
  type Tab = (typeof tabs)[number]['id']
-type EditorTab = Tab | 'loadingParty'
 const titles: Record<EditorTab, string> = { customers: 'клиента', suppliers: 'поставщика', loadingParty: 'участника погрузки', oilDepots: 'нефтебазы', managers: 'менеджера', products: 'товара', paymentForms: 'формы оплаты', vehicles: 'автомобиля', drivers: 'водителя', addresses: 'адреса', customerManagers: 'назначения менеджера' }
 const roleLabels = { customer: 'Клиент', supplier: 'Поставщик' }
 const companyTab = (tab: EditorTab) => ['customers', 'suppliers', 'loadingParty'].includes(tab)
@@ -78,9 +78,21 @@ function DirectoryDelete({tab,row,onClose,onDeleted}:{tab:Tab;row:DirectoryRow;o
   </dialog>
 }
 
+function formatConflictValue(value:unknown):string {
+  if(value===undefined||value===null||value==='')return 'пусто'
+  if(Array.isArray(value))return value.map(formatConflictValue).join('; ')||'пусто'
+  if(typeof value==='object')return Object.entries(value).filter(([key])=>!['id','version','companyId'].includes(key)).map(([key,value])=>`${directoryFieldLabel(key)}: ${formatConflictValue(value)}`).join(', ')
+  return String(value)
+}
+
 function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;id?:string;data:Snapshot;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void}) {
   const catalog = data.directories!, dialog = useRef<HTMLDialogElement>(null)
-  const entry = companyTab(tab) ? data.companies.find(row=>row.id===id) : tab === 'customerManagers' ? undefined : (catalog[tab as Exclude<Tab,'customers'|'suppliers'|'customerManagers'>] ?? []).find(row=>row.id===id)
+  const [baseline,setBaseline] = useState(data)
+  const entry = directoryEntry(baseline,tab,id)
+  const busy=useRef(false)
+  const conflictPanel=useRef<HTMLDivElement>(null)
+  const [conflict,setConflict]=useState<{snapshot:Snapshot;merged:Record<string,unknown>;latest:Record<string,unknown>;keys:string[];choices:Record<string,'mine'|'saved'>}|null>(null)
+  useEffect(()=>{conflictPanel.current?.scrollIntoView({block:'nearest'})},[conflict])
   const company = companyTab(tab) ? entry as Company | undefined : undefined
   const [fields,setFields] = useState<Record<string,string>>(()=>Object.fromEntries(Object.entries(entry ?? {}).filter(([,value])=>typeof value==='string').map(([key,value])=>[key,String(value)])))
   const [sections,setSections] = useState(()=>tab==='vehicles' ? (entry as Vehicle | undefined)?.compartmentsLitres?.join(' + ') ?? '' : '')
@@ -104,22 +116,44 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
   const input = (label:string,key:string,required=false)=><label className={`shipment-field ${longFields.has(key)?'form-field-wide':''}`}><span>{label}{required?' *':''}</span>{longFields.has(key)?<textarea aria-label={label} value={fields[key]??''} required={required} maxLength={500} rows={2} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/>:<input aria-label={label} value={fields[key]??''} required={required} maxLength={500} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/>}</label>
   const loadingRoleSelect = (label:string,value:string,onChange:(id:string)=>void)=><div className="loading-party-field"><DirectorySelect label={label} entries={relatedCompanies.filter(company=>!company.directoryArchived).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={value} legacy={relatedCompanies.find(company=>company.id===value)?.name} onChange={onChange} disabled={saving||lookupBusy} searchFirst wrapSelection emptyMessage="Введите наименование или ИНН. Новую организацию можно добавить здесь."/><button type="button" className="button" disabled={saving||lookupBusy} aria-label={`${value?'Реквизиты':'Добавить организацию'}: ${label}`} onClick={()=>setParticipant({label,value,onSelect:onChange})}>{value?'Реквизиты':'Добавить организацию'}</button></div>
   const save = async(event:React.FormEvent)=>{
-    event.preventDefault();if(saving||lookupBusy)return;setSaving(true);setError('')
+    event.preventDefault();if(busy.current||lookupBusy||conflict)return;busy.current=true;setSaving(true);setError('');setConfirmClose(false)
     try {
-      const payload:Record<string,unknown> = companyTab(tab) ? {...Object.fromEntries(companyFields.map(([key])=>[key,fields[key]??''])),name:fields.name,inn:fields.inn??'',roles,defaultDriverId:fields.defaultDriverId??'',defaultVehicleId:fields.defaultVehicleId??'',managerId:managerId||null,addresses:addresses.map(({id,...address})=>({...(id?{id}:{}),...address}))}
-        : tab === 'vehicles' ? Object.fromEntries(['plate','name','brand','model','trailer','capacityLitres','carrierId',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)].map(key=>[key,fields[key]??'']))
-        : tab === 'products' ? {name:fields.name,...Object.fromEntries(productTransportFields.map(([key])=>[key,fields[key]??'']))}
-        : tab === 'drivers' ? {...Object.fromEntries(driverFields.map(([key])=>[key,fields[key]??''])),name:fields.name,phone:fields.phone??'',vehicleId:fields.vehicleId??'',carrierId:fields.carrierId??''} : tab === 'oilDepots' ? Object.fromEntries(['name','address','mapUrl','latitude','longitude','ownerCompanyId','loadingActorCompanyId','infrastructureOwnerCompanyId'].map(key=>[key,fields[key]??''])) : tab === 'addresses' ? {name:fields.name,companyId:fields.companyId,addressKind:fields.addressKind??fields.kind??'delivery',address:fields.address??'',mapUrl:fields.mapUrl??'',latitude:fields.latitude??'',longitude:fields.longitude??'',receiverName:fields.receiverName??'',receiverPhone:fields.receiverPhone??'',loadingActorCompanyId:fields.loadingActorCompanyId??'',infrastructureOwnerCompanyId:fields.infrastructureOwnerCompanyId??''} : tab === 'customerManagers' ? {companyId,managerId:managerId||null} : {name:fields.name}
-      if(tab==='vehicles' && sections.trim())payload.compartmentsLitres=sections.split(/[+;]/).map(value=>value.trim())
+      const payload=directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses})
       const updating=!!id&&tab!=='customerManagers',kind=companyTab(tab)?'companies':tab
-      if(updating)payload.version=entry?.version??0;else payload.kind=kind
-      const response=await fetch(updating?`/api/directories/${kind}/${encodeURIComponent(id!)}`:'/api/directories',{method:updating?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить запись')
+      let result: {entry?:Company;created?:boolean;error?:string} = {}
+      for(let attempt=0;attempt<2;attempt++) {
+        let outgoing={...payload}
+        if(updating) {
+          const fresh=await fetch('/api/snapshot?shipments=omit',{cache:'no-store'})
+          if(!fresh.ok)throw new Error('Не удалось сверить актуальные данные. Ваш ввод сохранён в форме; повторите сохранение.')
+          const snapshot=await fresh.json() as Snapshot, current=directoryEntry(snapshot,tab,id)
+          if(!current)throw new Error('Запись удалена из справочника. Ваш ввод сохранён в форме.')
+          const base=directoryPayload(tab,directoryDraft(baseline,tab,id)),latest=directoryPayload(tab,directoryDraft(snapshot,tab,id))
+          const {merged,conflicts}=mergeDirectoryPayload(base,payload,latest)
+          if(conflicts.length) {setConflict({snapshot,merged,latest,keys:conflicts,choices:{}});return}
+          outgoing={...merged,version:current.version??0}
+        } else outgoing.kind=kind
+        const response=await fetch(updating?`/api/directories/${kind}/${encodeURIComponent(id!)}`:'/api/directories',{method:updating?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(outgoing)})
+        result=await response.json()
+        if(response.ok)break
+        // Re-read once if a writer won the race after our preflight read.
+        if(updating && response.status===409 && attempt===0)continue
+        throw new Error(response.status===409?'Не удалось сохранить: '+(result.error??'данные изменились')+' Ваш ввод остаётся в форме.':result.error||'Не удалось сохранить запись')
+      }
       // Company POST can restore an archived card or add a role to its existing ID.
       // Those committed changes have created:false; actual duplicates return 409.
       if(!id && !companyTab(tab) && tab!=='customerManagers' && !result.created)throw new Error('Такая запись уже есть. Найдите её в списке для редактирования.')
       onSaved(companyTab(tab) ? result.entry as Company : undefined)
-    }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{setSaving(false)}
+    }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{busy.current=false;setSaving(false)}
+  }
+  const resolveConflict = ()=>{
+    if(!conflict)return
+    const resolved={...conflict.merged}
+    for(const key of conflict.keys)if(conflict.choices[key]==='saved')resolved[key]=conflict.latest[key]
+    setFields(Object.fromEntries(Object.entries(resolved).filter(([,value])=>typeof value==='string')) as Record<string,string>)
+    setSections((resolved.compartmentsLitres as string[]|undefined)?.join(' + ')??'')
+    if(companyTab(tab)){setRoles(resolved.roles as string[]);setAddresses(withCurrentAddressVersions(resolved,conflict.latest).addresses as Omit<ShipmentAddress,'companyId'>[]);setManagerId(resolved.managerId as string||'')}
+    setBaseline(conflict.snapshot);setConflict(null);setDirty(true);setError('')
   }
   const lookup = async()=>{
     if(saving||lookupBusy)return;setLookupBusy(true);setError('');setLookupNotice('')
@@ -149,7 +183,7 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
   </section>
   return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
     <div className="directory-editor-heading"><h2>{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy} onClick={close}><X size={20}/></button></div>
-    <div className="directory-editor-body"><div className="shipment-field-grid">
+    <div className="directory-editor-body"><fieldset className="directory-edit-fields" disabled={!!conflict}><div className="shipment-field-grid">
       {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} disabled={saving||lookupBusy}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role));setDirty(true)}}/>{label}</label>)}</fieldset></>}</>
       :tab==='oilDepots'?<>
         <section className="directory-form-section form-field-wide" aria-labelledby="oil-depot-location-title"><div className="directory-form-section-heading"><h3 id="oil-depot-location-title">Место погрузки</h3><p>Название и фактический адрес нефтебазы.</p></div><div className="shipment-field-grid">
@@ -179,12 +213,14 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
     </details>}
     {tab==='vehicles'&&<><details className="directory-extra-fields" open><summary>Данные для транспортных документов</summary>
       <div className="shipment-field-grid">{vehicleTransportFields.slice(0,5).map(([key,label])=><div key={key}>{input(label,key)}</div>)}<label className="shipment-field"><span>Основание владения</span><select aria-label="Основание владения" value={fields.ownershipType??''} disabled={saving||lookupBusy} onChange={event=>update('ownershipType',event.target.value)}><option value="">Не указано</option><option value="1">Собственность</option><option value="2">Совместная собственность супругов</option><option value="3">Аренда</option><option value="4">Лизинг</option><option value="5">Безвозмездное пользование</option></select></label></div>
-      <p className="muted">Грузоподъёмность укажите по документам именно этой машины. Разрешённая максимальная масса и объём цистерны её не заменяют.</p>
+      <p className="muted">Для Saby укажите согласованное максимальное значение в тоннах: 27 900 кг = 27,9 т. Объём цистерны заполняется отдельно.</p>
       <label className="shipment-field"><span>Распределение груза по платформе</span><select aria-label="Распределение груза по платформе" value={fields.cargoDistributable??''} disabled={saving||lookupBusy} onChange={event=>update('cargoDistributable',event.target.value)}><option value="">Не выбрано</option><option value="0">Возможно</option><option value="1">Невозможно</option></select></label>
       {extraGroup('Договор на пользование этой машиной',vehicleTransportFields.slice(6).filter(([key])=>key!=='cargoDistributable'),['3','4','5'].includes(fields.ownershipType??''))}
     </details>{extraGroup('Данные транспортного средства',vehicleFields)}{extraGroup('Свидетельство о регистрации (СТС)',stsFields)}{extraGroup('Паспорт транспортного средства (ПТС / ЭПТС)',ptsFields)}</>}
+    </fieldset>
+    {conflict&&<div className="directory-conflict" ref={conflictPanel} role="region" aria-label="Сверка изменений"><h3>Эти поля изменились во время редактирования</h3><p>Ваш ввод сохранён. Выберите значения для спорных полей. Остальные изменения будут объединены.</p>{conflict.keys.map(key=><fieldset key={key}><legend>{directoryFieldLabel(key)}</legend>{(['mine','saved'] as const).map(choice=><label key={choice}><input type="radio" name={`conflict-${key}`} checked={conflict.choices[key]===choice} onChange={()=>setConflict({...conflict,choices:{...conflict.choices,[key]:choice}})}/><span>{choice==='mine'?'Моё значение':'Сохранённое значение'}: {formatConflictValue((choice==='mine'?conflict.merged:conflict.latest)[key])}</span></label>)}</fieldset>)}<button type="button" className="button" disabled={conflict.keys.some(key=>!conflict.choices[key])} onClick={resolveConflict}>Применить выбор</button><p className="muted">После сверки нажмите «Сохранить».</p></div>}
     {error&&<p className="shipment-error" role="alert">{error}</p>}
     {confirmClose&&<div className="directory-close-confirm" role="alert"><p>Закрыть карточку без сохранения изменений?</p><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
-    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
+    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy||!!conflict}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
   </form></dialog>{participant&&<DirectoryEditor tab="loadingParty" id={participant.value||undefined} data={{...data,companies:relatedCompanies}} onChanged={onChanged} onClose={()=>setParticipant(null)} onSaved={company=>{if(!company)return;setSavedCompanies(old=>[...old.filter(row=>row.id!==company.id),company]);participant.onSelect(company.id);setParticipant(null);onChanged()}}/>}</>
 }

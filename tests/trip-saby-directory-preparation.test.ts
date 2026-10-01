@@ -101,3 +101,20 @@ test('known fleet company links inconsistent with configured Saby carrier block 
     assert.ok(runtime.prepare(source, data, trip, integrationConfig()).blockers.some(message => /карточке автомобиля указан перевозчик/.test(message)));
   } finally { await runtime.close(); }
 });
+
+
+test('agreed maximum is accepted in tonnes; unconverted kilograms are blocked in new orders', async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
+    const vehicle = source.directories!.vehicles.find(row => row.id === 'vehicle')!;
+    vehicle.maxWeight = '27900';
+    for (const value of ['27900', '28']) {
+      vehicle.payloadTonnes = value;
+      assert.ok(runtime.prepare(source, data, runtime.trip, integrationConfig()).blockers.some(message => /Проверьте единицы/.test(message)));
+      assert.equal(vehicle.payloadTonnes, value, 'preflight must not rewrite the directory');
+    }
+    vehicle.payloadTonnes = '27.9';
+    assert.deepEqual(runtime.prepare(source, data, runtime.trip, integrationConfig()).blockers, []);
+  } finally { await runtime.close(); }
+});

@@ -2,7 +2,7 @@
 .etrn-panel .trip-saby-heading { align-items: center; gap: 1rem; }
 .etrn-panel .trip-saby-heading h3 { margin: .25rem 0 0; font-size: 1.1rem; line-height: 1.3; letter-spacing: -.02em; }
 .etrn-panel .workflow-eyebrow { font-size: .66rem; font-weight: 650; letter-spacing: .09em; color: var(--text-secondary, #63776b); }
-.etrn-panel .workflow-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; padding: 0; margin: 1.5rem 0; gap: .45rem; }
+.etrn-panel .workflow-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); list-style: none; padding: 0; margin: 1.5rem 0; gap: .45rem; }
 .etrn-panel .workflow-steps li { display: flex; align-items: center; flex-direction: column; text-align: center; gap: .6rem; font-size: .76rem; line-height: 1.35; color: var(--text-secondary, #63776b); position: relative; min-width: 0; }
 .etrn-panel .workflow-step-number { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border: 1px solid var(--line, #dce5de); background: var(--surface, #fff); border-radius: 50%; font-size: .75rem; font-weight: 650; z-index: 1; }
 .etrn-panel .workflow-steps li:not(:last-child)::after { content: ''; position: absolute; top: .95rem; left: calc(50% + 1rem); width: calc(100% - 1.55rem); height: 1px; background: var(--line, #dce5de); }

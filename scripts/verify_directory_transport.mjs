@@ -63,6 +63,85 @@ try {
   assert.equal((await request(`/api/directories/vehicles/${vehicle.id}`,'PATCH',{version:vehicle.version??0,plate:vehicle.plate,cargoDistributable:'2'})).status,400);
   console.log('PASS vehicle payload, lease and cargo distribution save/reopen; invalid choice rejected');
 
+  // Concurrent writes use only synthetic cards in this isolated runtime.
+  const currentVehicle=async()=> (await request('/api/snapshot')).body.directories.vehicles.find(row=>row.id===vehicle.id);
+  const remoteEdit=async changes=>{
+    const current=await currentVehicle();const {id,version,...fields}=current;
+    const result=await request(`/api/directories/vehicles/${id}`,'PATCH',{...fields,...changes,version:version??0});
+    assert.equal(result.status,200,JSON.stringify(result.body));
+  };
+  dialog=await edit('QA машина 991');
+  await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-LOCAL');
+  await remoteEdit({brand:'QA REMOTE'});
+  await save(dialog);
+  assert.equal((await currentVehicle()).brand,'QA REMOTE');
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-LOCAL');
+  console.log('PASS stale vehicle save merges unrelated remote edits on first click');
+
+  dialog=await edit('QA машина 991');
+  await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-MINE');
+  await remoteEdit({leaseDocumentNumber:'QA-THEIRS',model:'REMOTE MODEL'});
+  await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();
+  let review=dialog.getByRole('region',{name:'Сверка изменений'});
+  await expect(review).toBeVisible();await expect(review).toContainText('QA-MINE');await expect(review).toContainText('QA-THEIRS');
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-THEIRS');
+  await expect(dialog.getByLabel('Номер договора',{exact:true})).toHaveValue('QA-MINE');
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth+1),'Conflict panel overflows on mobile');
+  await review.getByRole('radio',{name:'Моё значение: QA-MINE',exact:true}).check();
+  await review.getByRole('button',{name:'Применить выбор',exact:true}).click();await save(dialog);
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-MINE');assert.equal((await currentVehicle()).model,'REMOTE MODEL');
+  await page.setViewportSize({width:1280,height:960});
+  console.log('PASS overlapping edits require an explicit choice, retain input, preserve unrelated values, fit mobile');
+
+  dialog=await edit('QA машина 991');
+  await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-UNUSED');
+  await remoteEdit({leaseDocumentNumber:'QA-KEEP'});
+  await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();
+  review=dialog.getByRole('region',{name:'Сверка изменений'});
+  await review.getByRole('radio',{name:'Сохранённое значение: QA-KEEP',exact:true}).check();
+  await review.getByRole('button',{name:'Применить выбор',exact:true}).click();await save(dialog);
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-KEEP');
+  console.log('PASS choosing saved value does not overwrite concurrent edit');
+
+  // A write between preflight and PATCH must be re-read, not force-overwritten.
+  dialog=await edit('QA машина 991');await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-RACE');
+  let intercepted=false;
+  await page.route(`**/api/directories/vehicles/${vehicle.id}`,async route=>{
+    if(route.request().method()==='PATCH'&&!intercepted){intercepted=true;await remoteEdit({brand:'RACE BRAND'});}
+    await route.continue();
+  });
+  await save(dialog);await page.unroute(`**/api/directories/vehicles/${vehicle.id}`);
+  assert.ok(intercepted);assert.equal((await currentVehicle()).brand,'RACE BRAND');assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-RACE');
+  console.log('PASS concurrent write after preflight retries safely within the same save');
+
+  dialog=await edit('QA машина 991');await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-OFFLINE');
+  await page.route('**/api/snapshot?shipments=omit',route=>route.abort());
+  await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();
+  await expect(dialog.getByRole('alert')).toBeVisible();await expect(dialog.getByLabel('Номер договора',{exact:true})).toHaveValue('QA-OFFLINE');
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-RACE');
+  await page.unroute('**/api/snapshot?shipments=omit');await save(dialog);
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-OFFLINE');
+  console.log('PASS failed read preserves input and allows retry');
+
+  dialog=await edit('QA машина 991');await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-LOST-REPLY');
+  let patchCount=0;
+  await page.route(`**/api/directories/vehicles/${vehicle.id}`,async route=>{
+    if(route.request().method()==='PATCH'){patchCount++;await route.fetch();await route.abort();}else await route.continue();
+  });
+  await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();
+  await expect(dialog.getByRole('alert')).toBeVisible();assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-LOST-REPLY');
+  await expect(dialog.getByLabel('Номер договора',{exact:true})).toHaveValue('QA-LOST-REPLY');
+  await page.unroute(`**/api/directories/vehicles/${vehicle.id}`);await save(dialog);assert.equal(patchCount,1);
+  assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-LOST-REPLY');
+  console.log('PASS lost PATCH response leaves form intact; retry keeps the committed value');
+
+  dialog=await edit('QA машина 991');await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-DOUBLE');patchCount=0;
+  await page.route(`**/api/directories/vehicles/${vehicle.id}`,async route=>{if(route.request().method()==='PATCH')patchCount++;await route.continue();});
+  await dialog.locator('form').evaluate(form=>{form.requestSubmit();form.requestSubmit();});await expect(dialog).toHaveCount(0);
+  await page.unroute(`**/api/directories/vehicles/${vehicle.id}`);assert.equal(patchCount,1);
+  console.log('PASS rapid duplicate submit produces one PATCH');
+
   await tab('Клиенты');dialog=await add();
   await dialog.getByLabel('Наименование',{exact:true}).fill('QA получатель');
   await dialog.locator('.company-address-group').getByRole('button',{name:'Добавить адрес'}).click();

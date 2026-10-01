@@ -63,7 +63,8 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     window.addEventListener('keydown', trapFocus)
     return () => {window.removeEventListener('keydown', trapFocus);if(opener?.isConnected)opener.focus()}
   }, [menu])
-  const fetchData = () => { setError(''); fetch('/api/snapshot?shipments=omit').then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(setData).catch(e => setError(e.message)) }
+  const snapshotRequest = useRef(0)
+  const fetchData = () => { const request=++snapshotRequest.current;setError(''); fetch('/api/snapshot?shipments=omit',{cache:'no-store'}).then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(snapshot=>{if(request===snapshotRequest.current)setData(snapshot)}).catch(e => {if(request===snapshotRequest.current)setError(e.message)}) }
   useEffect(fetchData, [])
   useEffect(() => {
     const handle = () => {

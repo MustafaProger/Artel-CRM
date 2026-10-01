@@ -9,13 +9,16 @@ import { exchangeEtrn, exchangePreparedEtrn, type EtrnOptions } from './etrn-ser
 import { SabyClient, sabyCredentialBlockers, type SabyConfig } from './saby-client';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
+import { carrierFastPolling } from './trip-saby-carrier';
 
 export const SABY_WORKFLOW_TICK_MS = 5 * 60_000;
+export const SABY_CARRIER_WAIT_TICK_MS = 15_000;
 // A created ETRN and even one signature do not prove that all participants finished.
 export const SABY_COMPLETED_REFRESH_MS = 5 * 60_000;
 export interface TripSabySchedulerOptions {
   base: Snapshot; store: OperationsStorage; config: SabyConfig; enabled: boolean;
   prepare?: PrepareTripSaby; send?: typeof fetch; now?: number;
+  carrierWaitingOnly?: boolean;
 }
 export interface TripSabyDispatchResult { continued: number; refreshed: number; denied: number; failed: number }
 
@@ -49,6 +52,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
   const source = base.provenance.sourceSha256;
   const initial = await store.read(source);
   for (const [tripId, record] of Object.entries(initial.tripSaby?.trips ?? {})) {
+    if (options.carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
     if (!record.initiatorId) continue;
     const expiredSubmission = record.phase === 'submitting' && !!record.leaseId
       && (!record.leaseUntil || Date.parse(record.leaseUntil) <= (options.now ?? Date.now()));
