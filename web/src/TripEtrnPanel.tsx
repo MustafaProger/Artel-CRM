@@ -1,6 +1,7 @@
+import { apiFetch as fetch, apiUrl } from './workspace-api'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, Check, Clock3, Copy, Download, FilePlus2, LoaderCircle, RefreshCw } from 'lucide-react'
-import type { ShipmentTrip, Snapshot } from './model'
+import type { ShipmentTrip, DirectoryData } from './model'
 import type { EtrnTripResponse } from './etrn-api-model'
 import type { TripSabyResponse } from './trip-saby-model'
 import type { SabyTripResponse } from './saby-model'
@@ -14,7 +15,7 @@ const safeSabyUrl = (value: string | null | undefined) => {
 }
 const steps = ['Подготовка', 'Отправка АРТЕЛЬ', 'Водитель и машина', 'Подтверждение НК', 'Создание ЭТрН', 'Отправка клиентам']
 
-export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data: Snapshot }) {
+export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data: DirectoryData }) {
   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
   const etrnEndpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/etrn`
   const [result, setResult] = useState<Workflow | null>(null), [etrn, setEtrn] = useState<EtrnTripResponse | null>(null)
@@ -134,7 +135,7 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     </>}
     {etrn?.deliveries.filter(delivery => delivery.document).map((delivery, index) => {
       const doc = delivery.document!, url = safeSabyUrl(doc.url)
-      return <section className="etrn-delivery" key={delivery.shipmentId}><h3>{title(delivery.shipmentId, index)}</h3><p>{doc.remoteStatus || (doc.status === 'draft' ? 'Черновик ЭТрН создан в АРТЕЛЬ' : doc.status === 'pending' ? 'Передача выполняется' : 'Результат требует сверки')}</p>{doc.lastError && <p className="shipment-error">{doc.lastError}</p>}<p className="etrn-note">Последнее обновление: {workflowTime(doc.updatedAt)} · Москва.</p><p className="etrn-note">Подпись: {doc.signatureStatus === 'reported_by_saby' ? 'Saby сообщает о наличии подписи' : 'Пока не подтверждена'}. ГИС ЭПД: {doc.gisStatus || 'подтверждение не получено'}.</p>{!!doc.availableActions?.length && <p className="etrn-note">Следующее действие в Saby: {doc.availableActions.join(' · ')}.</p>}{url && <a className="button" href={url} target="_blank" rel="noreferrer">Открыть ЭТрН в Saby <ArrowUpRight size={14}/></a>}<ul>{doc.files.map(file => <li key={file.id}>{file.url.startsWith(`${etrnEndpoint}/files/${encodeURIComponent(delivery.shipmentId)}/`) && <a href={file.url} download><Download size={14}/>{file.name}</a>}</li>)}</ul></section>
+      return <section className="etrn-delivery" key={delivery.shipmentId}><h3>{title(delivery.shipmentId, index)}</h3><p>{doc.remoteStatus || (doc.status === 'draft' ? 'Черновик ЭТрН создан в АРТЕЛЬ' : doc.status === 'pending' ? 'Передача выполняется' : 'Результат требует сверки')}</p>{doc.lastError && <p className="shipment-error">{doc.lastError}</p>}<p className="etrn-note">Последнее обновление: {workflowTime(doc.updatedAt)} · Москва.</p><p className="etrn-note">Подпись: {doc.signatureStatus === 'reported_by_saby' ? 'Saby сообщает о наличии подписи' : 'Пока не подтверждена'}. ГИС ЭПД: {doc.gisStatus || 'подтверждение не получено'}.</p>{!!doc.availableActions?.length && <p className="etrn-note">Следующее действие в Saby: {doc.availableActions.join(' · ')}.</p>}{url && <a className="button" href={url} target="_blank" rel="noreferrer">Открыть ЭТрН в Saby <ArrowUpRight size={14}/></a>}<ul>{doc.files.map(file => <li key={file.id}>{file.url.startsWith(`${etrnEndpoint}/files/${encodeURIComponent(delivery.shipmentId)}/`) && <a href={apiUrl(file.url)} download><Download size={14}/>{file.name}</a>}</li>)}</ul></section>
     })}
     {!!result?.history?.length && <details className="workflow-history"><summary>История обмена <span>{result.history.length}</span></summary><ol>{[...result.history].reverse().map((entry, index) => <li key={`${entry.at}-${index}`}><span>{exchangeStageLabels[entry.stage] ?? 'Состояние обновлено'}</span><time dateTime={entry.at}>{workflowTime(entry.at)}</time></li>)}</ol></details>}
     {haveLegacy && <details><summary>Ранее созданные документы</summary><p>Сохранённые связи доступны для сверки. Общая заявка поверх прежнего обмена автоматически не создаётся.</p>{legacy?.saby.documents.map(doc => <p key={doc.shipmentId}>{safeSabyUrl(doc.url) ? <a href={safeSabyUrl(doc.url)!} target="_blank" rel="noreferrer">Открыть прежний заказ в Saby</a> : doc.lastError || doc.status}</p>)}</details>}

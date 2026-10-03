@@ -8,6 +8,7 @@ import { SHIPMENT_DECIMAL_PRECISION } from '../web/src/shipment-calculations';
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 
 export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
+  if (actor.role === 'driver') return false;
   if (canManage(actor)) return true;
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId) || shipmentOwnership(snapshot, row).employeeId !== actor.managerId) return false;
   const assignments = snapshot.directories.customerManagers?.filter(link => link.companyId === row.customerId) ?? [];
@@ -33,6 +34,7 @@ export function requireWholeTrip(actor: AccountUser, snapshot: Snapshot, id: str
 }
 const companyLookup = (company: Company): Company => ({ id: company.id, name: company.name, roles: company.roles, directoryArchived: company.directoryArchived, shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] });
 export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work', workCompanyIds: string[] = []): Snapshot {
+  if (actor.role === 'driver') throw new ApiError(403, 'Водителю доступен только кабинет рейсов.');
   if (canManage(actor) && !context) return snapshot;
   const shipmentAccess = !context && (hasSection(actor, 'shipments') || hasSection(actor, 'trips'));
   const directoryAccess = !context && hasSection(actor, 'directories');

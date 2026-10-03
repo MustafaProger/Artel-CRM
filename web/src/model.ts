@@ -235,3 +235,6 @@ export interface ShipmentTripResponse {
   shipments: Shipment[];
   shipment: Shipment;
 }
+
+/** Shared operational inputs without the CRM financial snapshot. */
+export type DirectoryData = Pick<Snapshot, 'companies' | 'directories'>;

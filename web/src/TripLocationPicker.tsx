@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from './workspace-api'
 import { useState } from 'react'
 import { MapPin, Plus } from 'lucide-react'
 import type { ShipmentAddress } from './model'

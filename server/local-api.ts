@@ -17,7 +17,10 @@ import type { Plugin } from 'vite';
 import type { AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
-import { activeUsers, authenticate, deleteUser, login, logout, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
+import { readDriverTrips } from './driver-trips';
+import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
 import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
 import { apiSection, requireSection, requireTripSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
@@ -362,7 +365,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
     response.end(body);
   };
   return (request: IncomingMessage, response: ServerResponse, next: () => void) => {
-    const pathname = request.url?.split('?')[0];
+    const logistics = logisticsRequest(request);
+    const pathname = logistics ? request.url!.split('?')[0].replace('/api/logistics/', '/api/') : request.url?.split('?')[0];
     if (!pathname?.startsWith('/api/')) return next();
     const cronRequest = pathname === '/api/push/dispatch';
     const bankCron = pathname === '/api/banking/dispatch';
@@ -375,10 +379,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       : (options.authorizeRequest ?? isLocalRequest)(request);
     if (!cronRequest && !bankCron && !bankWebhook && !originAllowed) return write(response, 403, '{"error":"Доступ к API запрещён."}');
     void (async () => {
+      if (logistics) requireLogisticsRoute(pathname, request.method ?? '');
       if (cronRequest && !validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validPushWorkflow(request)) throw new ApiError(403, 'Доступ к планировщику запрещён.');
       const url = new URL(request.url!, 'http://localhost');
-      const authEnabled = options.requireAuthentication !== false;
+      const authEnabled = logistics || options.requireAuthentication !== false;
       const base = await baseSnapshot();
+      // Driver sessions never reach generic routes (including bank/auth subrouters).
+      const boundaryUser = authenticate(await operations.read(base.provenance.sourceSha256), request);
+      if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
       const banking = new BankingService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.bankRequest);
       if (bankCron) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
@@ -411,20 +419,20 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const userId = pathname.match(/^\/api\/auth\/users\/([^/]+)$/)?.[1];
         if (request.method === 'GET' && pathname === '/api/auth/session') {
           const data = await operations.read(base.provenance.sourceSha256);
-          return write(response, 200, JSON.stringify({ user: authenticate(data, request), needsSetup: !data.accounts?.users.length, setupTokenRequired: secure }));
+          return write(response, 200, JSON.stringify({ user: authenticate(data, request), needsSetup: !logistics && !data.accounts?.users.length, setupTokenRequired: !logistics && secure }));
         }
         if (request.method === 'GET' && pathname === '/api/auth/users') {
           const data = await operations.read(base.provenance.sourceSha256);
           const actor = requireUser(data, request);
           requireManage(actor);
-          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(publicUser);
+          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt && user.role !== 'driver').map(publicUser);
           return write(response, 200, JSON.stringify({users, currentUserId: actor.id}));
         }
         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
         const body = await jsonBody(request);
         const result = await operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
-          if(pathname === '/api/auth/login')return { result: await login(data,body), changed:true };
+          if(pathname === '/api/auth/login')return { result: await login(data,body,logistics ? 'logistics' : undefined), changed:true };
           if(pathname === '/api/auth/setup') {
             if(data.accounts?.users.length)throw new ApiError(409,'Директор уже создан. Выполните вход.');
             const setupToken=options.setupToken ?? process.env.ARTEL_SETUP_TOKEN;
@@ -434,7 +442,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           }
           const actor=requireUser(data,request);
           if(pathname === '/api/auth/logout'){
-            if (data.push) data.push.devices = data.push.devices.filter(device => device.sessionHash !== pushSessionHash(request) && !(device.userId === actor.id && device.endpoint === body.pushEndpoint));
+            if (!logistics && data.push) data.push.devices = data.push.devices.filter(device => device.sessionHash !== pushSessionHash(request) && !(device.userId === actor.id && device.endpoint === body.pushEndpoint));
             logout(data,request);return {result:{status:200,token:''},changed:true};
           }
           requireManage(actor);
@@ -444,19 +452,51 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           }
           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined)},changed:true};
         });
-        if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure));
+        if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure,logistics ? 'logistics' : undefined));
         const {token:_token,...safeResult}=result as typeof result & {token?:string};
         void _token;
         return write(response,result.status,JSON.stringify(safeResult));
       }
+      const driverAccessMatch = pathname.match(/^\/api\/drivers\/([^/]+)\/access$/);
+      if (driverAccessMatch) {
+        if (!['GET', 'POST', 'PATCH'].includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
+        const driverId = decodeURIComponent(driverAccessMatch[1]);
+        if (request.method === 'GET') {
+          const data = await operations.read(base.provenance.sourceSha256);
+          requireManage(requireUser(data, request));
+          return write(response, 200, JSON.stringify({ access: readDriverAccess(data, currentSnapshot(base, data, false), driverId) }));
+        }
+        const body = await jsonBody(request);
+        const result = await operations.mutate(base.provenance.sourceSha256, async data => {
+          requireManage(requireUser(data, request));
+          const { changed, ...result } = await mutateDriverAccess(data, currentSnapshot(base, data, false), driverId, request.method!, body);
+          return { result, changed };
+        });
+        return write(response, 200, JSON.stringify(result));
+      }
+      if (pathname.startsWith('/api/driver/')) {
+        const match = pathname.match(/^\/api\/driver\/trips(?:\/([^/]+))?$/);
+        const data = await operations.read(base.provenance.sourceSha256);
+        const user = requireUser(data, request);
+        requireDriverRoute(user, pathname, request.method ?? '');
+        if (!match) throw new ApiError(404, 'Маршрут не найден.');
+        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+        return write(response, 200, JSON.stringify(readDriverTrips(currentSnapshot(base, data, false), user, match[1] ? decodeURIComponent(match[1]) : undefined, url.searchParams.get('q') ?? '')));
+      }
       const authorized = (data: import('./operations-store').OperationsData) => {
         const user = requireUser(data, request);
+        requireDriverRoute(user, pathname, request.method ?? '');
+        if (logistics) requireTripSection(user, true);
         if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
-        if (section) requireSection(user, section);
+        if (section && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
         return user;
       };
       const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
+      if (logistics && pathname === '/api/context') {
+        const stored = await operations.read(base.provenance.sourceSha256);
+        return write(response, 200, JSON.stringify(logisticsContext(currentSnapshot(base, stored), authorized(stored))));
+      }
       if (pathname === '/api/settlements') {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const stored = await operations.read(base.provenance.sourceSha256);
@@ -675,7 +715,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const stored = await operations.read(base.provenance.sourceSha256);
         const fullSnapshot = currentSnapshot(base, stored);
         const snapshot = actor ? scopeSnapshot(fullSnapshot, authorized(stored)) : fullSnapshot;
-        if (pathname === '/api/directories') return write(response, 200, JSON.stringify({ directories: snapshot.directories, companies: snapshot.companies }));
+        if (pathname === '/api/directories') return write(response, 200, JSON.stringify(logistics ? logisticsContext(fullSnapshot, authorized(stored)) : { directories: snapshot.directories, companies: snapshot.companies }));
         if (pathname === '/api/snapshot') {
           if (url.searchParams.get('shipments') === 'omit') snapshot.shipments = [];
           return write(response, 200, JSON.stringify(snapshot));
@@ -700,11 +740,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return write(response, 200, JSON.stringify(shipmentPage(snapshot, url.searchParams)));
       }
       const body = await jsonBody(request, request.method === 'DELETE');
+      if (logistics) requireLogisticsDirectoryInput(pathname, body);
       if(actor && (pathname.startsWith('/api/directories') || pathname.startsWith('/api/companies') || request.method==='DELETE'))requireManage(actor);
       if (pathname === '/api/directories' || directoryMatch) {
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
           if(actor)requireManage(authorized(data));
           const snapshot = currentSnapshot(base, data);
+          if (logistics) requireLogisticsDirectoryTarget(pathname, body, snapshot, authorized(data));
           const result = directoryMatch && request.method === 'DELETE' ? deleteDirectoryEntry(directoryMatch[1],decodeURIComponent(directoryMatch[2]),body,snapshot,data) : directoryMatch
             ? directoryMatch[1] === 'companies'
               ? saveCompany(body, snapshot, data, decodeURIComponent(directoryMatch[2]))
@@ -715,12 +757,13 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           // without creating a new entity. Its changes must still be committed.
           return { result, changed: !!directoryMatch || body.kind === 'companies' || result.created };
         });
-        return write(response, result.created ? 201 : 200, JSON.stringify(result));
+        const safeResult = logistics && 'entry' in result && (pathname === '/api/directories' ? body.kind === 'companies' : directoryMatch?.[1] === 'companies') ? { ...result, entry: logisticsCompany(result.entry as Company) } : result;
+        return write(response, result.created ? 201 : 200, JSON.stringify(safeResult));
       }
       if (pathname === '/api/companies/lookup') {
         if (Object.keys(body).some(key=>key!=='inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН.');
         const company = await lookupCheckoCompany(body.inn.trim(), options.checkoApiKey ?? process.env.CHECKO_API_KEY, options.fetcher);
-        return write(response, 200, JSON.stringify({ company }));
+        return write(response, 200, JSON.stringify({ company: logistics ? logisticsCompany(company) : company }));
       }
       if (pathname === '/api/companies/from-inn') {
         if (Object.keys(body).some(key => key !== 'inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр с верными контрольными цифрами.');

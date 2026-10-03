@@ -29,6 +29,8 @@ async function fixture() {
   await writeFile(resolve(snapshot, 'manifest.json'), JSON.stringify({ meta, counts: {}, files }));
   await writeFile(resolve(store, 'operations.json'), encodeOperations({ schemaVersion: 1, sourceSha256: source, revision: 0, shipments: {}, companies: [] }));
   await writeFile(resolve(app, 'index.html'), '<!doctype html><title>Artel synthetic test</title>');
+  await mkdir(resolve(app, 'logistics'));
+  await writeFile(resolve(app, 'logistics/index.html'), '<!doctype html><title>Logistics synthetic test</title>');
   await writeFile(resolve(app, 'sw.js'), '/* test service worker */');
   await writeFile(resolve(directory, 'secret.txt'), 'private-test-only');
   await symlink(resolve(directory, 'secret.txt'), resolve(app, 'escape.js'));
@@ -101,6 +103,10 @@ test('production serves the compiled app only and validates host, origin, traver
     assert.equal((await runtime.request('/', { origin: 'https://evil.example' })).status, 403);
     assert.match((await runtime.request('/')).text, /Artel synthetic test/);
     assert.match((await runtime.request('/shipments')).text, /Artel synthetic test/);
+    for (const path of ['/logistics', '/logistics/', '/logistics/index.html', '/logistics/trips']) assert.match((await runtime.request(path)).text, /Logistics synthetic test/);
+    assert.equal((await runtime.request('/logistics/', { method: 'HEAD' })).text, '');
+    assert.equal((await runtime.request('/logistics/missing.js')).status, 404);
+    assert.equal((await runtime.request('/logistics/', { method: 'POST' })).status, 405);
     assert.equal((await runtime.request('/sw.js')).headers['cache-control'], 'no-cache');
     assert.equal((await runtime.request('/', { method: 'HEAD' })).text, '');
     assert.equal((await runtime.request('/api/snapshot', { origin: null })).status, 401);
@@ -128,6 +134,11 @@ test('external top-level links can open only the public app shell without relaxi
       const result = await runtime.request(path, navigation);
       assert.equal(result.status, 200, path); assert.match(result.text, /Artel synthetic test/);
     }
+    for (const path of ['/logistics', '/logistics/', '/logistics/index.html', '/logistics/trips']) {
+      const result = await runtime.request(path, navigation);
+      assert.equal(result.status, 200, path); assert.match(result.text, /Logistics synthetic test/);
+    }
+    assert.equal((await runtime.request('/api/logistics/context', navigation)).status, 403);
     assert.equal((await runtime.request('/', { ...navigation, origin: publicOrigin })).status, 200);
     for (const path of ['/api', '/api/snapshot', '/api/auth/setup', '/healthz', '/assets', '/assets/app', '/assets/app.js', '/sw.js',
       '/data', '/server/production', '/.env', '/%2eenv', '/%2e%2e/shipments', '/a/../shipments', '/%252e%252e/shipments', '/%5cshipments', '/%00', '/%ZZ', '//shipments']) {
@@ -161,12 +172,19 @@ test('HTTPS sessions, saved users and data survive a production restart with aut
     assert.match(cookie, /; Secure/); assert.match(cookie, /; HttpOnly/); assert.match(cookie, /SameSite=Strict/);
     assert.ok(!setup.text.includes(password));
     const session = cookie.split(';')[0];
+    const logisticsLogin = await runtime.request('/api/logistics/auth/login', { method: 'POST', body: { login: 'director', password } });
+    assert.equal(logisticsLogin.status, 200, logisticsLogin.text);
+    const logisticsCookie = logisticsLogin.headers['set-cookie']![0];
+    assert.match(logisticsCookie, /^artel_logistics_session=/); assert.match(logisticsCookie, /Path=\/api\/logistics;/); assert.match(logisticsCookie, /; Secure/);
+    const logisticsSession = logisticsCookie.split(';')[0];
+    assert.equal((await runtime.request('/api/logistics/context', { cookie: logisticsSession })).status, 200);
+    assert.equal((await runtime.request('/api/snapshot', { cookie: logisticsSession })).status, 401);
     const snapshot = await runtime.request('/api/snapshot', { cookie: session });
     assert.equal(snapshot.status, 200);
     const directory = await runtime.request('/api/directories', { method: 'POST', cookie: session, body: { kind: 'products', name: 'Persistent synthetic product' } });
     assert.equal(directory.status, 201, directory.text);
     assert.equal((await runtime.request('/api/banking', { cookie: session })).status, 200);
-    assert.equal((await runtime.request('/api/banking/sber/statements', { cookie: session })).status, 200);
+    assert.equal((await runtime.request('/api/banking/sber/statements?from=2026-09-01&to=2026-09-01', { cookie: session })).status, 200);
     const employee = await runtime.request('/api/directories', { method: 'POST', cookie: session, body: { kind: 'managers', name: 'Limited employee' } });
     assert.equal(employee.status, 201);
     const manager = await runtime.request('/api/auth/users', { method: 'POST', cookie: session, body: {
@@ -184,6 +202,12 @@ test('HTTPS sessions, saved users and data survive a production restart with aut
     const restored = await runtime.request('/api/snapshot', { cookie: session });
     assert.equal(restored.status, 200); assert.match(restored.text, /Persistent synthetic product/);
     assert.equal((await runtime.request('/api/snapshot')).status, 401);
+    const logisticsRestored = await runtime.request('/api/logistics/context', { cookie: logisticsSession });
+    assert.equal(logisticsRestored.status, 200, logisticsRestored.text); assert.match(logisticsRestored.text, /Persistent synthetic product/);
+    assert.equal((await runtime.request('/api/snapshot', { cookie: logisticsSession.replace('artel_logistics_session=', 'artel_session=') })).status, 401);
+    assert.equal((await runtime.request('/api/logistics/auth/logout', { method: 'POST', cookie: logisticsSession, body: {} })).status, 200);
+    assert.equal((await runtime.request('/api/logistics/context', { cookie: logisticsSession })).status, 401);
+    assert.equal((await runtime.request('/api/snapshot', { cookie: session })).status, 200);
     const login = await runtime.request('/api/auth/login', { method: 'POST', body: { login: 'director', password } });
     assert.equal(login.status, 200);
     const saved = await readFile(resolve(f.store, 'operations.json'), 'utf8');

@@ -27,13 +27,15 @@
     "test:design-ui": "node scripts/verify_apple.mjs",
     "test:push-ui": "node scripts/verify_push.mjs",
     "test:employee-access-ui": "node --import tsx scripts/verify_employee_access.mjs",
+    "test:logistics-ui": "node --import tsx scripts/verify_logistics.mjs",
     "test:settlements-ui": "node --import tsx scripts/verify_settlements.mjs",
     "test:customer-reconciliation": "tsx scripts/verify-customer-reconciliation.ts",
     "test:etrn-replay": "python3 -m unittest discover -s tests -p \"test_etrn_replay*.py\" -v",
     "replay:etrn": "node scripts/run_etrn_replay.mjs",
     "test:etrn": "tsx --test tests/api-etrn.test.ts tests/saby-consignment-note.test.ts tests/saby-client-workflow.test.ts tests/api-trip-saby-workflow.test.ts tests/api-trip-saby-prepared.test.ts",
     "test:trips-etrn-ui": "node --import tsx scripts/verify_trip_autofill.mjs",
-    "test:trips-etrn-runtime": "node --import tsx scripts/verify_trips_etrn_runtime.mjs"
+    "test:trips-etrn-runtime": "node --import tsx scripts/verify_trips_etrn_runtime.mjs",
+    "test:driver-ui": "node --import tsx scripts/verify_driver_access.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

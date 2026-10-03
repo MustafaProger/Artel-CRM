@@ -222,8 +222,8 @@ test('every Sber endpoint requires CRM login/management; browser and snapshot ne
     const snapshot=await(await request('/api/snapshot',cookie)).json();
     assert.equal((await request('/api/banking/sber/sync',cookie,{from:DAY,to:DAY})).status,200);
     assert.equal((await request('/api/banking/sber/continue',cookie,{})).status,200);
-    const list=await(await request('/api/banking/sber/statements',cookie)).json();assert.equal(list.operations.length,2);
-    const artelList = await (await request('/api/banking/sber/sber-artel/statements', cookie)).json();
+    const list=await(await request(`/api/banking/sber/statements?from=${DAY}&to=${DAY}`,cookie)).json();assert.equal(list.operations.length,2);
+    const artelList = await (await request(`/api/banking/sber/sber-artel/statements?from=${DAY}&to=${DAY}`, cookie)).json();
     assert.equal(artelList.account, '40702810538000003495'); assert.equal(artelList.inn, '9721079780'); assert.equal(artelList.operations.length, 0);
     assert.ok(!JSON.stringify(artelList).includes('encryptedTokens'));
     const response=JSON.stringify(await(await request('/api/snapshot',cookie)).json());

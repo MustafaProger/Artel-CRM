@@ -74,6 +74,13 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
     // Materialize the effective list, including imported records, before removing one item.
     data.directories![key] = catalog[key].filter(row => row.id !== id) as never;
     rememberDeletion(data, key, id);
+    if (key === 'drivers' && data.accounts) {
+      const user = data.accounts.users.find(row => row.role === 'driver' && row.driverId === id);
+      if (user) {
+        if (user.active) { user.active = false; user.version++; }
+        data.accounts.sessions = data.accounts.sessions.filter(session => session.userId !== user.id);
+      }
+    }
   }
   return { created: false as const, deleted: true as const, id };
 }

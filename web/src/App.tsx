@@ -9,6 +9,7 @@ import TripsPage from './TripsPage'
 import DirectoriesPage from './DirectoriesPage'
 import WorkPage from './WorkPage'
 import AuthGate from './AuthGate'
+import DriverWorkspace from './DriverWorkspace'
 import { hasSection, isAdministrator, type AccountUser, type SectionId } from './auth-model'
 import AccountManagement from './AccountManagement'
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
@@ -25,13 +26,13 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
   {id:'payroll',title:'ЗП',icon:Banknote,section:1,description:''},
   {id:'accounts',title:'Сотрудники и доступ',icon:Building2,section:1,description:'Учётные записи и права сотрудников.'},
-  {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Компании и менеджеры, товары, водители и автомобили.'},
+  {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Клиенты, поставщики, нефтебазы, водители и автомобили.'},
 ]
 const allowedPage = (user: AccountUser, page: Page) => page === 'accounts' ? isAdministrator(user) : hasSection(user, page)
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
-export default function App(){return <AuthGate>{(user,onLogout)=><WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</AuthGate>}
+export default function App(){return <AuthGate>{(user,onLogout)=>user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</AuthGate>}
 function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const canManage=isAdministrator(user)
   const availablePages = pages.filter(item => allowedPage(user, item.id))

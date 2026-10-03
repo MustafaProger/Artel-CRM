@@ -1,0 +1,16 @@
+.driver-access{margin:20px 0;padding:18px;border:1px solid var(--line,#e4e7eb);border-radius:14px;background:var(--surface,#fff)}
+.driver-access-heading{display:flex;align-items:center;gap:9px;color:var(--accent,#2d5b47)}
+.driver-access-heading h3{margin:0;font-size:16px}
+.driver-access-description,.driver-access-url{font-size:13px;line-height:1.6;color:var(--muted,#687477)}
+.driver-access-url{overflow-wrap:anywhere}
+.driver-access-url a{color:var(--accent,#2d5b47);text-decoration:underline;text-underline-offset:3px}
+.driver-access-status{padding:11px 0;font-size:14px;color:var(--muted,#687477)}
+.driver-access-status.is-active{color:var(--accent,#2d5b47)}
+.driver-access-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.driver-access-confirm,.driver-access-secret{margin-top:15px;padding:15px;border-radius:10px;background:var(--surface-soft,#f4f7f5);font-size:13px;line-height:1.6}
+.driver-access-confirm p,.driver-access-secret p{margin-top:0}
+.driver-access-password{display:flex;gap:7px;align-items:center;min-width:0}
+.driver-access-password input{min-width:0;flex:1;font-family:ui-monospace,monospace}
+.driver-access-error{margin-top:12px;color:#a13232;font-size:13px}
+.driver-access>p[role=status]{display:flex;align-items:center;gap:6px}
+@media(max-width:520px){.driver-access{padding:13px}.driver-access .shipment-field-grid{grid-template-columns:1fr}.driver-access-actions>.button{white-space:normal;text-align:left}}

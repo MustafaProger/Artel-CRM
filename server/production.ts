@@ -92,7 +92,7 @@ function requestPath(request: IncomingMessage): string | undefined {
 function publicShellNavigationAllowed(request: IncomingMessage, publicOrigin: string, pathname: string | undefined) {
   if (!pathname || pathname === '/api' || pathname.startsWith('/api/') || pathname === '/healthz'
       || pathname === '/assets' || pathname.startsWith('/assets/')
-      || (pathname !== '/index.html' && extname(pathname))) return false;
+      || (!['/index.html', '/logistics/index.html'].includes(pathname) && extname(pathname))) return false;
   const origin = new URL(publicOrigin);
   return request.headers.host === origin.host && request.method === 'GET'
     && request.headers['sec-fetch-site'] === 'cross-site'
@@ -105,7 +105,7 @@ async function serveStatic(request: IncomingMessage, response: ServerResponse, r
   if (request.method !== 'GET' && request.method !== 'HEAD') return json(response, 405, { error: 'Метод не поддерживается.' });
   const extension = extname(pathname);
   // Client-side navigation receives the shell; unknown file types never do.
-  const assetPath = extension ? pathname : '/index.html';
+  const assetPath = extension ? pathname : pathname === '/logistics' || pathname.startsWith('/logistics/') ? '/logistics/index.html' : '/index.html';
   if (!contentTypes[extname(assetPath)]) return json(response, 404, { error: 'Файл не найден.' });
   let file: string;
   try {

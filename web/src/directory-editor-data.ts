@@ -1,13 +1,13 @@
-import type { Company, ShipmentAddress, Snapshot, Vehicle } from './model'
+import type { Company, ShipmentAddress, DirectoryData, Vehicle } from './model'
 import { companyFields, driverFields, allVehicleFields, productTransportFields, vehicleTransportFields } from './directory-fields'
 import { customerManagerId } from './customer-manager'
 
 export type EditorTab = 'customers'|'suppliers'|'loadingParty'|'oilDepots'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses'|'customerManagers'
 const companyTab = (tab: EditorTab) => ['customers','suppliers','loadingParty'].includes(tab)
-export function directoryEntry(data: Snapshot, tab: EditorTab, id?: string) {
+export function directoryEntry(data: DirectoryData, tab: EditorTab, id?: string) {
   return companyTab(tab) ? data.companies.find(row=>row.id===id) : tab==='customerManagers' ? undefined : (data.directories![tab as Exclude<EditorTab,'customers'|'suppliers'|'loadingParty'|'customerManagers'>]??[]).find(row=>row.id===id)
 }
-export function directoryDraft(data: Snapshot, tab: EditorTab, id?: string) {
+export function directoryDraft(data: DirectoryData, tab: EditorTab, id?: string) {
   const entry=directoryEntry(data,tab,id), company=companyTab(tab)?entry as Company|undefined:undefined
   return {
     fields:Object.fromEntries(Object.entries(entry??{}).filter(([,value])=>typeof value==='string')) as Record<string,string>,

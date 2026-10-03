@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     fs: { strict: true, allow: [directory('./web'), directory('./node_modules')], deny: ['**/data/**', '**/server/**', '**/qa/**', '**/.env*'] },
   },
   preview: { host: '127.0.0.1', port: 4173, strictPort: true },
-  build: { outDir: '../app-dist', emptyOutDir: true },
+  // The separate logistics frontend remains local; production publishes only CRM.
+  build: { outDir: '../app-dist', emptyOutDir: true, rollupOptions: { input: { crm: directory('./web/index.html') } } },
   }
 })

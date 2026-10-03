@@ -1,0 +1,42 @@
+.driver-shell{min-height:100dvh;background:#f5f7f6;color:#24332b}
+.driver-topbar{height:82px;display:flex;justify-content:space-between;align-items:center;gap:16px;max-width:920px;margin:auto;padding:0 28px;border-bottom:1px solid #dfe7e1}
+.driver-brand{display:flex;align-items:center;gap:11px;color:#245d44;text-decoration:none;font-size:20px;font-weight:700}
+.driver-brand small{display:block;font-size:11px;font-weight:500;letter-spacing:.04em;margin-top:3px;color:#667a6e}
+.driver-content{max-width:920px;margin:auto;padding:32px 28px 70px;outline:none}
+.driver-heading{display:flex;gap:14px;align-items:center;justify-content:space-between}
+.driver-heading p{margin:0 0 7px;color:#68776e;font-size:14px}
+.driver-heading h1{margin:0;font-size:30px;letter-spacing:-.04em;line-height:1.2}
+.driver-intro{font-size:14px;color:#68776e;margin:14px 0 25px;line-height:1.5}
+.driver-search{display:flex;align-items:center;gap:10px;padding:11px 14px;border:1px solid #dbe4dd;background:#fff;border-radius:12px;color:#728078}
+.driver-search input{width:100%;min-width:0;border:0;background:none;outline:none;font:inherit;color:inherit;font-size:14px}
+.driver-search:focus-within{outline:2px solid #3c7b57;outline-offset:2px}
+.driver-count{font-size:12px;color:#718077;margin:18px 0 10px}
+.driver-trip-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.driver-trip-card{display:block;min-width:0;border:1px solid #dce5de;border-radius:16px;padding:20px;background:#fff;text-decoration:none;color:inherit;transition:border-color .15s,box-shadow .15s}
+.driver-trip-card:hover{border-color:#93b29e;box-shadow:0 3px 18px #244d3410}
+.driver-trip-card-heading{display:flex;justify-content:space-between;gap:12px;align-items:center;color:#315b42;font-size:16px}
+.driver-trip-card-heading strong,.driver-vehicle{display:flex;align-items:center;gap:8px}
+.driver-trip-card svg{flex-shrink:0}
+.driver-vehicle{font-size:13px;color:#63756a;margin:13px 0}
+.driver-trip-route{font-size:14px;line-height:1.5;font-weight:500;margin:15px 0;overflow-wrap:anywhere}
+.driver-trip-destinations{padding:2px 0 6px;border-top:1px solid #edf1ee}
+.driver-trip-destinations p{display:flex;align-items:baseline;gap:9px;font-size:13px;line-height:1.5;margin:10px 0;overflow-wrap:anywhere}
+.driver-trip-destinations p>span:first-child{flex-shrink:0;border-radius:50%;background:#f0f5f1;color:#477155;font-size:11px;width:21px;height:21px;text-align:center;line-height:21px}
+.driver-trip-deliveries{font-size:11px;color:#718077}
+.driver-empty{padding:45px 20px;text-align:center;color:#758379}
+.driver-empty>svg{margin:auto}.driver-empty h2{font-size:18px;color:#46594c;margin:15px 0 8px}.driver-empty p{font-size:14px;line-height:1.6}
+.driver-error{padding:15px 18px;margin:16px 0;border:1px solid #eed5d0;border-radius:12px;background:#fff7f5;color:#923d33;font-size:14px;line-height:1.6}
+.driver-back{display:inline-flex;margin:0 0 20px;text-decoration:none}
+.driver-detail-heading h2{font-size:23px;line-height:1.4;letter-spacing:-.03em;margin:0}
+.driver-detail-heading{margin-bottom:20px}
+.driver-stop{padding:22px;background:#fff;border:1px solid #dce5de;border-radius:15px;margin-bottom:14px}
+.driver-stop-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:17px}.driver-stop-heading h3{font-size:17px;margin:0;flex:1;min-width:120px}.driver-stop-heading small{font-size:12px;color:#6c7d71}
+.driver-stop-marker{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;height:30px;border-radius:50%;background:#edf4ee;color:#356f4b;font-size:13px;font-weight:600}
+.driver-stop-party{font-size:14px;color:#53695b;margin:0 0 13px}
+.driver-address{display:flex;align-items:flex-start;gap:9px;line-height:1.6;font-size:15px;overflow-wrap:anywhere}.driver-address>svg{flex-shrink:0;margin-top:4px;color:#6d8374}.driver-address a{display:flex;align-items:center;gap:4px;width:fit-content;font-size:13px;color:#366d4d;margin-top:7px;text-decoration:underline;text-underline-offset:3px}
+.driver-cargo{display:flex;flex-wrap:wrap;gap:18px 36px;margin:20px 0 0}.driver-cargo dt{font-size:11px;color:#79867e;margin-bottom:5px}.driver-cargo dd{font-size:14px;margin:0;color:#3d5345}
+.driver-note{font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;border-top:1px solid #edf1ee;margin:19px 0 0;padding-top:15px;color:#54655a}
+.driver-deliveries-heading{display:flex;align-items:center;gap:10px;margin:26px 0 14px}.driver-deliveries-heading h3{font-size:17px;margin:0}.driver-deliveries-heading>span{font-size:12px;background:#e6ede8;border-radius:20px;padding:4px 9px;color:#506a58}
+@media(max-width:650px){.driver-topbar{height:74px;padding:0 18px}.driver-content{padding:26px 18px 50px}.driver-heading h1{font-size:27px}.driver-trip-list{grid-template-columns:1fr}.driver-trip-card,.driver-stop{padding:18px}.driver-heading>.button{padding:9px}.driver-heading>.button>span{display:none}.driver-brand{font-size:19px}.driver-detail-heading h2{font-size:21px}}
+
+.driver-destination-name{min-width:0}.driver-destination-name small{display:block;margin-top:3px;color:#587361;font-size:12px}

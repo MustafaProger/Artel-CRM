@@ -1,7 +1,9 @@
+import { apiFetch as fetch, fetchDirectoryData, isLogisticsWorkspace } from './workspace-api'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
-import type { Company, ShipmentAddress, Snapshot, Vehicle } from './model'
+import type { Company, ShipmentAddress, DirectoryData, Vehicle } from './model'
 import DirectorySelect from './DirectorySelect'
+import DriverAccess from './DriverAccess'
 import { companyFields, driverFields, vehicleFields, stsFields, ptsFields, productTransportFields, vehicleTransportFields } from './directory-fields'
 import { directoryDraft, directoryEntry, directoryPayload, mergeDirectoryPayload, directoryFieldLabel, withCurrentAddressVersions, type EditorTab } from './directory-editor-data'
 import { customerManagerId } from './customer-manager'
@@ -9,17 +11,20 @@ import './directories.css'
 import './form-refinements.css'
 
 const tabs = [{id:'customers',name:'Клиенты'}, {id:'suppliers',name:'Поставщики'}, {id:'oilDepots',name:'Нефтебазы'}, {id:'managers',name:'Менеджеры'}, {id:'products',name:'Товары'}, {id:'paymentForms',name:'Формы оплаты'}, {id:'vehicles',name:'Автомобили'}, {id:'drivers',name:'Водители'}, {id:'addresses',name:'Места погрузки и доставки'}, {id:'customerManagers',name:'Клиенты и менеджеры'}] as const
- type Tab = (typeof tabs)[number]['id']
+ export type DirectoryTab = (typeof tabs)[number]['id']
+ type Tab = DirectoryTab
 const titles: Record<EditorTab, string> = { customers: 'клиента', suppliers: 'поставщика', loadingParty: 'участника погрузки', oilDepots: 'нефтебазы', managers: 'менеджера', products: 'товара', paymentForms: 'формы оплаты', vehicles: 'автомобиля', drivers: 'водителя', addresses: 'адреса', customerManagers: 'назначения менеджера' }
 const roleLabels = { customer: 'Клиент', supplier: 'Поставщик' }
 const companyTab = (tab: EditorTab) => ['customers', 'suppliers', 'loadingParty'].includes(tab)
 const tabRole = (tab: EditorTab) => tab === 'customers' ? 'customer' : tab === 'suppliers' ? 'supplier' : 'other'
+const bankFields = new Set(['bankName','settlementAccount','correspondentAccount','bik'])
+const editablePayload = (payload:Record<string,unknown>) => isLogisticsWorkspace() ? Object.fromEntries(Object.entries(payload).filter(([key])=>!bankFields.has(key))) : payload
 const vehicleName = (vehicle: Vehicle) => vehicle.name || vehicle.plate
 const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== vehicle.plate ? vehicle.plate : '', vehicle.capacityLitres ? `${Number(vehicle.capacityLitres).toLocaleString('ru-RU')} л` : '', vehicle.compartmentsLitres?.length ? `Секции: ${vehicle.compartmentsLitres.join(' + ')} л` : ''].filter(Boolean).join(' · ')
 type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager?:string;managerId?:string;addresses?:string;roles?:string[]}
 
-export default function DirectoriesPage({data,onChanged,canManage=true}:{data:Snapshot;onChanged:()=>void;canManage?:boolean}) {
-  const [tab,setTab] = useState<Tab>('customers'), [query,setQuery] = useState(''), [page,setPage] = useState(0)
+export default function DirectoriesPage({data,onChanged,canManage=true,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void;canManage?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
+  const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
   const [editor,setEditor] = useState<{id?:string} | null>(null), [notice,setNotice] = useState(''), [deleting,setDeleting] = useState<DirectoryRow|null>(null)
   const catalog = data.directories!
   const rows: DirectoryRow[] = companyTab(tab) ? data.companies.filter(company => !company.directoryArchived && company.roles.includes(tabRole(tab))).map(company => ({
@@ -37,7 +42,7 @@ export default function DirectoriesPage({data,onChanged,canManage=true}:{data:Sn
   const visible = rows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
   const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
   return <div className="directories-page">
-    <div className="directory-tabs" role="group" aria-label="Справочники">{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id)).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setNotice('')}}>{item.name}</button>)}</div>
+    {!hideTabs && <div className="directory-tabs" role="group" aria-label="Справочники">{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setNotice('')}}>{item.name}</button>)}</div>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     <section className="panel directory-list">
       <div className="directory-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск в справочнике" onClick={()=>{setQuery('');setPage(0)}}><X size={16}/></button>}</label>
@@ -85,13 +90,13 @@ function formatConflictValue(value:unknown):string {
   return String(value)
 }
 
-function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;id?:string;data:Snapshot;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void}) {
+function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;id?:string;data:DirectoryData;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void}) {
   const catalog = data.directories!, dialog = useRef<HTMLDialogElement>(null)
   const [baseline,setBaseline] = useState(data)
   const entry = directoryEntry(baseline,tab,id)
   const busy=useRef(false)
   const conflictPanel=useRef<HTMLDivElement>(null)
-  const [conflict,setConflict]=useState<{snapshot:Snapshot;merged:Record<string,unknown>;latest:Record<string,unknown>;keys:string[];choices:Record<string,'mine'|'saved'>}|null>(null)
+  const [conflict,setConflict]=useState<{snapshot:DirectoryData;merged:Record<string,unknown>;latest:Record<string,unknown>;keys:string[];choices:Record<string,'mine'|'saved'>}|null>(null)
   useEffect(()=>{conflictPanel.current?.scrollIntoView({block:'nearest'})},[conflict])
   const company = companyTab(tab) ? entry as Company | undefined : undefined
   const [fields,setFields] = useState<Record<string,string>>(()=>Object.fromEntries(Object.entries(entry ?? {}).filter(([,value])=>typeof value==='string').map(([key,value])=>[key,String(value)])))
@@ -106,29 +111,28 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
   const [companyId,setCompanyId] = useState(id??'')
   const [managerId,setManagerId] = useState(()=>customerManagerId(catalog,id??''))
   const [addresses,setAddresses] = useState<Omit<ShipmentAddress,'companyId'>[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind,version,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId})=>({id,name,kind,version:version??0,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId})))
+  const [accessBusy,setAccessBusy] = useState(false)
   const [lookupBusy,setLookupBusy] = useState(false), [lookupNotice,setLookupNotice] = useState('')
   const [saving,setSaving] = useState(false), [error,setError] = useState(''), [dirty,setDirty] = useState(false), [confirmClose,setConfirmClose] = useState(false)
   useEffect(()=>{const element=dialog.current;element?.showModal();return()=>element?.close()},[])
   useEffect(()=>{if(!dirty)return;const handler=(event:BeforeUnloadEvent)=>{event.preventDefault()};window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler)},[dirty])
-  const close = ()=>{if(saving||lookupBusy)return;if(dirty)setConfirmClose(true);else onClose()}
+  const close = ()=>{if(saving||lookupBusy||accessBusy)return;if(dirty)setConfirmClose(true);else onClose()}
   const update = (key:string,value:string)=>{setFields(old=>({...old,[key]:value}));setDirty(true)}
   const longFields = new Set(['address','registeredAddress','ownerAddress','fullName','documentName','passportIssuedBy','ptsSpecialMarks','stsSpecialMarks'])
   const input = (label:string,key:string,required=false)=><label className={`shipment-field ${longFields.has(key)?'form-field-wide':''}`}><span>{label}{required?' *':''}</span>{longFields.has(key)?<textarea aria-label={label} value={fields[key]??''} required={required} maxLength={500} rows={2} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/>:<input aria-label={label} value={fields[key]??''} required={required} maxLength={500} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/>}</label>
   const loadingRoleSelect = (label:string,value:string,onChange:(id:string)=>void)=><div className="loading-party-field"><DirectorySelect label={label} entries={relatedCompanies.filter(company=>!company.directoryArchived).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={value} legacy={relatedCompanies.find(company=>company.id===value)?.name} onChange={onChange} disabled={saving||lookupBusy} searchFirst wrapSelection emptyMessage="Введите наименование или ИНН. Новую организацию можно добавить здесь."/><button type="button" className="button" disabled={saving||lookupBusy} aria-label={`${value?'Реквизиты':'Добавить организацию'}: ${label}`} onClick={()=>setParticipant({label,value,onSelect:onChange})}>{value?'Реквизиты':'Добавить организацию'}</button></div>
   const save = async(event:React.FormEvent)=>{
-    event.preventDefault();if(busy.current||lookupBusy||conflict)return;busy.current=true;setSaving(true);setError('');setConfirmClose(false)
+    event.preventDefault();if(busy.current||lookupBusy||accessBusy||conflict)return;busy.current=true;setSaving(true);setError('');setConfirmClose(false)
     try {
-      const payload=directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses})
+      const payload=editablePayload(directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses}))
       const updating=!!id&&tab!=='customerManagers',kind=companyTab(tab)?'companies':tab
       let result: {entry?:Company;created?:boolean;error?:string} = {}
       for(let attempt=0;attempt<2;attempt++) {
         let outgoing={...payload}
         if(updating) {
-          const fresh=await fetch('/api/snapshot?shipments=omit',{cache:'no-store'})
-          if(!fresh.ok)throw new Error('Не удалось сверить актуальные данные. Ваш ввод сохранён в форме; повторите сохранение.')
-          const snapshot=await fresh.json() as Snapshot, current=directoryEntry(snapshot,tab,id)
+          const snapshot=await fetchDirectoryData(), current=directoryEntry(snapshot,tab,id)
           if(!current)throw new Error('Запись удалена из справочника. Ваш ввод сохранён в форме.')
-          const base=directoryPayload(tab,directoryDraft(baseline,tab,id)),latest=directoryPayload(tab,directoryDraft(snapshot,tab,id))
+          const base=editablePayload(directoryPayload(tab,directoryDraft(baseline,tab,id))),latest=editablePayload(directoryPayload(tab,directoryDraft(snapshot,tab,id)))
           const {merged,conflicts}=mergeDirectoryPayload(base,payload,latest)
           if(conflicts.length) {setConflict({snapshot,merged,latest,keys:conflicts,choices:{}});return}
           outgoing={...merged,version:current.version??0}
@@ -182,7 +186,7 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
     {kind==='loading'&&<p className="muted">Укажите компании, которые выполняют погрузку и владеют площадкой. Эти сведения используются в транспортных документах.</p>}
   </section>
   return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
-    <div className="directory-editor-heading"><h2>{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy} onClick={close}><X size={20}/></button></div>
+    <div className="directory-editor-heading"><h2>{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy||accessBusy} onClick={close}><X size={20}/></button></div>
     <div className="directory-editor-body"><fieldset className="directory-edit-fields" disabled={!!conflict}><div className="shipment-field-grid">
       {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} disabled={saving||lookupBusy}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role));setDirty(true)}}/>{label}</label>)}</fieldset></>}</>
       :tab==='oilDepots'?<>
@@ -202,9 +206,9 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
       :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя менеджера':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<>{input('Приёмщик','receiverName')}{input('Телефон приёмщика','receiverPhone')}</>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
     </div>
     {lookupNotice&&<p className="directory-notice" role="status">{lookupNotice}</p>}
-    {companyTab(tab)&&<>{extraGroup('Реквизиты организации',companyFields.slice(0,5),true)}{extraGroup('Контакты и банковские реквизиты',companyFields.slice(5))}{(roles.includes('customer')||addresses.some(address=>address.kind==='delivery'))&&addressGroup('delivery','Фактические адреса отгрузки клиента')}</>}
+    {companyTab(tab)&&<>{extraGroup('Реквизиты организации',companyFields.slice(0,5),true)}{extraGroup(isLogisticsWorkspace()?'Контакты':'Контакты и банковские реквизиты',isLogisticsWorkspace()?companyFields.slice(5,7):companyFields.slice(5))}{(roles.includes('customer')||addresses.some(address=>address.kind==='delivery'))&&addressGroup('delivery','Фактические адреса отгрузки клиента')}</>}
     {tab==='oilDepots'&&<p className="directory-context-note">Поставщик выбирается отдельно в рейсе.</p>}
-    {tab==='drivers'&&<>{extraGroup('Водительское удостоверение и ИНН',driverFields.slice(0,4),true)}{extraGroup('Паспортные данные водителя',driverFields.slice(4))}</>}
+    {tab==='drivers'&&<>{id ? <DriverAccess driverId={id} disabled={saving||lookupBusy||!!conflict} onBusyChange={setAccessBusy}/> : <p className="directory-context-note">Сохраните карточку водителя, чтобы выдать ему доступ.</p>}{extraGroup('Водительское удостоверение и ИНН',driverFields.slice(0,4),true)}{extraGroup('Паспортные данные водителя',driverFields.slice(4))}</>}
     {tab==='addresses'&&(fields.addressKind??fields.kind??'delivery')==='loading'&&<div className="shipment-field-grid">{loadingRoleSelect('Погрузчик',fields.loadingActorCompanyId??'',value=>update('loadingActorCompanyId',value))}{loadingRoleSelect('Владелец площадки',fields.infrastructureOwnerCompanyId??'',value=>update('infrastructureOwnerCompanyId',value))}</div>}
     {tab==='products'&&<details className="directory-extra-fields" open><summary>Транспортные документы</summary>
       <div className="shipment-field-grid">{input('Полное наименование для документов','documentName')}<label className="shipment-field"><span>Автоматизация транспортных документов</span><select aria-label="Автоматизация транспортных документов" value={fields.transportProductKind??''} disabled={saving||lookupBusy} onChange={event=>update('transportProductKind',event.target.value)}><option value="">Не настроена</option><option value="diesel">Дизельное топливо</option></select></label><label className="shipment-field"><span>Способ перевозки груза</span><select aria-label="Способ перевозки груза" value={fields.cargoPackaging??''} disabled={saving||lookupBusy} onChange={event=>update('cargoPackaging',event.target.value)}><option value="">Не указан</option><option value="bulk">Без упаковки (наливом)</option><option value="packaged">В упаковке</option></select></label></div>
@@ -221,6 +225,6 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
     {conflict&&<div className="directory-conflict" ref={conflictPanel} role="region" aria-label="Сверка изменений"><h3>Эти поля изменились во время редактирования</h3><p>Ваш ввод сохранён. Выберите значения для спорных полей. Остальные изменения будут объединены.</p>{conflict.keys.map(key=><fieldset key={key}><legend>{directoryFieldLabel(key)}</legend>{(['mine','saved'] as const).map(choice=><label key={choice}><input type="radio" name={`conflict-${key}`} checked={conflict.choices[key]===choice} onChange={()=>setConflict({...conflict,choices:{...conflict.choices,[key]:choice}})}/><span>{choice==='mine'?'Моё значение':'Сохранённое значение'}: {formatConflictValue((choice==='mine'?conflict.merged:conflict.latest)[key])}</span></label>)}</fieldset>)}<button type="button" className="button" disabled={conflict.keys.some(key=>!conflict.choices[key])} onClick={resolveConflict}>Применить выбор</button><p className="muted">После сверки нажмите «Сохранить».</p></div>}
     {error&&<p className="shipment-error" role="alert">{error}</p>}
     {confirmClose&&<div className="directory-close-confirm" role="alert"><p>Закрыть карточку без сохранения изменений?</p><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
-    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy||!!conflict}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
+    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy||accessBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy||accessBusy||!!conflict}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
   </form></dialog>{participant&&<DirectoryEditor tab="loadingParty" id={participant.value||undefined} data={{...data,companies:relatedCompanies}} onChanged={onChanged} onClose={()=>setParticipant(null)} onSaved={company=>{if(!company)return;setSavedCompanies(old=>[...old.filter(row=>row.id!==company.id),company]);participant.onSelect(company.id);setParticipant(null);onChanged()}}/>}</>
 }

@@ -2,51 +2,67 @@ import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual 
 import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
-import { effectiveSections, isAdministrator, sections, type SectionId } from '../web/src/auth-model';
+import { effectiveSections, hasSection, isAdministrator, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 
 const scrypt = promisify(derive);
-interface StoredUser extends AccountUser { passwordHash: string; salt: string; deletedBy?: string }
+export interface StoredUser extends AccountUser { passwordHash: string; salt: string; deletedBy?: string }
 export interface AccountsData {
   users: StoredUser[];
-  sessions: { hash: string; userId: string; expiresAt: number }[];
+  sessions: { hash: string; userId: string; expiresAt: number; audience?: 'logistics' }[];
   attempts: Record<string, { count: number; until: number }>;
 }
-export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, active:user.active, version:user.version, sections:effectiveSections(user), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
-export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt).map(publicUser);
+export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
+export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt && user.role !== 'driver').map(publicUser);
 export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 export const cookieName = 'artel_session';
+export const logisticsCookieName = 'artel_logistics_session';
+export const logisticsRequest = (request: Pick<IncomingMessage, 'url'>) => request.url?.split('?')[0].startsWith('/api/logistics/') === true;
 export function sessionToken(request: IncomingMessage) {
-  const token = request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${cookieName}=`))?.slice(cookieName.length+1);
+  const name = logisticsRequest(request) ? logisticsCookieName : cookieName;
+  const token = request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${name}=`))?.slice(name.length+1);
   return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
+}
+
+/** Driver identity must still exist in the live directory on every session use. */
+export function driverAccountAvailable(data: OperationsData, user: AccountUser) {
+  if (user.role !== 'driver') return true;
+  const entry = data.directories?.drivers.find(row => row.id === user.driverId);
+  const flags = entry as (typeof entry & { archived?: boolean; directoryArchived?: boolean; deletedAt?: string }) | undefined;
+  return !!entry && !flags?.archived && !flags?.directoryArchived && !flags?.deletedAt && !data.directories?.deletedEntries?.drivers?.includes(entry.id);
 }
 export function authenticate(data: OperationsData, request: IncomingMessage): AccountUser | null {
   const token = sessionToken(request);
-  const session = token && data.accounts?.sessions.find(row=>row.hash===hash(token) && row.expiresAt>Date.now());
+  const audience = logisticsRequest(request) ? 'logistics' : undefined;
+  const session = token && data.accounts?.sessions.find(row=>row.hash===hash(token) && row.expiresAt>Date.now() && row.audience === audience);
   const user = session && data.accounts?.users.find(row=>row.id===session.userId && row.active && !row.deletedAt);
-  return user ? publicUser(user) : null;
+  return user && driverAccountAvailable(data, user) && (!audience || user.role === 'driver' || hasSection(user, 'trips')) ? publicUser(user) : null;
 }
-export function sessionCookie(token: string, secure: boolean) { return `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token?28800:0}${secure?'; Secure':''}`; }
+export function sessionCookie(token: string, secure: boolean, audience?: 'logistics') { return `${audience ? logisticsCookieName : cookieName}=${token}; Path=${audience ? '/api/logistics' : '/'}; HttpOnly; SameSite=Strict; Max-Age=${token?28800:0}${secure?'; Secure':''}`; }
 export function requireUser(data: OperationsData, request: IncomingMessage) { const user=authenticate(data,request); if(!user)throw new ApiError(401,'Войдите в приложение.');return user; }
 export function requireManage(user: AccountUser) { if(!canManage(user))throw new ApiError(403,'Действие доступно директору и администратору.'); }
 export function validateAccounts(value: AccountsData) {
   if(!value || !Array.isArray(value.users) || !Array.isArray(value.sessions) || !value.attempts || typeof value.attempts!=='object')throw new Error('Invalid accounts');
-  const ids=new Set<string>(), logins=new Set<string>();
+  const ids=new Set<string>(), logins=new Set<string>(), driverIds=new Set<string>();
   for(const u of value.users){
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
     if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
-    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','manager'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
+    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','manager','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
+    if (u.role === 'driver') {
+      if (typeof u.driverId !== 'string' || !u.driverId || driverIds.has(u.driverId) || u.managerId !== null || !Array.isArray(u.sections) || u.sections.length) throw new Error('Invalid driver account');
+      driverIds.add(u.driverId);
+    } else if (u.driverId !== undefined) throw new Error('Invalid employee driver binding');
     ids.add(u.id);logins.add(u.login);
   }
   if(value.users.length && !value.users.some(u=>u.active && u.role==='director'))throw new Error('Director required');
-  for(const row of value.sessions)if(!row || !ids.has(row.userId) || !/^[a-f0-9]{64}$/.test(row.hash) || !Number.isSafeInteger(row.expiresAt))throw new Error('Invalid session');
+  for(const row of value.sessions)if(!row || !ids.has(row.userId) || !/^[a-f0-9]{64}$/.test(row.hash) || !Number.isSafeInteger(row.expiresAt) || row.audience !== undefined && row.audience !== 'logistics')throw new Error('Invalid session');
   for(const [key,row] of Object.entries(value.attempts))if(!/^[a-f0-9]{64}$/.test(key) || !row || !Number.isSafeInteger(row.count) || row.count<0 || !Number.isSafeInteger(row.until))throw new Error('Invalid login attempt');
 }
 function text(input: Record<string,unknown>, key:string, max=120) { const v=input[key];if(typeof v!=='string' || !v.trim() || v.trim().length>max)throw new ApiError(400,`Проверьте поле «${key}».`);return v.trim(); }
-async function passwordFields(input: unknown) {
+export async function passwordFields(input: unknown) {
   if(typeof input!=='string' || input.length<12 || input.length>256)throw new ApiError(400,'Пароль должен содержать от 12 до 256 символов.');
   const salt=randomBytes(16).toString('hex');return {salt,passwordHash:(await scrypt(input,salt,64) as Buffer).toString('hex')};
 }
@@ -54,6 +70,7 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
   const accounts=data.accounts ??= {users:[],sessions:[],attempts:{}};
   const previous=id?accounts.users.find(u=>u.id===id):undefined;
+  if (previous?.role === 'driver') throw new ApiError(403, 'Управляйте доступом через карточку водителя.');
   if(id && (!previous || previous.deletedAt))throw new ApiError(404,'Пользователь не найден.');
   if(previous && input.version!==previous.version)throw new ApiError(409,'Пользователь уже изменён. Обновите список.');
   const name=text(input,'name'),login=text(input,'login',64).toLowerCase();
@@ -86,6 +103,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   const accounts = data.accounts;
   const user = accounts?.users.find(row => row.id === id);
   if (!accounts || !user) throw new ApiError(404, 'Пользователь не найден.');
+  if (user.role === 'driver') throw new ApiError(403, 'Управляйте доступом через карточку водителя.');
   if (input.confirmationName !== user.name) throw new ApiError(400, 'Для подтверждения введите точное имя сотрудника.');
   if (actor.id === id) throw new ApiError(409, 'Нельзя удалить свою учётную запись.');
   // The same DELETE can be safely retried after a lost response, without another revision.
@@ -109,7 +127,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   }
   return { id, deleted: true, changed: true };
 }
-export async function login(data:OperationsData,input:Record<string,unknown>) {
+export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics') {
   const accounts=data.accounts;
   if(!accounts?.users.length)throw new ApiError(403,'Сначала создайте учётную запись директора.');
   const name=typeof input.login==='string'?input.login.trim().toLowerCase().slice(0,64):'';
@@ -119,14 +137,15 @@ export async function login(data:OperationsData,input:Record<string,unknown>) {
   const user=accounts.users.find(u=>u.login===name && u.active && !u.deletedAt);
   const password=typeof input.password==='string' && input.password.length<=256?input.password:'';
   const actual=await scrypt(password,user?.salt??'00000000000000000000000000000000',64) as Buffer;
-  if(!user || !timingSafeEqual(actual,Buffer.from(user.passwordHash,'hex'))){
+  if(!user || !driverAccountAvailable(data, user) || !timingSafeEqual(actual,Buffer.from(user.passwordHash,'hex'))){
     for(const k of [key,globalKey])accounts.attempts[k]={count:(accounts.attempts[k]?.count??0)+1,until:accounts.attempts[k]?.until??now+900000};
     return {error:'Неверный логин или пароль.',status:401};
   }
   delete accounts.attempts[key];
+  if (audience && user.role !== 'driver' && !hasSection(user, 'trips')) return { error: 'Раздел рейсов недоступен. Обратитесь к администратору.', status: 403 };
   const token=randomBytes(32).toString('hex');
   accounts.sessions=accounts.sessions.filter(s=>s.expiresAt>now).slice(-499);
-  accounts.sessions.push({hash:hash(token),userId:user.id,expiresAt:now+28800000});
+  accounts.sessions.push({hash:hash(token),userId:user.id,expiresAt:now+28800000,...(audience ? { audience } : {})});
   return {token,user:publicUser(user),status:200};
 }
 export function logout(data:OperationsData,request:IncomingMessage){const token=sessionToken(request);if(data.accounts && token)data.accounts.sessions=data.accounts.sessions.filter(s=>s.hash!==hash(token));}
