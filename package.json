@@ -13,7 +13,7 @@
     "test:api": "tsx --test tests/api*.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint web/src server tests vite.config.ts",
-    "test": "npm run test:api",
+    "test": "npm run test:api && npm run test:bank-period",
     "test:shipments-ui": "node scripts/verify_shipments_excel.mjs",
     "test:trips-ui": "node --import tsx scripts/verify_trip_autofill.mjs",
     "test:trips-saby-ui": "node --import tsx scripts/verify_trips_etrn_runtime.mjs",
@@ -38,7 +38,8 @@
     "test:driver-ui": "node --import tsx scripts/verify_driver_access.mjs",
     "test:driver-password-ui": "node --import tsx scripts/verify_driver_password_ui.mjs",
     "test:segments-ui": "node --import tsx scripts/verify_scrollable_segments.mjs",
-    "test:design-consistency": "node --import tsx scripts/verify_design_consistency.mjs"
+    "test:design-consistency": "node --import tsx scripts/verify_design_consistency.mjs",
+    "test:bank-period": "tsx --test tests/bank-period.test.ts"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

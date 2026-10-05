@@ -72,12 +72,12 @@ try {
   await page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Выписки по дням', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Обновить из банка', exact: true })).toBeEnabled();
-  await expect(page.getByLabel('Начало периода выписки Сбера')).toHaveValue('2026-09-01');
+  await expect(page.getByLabel('Начало периода выписки Сбера')).toHaveValue(`${new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date()).slice(0, 7)}-01`);
   const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date());
   await expect(page.getByLabel('Конец периода выписки Сбера')).toHaveValue(today);
   await expect(page.getByLabel('Конец периода выписки Сбера')).toHaveAttribute('max', today);
   assert.equal(report.bankRequests.length, 0, 'Opening the screen must only read saved state');
-  check('Default period September 1 through Moscow today; initial screen never starts bank requests');
+  check('Default period current month through Moscow today; initial screen never starts bank requests');
   const setPeriod = async (from, to) => {
     await page.getByLabel('Начало периода выписки Сбера').fill(from);
     await page.getByLabel('Конец периода выписки Сбера').fill(to);

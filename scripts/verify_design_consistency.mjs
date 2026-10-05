@@ -230,6 +230,80 @@ try {
   for (const [route, button, name] of [['shipments', 'Добавить отгрузку', 'shipment-editor-320'], ['directories', 'Добавить', 'directory-editor-320'], ['work', 'Новая задача', 'work-editor-320']]) {
     await visit(route); await page.getByRole('button', { name: button, exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible(); await capture(name); await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
   }
+  // Screenshot regressions: verify active states too, with motion enabled.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const [route, label] of [['shipments', 'Поиск отгрузок'], ['directories', 'Поиск в справочнике']]) {
+    await visit(route);
+    const input = page.getByLabel(label, { exact: true });
+    await input.focus();
+    assert.equal(await input.evaluate(el => getComputedStyle(el).outlineStyle), 'none', `${route}: no inner ring`);
+    assert.equal(await input.evaluate(el => getComputedStyle(el.parentElement).outlineStyle), 'solid', `${route}: wrapper focus ring`);
+    await capture(`search-focused-${route}`);
+  }
+  const row = page.locator('.directory-record').first();
+  await page.mouse.move(0, 0);
+  await page.getByLabel('Поиск в справочнике').focus();
+  await row.hover();
+  await expect(row).toHaveCSS('background-color', 'rgb(245, 245, 247)');
+  await expect(row.locator('.directory-record-open')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await row.locator('.directory-delete').hover();
+  await expect(row).toHaveCSS('background-color', 'rgb(245, 245, 247)');
+  const hoverFrames = await row.evaluate(async el => {
+    const frames = [];
+    for (let i = 0; i < 12; i++) { await new Promise(requestAnimationFrame); frames.push(getComputedStyle(el).backgroundColor); }
+    return frames;
+  });
+  assert.ok(hoverFrames.every(color => color === 'rgb(245, 245, 247)'), 'Hover stays one colour across nested controls');
+  await capture('directory-hover');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(row).toHaveCSS('transition-duration', '0s');
+  await visit('overview'); await expect(page.getByRole('heading', { name: 'Наши организации', exact: true })).toHaveCount(0);
+  await visit('accounts'); await expect(page.getByRole('heading', { name: 'Учётные записи', exact: true })).toHaveCount(0);
+  assert.equal(await page.getByRole('button', { name: 'Добавить пользователя', exact: true }).evaluate(el => !!el.closest('.account-panel')), false);
+  report.checks.push('Single search focus ring; stable neutral directory hover across nested controls; reduced motion; headings removed; account action outside panel');
+
+  for (const company of ['НК АРТЕЛЬ', 'АРТЕЛЬ']) {
+    await visit('overview'); await visit('payments');
+    await page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Выписки по дням', exact: true })).toBeVisible();
+    const from = page.getByLabel('Начало периода выписки Сбера'), to = page.getByLabel('Конец периода выписки Сбера');
+    await expect(from).toHaveValue(`${day.slice(0, 7)}-01`); await expect(to).toHaveValue(day);
+    await expect(page.getByText('Не удалось загрузить сохранённые данные', { exact: true })).toHaveCount(0);
+    await from.fill('2026-01-01');
+    await expect(page.getByRole('button', { name: 'Показать период', exact: true })).toBeDisabled();
+    await expect(page.getByRole('alert')).toContainText('31 дня');
+    await expect(page.getByRole('heading', { name: 'Выписки по дням', exact: true })).toBeVisible();
+    await from.fill(`${day.slice(0, 7)}-01`);
+    await expect(page.getByRole('button', { name: 'Показать период', exact: true })).toBeEnabled();
+    await capture(`bank-default-${company === 'АРТЕЛЬ' ? 'artel' : 'nk'}`);
+  }
+  report.checks.push('Both Sber connections open with a valid current-month period; invalid drafts cannot replace the saved statement');
+
+  let fillState = 'saved';
+  const workflowRoute = '**/api/shipment-trips/*/saby-workflow';
+  await page.route(workflowRoute, async route => {
+    assert.equal(route.request().method(), 'GET');
+    const response = await route.fetch(); const result = await response.json();
+    Object.assign(result, { locked: true, status: 'sent', phase: 'awaiting_carrier', carrierConfirmed: false,
+      carrierFill: { state: fillState, driverSaved: true, vehicleSaved: fillState === 'saved', responsibleSaved: fillState === 'saved', blockers: fillState === 'saved' ? [] : ['Проверьте данные автомобиля.'], checkedAt: '2026-10-05T09:16:00Z' } });
+    await route.fulfill({ response, json: result });
+  });
+  for (const state of ['saved', 'partial']) {
+    fillState = state;
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await visit('overview'); await visit('trips'); await page.getByRole('button', { name: 'Saby', exact: true }).click();
+      const panel = page.getByRole('region', { name: 'Заполнение ответа НК' });
+      await expect(panel).toBeVisible();
+      await expect(panel.locator('.workflow-fill-statuses li')).toHaveCount(3);
+      await expect(panel.locator('.is-saved')).toHaveCount(state === 'saved' ? 3 : 1);
+      await expect(panel.locator('.workflow-fill-next')).toHaveCount(state === 'saved' ? 1 : 0);
+      await capture(`saby-carrier-${state}-${width}`);
+    }
+  }
+  await page.unroute(workflowRoute);
+  report.checks.push('Saby carrier status: saved and partial data remain distinct at desktop, 390px and 320px; no document writes');
   assert.equal(report.providerCalls, 0, 'Read-only interface audit must not call Saby');
   assert.deepEqual(report.unexpectedRequests, [], 'Browser must not reach external services');
   assert.deepEqual(report.mutationRequests, [], 'Browser audit must not change CRM records');

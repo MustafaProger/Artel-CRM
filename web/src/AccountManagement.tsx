@@ -26,8 +26,9 @@ export default function AccountManagement({ directories, onChanged }: { director
   const toggle = (id: SectionId, enabled: boolean) => setForm(previous => ({ ...previous, sections: enabled ? [...previous.sections, id] : previous.sections.filter(value => value !== id) }));
   const privileged = form.role !== 'manager';
   const deletionBlock = (user: AccountUser) => user.id === currentUserId ? 'Нельзя удалить свою учётную запись' : user.active && user.role === 'director' && users.filter(row => row.active && row.role === 'director').length === 1 ? 'Нельзя удалить последнего активного директора' : '';
-  return <section className="panel account-panel">
-    <div className="panel-heading"><div><h2>Учётные записи</h2></div><button className="button primary" disabled={busy} onClick={() => edit(null)}><Plus size={16} aria-hidden="true" />Добавить пользователя</button></div>
+  return <section className="account-management">
+    <div className="account-toolbar"><button className="button primary" disabled={busy} onClick={() => edit(null)}><Plus size={16} aria-hidden="true" />Добавить пользователя</button></div>
+    <div className="panel account-panel">
     {error && <p className="soft-notice" role="alert">{error}</p>}{notice && <p className="soft-notice" role="status">{notice}</p>}
     {editing !== undefined && <form className="account-form" onSubmit={async event => {
       event.preventDefault(); if (busy) return; setBusy(true); setError('');
@@ -63,6 +64,7 @@ export default function AccountManagement({ directories, onChanged }: { director
     </fieldset></form>}
     <div className="account-list-heading"><h3>Пользователи</h3><span>{users.length}</span></div><div className="account-list">{users.map(user => <div className="account-row" key={user.id}><span className="account-avatar" aria-hidden="true">{user.name.trim().slice(0, 1).toUpperCase()}</span><div className="account-user-info"><div className="account-user-title"><strong>{user.name}</strong><span className={`account-status${user.active ? '' : ' is-inactive'}`}>{user.active ? 'Активен' : 'Отключён'}</span></div><small>{user.login} · {user.role === 'driver' ? 'Водитель' : roleNames[user.role]}</small><small>Сотрудник: {employees.find(employee => employee.id === user.managerId)?.name ?? 'Не связан — привяжите сотрудника'}</small><small>Разделы: {user.active ? sections.filter(section => effectiveSections(user).includes(section.id)).map(section => section.title).join(', ') || 'Нет доступа' : 'Доступ отключён'}</small><small>{user.role === 'manager' ? 'Отгрузки: только свои' : 'Отгрузки: все'}</small></div><div className="account-row-actions"><button className="button" disabled={busy} onClick={() => edit(user)}>Изменить</button><button className="button account-delete" disabled={busy || !!deletionBlock(user)} title={deletionBlock(user) || `Удалить ${user.name}`} aria-label={`Удалить ${user.name}`} onClick={() => { setDeleting(user); setError(''); setNotice(''); }}><Trash2 size={15} aria-hidden="true"/>Удалить</button>{deletionBlock(user) && <small>{deletionBlock(user)}</small>}</div></div>)}</div>
     {deleting && <DeleteAccountDialog user={deleting} onClose={() => setDeleting(null)} onDeleted={async () => { await refresh(); setDeleting(null); if (editing?.id === deleting.id) setEditing(undefined); onChanged(); setNotice('Учётная запись удалена. Доступ и уведомления отключены, история работы сохранена.'); }}/>}
+    </div>
   </section>;
 }
 

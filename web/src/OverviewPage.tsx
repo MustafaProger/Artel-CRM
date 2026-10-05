@@ -51,7 +51,7 @@ export default function OverviewPage() {
   }, [refresh])
 
   return <section className="overview-page" aria-label="Обзор взаиморасчётов">
-    <div className="overview-heading"><h2>Наши организации</h2><button type="button" className="button overview-refresh" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/>{loading && data ? 'Обновляем…' : 'Обновить'}</button></div>
+    <div className="overview-heading"><button type="button" className="button overview-refresh" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/>{loading && data ? 'Обновляем…' : 'Обновить'}</button></div>
     {error && <div className="overview-notice overview-error" role="alert"><AlertCircle size={18}/><div><strong>{error}</strong>{data && <p>Данные от {time(updatedAt)} могут быть неактуальны.</p>}<button type="button" className="button" disabled={loading} onClick={() => void refresh()}>Повторить загрузку</button></div></div>}
     {!data ? <div className="overview-empty overview-card" role="status">{loading ? <><LoaderCircle size={28} className="spin"/><h3>Загрузка…</h3></> : <><Wallet size={30}/><h3>Обзор пока недоступен</h3></>}</div> : <>
       <div className="overview-freshness"><span>{loading ? <LoaderCircle size={13} className="spin"/> : <CircleCheck size={13}/>}Обновлено: {time(updatedAt)}</span></div>

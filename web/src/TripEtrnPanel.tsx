@@ -114,13 +114,18 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
       {!!result.blockers.length && <div className="trip-saby-blockers"><p>Для создания заявки заполните:</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
       {result.order && <div className="etrn-result workflow-order"><div><span className="workflow-eyebrow">ОБЩАЯ ЗАЯВКА</span><h4>{result.order.number ? `№ ${result.order.number}` : 'Номер ожидается'}</h4><p>{result.order.remoteStatus || 'Состояние уточняется'}</p>{result.phase === 'completed' && <p className="etrn-note">Последнее состояние перед созданием ЭТрН. Дальше автоматически проверяются ЭТрН доставок.</p>}</div>{orderUrl && <a className="button" href={orderUrl} target="_blank" rel="noreferrer">Открыть заявку в Saby <ArrowUpRight size={14}/></a>}</div>}
       {handoff && !result.carrierConfirmed && <details className="workflow-handoff" open={['carrier_details_required', 'carrier_action_required'].includes(result.order?.exchangeStage ?? '') || undefined}><summary>Данные водителя и автомобиля для НК АРТЕЛЬ</summary><p className="etrn-note">Сведения выбранного водителя и машины заполняются в ответе НК до подписи и утверждения.</p><dl>{[['Водитель', handoff.driverName], ['Телефон', handoff.driverPhone], ['Госномер', handoff.vehiclePlate], ['Автомобиль', handoff.vehicleType]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Не указано'}</dd></div>)}</dl><button className="button" type="button" onClick={() => void copyHandoff()}><Copy size={14}/>{copied ? 'Скопировано' : 'Скопировать данные'}</button></details>}
-      {result.locked && !result.carrierConfirmed && <section className="workflow-handoff" aria-label="Заполнение ответа НК">
-        <h4>Водитель и машина</h4>
-        {result.carrierFill ? <><p>{result.carrierFill.driverSaved ? 'Данные водителя сохранены в Saby.' : 'Данные водителя ещё не подтверждены в Saby.'} {result.carrierFill.vehicleSaved ? 'Данные машины сохранены в Saby.' : 'Данные машины ещё не подтверждены в Saby.'}</p>
-          {result.carrierFill.responsibleSaved !== undefined && <p>{result.carrierFill.responsibleSaved ? 'Ответственный и его телефон сохранены в Saby.' : 'Ответственный и его телефон ещё не подтверждены в Saby.'}</p>}
-          {!!result.carrierFill.blockers.length && <ul>{result.carrierFill.blockers.map(message => <li key={message}>{message}</li>)}</ul>}
-          {result.carrierFill.checkedAt && <p className="etrn-note">Проверка заполнения: {workflowTime(result.carrierFill.checkedAt)} · Москва.</p>}
-          {result.carrierFill.state === 'saved' && <p className="etrn-note">Следующий шаг — подтверждение НК уполномоченным подписантом после подключения подписи и МЧД.</p>}
+      {result.locked && !result.carrierConfirmed && <section className="workflow-handoff workflow-carrier-fill" aria-label="Заполнение ответа НК">
+        <header><h4>Водитель и машина</h4>{result.carrierFill?.checkedAt && <span className="workflow-fill-checked">Проверено {workflowTime(result.carrierFill.checkedAt)} · Москва</span>}</header>
+        {result.carrierFill ? <>
+          <ul className="workflow-fill-statuses">{([
+            ['Водитель', result.carrierFill.driverSaved],
+            ['Автомобиль', result.carrierFill.vehicleSaved],
+            ...(result.carrierFill.responsibleSaved === undefined ? [] : [['Ответственный и телефон', result.carrierFill.responsibleSaved]]),
+          ] as [string, boolean][]).map(([label, saved]) => <li key={label} className={saved ? 'is-saved' : 'is-pending'}>
+            {saved ? <Check size={17} aria-hidden="true"/> : <Clock3 size={17} aria-hidden="true"/>}<div><strong>{label}</strong><span>{saved ? 'Сохранено в Saby' : 'Ожидает подтверждения в Saby'}</span></div>
+          </li>)}</ul>
+          {!!result.carrierFill.blockers.length && <ul className="workflow-fill-blockers">{result.carrierFill.blockers.map(message => <li key={message}>{message}</li>)}</ul>}
+          {result.carrierFill.state === 'saved' && <div className="workflow-fill-next"><Clock3 size={18} aria-hidden="true"/><div><strong>Следующий шаг — подтверждение НК</strong><p>Уполномоченный подписант сможет подтвердить заявку после подключения подписи и МЧД.</p></div></div>}
         </> : <><p className="etrn-note">Заполнить ответ НК сведениями выбранного водителя и автомобиля. CRM дождётся готовности входящей заявки и проверит результат.</p><button type="button" className="button primary" disabled={busy} onClick={() => void perform(undefined, true)}>Заполнить водителя и машину</button></>}
       </section>}
       {result.carrierConfirmed && !result.loadingFacts && <form className="etrn-loading-facts" onSubmit={event => { event.preventDefault(); if (confirmed) void perform(facts) }}>

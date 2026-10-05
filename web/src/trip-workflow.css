@@ -23,6 +23,23 @@
 .etrn-panel .workflow-handoff dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
 .etrn-panel .workflow-handoff dt { font-size: .73rem; color: var(--text-secondary, #63776b); }
 .etrn-panel .workflow-handoff dd { margin: .3rem 0 0; font-size: .875rem; overflow-wrap: anywhere; }
+.etrn-panel .workflow-carrier-fill { padding: 20px; }
+.workflow-carrier-fill header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 20px; }
+.workflow-carrier-fill header h4 { margin: 0; font-size: 16px; line-height: 1.4; }
+.workflow-fill-checked { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.etrn-panel .workflow-fill-statuses { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 0; margin: 20px 0; list-style: none; }
+.workflow-fill-statuses li { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.workflow-fill-statuses svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted); }
+.workflow-fill-statuses .is-saved svg { color: var(--accent); }
+.workflow-fill-statuses strong, .workflow-fill-statuses span { display: block; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.workflow-fill-statuses strong { font-weight: 600; }
+.workflow-fill-statuses span { color: var(--muted); margin-top: 3px; }
+.workflow-fill-next { display: flex; align-items: flex-start; gap: 10px; padding-top: 16px; border-top: 1px solid var(--border); }
+.workflow-fill-next svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted); }
+.workflow-fill-next strong { font-size: 13px; line-height: 1.5; font-weight: 600; }
+.workflow-fill-next p { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
+.workflow-fill-blockers { font-size: 13px; line-height: 1.6; padding-left: 20px; }
+@media (max-width: 760px) { .etrn-panel .workflow-fill-statuses { grid-template-columns: 1fr; } }
 .etrn-panel .workflow-history summary span { color: var(--text-secondary, #63776b); margin-left: .4rem; font-size: .75rem; }
 .etrn-panel .workflow-history ol { margin: .8rem 0 0; padding: 0; list-style: none; }
 .etrn-panel .workflow-history li { display: flex; justify-content: space-between; gap: .8rem; padding: .7rem 0; border-top: 1px solid var(--line, #dce5de); font-size: .78rem; }

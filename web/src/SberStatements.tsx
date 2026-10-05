@@ -4,9 +4,9 @@ import { bankConnections, type BankParty } from './banking-model'
 import SupplierPaymentTrace from './SupplierPaymentTrace'
 import type { SberOperation, SberStatementsResult } from './sber-model'
 import BankConnectionHeader from './BankConnectionHeader'
+import { bankToday, defaultBankPeriod, bankPeriodError } from './bank-period'
 import './sber-statements.css'
 
-const currentDay = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date())
 const displayDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) ? value.split('-').reverse().join('.') : value
 const displayTimestamp = (value?: string) => {
   if (!value) return 'Ещё не выполнялась'
@@ -39,7 +39,7 @@ async function api<T>(url: string, body?: unknown, signal?: AbortSignal): Promis
 
 export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' }: { onBack: () => void; connectionId?: string }) {
   const endpoint = `/api/banking/sber/${connectionId}`
-  const [period, setPeriod] = useState(() => ({ from: '2026-09-01', to: currentDay() }))
+  const [period, setPeriod] = useState(() => defaultBankPeriod())
   const [draft, setDraft] = useState(period)
   const [data, setData] = useState<SberStatementsResult | null>(null)
   const [dataPeriod, setDataPeriod] = useState(period)
@@ -50,8 +50,8 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
   const [search, setSearch] = useState(''), [direction, setDirection] = useState('')
   const [detail, setDetail] = useState<SberOperation | null>(null)
   const mounted = useRef(true), working = useRef(false), requestVersion = useRef(0)
-  const today = currentDay()
-  const invalidPeriod = !draft.from || !draft.to ? 'Выберите начало и конец периода.' : draft.from > draft.to ? 'Начало периода должно быть не позднее его окончания.' : draft.to > today ? 'Выписки доступны по текущую дату. Будущие даты выбрать нельзя.' : Date.parse(draft.to) - Date.parse(draft.from) > 30 * 86400000 ? 'Выберите период не более 31 дня.' : ''
+  const today = bankToday()
+  const invalidPeriod = bankPeriodError(draft, today)
   const draftChanged = draft.from !== period.from || draft.to !== period.to
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; requestVersion.current++ } }, [])
 
@@ -154,7 +154,7 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
   return <div className="sber-statements">
     <BankConnectionHeader bankName="СберБизнес" company={data?.company ?? (connectionId === 'sber-artel' ? 'ООО «АРТЭЛЬ»' : 'ООО «НК АРТЭЛЬ»')} provider="sber" onBack={onBack}
       actions={<button className="button primary" disabled={busy || backgroundSync || loading || !data || !!data.missing.length || !!invalidPeriod || draftChanged} onClick={() => void synchronize()}><RefreshCw size={16} className={busy || backgroundSync && !scheduledRetry ? 'spin' : ''}/>{busy ? 'Обновляем выписку…' : scheduledRetry ? 'Ожидаем повтора' : backgroundSync ? 'Обновляем выписку…' : data?.progress ? 'Продолжить загрузку' : 'Обновить из банка'}</button>}
-      fields={[{ label: 'Расчётный счёт', value: data?.account ?? 'Загружаем…' }, { label: 'ИНН', value: data?.inn ?? 'Загружаем…' }, { label: 'Валюта счёта', value: 'Рубли' }]}>
+      fields={[{ label: 'Расчётный счёт', value: data?.account ?? (loading ? 'Загружаем…' : 'Не удалось загрузить') }, { label: 'ИНН', value: data?.inn ?? (loading ? 'Загружаем…' : 'Не удалось загрузить') }, { label: 'Валюта счёта', value: 'Рубли' }]}>
     <form className="bank-period sber-period" onSubmit={event => { event.preventDefault(); if (!invalidPeriod && !busy) { setSelectedDay(null); setPeriod({ ...draft }) } }}>
       <label>Период с<input aria-label="Начало периода выписки Сбера" type="date" value={draft.from} max={draft.to && draft.to < today ? draft.to : today} disabled={busy} onChange={event => setDraft(previous => ({ ...previous, from: event.target.value }))}/></label>
       <span aria-hidden="true">—</span>
@@ -164,7 +164,7 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
       {invalidPeriod && <p className="sber-period-error" role="alert">{invalidPeriod}</p>}
       {draftChanged && !invalidPeriod && <p className="bank-muted">Нажмите «Показать период», чтобы применить выбранные даты.</p>}
     </form>
-    <div className="bank-connection-line">{(!data?.lastSuccessAt || busy || syncError || !!data?.missing.length) && <span className={`bank-state ${busy ? 'syncing' : syncError ? 'error' : data?.missing.length ? 'not_configured' : data?.lastSuccessAt ? 'connected' : 'ready'}`}>{busy ? 'Синхронизация' : syncError ? 'Обновление не завершено' : data?.missing.length ? 'Доступ не настроен' : 'Ожидает первой загрузки'}</span>}<span>Обновлено: <strong>{displayTimestamp(data?.lastSuccessAt)}</strong></span>{data?.lastCompletedPeriod && <span>Загружен период: {displayDate(data.lastCompletedPeriod.from)} — {displayDate(data.lastCompletedPeriod.to)}</span>}</div>
+    <div className="bank-connection-line">{data && <>{(!data?.lastSuccessAt || busy || syncError || !!data?.missing.length) && <span className={`bank-state ${busy ? 'syncing' : syncError ? 'error' : data?.missing.length ? 'not_configured' : data?.lastSuccessAt ? 'connected' : 'ready'}`}>{busy ? 'Синхронизация' : syncError ? 'Обновление не завершено' : data?.missing.length ? 'Доступ не настроен' : 'Ожидает первой загрузки'}</span>}<span>Обновлено: <strong>{displayTimestamp(data?.lastSuccessAt)}</strong></span>{data?.lastCompletedPeriod && <span>Загружен период: {displayDate(data.lastCompletedPeriod.from)} — {displayDate(data.lastCompletedPeriod.to)}</span>}</>}</div>
     {data?.scheduleEnabled && <p className="bank-auto-sync"><RefreshCw size={14}/>Фоновое обновление каждые 5 минут, даже когда страница закрыта</p>}
     </BankConnectionHeader>
     {data?.missing.length ? <div className="bank-notice" role="status"><strong>Для подключения не хватает серверных настроек</strong><p>{data.missing.join(', ')}.</p><p>После настройки доступа нажмите «Обновить из банка».</p></div> : null}

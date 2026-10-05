@@ -4,12 +4,12 @@ import Decimal from 'decimal.js'
 import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Building2, Check, ChevronLeft, ChevronRight, Copy, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
 import { bankConnections, type BankCard, type BankListResult, type BankOperation, type BankParty, type BankTotals } from './banking-model'
 import BankConnectionHeader from './BankConnectionHeader'
+import { bankToday as currentDay, defaultBankPeriod } from './bank-period'
 import SberStatements from './SberStatements'
 import SupplierPaymentTrace from './SupplierPaymentTrace'
 import type { SberStatementsResult } from './sber-model'
 import './banking.css'
 
-const currentDay = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date())
 const Exact = Decimal.clone({ precision: 80 })
 const date = (value?: string) => value ? new Date(value.length === 10 ? `${value}T12:00:00` : value).toLocaleDateString('ru-RU') : 'Не передана'
 const time = (value?: string) => value ? new Date(value).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : 'Ещё не выполнялась'
@@ -40,7 +40,7 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const [source, setSource] = useState<'api' | 'legacy'>('api')
   const [connection, setConnection] = useState(''), [account, setAccount] = useState('')
   const sber = bankConnections.find(item => item.id === connection && item.provider === 'sber')
-  const [from, setFrom] = useState(() => `${currentDay().slice(0, 7)}-01`), [to, setTo] = useState(currentDay)
+  const [from, setFrom] = useState(() => defaultBankPeriod().from), [to, setTo] = useState(currentDay)
   const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [direction, setDirection] = useState(''), [status, setStatus] = useState('')
   const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [revision, setRevision] = useState(0)
   const [data, setData] = useState<BankListResult | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
