@@ -5,11 +5,12 @@
 .overview-page button:disabled { cursor: wait; }
 .overview-page p, .overview-page h2, .overview-page h3, .overview-page figure { margin: 0; }
 .overview-page ul, .overview-page ol { list-style: none; margin: 0; padding: 0; }
-.overview-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 16px; }
+.overview-page .overview-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: nowrap; gap: 12px; margin-bottom: 8px; }
+.overview-heading-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .overview-eyebrow { display: block; font-size: 10px; font-weight: 650; letter-spacing: .1em; line-height: 1.6; color: var(--overview-green); }
 .overview-heading h2 { font-size: clamp(21px, 2.1vw, 28px); line-height: 1.25; letter-spacing: -.65px; font-weight: 650; margin-top: 5px; }
 .overview-heading p { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 8px; }
-.overview-heading .overview-refresh { flex-shrink: 0; margin-top: 9px; background: #fff; min-height: 39px; padding: 8px 13px; border: 1px solid var(--border); color: #404047; font-size: 12px; }
+.overview-heading .overview-refresh { flex-shrink: 0; margin-top: 0; background: #fff; min-height: 39px; padding: 8px 13px; border: 1px solid var(--border); color: #404047; font-size: 12px; }
 .overview-freshness { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px 15px; font-size: 11px; color: var(--muted); line-height: 1.6; margin: 0 0 19px; }
 .overview-freshness > span:first-child { display: inline-flex; align-items: center; gap: 5px; }
 .overview-freshness svg { color: var(--overview-green); }
