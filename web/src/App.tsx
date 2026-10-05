@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Search, PanelLeftClose, PanelLeftOpen, Truck, Wallet, X, type LucideIcon } from 'lucide-react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
 import ChinaPage from './ChinaPage'
 import BankingPage from './BankingPage'
@@ -19,14 +19,14 @@ const pages: {id: Page; title: string; icon: LucideIcon; section: number; descri
   {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:''},
   {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
   {id:'shipments',title:'Отгрузки',icon:Truck,section:0,description:'Движение топлива — от поставщика до покупателя.'},
-  {id:'trips',title:'Рейсы',icon:Truck,section:0,description:'Маршруты, клиентские доставки и отправка в Saby.'},
+  {id:'trips',title:'Рейсы',icon:Route,section:0,description:'Маршруты, клиентские доставки и отправка в Saby.'},
   {id:'payments',title:'Платежи',icon:Wallet,section:0,description:'Поступления и списания из банковской выписки.'},
   {id:'stock',title:'Склад',icon:PackageCheck,section:0,description:''},
   {id:'china',title:'Китай',icon:Globe,section:0,description:''},
   {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
   {id:'payroll',title:'ЗП',icon:Banknote,section:1,description:''},
-  {id:'accounts',title:'Сотрудники и доступ',icon:Building2,section:1,description:'Учётные записи и права сотрудников.'},
-  {id:'directories',title:'Справочники',icon:Building2,section:1,description:'Клиенты, поставщики, нефтебазы, водители и автомобили.'},
+  {id:'accounts',title:'Сотрудники и доступ',icon:UsersRound,section:1,description:'Учётные записи и права сотрудников.'},
+  {id:'directories',title:'Справочники',icon:BookOpen,section:1,description:'Клиенты, поставщики, нефтебазы, водители и автомобили.'},
 ]
 const allowedPage = (user: AccountUser, page: Page) => page === 'accounts' ? isAdministrator(user) : hasSection(user, page)
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'

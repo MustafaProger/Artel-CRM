@@ -77,6 +77,48 @@ test('driver access is versioned, strong, single-use disclosure and one stable d
   } finally { await f.close(); }
 });
 
+test('custom driver passwords support issue and reset through both audiences without plaintext storage or stale sessions', async () => {
+  const f = await fixture();
+  try {
+    // Preserve whitespace exactly, as the shared authentication policy does.
+    const firstPassword = ` ${randomUUID()} `, nextPassword = randomUUID();
+    const endpoint = '/api/drivers/driver/access';
+    const issued = await f.request(endpoint, 'POST', { version: 0, action: 'issue', password: firstPassword }, f.adminCookie);
+    assert.equal(issued.status, 200); assert.equal(issued.body.temporaryPassword, firstPassword);
+    const login = issued.body.access.login;
+    const crm = await f.request('/api/auth/login', 'POST', { login, password: firstPassword });
+    const logistics = await f.request('/api/logistics/auth/login', 'POST', { login, password: firstPassword });
+    assert.equal(crm.status, 200); assert.equal(logistics.status, 200);
+    const reset = await f.request('/api/logistics/drivers/driver/access', 'POST', { version: 1, action: 'reset', password: nextPassword }, f.logisticsCookie);
+    assert.equal(reset.status, 200); assert.equal(reset.body.temporaryPassword, nextPassword);
+    assert.equal(reset.body.access.userId, issued.body.access.userId);
+    assert.equal((await f.request('/api/driver/trips', 'GET', undefined, crm.cookie)).status, 401);
+    assert.equal((await f.request('/api/logistics/driver/trips', 'GET', undefined, logistics.cookie)).status, 401);
+    assert.equal((await f.request('/api/auth/login', 'POST', { login, password: firstPassword })).status, 401);
+    assert.equal((await f.request('/api/auth/login', 'POST', { login, password: nextPassword })).status, 200);
+    const read = await f.request(endpoint, 'GET', undefined, f.adminCookie);
+    const stored = await readFile(f.store.path, 'utf8');
+    for (const secret of [firstPassword, nextPassword]) { assert.ok(!stored.includes(secret)); assert.ok(!read.text.includes(secret)); }
+    assert.equal(read.body.temporaryPassword, undefined);
+    assert.equal((await f.request(endpoint, 'POST', { version: 1, action: 'reset', password: randomUUID() }, f.adminCookie)).status, 409);
+  } finally { await f.close(); }
+});
+
+test('invalid explicit driver passwords never generate a replacement or mutate accounts and sessions', async () => {
+  const f = await fixture();
+  try {
+    for (const action of ['issue', 'reset']) {
+      if (action === 'reset') await f.issue();
+      const before = (await f.store.read(f.source)).accounts;
+      for (const password of ['', 'x'.repeat(11), 'x'.repeat(257), null, 123, {}, []]) {
+        const response = await f.request('/api/drivers/driver/access', 'POST', { version: action === 'issue' ? 0 : 1, action, password }, f.adminCookie);
+        assert.equal(response.status, 400); assert.equal(response.body.temporaryPassword, undefined);
+        assert.deepEqual((await f.store.read(f.source)).accounts, before);
+      }
+    }
+  } finally { await f.close(); }
+});
+
 test('two drivers see only assigned trips and deliveries despite identical names, phone and vehicle; all financial fields omitted', async () => {
   const f = await fixture();
   try {

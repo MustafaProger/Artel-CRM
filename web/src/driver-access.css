@@ -1,16 +1,32 @@
-.driver-access{margin:20px 0;padding:18px;border:1px solid var(--line,#e4e7eb);border-radius:14px;background:var(--surface,#fff)}
+.driver-access{margin:20px 0;padding:20px;border:1px solid var(--line,#e4e7eb);border-radius:16px;background:var(--surface,#fff)}
+.driver-access-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .driver-access-heading{display:flex;align-items:center;gap:9px;color:var(--accent,#2d5b47)}
 .driver-access-heading h3{margin:0;font-size:16px}
-.driver-access-description,.driver-access-url{font-size:13px;line-height:1.6;color:var(--muted,#687477)}
-.driver-access-url{overflow-wrap:anywhere}
-.driver-access-url a{color:var(--accent,#2d5b47);text-decoration:underline;text-underline-offset:3px}
-.driver-access-status{padding:11px 0;font-size:14px;color:var(--muted,#687477)}
-.driver-access-status.is-active{color:var(--accent,#2d5b47)}
-.driver-access-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.driver-access-confirm,.driver-access-secret{margin-top:15px;padding:15px;border-radius:10px;background:var(--surface-soft,#f4f7f5);font-size:13px;line-height:1.6}
-.driver-access-confirm p,.driver-access-secret p{margin-top:0}
+.driver-access-description{margin:9px 0 18px;font-size:13px;line-height:1.6;color:var(--muted,#687477)}
+.driver-access-status{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:20px;background:var(--surface-soft,#f4f7f5);font-size:12px;font-weight:600;color:var(--muted,#687477)}
+.driver-access-status::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+.driver-access-status.is-active{color:var(--accent,#2d5b47);background:#e8f3ec}
+.driver-access-details{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:18px;align-items:start;padding:16px;background:var(--surface-soft,#f4f7f5);border-radius:12px}
+.driver-access-url{display:grid;gap:8px;min-width:0;font-size:13px;line-height:1.6;color:var(--muted,#687477)}
+.driver-access-url>span{font-weight:550}
+.driver-access-url a{display:flex;align-items:center;gap:6px;min-height:44px;color:var(--accent,#2d5b47);text-underline-offset:3px;overflow-wrap:anywhere}
+.driver-access-url svg{flex-shrink:0}
+.driver-access-controls{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:16px}
+.driver-access-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.driver-access-controls .driver-access-actions{margin-top:0}
+.driver-access .button{min-height:42px;white-space:normal;text-align:center}
+.driver-access-revoke{border:0;background:transparent;color:#a13232;min-height:44px;padding:8px 4px;font:inherit;font-size:13px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.driver-access-revoke:disabled{opacity:.5;cursor:default}
+.driver-access-revoke:focus-visible{outline:2px solid currentColor;outline-offset:3px;border-radius:4px}
+.driver-access-confirm,.driver-access-secret{margin-top:16px;padding:16px;border:1px solid var(--line,#e4e7eb);border-radius:12px;background:var(--surface-soft,#f4f7f5);font-size:13px;line-height:1.6}
+.driver-access-confirm h4{font-size:14px;margin:0 0 6px}
+.driver-access-confirm p,.driver-access-secret p{margin:0 0 14px}
+.driver-access-custom{display:grid;gap:12px;max-width:460px}
 .driver-access-password{display:flex;gap:7px;align-items:center;min-width:0}
-.driver-access-password input{min-width:0;flex:1;font-family:ui-monospace,monospace}
+.driver-access-password input{min-width:0;flex:1}
+.driver-access-password .icon-button{flex-shrink:0;min-width:44px;min-height:44px}
+.driver-access .driver-access-hint{margin:0;color:var(--muted,#687477);font-size:12px}
+.driver-access .driver-access-footnote{margin:14px 0 0;font-size:12px;line-height:1.5;color:var(--muted,#687477)}
 .driver-access-error{margin-top:12px;color:#a13232;font-size:13px}
-.driver-access>p[role=status]{display:flex;align-items:center;gap:6px}
-@media(max-width:520px){.driver-access{padding:13px}.driver-access .shipment-field-grid{grid-template-columns:1fr}.driver-access-actions>.button{white-space:normal;text-align:left}}
+.driver-access>p[role=status]{display:flex;align-items:center;gap:6px;margin-top:12px}
+@media(max-width:600px){.driver-access{padding:14px}.driver-access-details{grid-template-columns:1fr;gap:12px;padding:12px}.driver-access-url{gap:0}.driver-access-url a{min-height:36px}.driver-access-controls{align-items:stretch}.driver-access-controls .driver-access-actions{width:100%}.driver-access-actions>.button{flex:1 1 180px}.driver-access-revoke{text-align:left}.driver-access-confirm,.driver-access-secret{padding:12px}}

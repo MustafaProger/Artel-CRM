@@ -32,7 +32,7 @@ function invalidateSessions(data: OperationsData, user: StoredUser) {
 /** Used inside the same OperationsStore transaction as the version/identity check. */
 export async function mutateDriverAccess(data: OperationsData, snapshot: Snapshot, driverId: string, method: string, input: Record<string, unknown>) {
   const driver = activeDriver(snapshot, driverId);
-  const fields = method === 'POST' ? ['version', 'action'] : ['version', 'active'];
+  const fields = method === 'POST' ? ['version', 'action', 'password'] : ['version', 'active'];
   if (Object.keys(input).some(key => !fields.includes(key)) || !Number.isSafeInteger(input.version) || Number(input.version) < 0) throw new ApiError(400, 'Передайте текущую версию доступа водителя.');
   if (method === 'POST' && !['issue', 'reset'].includes(String(input.action)) || method === 'PATCH' && input.active !== false) throw new ApiError(400, 'Выберите выдачу, смену пароля или отключение доступа.');
   const accounts = data.accounts;
@@ -47,8 +47,11 @@ export async function mutateDriverAccess(data: OperationsData, snapshot: Snapsho
     return { access: readDriverAccess(data, snapshot, driverId), changed: true };
   }
   if (input.action === 'issue' && previous) return { access: readDriverAccess(data, snapshot, driverId), changed: false };
-  const temporaryPassword = randomBytes(24).toString('base64url');
-  const credentials = await passwordFields(temporaryPassword);
+  // Omission requests generation; an explicitly supplied value must pass the
+  // same password policy as employee accounts (including empty/invalid input).
+  const candidate = Object.hasOwn(input, 'password') ? input.password : randomBytes(24).toString('base64url');
+  const credentials = await passwordFields(candidate);
+  const temporaryPassword = candidate as string; // Validated by passwordFields.
   if (previous) {
     Object.assign(previous, credentials, { active: true, version: previous.version + 1 });
     invalidateSessions(data, previous);
