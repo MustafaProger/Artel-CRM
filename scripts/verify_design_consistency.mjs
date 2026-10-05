@@ -15,7 +15,7 @@ import { authenticateContext, bootstrapQaAuth } from './qa-auth.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const useWebKit = process.env.QA_WEBKIT === '1';
-const output = resolve(root, `qa/apple-consistency-20261005${useWebKit ? '-webkit' : ''}`);
+const output = resolve(root, `qa/shipment-filter-strip-20261005${useWebKit ? '-webkit' : ''}`);
 const temporary = await mkdtemp(resolve(tmpdir(), 'artel-interface-refresh-'));
 const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'operations');
 const report = { fixtureOnly: true, workingStoreAccessed: false, providerCalls: 0, status: 'running', checks: [], layouts: [], violations: [], errors: [], consoleErrors: [], unexpectedRequests: [], mutationRequests: [], screenshots: [] };
@@ -123,11 +123,39 @@ try {
     await styles.evaluateAll(elements => elements.forEach(element => { element.sheet.disabled = false; }));
     assert.deepEqual(current, previous, `Protected ledger CSS/geometry at ${width}px`);
     report.checks.push(`Protected ledger: ${current.length} elements identical at ${width}px`);
-    const controls = await page.locator('.shipment-toolbar, .shipment-type-tabs, .shipment-view-controls select, .shipment-view-actions button').evaluateAll(elements => elements.map(element => {
+    const controls = await page.locator('.shipment-toolbar, .shipment-template-row').evaluateAll(elements => elements.map(element => {
       const r = element.getBoundingClientRect();
       return { left: r.left, right: r.right, viewport: innerWidth };
     }));
     assert.ok(controls.every(r => r.left >= 0 && r.right <= r.viewport + 1), `Shipment controls fit at ${width}px`);
+    await expect(page.locator('.shipment-width-toolbar')).toHaveCount(0);
+    const strip = page.getByRole('group', { name: 'Тип и фильтры отгрузок', exact: true });
+    const row = await strip.evaluate(element => {
+      const r = element.getBoundingClientRect();
+      const controls = [...element.querySelectorAll('select, button')].map(control => {
+        const box = control.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, middle: box.top + box.height / 2 };
+      });
+      return { height: r.height, overflow: element.scrollWidth > element.clientWidth, controls };
+    });
+    assert.ok(row.height <= 66, `Filter strip stays compact at ${width}px`);
+    assert.ok(row.controls.every(control => Math.abs(control.middle - row.controls[0].middle) <= 1), 'All filters, types and actions share one row');
+    if (width <= 760) assert.ok(row.overflow, 'Narrow strip scrolls instead of wrapping');
+    // Native focus must reveal controls without shifting the page/table.
+    const csv = page.getByRole('button', { name: 'CSV', exact: true });
+    await csv.focus();
+    assert.ok(await csv.evaluate(element => {
+      const r = element.getBoundingClientRect(), strip = element.closest('.shipment-template-row').getBoundingClientRect();
+      return r.left >= strip.left && r.right <= strip.right + 1;
+    }), 'Keyboard focus reveals CSV at the end of the strip');
+    await expect(page.getByLabel('Вид таблицы')).toBeEnabled();
+    await page.getByLabel('Вид таблицы').selectOption('expanded');
+    await strip.evaluate(element => { element.scrollLeft = 0; });
+    if (width <= 760) {
+      await strip.hover(); await page.mouse.wheel(450, 0);
+      await expect.poll(() => strip.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+      await strip.evaluate(element => { element.scrollLeft = 0; });
+    }
     await capture(`shipment-toolbar-${width}`);
     const tanker = page.getByRole('tab', { name: 'Бензовозы', exact: true });
     const azs = page.getByRole('tab', { name: 'АЗС', exact: true });
@@ -138,6 +166,23 @@ try {
     await capture(`shipment-toolbar-azs-${width}`);
     await azs.press('Home'); await expect(tanker).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('shipment-row')).toHaveCount(1);
+    if (width === 320 && !useWebKit) {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+      await strip.evaluate(element => { element.scrollLeft = 0; });
+      const box = await strip.boundingBox(), y = box.y + box.height / 2;
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 180, y }] });
+      for (let x = 160; x >= 20; x -= 20) {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+        await page.waitForTimeout(16);
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect.poll(() => strip.evaluate(element => element.scrollLeft)).toBeGreaterThan(50);
+      await expect(tanker).toHaveAttribute('aria-selected', 'true');
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      await cdp.detach();
+      report.checks.push('Native swipe over type tabs scrolls the filter strip without changing the selection');
+    }
   }
   await page.setViewportSize({ width: 1440, height: 900 }); await visit('shipments');
   await page.getByLabel('Поиск отгрузок').fill('no-matching-qa-shipment');
