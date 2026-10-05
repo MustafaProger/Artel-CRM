@@ -38,7 +38,7 @@ export async function mutateDriverAccess(data: OperationsData, snapshot: Snapsho
   const accounts = data.accounts;
   if (!accounts?.users.some(user => user.active && !user.deletedAt && user.role === 'director')) throw new ApiError(409, 'Сначала настройте учётную запись директора.');
   const previous = linkedUser(data, driverId);
-  if (input.version !== (previous?.version ?? 0)) throw new ApiError(409, 'Доступ уже изменён. Обновите карточку водителя.');
+  if (input.version !== (previous?.version ?? 0)) throw new ApiError(409, 'Доступ уже изменён. Обновите сведения о доступе.');
   // Tombstoned accounts are never restored or replaced by another account.
   if (previous?.deletedAt) throw new ApiError(409, 'Учётная запись удалена; автоматическое восстановление запрещено.');
   if (method === 'PATCH') {
@@ -85,5 +85,6 @@ export function requireDriverRoute(actor: AccountUser, path: string, method: str
   if (actor.role !== 'driver') return;
   if (path === '/api/auth/session' && method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(path) && method === 'POST') return;
   if (/^\/api\/driver\/trips(?:\/[^/]+)?$/.test(path) && method === 'GET') return;
+  if (['/api/push/config', '/api/push/test-status'].includes(path) && method === 'GET' || path === '/api/push/subscription' && ['POST', 'DELETE'].includes(method) || path === '/api/push/test' && method === 'POST') return;
   throw new ApiError(403, 'Водителю доступен только просмотр своих рейсов.');
 }

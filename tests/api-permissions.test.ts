@@ -47,6 +47,38 @@ async function fixture() {
 }
 const update = (user: AccountUser, changes: object = {}) => ({ name: user.name, login: user.login, role: user.role, managerId: user.managerId, active: user.active, version: user.version, sections: effectiveSections(user), ...changes });
 
+for (const role of ['employee', 'logistician'] as const) test(`${role} persists with explicit sections, preserves identity/password and enforces employee boundaries`, async () => {
+  const f = await fixture(); try {
+    const before = (await f.store.read(base.provenance.sourceSha256)).accounts!.users.find(user => user.id === f.users[0].id)!;
+    const own = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
+    const foreign = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[1].managerId!) });
+    assert.equal(own.status, 201); assert.equal(foreign.status, 201);
+    const changed = await f.director(`/api/auth/users/${before.id}`, 'PATCH', update(f.users[0], { role }));
+    assert.equal(changed.status, 200); assert.equal(changed.body.user.role, role);
+    assert.deepEqual(changed.body.user.sections, effectiveSections(before));
+    const after = (await f.store.read(base.provenance.sourceSha256)).accounts!.users.find(user => user.id === before.id)!;
+    for (const key of ['id', 'login', 'passwordHash', 'salt', 'managerId'] as const) assert.equal(after[key], before[key]);
+    assert.equal((await f.aidar('/api/shipments')).status, 401);
+    assert.equal((await f.aidar('/api/auth/login', 'POST', { login: before.login, password: f.password })).status, 200);
+    assert.equal((await f.aidar('/api/shipments')).body.total, 1);
+    assert.equal((await f.aidar('/api/shipments/' + foreign.body.shipment.id)).status, 404);
+    for (const path of ['/api/auth/users', '/api/banking/export', '/api/china', '/api/drivers/driver/access']) assert.equal((await f.aidar(path)).status, 403, path);
+    const task = await f.aidar('/api/work/tasks', 'POST', { title: 'Scoped task', addAttachments: [{ name: 'test.txt', data: Buffer.from('synthetic').toString('base64') }] });
+    assert.equal(task.status, 201); assert.equal(task.body.entry.assigneeId, before.id);
+    assert.equal((await f.zufar(`/api/work/tasks/${task.body.entry.id}/files/${task.body.entry.attachments[0].id}`)).status, 404);
+    assert.equal((await f.aidar('/api/auth/users/' + before.id, 'PATCH', update(changed.body.user, { role: 'director' }))).status, 403);
+    const noSections = await f.director('/api/auth/users/' + before.id, 'PATCH', update(changed.body.user, { sections: [] }));
+    assert.equal(noSections.status, 200);
+    await f.aidar('/api/auth/login', 'POST', { login: before.login, password: f.password });
+    for (const path of ['/api/work', '/api/shipments', '/api/shipment-trips']) assert.equal((await f.aidar(path)).status, 403, path);
+    const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'New role QA' });
+    const created = await f.director('/api/auth/users', 'POST', { name: 'New role QA', login: 'new-role-qa', password: f.password, managerId: employee.body.entry.id, role });
+    assert.equal(created.status, 201); assert.deepEqual(created.body.user.sections, []);
+    const duplicate = await f.director('/api/auth/users', 'POST', { name: 'Duplicate QA', login: 'duplicate-role-qa', password: f.password, managerId: employee.body.entry.id, role });
+    assert.equal(duplicate.status, 409);
+  } finally { await f.close(); }
+});
+
 test('administration links existing employees, rejects duplicate links, unknown privileges, missing employees and manager self-service', async () => {
   const f = await fixture(); try {
     const before = (await f.director('/api/directories')).body.directories.managers;

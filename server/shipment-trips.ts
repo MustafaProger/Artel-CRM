@@ -5,6 +5,7 @@ import { allocateTrip } from '../web/src/trip-calculations';
 import { ApiError } from './api-error';
 import type { OperationsData } from './operations-store';
 import { allocateShipmentNumber } from './shipment-numbering';
+import { queueTripAssignment } from './push';
 import { currentSnapshot, prepareShipmentFields } from './shipment-operations';
 import { hasSabyDocuments } from './saby-service';
 import { isUnpackagedDiesel, validLoadingDate } from '../web/src/trip-input-rules';
@@ -187,6 +188,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   const updated = currentSnapshot(base, data);
   const rowsById = new Map(updated.shipments.map(row => [row.id, row]));
   const shipments = shipmentIds.map(id => rowsById.get(id) as Shipment);
+  queueTripAssignment(data, id, shipments, previousRows);
   return { trip: getShipmentTrip(updated, id), shipments, shipment: shipments[0] };
 }
 
@@ -200,5 +202,6 @@ export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: R
   if (rows.some(row => data.paymentAllocations?.some(allocation => allocation.shipmentId === row.id))) throw new ApiError(409, 'Нельзя удалить отгрузку с привязанными банковскими платежами. Сначала отмените привязку платежей у всех клиентов.');
   const now = new Date().toISOString();
   for (const row of rows) tombstone(data, row, now);
+  if (data.push?.tripAssignments) delete data.push.tripAssignments[id];
   return { deleted: true, id, deletedCount: rows.length };
 }

@@ -45,7 +45,7 @@ import { getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { sabyConfigFromEnv, sabyCredentialBlockers, type SabyClient } from './saby-client';
 import { dispatchTripSaby, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
-import { dispatchReminders, dispatchTaskAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+import { dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
 
@@ -425,7 +425,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const data = await operations.read(base.provenance.sourceSha256);
           const actor = requireUser(data, request);
           requireManage(actor);
-          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt && user.role !== 'driver').map(publicUser);
+          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(publicUser);
           return write(response, 200, JSON.stringify({users, currentUserId: actor.id}));
         }
         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
@@ -489,7 +489,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (logistics) requireTripSection(user, true);
         if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
-        if (section && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
+        if (section && !(user.role === 'driver' && pathname.startsWith('/api/push/')) && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
         return user;
       };
       const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
@@ -532,7 +532,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { result: { device: { ...device }, ...createPushProbe(data, device) }, changed: true };
           });
           try {
-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артель CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: '/#work', probe: { id: probeId, token } }), config);
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артель CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: actor.role === 'driver' ? '/#driver-trips' : '/#work', probe: { id: probeId, token } }), config);
           } catch (error) {
             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
             // A browser receipt is stronger evidence than a sender timeout after delivery.
@@ -800,6 +800,11 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
             return {result,changed:true};
           });
+        if ('trip' in result && pushReady(config)) {
+          // The assignment is already committed. A provider failure must not turn a saved trip into an error.
+          try { await dispatchTripAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.trip.id); }
+          catch { console.error('Уведомление водителю ожидает повторной отправки планировщиком.'); }
+        }
         return write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
       }
       if (Object.keys(body).some(key => !['fields', 'version'].includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');

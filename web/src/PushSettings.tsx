@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { applicationKey, pushRequest, pushSupported, registerPushWorker, subscribePushDevice, waitForPush } from './push-client';
 
 interface Config { enabled: boolean; publicKey: string; lastRunAt: number | null; intervalSeconds: number }
-export default function PushSettings({ userId }: { userId: string }) {
+export default function PushSettings({ userId, kind: audience = 'work', onEnabledChange, onEnabled }: { userId: string; kind?: 'work' | 'driver'; onEnabledChange?: (enabled: boolean) => void; onEnabled?: () => void }) {
   const [config, setConfig] = useState<Config | null>(null);
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [probeId, setProbeId] = useState<string | null>(null);
@@ -11,6 +11,7 @@ export default function PushSettings({ userId }: { userId: string }) {
   const supported = pushSupported();
   const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
   const installed = matchMedia('(display-mode: standalone)').matches || !!(navigator as Navigator & { standalone?: boolean }).standalone;
+  useEffect(() => { onEnabledChange?.(!!subscription && permission === 'granted' && !!config?.enabled); }, [subscription, permission, config?.enabled, onEnabledChange]);
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -105,7 +106,8 @@ export default function PushSettings({ userId }: { userId: string }) {
         setNotice('Сохраняем подключение устройства…');
         await pushRequest('subscription', 'POST', { subscription: current.toJSON() });
         setSubscription(current);
-        setNotice('Уведомления включены для ваших задач и работы с компаниями.');
+        setNotice(audience === 'driver' ? 'Уведомления о новых рейсах включены на этом устройстве.' : 'Уведомления включены для ваших задач и работы с компаниями.');
+        onEnabled?.();
       } else if (kind === 'disable' && subscription) {
         await pushRequest('subscription', 'DELETE', { endpoint: subscription.endpoint });
         await waitForPush(subscription.unsubscribe(), 15000, 'Сервер отключил уведомления, но браузер пока не завершил отключение. Повторите проверку позже.');
@@ -129,6 +131,7 @@ export default function PushSettings({ userId }: { userId: string }) {
       {config && !config.enabled && <p>Серверная отправка ещё не настроена.</p>}
       {config?.enabled && config.lastRunAt && Date.now() - config.lastRunAt > 20 * 60000 && <p role="status">Проверка напоминаний задерживается. Последняя проверка: {new Date(config.lastRunAt).toLocaleString('ru-RU')}.</p>}
       {permission === 'denied' && <p>Разрешите уведомления для CRM в настройках браузера или устройства.</p>}
+      {subscription && <p role="status">{audience === 'driver' ? 'Уведомления о новых рейсах включены.' : 'Уведомления на этом устройстве включены.'}</p>}
       <div className="work-push-actions">{subscription ? <><button className="button" disabled={busy || !!probeId || !config?.enabled} onClick={() => void action('test')}>Проверить уведомление</button><button className="button" disabled={busy} onClick={() => void action('disable')}>Выключить</button></> : <button className="button" disabled={busy || !config?.enabled || permission === 'denied'} onClick={() => void action('enable')}>{busy ? 'Подключение…' : 'Включить уведомления'}</button>}</div>
 
     </>}

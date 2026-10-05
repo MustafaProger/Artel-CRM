@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AccountUser } from '../web/src/auth-model';
+import { isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import { emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
@@ -13,7 +13,7 @@ const date = (value: unknown): value is string => typeof value === 'string' && /
 const instant = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && date(value.slice(0, 10)) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().replace('.000Z', 'Z') === value.replace('.000Z', 'Z');
 const listKey = (kind: WorkKind) => kind === 'companies' ? 'companyRecords' : kind;
 const isSupervisor = (actor: AccountUser) => actor.role === 'director' || actor.role === 'admin';
-const canAccess = (actor: AccountUser, entry: AnyWorkEntry) => isSupervisor(actor) || actor.role === 'manager' && entry.assigneeId === actor.id;
+const canAccess = (actor: AccountUser, entry: AnyWorkEntry) => isSupervisor(actor) || isScopedEmployee(actor) && entry.assigneeId === actor.id;
 
 /** A handed-over task grants its company label in Work, never ownership of that
  * company's shipments or money. Existing task edits must retain this reference. */
@@ -64,7 +64,7 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
 }
 
 export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSearchParams, actor: AccountUser, users: AccountUser[]): WorkResponse {
-  if (!['director', 'admin', 'manager'].includes(actor.role)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
+  if (!isSupervisor(actor) && !isScopedEmployee(actor)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
   const requested = params.get('assigneeId');
   if (requested && requested !== 'mine' && !users.some(user => user.id === requested) && !(isSupervisor(actor) && data.accounts?.users.some(user => user.id === requested))) throw new ApiError(400, 'Сотрудник не найден.');
   const assigneeId = requested === 'mine' ? actor.id : requested;
@@ -107,7 +107,7 @@ export interface WorkMutationResult { entry?: AnyWorkEntry; deleted?: boolean; i
 
 /** Called inside the existing storage transaction; both authorization and version checks are atomic. */
 export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: string, body: Record<string, unknown>, id: string | undefined, method: string, actor: AccountUser, users: AccountUser[]): WorkMutationResult {
-  if (!['director', 'admin', 'manager'].includes(actor.role)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
+  if (!isSupervisor(actor) && !isScopedEmployee(actor)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
   if (!['tasks', 'companies', 'notes'].includes(kindValue)) throw new ApiError(404, 'Раздел работы не найден.');
   if (!['POST', 'PATCH', 'DELETE'].includes(method) || (method === 'POST') === !!id) throw new ApiError(405, 'Метод не поддерживается для этого маршрута.');
   const kind = kindValue as WorkKind;

@@ -10,6 +10,10 @@ self.addEventListener('push', event => {
       icon: '/icons/icon-192.png?v=20260911', badge: '/icons/icon-192.png?v=20260911',
       tag: payload.tag || 'artel-reminder', data: { url: payload.url || '/#work' },
     });
+    if (typeof payload.url === 'string' && payload.url.startsWith('/#driver-trip/')) {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of windows) client.postMessage({ type: 'artel-driver-trip-assigned' });
+    }
     // Only explicit test pushes carry a receipt capability. Confirm creation by
     // this browser, never whether a person saw or read the notification.
     const probe = payload.probe;

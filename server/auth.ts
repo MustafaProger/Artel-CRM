@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual 
 import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
-import { effectiveSections, hasSection, isAdministrator, sections, type SectionId } from '../web/src/auth-model';
+import { effectiveSections, hasSection, isAdministrator, isScopedEmployee, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
@@ -50,7 +50,7 @@ export function validateAccounts(value: AccountsData) {
   for(const u of value.users){
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
     if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
-    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','manager','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
+    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','employee','manager','logistician','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
     if (u.role === 'driver') {
       if (typeof u.driverId !== 'string' || !u.driverId || driverIds.has(u.driverId) || u.managerId !== null || !Array.isArray(u.sections) || u.sections.length) throw new Error('Invalid driver account');
       driverIds.add(u.driverId);
@@ -70,26 +70,26 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
   const accounts=data.accounts ??= {users:[],sessions:[],attempts:{}};
   const previous=id?accounts.users.find(u=>u.id===id):undefined;
-  if (previous?.role === 'driver') throw new ApiError(403, 'Управляйте доступом через карточку водителя.');
+  if (previous?.role === 'driver') throw new ApiError(403, 'Управляйте доступом водителя в разделе «Сотрудники и доступ».');
   if(id && (!previous || previous.deletedAt))throw new ApiError(404,'Пользователь не найден.');
   if(previous && input.version!==previous.version)throw new ApiError(409,'Пользователь уже изменён. Обновите список.');
   const name=text(input,'name'),login=text(input,'login',64).toLowerCase();
   if(!/^[a-z0-9._-]{3,64}$/.test(login))throw new ApiError(400,'Логин: 3–64 латинских буквы, цифры, точка, дефис или подчёркивание.');
   if(accounts.users.some(u=>u.login===login && u.id!==id))throw new ApiError(409,'Этот логин уже используется.');
   const role=setup?'director':input.role;
-  if(!['director','admin','manager'].includes(String(role)))throw new ApiError(400,'Выберите роль пользователя.');
+  if(!['director','admin','employee','manager','logistician'].includes(String(role)))throw new ApiError(400,'Выберите роль пользователя.');
   const managerId=input.managerId || null;
   if(managerId!==null && (typeof managerId!=='string' || !snapshot.directories?.managers.some(m=>m.id===managerId)))throw new ApiError(400,'Выберите сотрудника из справочника.');
   if(managerId && accounts.users.some(u=>u.id!==id && u.managerId===managerId && u.active))throw new ApiError(409,'Сотрудник уже связан с активной учётной записью.');
   if(input.active!==undefined && typeof input.active!=='boolean')throw new ApiError(400,'Некорректный статус пользователя.');
   const active=setup?true:input.active!==false;
   if(previous?.role==='director' && (!active || role!=='director') && !accounts.users.some(u=>u.id!==id && u.active && u.role==='director'))throw new ApiError(409,'Нельзя отключить последнего директора.');
-  if (!setup && !managerId && (!previous || role === 'manager' && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
+  if (!setup && !managerId && (!previous || isScopedEmployee({ role: role as AccountUser['role'] }) && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
   if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
-  const permissions = input.sections === undefined ? previous?.role === 'manager' ? effectiveSections(previous) : undefined
+  const permissions = input.sections === undefined ? previous && isScopedEmployee(previous) ? effectiveSections(previous) : undefined
     : [...new Set((input.sections as SectionId[]).map(id => id === 'settlements' ? 'overview' : id))];
   const user:StoredUser={...(previous??await passwordFields(input.password)),...(previous && input.password?await passwordFields(input.password):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
-  user.sections = role === 'manager' ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
+  user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);
   if (previous && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
@@ -103,7 +103,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   const accounts = data.accounts;
   const user = accounts?.users.find(row => row.id === id);
   if (!accounts || !user) throw new ApiError(404, 'Пользователь не найден.');
-  if (user.role === 'driver') throw new ApiError(403, 'Управляйте доступом через карточку водителя.');
+  if (user.role === 'driver') throw new ApiError(403, 'Управляйте доступом водителя в разделе «Сотрудники и доступ».');
   if (input.confirmationName !== user.name) throw new ApiError(400, 'Для подтверждения введите точное имя сотрудника.');
   if (actor.id === id) throw new ApiError(409, 'Нельзя удалить свою учётную запись.');
   // The same DELETE can be safely retried after a lost response, without another revision.

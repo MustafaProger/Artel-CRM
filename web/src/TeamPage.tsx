@@ -105,7 +105,7 @@ const roles: Role[] = [
 export default function TeamPage({ managerLabels }: TeamPageProps) {
   const [selectedId, setSelectedId] = useState('director');
   const [activeUsers,setActiveUsers]=useState<number|null>(null);
-  useEffect(()=>{fetch('/api/auth/users').then(async r=>{if(r.ok){const data=await r.json();setActiveUsers(data.users.filter((u:{active:boolean})=>u.active).length);}}).catch(()=>{});},[]);
+  useEffect(()=>{fetch('/api/auth/users').then(async r=>{if(r.ok){const data=await r.json();setActiveUsers(data.users.filter((u:{active:boolean;role:string})=>u.active&&u.role!=='driver').length);}}).catch(()=>{});},[]);
   const [query, setQuery] = useState('');
   const [showAllLabels, setShowAllLabels] = useState(false);
   const selected = roles.find((role) => role.id === selectedId) ?? roles[0];

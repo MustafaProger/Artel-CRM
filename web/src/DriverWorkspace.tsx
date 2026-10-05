@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowUpRight, CalendarDays, ChevronRight, LoaderCircle, LogOut, MapPin, RefreshCw, Route, Search, Truck, X } from 'lucide-react'
 import type { AccountUser } from './auth-model'
 import { apiFetch } from './workspace-api'
+import DriverNotifications from './DriverNotifications'
 import './driver.css'
 
 type DriverDelivery = { id: string; number: string | null; customer: string | null; product: string | null; liters: string | null; address: string | null; mapUrl: string | null; plannedAt: string | null; actualAt: string | null; notes: string | null }
@@ -66,8 +67,10 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
     window.addEventListener('hashchange', navigate)
     const focused = () => refresh()
     window.addEventListener('focus', focused)
+    const notified = (event: MessageEvent) => { if (event.data?.type === 'artel-driver-trip-assigned') refresh() }
+    navigator.serviceWorker?.addEventListener('message', notified)
     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') refresh() }, 60000)
-    return () => { controller.current?.abort(); sequence.current++; window.clearInterval(timer); window.removeEventListener('hashchange', navigate); window.removeEventListener('focus', focused) }
+    return () => { controller.current?.abort(); sequence.current++; window.clearInterval(timer); window.removeEventListener('hashchange', navigate); window.removeEventListener('focus', focused); navigator.serviceWorker?.removeEventListener('message', notified) }
   }, [refresh])
 
   useEffect(() => {
@@ -92,7 +95,7 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
     <a className="skip-link" href="#driver-content" onClick={event => { event.preventDefault(); document.getElementById('driver-content')?.focus() }}>К содержимому</a>
     <header className="driver-topbar"><a href="#driver-trips" className="driver-brand"><Route size={24}/><span>Артэль<small>Кабинет водителя</small></span></a><button className="button" onClick={onLogout}><LogOut size={17}/><span>Выйти</span></button></header>
     <main id="driver-content" tabIndex={-1} className="driver-content">
-      <div className="driver-heading"><div><p>{user.name}</p><h1>Мои рейсы</h1></div><button className="button" aria-label="Обновить мои рейсы" disabled={loading || detailLoading} onClick={refresh}><RefreshCw size={17} className={loading ? 'spin' : ''}/><span>Обновить</span></button></div>
+      <div className="driver-heading"><div><p>{user.name}</p><h1>Мои рейсы</h1></div><div className="driver-heading-actions"><DriverNotifications userId={user.id}/><button className="button driver-refresh" aria-label="Обновить мои рейсы" disabled={loading || detailLoading} onClick={refresh}><RefreshCw size={17} className={loading ? 'spin' : ''}/><span>Обновить</span></button></div></div>
       <p className="driver-intro">Рейсы и доставки, назначенные вам логистом.</p>
       {selectedId ? <>
         <a className="button driver-back" href="#driver-trips"><ArrowLeft size={16}/>Все мои рейсы</a>

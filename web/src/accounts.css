@@ -1,4 +1,32 @@
 /* Scoped employee settings: grouped surfaces and native, keyboard-accessible controls. */
+.account-management .account-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.account-toolbar .account-search {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  border-radius: 999px;
+}
+.account-toolbar > .button { white-space: nowrap; }
+.account-management > .account-role-filters.scrollable-segments {
+  box-sizing: border-box;
+  margin: 0 0 20px;
+}
+.account-driver-editor { margin-bottom: 28px; }
+.account-driver-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+.account-driver-fields label { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.account-driver-fields select { min-width: 0; max-width: 100%; width: 100%; overflow: hidden; text-overflow: ellipsis; min-height: 44px; border: 1px solid #dedfe4; border-radius: 12px; padding: 10px 12px; background: #fff; font: inherit; }
+.account-driver-editor > .account-actions { margin-top: 16px; }
+.account-user-info { min-width: 0; overflow-wrap: anywhere; }
+.account-empty { padding: 24px 0; color: #737780; }
+@media (max-width: 650px) { .account-driver-fields { grid-template-columns: 1fr; } .account-driver-fields select { font-size: 16px; } }
 .account-panel.panel { padding: 28px; margin-bottom: 24px; }
 .account-panel .panel-heading { padding: 0 0 24px; gap: 20px; }
 .account-panel .panel-heading h2 { font-size: 20px; letter-spacing: -.025em; }
@@ -40,7 +68,7 @@
 .account-panel .account-actions { display: flex; gap: 10px; }
 .account-list-heading { display: flex; align-items: center; gap: 9px; margin-top: 0; }
 .account-panel > .account-form + .account-list-heading { margin-top: 28px; }
-.account-list-heading > span { background: #f0f1f4; color: #737780; font-size: 12px; padding: 3px 8px; border-radius: 7px; }
+.account-list-heading > span { background: #f0f1f4; color: #62666d; font-size: 12px; padding: 3px 8px; border-radius: 7px; }
 .account-panel .account-list { gap: 0; margin: 12px 0 0; }
 .account-panel .account-row { flex-wrap: nowrap; gap: 16px; padding: 20px 0; border-bottom: 1px solid #eceef1; align-items: start; }
 .account-panel .account-row:last-child { border-bottom: 0; padding-bottom: 0; }
@@ -88,3 +116,5 @@
 }
 @media (prefers-reduced-motion: reduce) { .account-panel .account-form input.account-toggle, .account-panel .account-form input.account-toggle::after { transition: none; } .account-panel .button:active { transform: none; } }
 @media (prefers-contrast: more) { .account-panel .account-form input.account-toggle { outline: 1px solid #555; } .account-panel .account-row small, .account-panel .account-form .work-hint { color: #454950; } }
+
+.account-editor { scroll-margin-top: 24px; }

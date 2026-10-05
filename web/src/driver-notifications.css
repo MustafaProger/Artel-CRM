@@ -1,0 +1,14 @@
+.driver-heading>div:first-child{min-width:0}
+.driver-heading-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.driver-shell .button.driver-notification-button,.driver-notifications-dialog .button.driver-notification-close{position:relative;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;min-width:44px;min-height:44px;padding:0;border-radius:50%;flex-shrink:0}
+.driver-notification-indicator{position:absolute;top:7px;right:7px;width:7px;height:7px;border:2px solid #fff;border-radius:50%;background:#397652;box-sizing:content-box}
+.driver-notifications-dialog{box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 32px);margin:auto;padding:20px;border:1px solid #dce5de;border-radius:20px;background:#fff;color:#24332b;box-shadow:0 18px 70px #1d392433;overflow:auto}
+.driver-notifications-dialog::backdrop{background:#172c245c}
+.driver-notifications-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.driver-notifications-dialog h2{margin:0;font-size:19px;line-height:1.35;letter-spacing:-.02em;color:#315b42}
+.driver-notifications-dialog p{margin:12px 0;font-size:14px;line-height:1.6;color:#63756a;overflow-wrap:anywhere}
+.driver-notifications-dialog .work-push-settings{padding:0;border:0}
+.driver-notifications-dialog .work-push-actions{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 0}
+.driver-notifications-dialog .work-push-actions .button{white-space:normal;max-width:100%}
+.driver-notifications-dialog [role=alert]{color:#923d33}
+@media(max-width:650px){.driver-heading-actions .driver-refresh{width:44px;height:44px;min-width:44px;padding:0;border-radius:50%}.driver-heading-actions .driver-refresh>span{display:none}.driver-notifications-dialog{margin:auto auto 16px;padding:18px}}

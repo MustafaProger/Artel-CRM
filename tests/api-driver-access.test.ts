@@ -71,7 +71,13 @@ test('driver access is versioned, strong, single-use disclosure and one stable d
     assert.equal(repeat.status, 200); assert.equal(repeat.body.temporaryPassword, undefined); assert.equal(repeat.body.access.userId, driver.access.userId);
     assert.equal((await f.request('/api/drivers/driver/access', 'POST', { version: 0, action: 'issue' }, f.adminCookie)).status, 409);
     assert.equal((await f.store.read(f.source)).accounts!.users.filter(user => user.driverId === 'driver').length, 1);
-    assert.equal((await f.request('/api/auth/users', 'GET', undefined, f.adminCookie)).body.users.length, 1);
+    const allUsers = await f.request('/api/auth/users', 'GET', undefined, f.adminCookie);
+    assert.equal(allUsers.body.users.length, 2);
+    assert.equal(allUsers.body.users.find((user: { id: string }) => user.id === driver.access.userId).driverId, 'driver');
+    assert.doesNotMatch(allUsers.text, /passwordHash|salt|temporaryPassword/);
+    assert.ok(!allUsers.text.includes(driver.temporaryPassword));
+    assert.deepEqual((await f.store.read(f.source)).accounts!.users, stored.accounts!.users);
+    assert.equal((await f.request('/api/driver/trips', 'GET', undefined, driver.cookie)).status, 200);
     assert.equal((await f.request(`/api/auth/users/${driver.access.userId}`, 'PATCH', { name: 'forged', login: 'forged', role: 'admin', managerId: 'manager', version: 1 }, f.adminCookie)).status, 403);
     assert.equal((await f.request('/api/auth/users', 'POST', { name: 'forged', login: 'forged', role: 'driver', driverId: 'driver-other', password: randomUUID() }, f.adminCookie)).status, 400);
   } finally { await f.close(); }
@@ -150,7 +156,7 @@ test('driver requests fail closed for files, documents, Saby and every mutation 
       }
       for (const path of [`/api/driver/trips/${trip.id}/files/guessed`, `/api/work/tasks/${trip.id}/files/guessed`]) assert.equal((await f.request(path, 'GET', undefined, a.cookie)).status, 403);
     }
-    for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) for (const path of ['/api/driver/trips', `/api/driver/trips/${f.tripId}`, '/api/shipments', '/api/directories', '/api/drivers/driver/access', '/api/auth/users', `/api/auth/users/${f.owner.id}`, '/api/push/subscription']) assert.equal((await f.request(path, method, {}, a.cookie)).status, 403, `${method} ${path}`);
+    for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) for (const path of ['/api/driver/trips', `/api/driver/trips/${f.tripId}`, '/api/shipments', '/api/directories', '/api/drivers/driver/access', '/api/auth/users', `/api/auth/users/${f.owner.id}`]) assert.equal((await f.request(path, method, {}, a.cookie)).status, 403, `${method} ${path}`);
     assert.equal(await readFile(f.store.path, 'utf8'), before); assert.equal(f.provider.calls.length, 0);
     assert.equal((await f.request('/api/driver/trips', 'GET', undefined, f.adminCookie)).status, 403);
   } finally { await f.close(); }

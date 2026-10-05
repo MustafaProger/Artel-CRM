@@ -14,7 +14,7 @@ type DriverAccessState = {
 }
 
 /** Passwords exist only in this mounted issuance panel, never in the directory draft. */
-export default function DriverAccess({ driverId, disabled, onBusyChange }: { driverId: string; disabled: boolean; onBusyChange: (busy: boolean) => void }) {
+export default function DriverAccess({ driverId, disabled, onBusyChange, onChanged }: { driverId: string; disabled: boolean; onBusyChange: (busy: boolean) => void; onChanged?: () => void }) {
   const [access, setAccess] = useState<DriverAccessState | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -93,6 +93,7 @@ export default function DriverAccess({ driverId, disabled, onBusyChange }: { dri
         throw new Error(result.error || 'Не удалось изменить доступ водителя.')
       }
       setAccess(result.access)
+      onChanged?.()
       cancelConfirmation()
       if (typeof result.temporaryPassword === 'string') setTemporaryPassword(result.temporaryPassword)
       setNotice(action === 'revoke' ? 'Доступ отозван. Прежние сеансы завершены.' : result.temporaryPassword ? 'Данные входа готовы к передаче водителю.' : 'У водителя уже есть доступ. Для нового пароля выберите «Выдать новый пароль».')
@@ -148,12 +149,12 @@ export default function DriverAccess({ driverId, disabled, onBusyChange }: { dri
         <div className="driver-access-actions"><button type="button" className={`button ${confirmation === 'revoke' ? 'directory-danger' : 'primary'}`} disabled={disabled || busy || loading || needsCheck || (customPassword && !validPassword)} onClick={() => void change(confirmation)}>{confirmation === 'revoke' ? 'Подтвердить отзыв' : customPassword ? 'Сохранить пароль' : 'Подтвердить новый пароль'}</button><button type="button" className="button" disabled={busy} onClick={cancelConfirmation}>Отмена изменения доступа</button></div>
       </div>}
       {temporaryPassword && <div className="driver-access-secret" aria-label="Выданные данные входа">
-        <p>Пароль доступен только сейчас. Передайте его водителю перед закрытием карточки. Повторно посмотреть пароль нельзя — можно выдать новый.</p>
+        <p>Пароль доступен только сейчас. Передайте его водителю перед закрытием панели. Повторно посмотреть пароль нельзя — можно выдать новый.</p>
         <label className="shipment-field"><span>Временный пароль водителя</span><span className="driver-access-password"><input aria-label="Временный пароль водителя" type={showPassword ? 'text' : 'password'} value={temporaryPassword} readOnly autoComplete="off" spellCheck={false}/><button type="button" className="icon-button" aria-label={showPassword ? 'Скрыть временный пароль' : 'Показать временный пароль'} onClick={() => setShowPassword(value => !value)}>{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></span></label>
         <div className="driver-access-actions"><button type="button" className="button" onClick={() => void copyCredentials()}><Copy size={16}/>Скопировать данные входа</button><button type="button" className="button" onClick={() => { setTemporaryPassword(''); setShowPassword(false); setNotice('Пароль скрыт. Доступ водителя сохранён.') }}><Check size={16}/>Данные переданы</button></div>
       </div>}
     </>}
-    <p className="driver-access-footnote">Изменения доступа сохраняются сразу, отдельно от карточки водителя.</p>
+    <p className="driver-access-footnote">Изменения доступа сохраняются сразу. Данные водителя в справочнике сохраняются отдельно.</p>
     {busy && <p role="status"><LoaderCircle size={16} className="spin"/> Сохраняем доступ…</p>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="driver-access-error" role="alert"><p>{error}</p><button type="button" className="button" disabled={busy || loading} onClick={() => void refresh()}>Проверить доступ снова</button></div>}
