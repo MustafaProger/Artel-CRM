@@ -56,11 +56,21 @@ try {
         const button = page.locator('.account-row').filter({ has: page.locator('strong', { hasText: name }) }).getByRole('button', { name: 'Изменить', exact: true });
         await button.scrollIntoViewIfNeeded();
         assert.ok(await page.evaluate(() => scrollY > 500));
+        await page.evaluate(() => {
+          window.scrollPositions = [];
+          window.recordScroll = () => window.scrollPositions.push(window.scrollY);
+          window.addEventListener('scroll', window.recordScroll);
+        });
         await button.click();
         const editor = page.getByRole('region', { name: 'Настройки учётной записи', exact: true });
         await expect(editor).toBeFocused();
         await expect.poll(async () => Math.round((await editor.boundingBox()).y)).toBeGreaterThanOrEqual(0);
         await expect.poll(async () => Math.round((await editor.boundingBox()).y)).toBeLessThanOrEqual(30);
+        const positions = await page.evaluate(() => {
+          window.removeEventListener('scroll', window.recordScroll);
+          return [...new Set(window.scrollPositions)];
+        });
+        if (reducedMotion === 'no-preference') assert.ok(positions.length > 2, 'Smooth scroll must include intermediate positions');
         if (name === 'QA Водитель') await expect(editor.getByLabel('Водитель справочника', { exact: true })).toHaveValue('driver');
         else await expect(editor.getByLabel('Имя в приложении', { exact: true })).toHaveValue(name);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));

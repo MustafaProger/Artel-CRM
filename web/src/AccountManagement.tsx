@@ -23,8 +23,10 @@ export default function AccountManagement({ directories, onChanged }: { director
   useEffect(() => {
     if (!editorRequest || !editorRef.current) return;
     const frame = window.requestAnimationFrame(() => {
-      editorRef.current?.focus({ preventScroll: true });
-      editorRef.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus({ preventScroll: true });
+      window.scrollTo({ top: window.scrollY + editor.getBoundingClientRect().top - 24, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [editorRequest]);
