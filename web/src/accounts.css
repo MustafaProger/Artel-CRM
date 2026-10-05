@@ -38,7 +38,8 @@
 .account-form-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 24px; }
 .account-panel .account-form .active-field { display: flex; gap: 10px; cursor: pointer; }
 .account-panel .account-actions { display: flex; gap: 10px; }
-.account-list-heading { display: flex; align-items: center; gap: 9px; margin-top: 28px; }
+.account-list-heading { display: flex; align-items: center; gap: 9px; margin-top: 0; }
+.account-panel > .account-form + .account-list-heading { margin-top: 28px; }
 .account-list-heading > span { background: #f0f1f4; color: #737780; font-size: 12px; padding: 3px 8px; border-radius: 7px; }
 .account-panel .account-list { gap: 0; margin: 12px 0 0; }
 .account-panel .account-row { flex-wrap: nowrap; gap: 16px; padding: 20px 0; border-bottom: 1px solid #eceef1; align-items: start; }

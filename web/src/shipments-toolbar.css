@@ -2,6 +2,38 @@
  * Keep these selectors inside the controls above the ledger, never the table.
  * Types and filters share one native horizontal strip at every viewport size.
  */
+.shipments-focus #main-content { height: 100dvh; }
+.shipments-focus .shipment-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 12px;
+  padding: 14px;
+  background: #F5F5F7;
+  border-color: var(--border);
+}
+.shipments-focus .shipment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.shipments-focus .shipment-toolbar h1 {
+  margin: 0;
+  min-width: 0;
+  font-size: clamp(26px, 2.4vw, 37.6px);
+  font-weight: 600;
+  line-height: 1.14;
+  letter-spacing: -.035em;
+}
+.shipments-focus .shipment-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
 .shipments-workspace :is(.shipment-toolbar, .shipment-template-row) .button {
   min-height: var(--ui-control-size);
   padding: 10px 19px;
@@ -13,18 +45,32 @@
   box-shadow: none;
   transition: background-color var(--ui-feedback), border-color var(--ui-feedback), opacity var(--ui-feedback);
 }
-.shipments-workspace .shipment-toolbar h1 {
-  font-weight: 600;
-  letter-spacing: -.025em;
-}
-.shipments-workspace .shipment-toolbar .shipment-menu {
+.shipments-focus .shipment-toolbar .shipment-header-action {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 var(--ui-control-size);
+  align-items: center;
+  justify-content: center;
   width: var(--ui-control-size);
   height: var(--ui-control-size);
+  min-height: var(--ui-control-size);
+  min-width: var(--ui-control-size);
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--border);
   border-radius: 50%;
 }
+.shipments-focus .shipment-toolbar .shipment-header-action.primary { border-color: var(--accent); }
+.shipments-focus .shipment-header-action svg { width: 21px; height: 21px; }
 .shipments-workspace .shipment-toolbar .shipment-search {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  margin: 0;
   min-height: var(--ui-control-size);
-  border-radius: var(--ui-control-radius);
+  border-radius: var(--ui-search-radius, 999px);
+  background: var(--surface);
   box-shadow: none;
 }
 .shipments-workspace .shipment-toolbar .shipment-search input {
@@ -39,8 +85,11 @@
   outline-offset: 2px;
 }
 .shipments-workspace .shipment-view-controls select {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23585860' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") right 14px center / 16px no-repeat;
   min-height: var(--ui-control-size);
-  padding: 10px 12px;
+  padding: 10px 38px 10px 14px;
   border-radius: var(--ui-control-radius);
   font-family: inherit;
   font-size: var(--ui-field-font);
@@ -105,12 +154,13 @@
 .shipments-workspace .shipment-view-actions .button { flex: 0 0 auto; max-width: none; white-space: nowrap; }
 
 @media (max-width: 800px) {
-  .shipments-workspace :is(.shipment-toolbar, .shipment-template-row) .button { padding-inline: 14px; }
+  .shipments-workspace .shipment-template-row .button { padding-inline: 14px; }
+  .shipments-focus .shipment-toolbar h1 { font-size: 30px; }
 }
-@media (max-width: 420px) {
-  /* Preserve the existing icon-only directory link on compact screens. */
-  .shipments-workspace .shipment-toolbar a.button { font-size: 0; padding-inline: 12px; }
-  .shipments-workspace .shipment-toolbar > .button.primary { font-size: 12px; padding-inline: 12px; }
+@media (max-width: 360px) {
+  .shipments-focus .shipment-toolbar { padding-inline: 12px; }
+  .shipments-focus .shipment-toolbar h1 { font-size: 26px; }
+  .shipments-focus .shipment-header-actions { gap: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .shipments-workspace :is(.shipment-toolbar, .shipment-template-row) .button { transition: none; }

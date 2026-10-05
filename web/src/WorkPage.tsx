@@ -92,8 +92,9 @@ export default function WorkPage() {
     <div className="work-toolbar">
       <ScrollableSegments className="work-views" label="Представление работы" value={view}><button className={`button ${view === 'board' ? 'primary' : ''}`} aria-pressed={view === 'board'} onClick={() => setView('board')}><LayoutGrid size={17}/>Работа с компаниями</button><button className={`button ${view === 'calendar' ? 'primary' : ''}`} aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><CalendarDays size={17}/>Календарь</button><button className={`button ${view === 'archive' ? 'primary' : ''}`} aria-pressed={view === 'archive'} onClick={() => setView('archive')}>Архив задач</button></ScrollableSegments>
       {isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}
-      <button className="button work-refresh" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу"><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button>
+      <div className="work-toolbar-actions"><button className="button work-refresh" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу"><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button>
       <button className="button primary" disabled={!data} onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17}/>Новая задача</button>
+      </div>
     </div>
     {notice && <p className="work-notice" role="status">{notice}</p>}
     {error && <p className="shipment-error" role="alert">{error}</p>}

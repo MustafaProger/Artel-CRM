@@ -37,7 +37,7 @@ export default function ChinaPage({ canManage }: { canManage: boolean }) {
   </section>;
 }
 function ChinaDate({ date }: { date: string }) {
-  return <time dateTime={date} title={formatDate(date)} aria-label={formatDate(date)}>{date.slice(8,10)}.{date.slice(5,7)}<span className="china-date-year">.{date.slice(0,4)}</span></time>;
+  return <time className="china-date" dateTime={date} title={formatDate(date)}>{formatDate(date)}</time>;
 }
 function ChinaEditor({ editor, suppliers, onClose, onSaved }: { editor: Editor; suppliers: Company[]; onClose: () => void; onSaved: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);
