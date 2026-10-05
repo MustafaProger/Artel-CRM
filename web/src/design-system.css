@@ -148,7 +148,6 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   :root { --ui-card-radius: 20px; --ui-dialog-radius: 22px; --ui-field-font: 16px; }
   :is(.app-shell, .driver-shell, .auth-shell) .button.button:not(:where(.shipments-workspace *, .shipment-grid *)) { padding-inline: 16px; }
   :is(.app-shell.app-shell, .driver-shell.driver-shell, .auth-shell.auth-shell) :is(input, select, textarea):not(:where(.shipments-workspace *, table *, [type="checkbox"], [type="radio"])) { font-size: 16px; }
-  .work-page .work-views.scrollable-segments { display: flex; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.app-shell, .driver-shell, .auth-shell) .button.button:not(:where(.shipments-workspace *, .shipment-grid *)) { transition: none; }

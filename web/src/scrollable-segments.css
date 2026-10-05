@@ -2,6 +2,8 @@
 div.scrollable-segments[class] {
   position: relative;
   display: flex;
+  flex: 0 1 auto;
+  align-self: flex-start;
   flex-wrap: nowrap;
   align-items: stretch;
   justify-content: flex-start;
