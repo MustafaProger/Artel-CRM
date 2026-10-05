@@ -36,7 +36,9 @@
     "test:trips-etrn-ui": "node --import tsx scripts/verify_trip_autofill.mjs",
     "test:trips-etrn-runtime": "node --import tsx scripts/verify_trips_etrn_runtime.mjs",
     "test:driver-ui": "node --import tsx scripts/verify_driver_access.mjs",
-    "test:driver-password-ui": "node --import tsx scripts/verify_driver_password_ui.mjs"
+    "test:driver-password-ui": "node --import tsx scripts/verify_driver_password_ui.mjs",
+    "test:segments-ui": "node --import tsx scripts/verify_scrollable_segments.mjs",
+    "test:design-consistency": "node --import tsx scripts/verify_design_consistency.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

@@ -1,0 +1,69 @@
+/* The user explicitly included the shipment header on 2026-10-05.
+ * Keep these selectors inside the controls above the ledger, never the table.
+ * Existing colours, control order and responsive row layout are preserved.
+ */
+.shipments-workspace :is(.shipment-toolbar, .shipment-template-row, .shipment-width-toolbar) .button {
+  min-height: var(--ui-control-size);
+  padding: 10px 19px;
+  border-radius: var(--ui-action-radius);
+  font-size: var(--ui-action-font);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -.01em;
+  box-shadow: none;
+  transition: background-color var(--ui-feedback), border-color var(--ui-feedback), opacity var(--ui-feedback);
+}
+.shipments-workspace .shipment-toolbar h1 {
+  font-weight: 600;
+  letter-spacing: -.025em;
+}
+.shipments-workspace .shipment-toolbar .shipment-menu {
+  width: var(--ui-control-size);
+  height: var(--ui-control-size);
+  border-radius: 50%;
+}
+.shipments-workspace .shipment-toolbar .shipment-search {
+  min-height: var(--ui-control-size);
+  border-radius: var(--ui-control-radius);
+  box-shadow: none;
+}
+.shipments-workspace .shipment-toolbar .shipment-search input {
+  min-width: 0;
+  min-height: 42px;
+  font-size: var(--ui-field-font);
+  line-height: 1.4;
+}
+.shipments-workspace .shipment-search .icon-button { flex-shrink: 0; border-radius: 50%; }
+.shipments-workspace .shipment-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.shipments-workspace .shipment-view-controls select {
+  min-height: var(--ui-control-size);
+  padding: 10px 12px;
+  border-radius: var(--ui-control-radius);
+  font-family: inherit;
+  font-size: var(--ui-field-font);
+  font-weight: 400;
+  line-height: 1.4;
+  box-shadow: none;
+}
+.shipments-workspace :is(.shipment-toolbar, .shipment-template-row, .shipment-width-toolbar) :is(button, a, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.shipments-workspace .shipment-type-tabs { align-items: center; }
+
+@media (max-width: 800px) {
+  .shipments-workspace :is(.shipment-toolbar, .shipment-template-row, .shipment-width-toolbar) .button { padding-inline: 14px; }
+  .shipments-workspace .shipment-view-controls select { max-width: 100%; }
+  .shipments-workspace .shipment-width-toolbar { flex-wrap: wrap; }
+}
+@media (max-width: 420px) {
+  /* Preserve the existing icon-only directory link on compact screens. */
+  .shipments-workspace .shipment-toolbar a.button { font-size: 0; padding-inline: 12px; }
+  .shipments-workspace .shipment-toolbar > .button.primary { font-size: 12px; padding-inline: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shipments-workspace :is(.shipment-toolbar, .shipment-template-row, .shipment-width-toolbar) .button { transition: none; }
+}

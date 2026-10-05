@@ -1,3 +1,4 @@
+import ScrollableSegments from './ScrollableSegments'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, ArrowDownLeft, ArrowLeft, Building2, ChevronRight, Search, Truck, Wallet, X } from 'lucide-react'
 import type { OrganizationSettlement } from './organization-settlements-model'
@@ -30,7 +31,7 @@ export default function OrganizationOverview({ organizations, unassignedShipment
   return <section className="organization-overview" aria-label="Расчёты по нашим организациям">
     {organization ? <>
       <div className="overview-organization-picker" role="group" aria-label="Наша организация">{organizations.map(row => <button type="button" key={row.id} aria-pressed={organization.id === row.id} onClick={() => setOrganizationId(row.id)} data-organization-id={row.id}><Building2 size={20}/><span>{row.name}</span></button>)}</div>
-      <div className="overview-ledger-tabs" role="group" aria-label="Сторона взаиморасчётов"><button type="button" aria-pressed={side === 'suppliers'} onClick={() => setSide('suppliers')}>Поставщики</button><button type="button" aria-pressed={side === 'clients'} onClick={() => setSide('clients')}>Клиенты</button></div>
+      <ScrollableSegments className="overview-ledger-tabs" label="Сторона взаиморасчётов" value={side}><button type="button" aria-pressed={side === 'suppliers'} onClick={() => setSide('suppliers')}>Поставщики</button><button type="button" aria-pressed={side === 'clients'} onClick={() => setSide('clients')}>Клиенты</button></ScrollableSegments>
       {unassignedShipmentCount > 0 && <div className="overview-notice" data-testid="organization-unassigned-notice"><AlertCircle size={18}/><div><strong>Без нашей организации: {unassignedShipmentCount} отгрузок</strong></div></div>}
       <OrganizationLedger key={`${organization.id}:${side}`} report={organization[side]} organization={organization.name} organizationId={organization.id} side={side}/>
     </> : <div className="overview-empty overview-card"><Building2 size={30}/><h3>Раздельные расчёты пока недоступны</h3></div>}

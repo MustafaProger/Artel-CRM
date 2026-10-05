@@ -1,3 +1,4 @@
+import ScrollableSegments from './ScrollableSegments'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Decimal from 'decimal.js'
 import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Building2, Check, ChevronLeft, ChevronRight, Copy, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
@@ -126,7 +127,7 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const syncControls = <><button className="button" onClick={() => setSettings(v => !v)}><Unplug size={16}/>Подключение</button><button className="button primary" onClick={() => void synchronize()} disabled={busy || loading || !!error || !(card ? !card.missing.length : data?.connections.some(card => !card.missing.length) || Object.values(sberCards).some(state => !state.missing.length))}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем…' : card?.progress ? 'Продолжить загрузку' : 'Синхронизировать'}</button></>
   const periodControls = <div className="bank-period"><label>Период с<input aria-label="Период с" type="date" value={from} max={to || currentDay()} onChange={e => { setFrom(e.target.value); setPage(1) }}/></label><span>—</span><label>Период по<input aria-label="Период по" type="date" value={to} min={from} max={currentDay()} onChange={e => { setTo(e.target.value); setPage(1) }}/></label></div>
   return <section className="banking-page">
-    <div className="bank-source-tabs" role="tablist" aria-label="Источник платежей"><button role="tab" aria-selected={source === 'api'} onClick={() => setSource('api')}>Банковские подключения</button><button role="tab" aria-selected={source === 'legacy'} onClick={() => setSource('legacy')}>Архив из файла</button></div>
+    <ScrollableSegments className="bank-source-tabs" role="tablist" label="Источник платежей" value={source}><button role="tab" aria-selected={source === 'api'} onClick={() => setSource('api')}>Банковские подключения</button><button role="tab" aria-selected={source === 'legacy'} onClick={() => setSource('legacy')}>Архив из файла</button></ScrollableSegments>
     {source === 'legacy' ? <>{legacy}</> : sber ? <SberStatements key={sber.id} connectionId={sber.id} onBack={() => selectBank('')}/> : <>
       {selectedBank ? <BankConnectionHeader bankName={selectedBank.bankName} company={selectedBank.company} provider={selectedBank.provider} onBack={() => selectBank('')}
         actions={syncControls}

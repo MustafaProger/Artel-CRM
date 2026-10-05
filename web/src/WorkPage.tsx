@@ -6,6 +6,7 @@ import type { Company } from './model';
 import { workStatuses, workFileLimit, workFilesTotalLimit, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from './work-model';
 import './work.css';
 import PushSettings from './PushSettings';
+import ScrollableSegments from './ScrollableSegments';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry };
 type SavedAction = 'saved' | 'archived' | 'restored' | 'deleted';
@@ -89,7 +90,7 @@ export default function WorkPage() {
   const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
   return <div className="work-page">
     <div className="work-toolbar">
-      <div className="work-views" role="group" aria-label="Представление работы"><button className={`button ${view === 'board' ? 'primary' : ''}`} aria-pressed={view === 'board'} onClick={() => setView('board')}><LayoutGrid size={17}/>Работа с компаниями</button><button className={`button ${view === 'calendar' ? 'primary' : ''}`} aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><CalendarDays size={17}/>Календарь</button><button className={`button ${view === 'archive' ? 'primary' : ''}`} aria-pressed={view === 'archive'} onClick={() => setView('archive')}>Архив задач</button></div>
+      <ScrollableSegments className="work-views" label="Представление работы" value={view}><button className={`button ${view === 'board' ? 'primary' : ''}`} aria-pressed={view === 'board'} onClick={() => setView('board')}><LayoutGrid size={17}/>Работа с компаниями</button><button className={`button ${view === 'calendar' ? 'primary' : ''}`} aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><CalendarDays size={17}/>Календарь</button><button className={`button ${view === 'archive' ? 'primary' : ''}`} aria-pressed={view === 'archive'} onClick={() => setView('archive')}>Архив задач</button></ScrollableSegments>
       {isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}
       <button className="button work-refresh" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу"><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button>
       <button className="button primary" disabled={!data} onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17}/>Новая задача</button>

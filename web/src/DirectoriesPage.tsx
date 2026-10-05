@@ -1,3 +1,4 @@
+import ScrollableSegments from './ScrollableSegments'
 import { apiFetch as fetch, fetchDirectoryData, isLogisticsWorkspace } from './workspace-api'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
@@ -42,7 +43,7 @@ export default function DirectoriesPage({data,onChanged,canManage=true,initialTa
   const visible = rows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
   const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
   return <div className="directories-page">
-    {!hideTabs && <div className="directory-tabs" role="group" aria-label="Справочники">{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setNotice('')}}>{item.name}</button>)}</div>}
+    {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     <section className="panel directory-list">
       <div className="directory-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск в справочнике" onClick={()=>{setQuery('');setPage(0)}}><X size={16}/></button>}</label>
