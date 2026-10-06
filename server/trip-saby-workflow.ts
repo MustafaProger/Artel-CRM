@@ -88,7 +88,7 @@ export function authorizeAutomaticTripSaby(snapshot: Snapshot, data: OperationsD
 
 function newTripSabyRecord(prepared: TripSabyPreparation, initiatorId?: string): TripSabyRecord {
   const stamp = now();
-  return { ...(initiatorId ? { initiatorId } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill(), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
+  return { ...(initiatorId ? { initiatorId } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill('По договору'), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
 }
 
 /** Called only from a successful non-replayed trip save, in its storage transaction. No network. */
@@ -293,10 +293,17 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
   });
   if (!claimed) { const data = await store.read(source); authorize(currentSnapshot(base, data), data); return getTripSabyWorkflow({ base, data, tripId, prepare, config: client.config, monitoringEnabled: options.monitoringEnabled }); }
   let record = claimed;
-  const update = async (mutate: (current: TripSabyRecord) => void) => {
+  const update = async (mutate: (current: TripSabyRecord) => void, requireSigningAccess = false) => {
     record = await store.mutate(source, data => {
       const current = data.tripSaby?.trips[tripId];
       if (!current || current.leaseId !== leaseId || !current.leaseUntil || Date.parse(current.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс обмена рейса изменился. Выполните сверку Saby.');
+      // The dispatch marker may wait behind a revocation write. Recheck in its transaction,
+      // not only in the earlier HTTP guard, before authorizing the one outbound request.
+      if (requireSigningAccess) {
+        const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+        authorizeSigningActor(snapshot, data, tripId, current);
+        authorizeAutomaticTripSaby(snapshot, data, tripId, current, client.config);
+      }
       mutate(current); current.updatedAt = now(); current.leaseUntil = new Date(Date.now() + 300_000).toISOString();
       return { result: structuredClone(current), changed: true };
     });

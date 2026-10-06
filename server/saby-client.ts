@@ -17,8 +17,39 @@ export interface SabyConfig {
 }
 export const sabyObject = (value: unknown): value is SabyObject => !!value && typeof value === 'object' && !Array.isArray(value);
 export const sabyText = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
+const diagnosticMethods = ['СБИС.Аутентифицировать', 'СБИС.ПрочитатьДокумент', 'sabyCertificate.Read', 'sabyCertificate.List', 'СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие', 'download_attachment', 'other'] as const;
+const diagnosticCategories = ['configuration', 'authorization', 'permission', 'validation', 'transport', 'protocol', 'unknown', 'provider_error', 'carrier_payment_missing', 'access_denied', 'lease_changed'] as const;
+export interface SabyFailureDiagnostic {
+  method: typeof diagnosticMethods[number]; phase: 'preflight' | 'dispatch' | 'response';
+  category: typeof diagnosticCategories[number]; rpcCode?: number; httpStatus?: number;
+  formatCode?: '0001.006.406.020';
+}
+/** Only controlled enums/numbers may be persisted. Provider messages, data and traces stay private. */
+export function isSabyFailureDiagnostic(value: unknown): value is SabyFailureDiagnostic {
+  return sabyObject(value) && !Object.keys(value).some(key => !['method', 'phase', 'category', 'rpcCode', 'httpStatus', 'formatCode'].includes(key)) &&
+    diagnosticMethods.includes(value.method as SabyFailureDiagnostic['method']) && ['preflight', 'dispatch', 'response'].includes(String(value.phase)) &&
+    diagnosticCategories.includes(value.category as SabyFailureDiagnostic['category']) &&
+    (value.rpcCode === undefined || Number.isSafeInteger(value.rpcCode) && Math.abs(Number(value.rpcCode)) <= 2_147_483_647) &&
+    (value.httpStatus === undefined || Number.isInteger(value.httpStatus) && Number(value.httpStatus) >= 100 && Number(value.httpStatus) <= 599) &&
+    (value.formatCode === undefined ? value.category !== 'carrier_payment_missing' : value.formatCode === '0001.006.406.020' && value.category === 'carrier_payment_missing');
+}
+/** Recognize only an audited format-rule literal, never retain surrounding provider text. */
+function paymentFormatCode(error: unknown): SabyFailureDiagnostic['formatCode'] {
+  let remaining = 128;
+  const inspect = (value: unknown, depth: number): boolean => {
+    if (--remaining < 0 || depth > 4) return false;
+    if (typeof value === 'string') return /(?:^|[^\d.])0001\.006\.406\.020(?:$|[^\d.])/.test(value.slice(0, 65_536));
+    if (Array.isArray(value) || sabyObject(value)) return Object.values(value).slice(0, 32).some(child => inspect(child, depth + 1));
+    return false;
+  };
+  return inspect(error, 0) ? '0001.006.406.020' : undefined;
+}
 export class SabyError extends Error {
-  constructor(readonly kind: 'configuration' | 'authorization' | 'permission' | 'validation' | 'transport' | 'protocol' | 'unknown', message: string, readonly uncertain = false) { super(message); }
+  constructor(readonly kind: 'configuration' | 'authorization' | 'permission' | 'validation' | 'transport' | 'protocol' | 'unknown', message: string, readonly uncertain = false, readonly diagnostic?: SabyFailureDiagnostic) { super(message); }
+}
+export function sabyFailureDiagnostic(error: unknown, phase: SabyFailureDiagnostic['phase'] = 'preflight', method: SabyFailureDiagnostic['method'] = 'other'): SabyFailureDiagnostic {
+  if (error instanceof SabyError && isSabyFailureDiagnostic(error.diagnostic)) return structuredClone(error.diagnostic);
+  return { method, phase, category: error instanceof SabyError ? error.kind : 'unknown' };
 }
 function carrierResponsibleFromEnv(raw: string | undefined): SabyCarrierResponsible | null | undefined {
   if (raw === undefined) return undefined;
@@ -173,23 +204,33 @@ export class SabyClient {
     return new SabyClient({ ...this.config, sessionId: this.session }, this.send, guard);
   }
 
-  private async request(url: string, method: string, params: SabyObject, session?: string, writing = false): Promise<unknown> {
+  private async request(url: string, method: string, params: SabyObject, session?: string, writing = false, beforeDispatch?: () => Promise<void>): Promise<unknown> {
     let response: Response;
     const id = ++this.requestId;
+    const diagnostic = (category: SabyFailureDiagnostic['category'], phase: SabyFailureDiagnostic['phase'], extra: Pick<SabyFailureDiagnostic, 'httpStatus' | 'rpcCode' | 'formatCode'> = {}): SabyFailureDiagnostic => ({ method: diagnosticMethods.includes(method as SabyFailureDiagnostic['method']) ? method as SabyFailureDiagnostic['method'] : 'other', phase, category, ...extra });
+    const bodyText = JSON.stringify({ jsonrpc: '2.0', method, params, id });
     // A local access failure occurs before any HTTP and must not become an uncertain transport error.
     await this.beforeRequest?.();
+    // Authentication, serialization and the final rights/lease guard have already succeeded.
+    // A failed durable marker must never reach fetch; a crash after it is treated as uncertain.
+    await beforeDispatch?.();
     try {
-      response = await this.send(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(this.config.timeoutMs ?? 25_000), headers: { 'Content-Type': 'application/json-rpc; charset=utf-8', ...(session ? { 'X-SBISSessionID': session } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', method, params, id }) });
-    } catch { throw new SabyError('transport', writing ? 'Нет подтверждения результата Saby. Перед повтором нужна сверка существующего документа.' : 'Не удалось соединиться с API Saby.', writing); }
-    if (response.status === 401) throw new SabyError('authorization', 'Сессия Saby истекла или доступ к кабинету отклонён.');
-    if (response.status === 403) throw new SabyError('permission', 'Saby запретил действие. Проверьте права API и доступ к организации.');
-    if (!response.ok) throw new SabyError('transport', `API Saby вернул HTTP ${response.status}. ${writing ? 'Результат записи необходимо сверить.' : 'Повторите проверку позже.'}`, writing);
+      response = await this.send(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(this.config.timeoutMs ?? 25_000), headers: { 'Content-Type': 'application/json-rpc; charset=utf-8', ...(session ? { 'X-SBISSessionID': session } : {}) }, body: bodyText });
+    } catch { throw new SabyError('transport', writing ? 'Нет подтверждения результата Saby. Перед повтором нужна сверка существующего документа.' : 'Не удалось соединиться с API Saby.', writing, diagnostic('transport', 'dispatch')); }
+    if (response.status === 401) throw new SabyError('authorization', 'Сессия Saby истекла или доступ к кабинету отклонён.', false, diagnostic('authorization', 'response', { httpStatus: 401 }));
+    if (response.status === 403) throw new SabyError('permission', 'Saby запретил действие. Проверьте права API и доступ к организации.', false, diagnostic('permission', 'response', { httpStatus: 403 }));
+    if (!response.ok) throw new SabyError('transport', `API Saby вернул HTTP ${response.status}. ${writing ? 'Результат записи необходимо сверить.' : 'Повторите проверку позже.'}`, writing, diagnostic('transport', 'response', { httpStatus: response.status }));
     let body: unknown;
-    try { body = await response.json(); } catch { throw new SabyError('protocol', 'Saby вернул ответ без корректного JSON-RPC. Результат не подтверждён.', writing); }
-    if (!sabyObject(body) || body.jsonrpc !== '2.0' || body.id !== id) throw new SabyError('protocol', 'Saby вернул несогласованный ответ JSON-RPC. Результат не подтверждён.', writing);
+    try { body = await response.json(); } catch { throw new SabyError('protocol', 'Saby вернул ответ без корректного JSON-RPC. Результат не подтверждён.', writing, diagnostic('protocol', 'response')); }
+    if (!sabyObject(body) || body.jsonrpc !== '2.0' || body.id !== id) throw new SabyError('protocol', 'Saby вернул несогласованный ответ JSON-RPC. Результат не подтверждён.', writing, diagnostic('protocol', 'response'));
     // Do not return vendor messages/stack traces: they can contain payloads or credentials.
-    if (body.error) throw new SabyError('validation', writing ? 'Saby вернул ошибку обработки документа. Перед повтором проверьте созданный черновик и его обязательные поля в Saby.' : 'Saby отклонил запрос. Проверьте авторизацию, тариф API и права организации.', writing);
-    if (!Object.hasOwn(body, 'result')) throw new SabyError('protocol', 'В ответе Saby отсутствует результат.', writing);
+    if (body.error) {
+      const code = sabyObject(body.error) ? body.error.code : undefined;
+      const rpcCode = typeof code === 'number' && Number.isSafeInteger(code) && Math.abs(code) <= 2_147_483_647 ? code : undefined;
+      const formatCode = paymentFormatCode(body.error);
+      throw new SabyError('validation', formatCode ? 'Saby сообщил об отсутствии расчёта платы в ответе НК (0001.006.406.020).' : writing ? 'Saby вернул ошибку обработки документа. Перед повтором проверьте созданный черновик и его обязательные поля в Saby.' : 'Saby отклонил запрос. Проверьте авторизацию, тариф API и права организации.', writing, diagnostic(formatCode ? 'carrier_payment_missing' : 'provider_error', 'response', { ...(rpcCode === undefined ? {} : { rpcCode }), ...(formatCode ? { formatCode } : {}) }));
+    }
+    if (!Object.hasOwn(body, 'result')) throw new SabyError('protocol', 'В ответе Saby отсутствует результат.', writing, diagnostic('protocol', 'response'));
     return body.result;
   }
 
@@ -205,12 +246,12 @@ export class SabyClient {
     return this.authenticating;
   }
 
-  async call(method: string, params: SabyObject, writing = false, directory = false): Promise<unknown> {
-    const invoke = async () => this.request(directory ? DIRECTORY_URL : DOCUMENT_URL, method, params, await this.authenticate(), writing);
+  async call(method: string, params: SabyObject, writing = false, directory = false, beforeDispatch?: () => Promise<void>): Promise<unknown> {
+    const invoke = async () => this.request(directory ? DIRECTORY_URL : DOCUMENT_URL, method, params, await this.authenticate(), writing, beforeDispatch);
     try { return await invoke(); }
     catch (error) {
       // A definite HTTP 401 rejects execution. Never retry a timeout/RPC error automatically.
-      if (!(error instanceof SabyError) || error.kind !== 'authorization' || !this.config.login || !this.config.password || !this.config.accountNumber) throw error;
+      if (beforeDispatch || !(error instanceof SabyError) || error.kind !== 'authorization' || !this.config.login || !this.config.password || !this.config.accountNumber) throw error;
       this.session = undefined; return invoke();
     }
   }
@@ -326,11 +367,14 @@ export class SabyClient {
     if (prepared.Идентификатор !== binding.documentId || stages.length !== 1 || sabyDocumentWorkflow(prepared).revision !== binding.revision) throw new SabyError('validation', 'Подготовленные файлы относятся к другому этапу или редакции Saby.');
     return this.signingClient(binding.side).downloadDocumentAttachment({ ...prepared, Вложение: stages[0].Вложение }, attachmentId, binding.revision);
   }
-  /** Call only after persisting an execute intent. Never retry an uncertain result. */
-  async executeDeferredSigning(prepared: SabyPreparedSigning): Promise<SabyObject> {
+  /** Persist the dispatch intent through the hook after preflight/auth, immediately before HTTP. */
+  async executeDeferredSigning(prepared: SabyPreparedSigning, beforeDispatch?: () => Promise<void>): Promise<SabyObject> {
     await verifyPreparedSigning(this, prepared);
     const params = signingActionRequest(prepared.binding, prepared);
-    return this.document(await this.signingClient(prepared.binding.side).call('СБИС.ВыполнитьДействие', params, true), true);
+    const raw = await this.signingClient(prepared.binding.side).call('СБИС.ВыполнитьДействие', params, true, false, beforeDispatch);
+    const result = sabyObject(raw) && sabyObject(raw.Документ) ? raw.Документ : raw;
+    if (!sabyObject(result) || result.Идентификатор !== prepared.binding.documentId) throw new SabyError('protocol', 'Saby не подтвердил заявку в ответе на подписание. Результат необходимо сверить.', true, { method: 'СБИС.ВыполнитьДействие', phase: 'response', category: 'protocol' });
+    return result;
   }
 
   /** Fresh read resolves the file from a document ID, never from a caller-supplied URL. */
@@ -353,8 +397,8 @@ export class SabyClient {
     await this.beforeRequest?.();
     try {
       response = await this.send(url, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(this.config.timeoutMs ?? 25_000), headers: { 'X-SBISSessionID': session } });
-    } catch { throw new SabyError('transport', 'Не удалось скачать вложение из Saby.'); }
-    if (!response.ok || response.redirected) throw new SabyError('transport', 'Saby не подтвердил скачивание вложения. Обновите статус документа.');
+    } catch { throw new SabyError('transport', 'Не удалось скачать вложение из Saby.', false, { method: 'download_attachment', phase: 'dispatch', category: 'transport' }); }
+    if (!response.ok || response.redirected) throw new SabyError('transport', 'Saby не подтвердил скачивание вложения. Обновите статус документа.', false, { method: 'download_attachment', phase: 'response', category: 'transport', httpStatus: response.status });
     const maximumBytes = 20 * 1024 * 1024;
     if (Number(response.headers.get('content-length')) > maximumBytes) { await response.body?.cancel(); throw new SabyError('protocol', 'Вложение Saby превышает допустимый размер.'); }
     if (!response.body) throw new SabyError('protocol', 'Saby вернул пустой ответ при скачивании вложения.');
@@ -367,7 +411,7 @@ export class SabyClient {
         if (total > maximumBytes) { await reader.cancel(); throw new SabyError('protocol', 'Вложение Saby превышает допустимый размер.'); }
         chunks.push(part.value);
       }
-    } catch (error) { if (error instanceof SabyError) throw error; throw new SabyError('transport', 'Загрузка вложения Saby прервана. Повторите скачивание.'); }
+    } catch (error) { if (error instanceof SabyError) throw error; throw new SabyError('transport', 'Загрузка вложения Saby прервана. Повторите скачивание.', false, { method: 'download_attachment', phase: 'response', category: 'transport' }); }
     const bytes = new Uint8Array(total); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     const mimeType = ({ xml: 'application/xml', pdf: 'application/pdf', zip: 'application/zip', sig: 'application/octet-stream', sgn: 'application/octet-stream' } as Record<string, string>)[info.extension] ?? 'application/octet-stream';

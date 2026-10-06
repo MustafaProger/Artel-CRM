@@ -20,7 +20,7 @@ const same = (left: XmlNode, right: XmlNode) => JSON.stringify(canonical(left)) 
 const text = (value: string | undefined, max = 255) => !!value?.trim() && value.length <= max && ![...value].some(char => char.charCodeAt(0) < 32);
 const positive = (value: string | undefined) => !!value && /^\d+(?:\.\d{1,2})?$/.test(value) && new Decimal(value).gt(0) && value.replace('.', '').length <= 5;
 const date = (value: string | undefined) => !!value && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
-export interface CarrierDetailsInput { driver: XmlNode | null; vehicle: XmlNode | null; responsible?: XmlNode | null; blockers: string[] }
+export interface CarrierDetailsInput { driver: XmlNode | null; vehicle: XmlNode | null; responsible?: XmlNode | null; paymentCalculation?: 'По договору'; blockers: string[] }
 
 /** Supplementary details come from the exact driver/vehicle selected in the frozen order. */
 export function carrierDetailsInput(snapshot: Snapshot, record: TripSabyRecord, responsible?: SabyCarrierResponsible | null): CarrierDetailsInput {
@@ -52,7 +52,7 @@ export function carrierDetailsInput(snapshot: Snapshot, record: TripSabyRecord, 
     ...(needsLease ? [node('ОснАрЛиз', { НаимДок: vehicle!.leaseDocumentName!, НомерДок: vehicle!.leaseDocumentNumber!, ДатаДок: vehicle!.leaseDocumentDate!.split('-').reverse().join('.') }, issuerInns.map(inn => node('ИдРекСост', {}, [node(inn.length === 10 ? 'ИННЮЛ' : 'ИННФЛ', {}, [inn])])))] : []),
   ]);
   const responsibleInvalid = responsible !== undefined && (!responsible || ![responsible.surname, responsible.name, responsible.patronymic].every(value => text(value, 60)) || !/^\+\d{11,15}$/.test(responsible.phone));
-  return { driver: driverNode, vehicle: vehicleNode, ...(responsible !== undefined ? { responsible: responsibleInvalid ? null : node('СвЛицОргПрвз', {}, [node('Тлф', {}, [responsible!.phone]), node('ФИО', { Фамилия: responsible!.surname, Имя: responsible!.name, Отчество: responsible!.patronymic })]) } : {}), blockers: [...driverErrors, ...vehicleErrors, ...(responsibleInvalid ? ['Проверьте серверную настройку ФИО и телефона ответственного НК.'] : [])] };
+  return { driver: driverNode, vehicle: vehicleNode, ...(responsible !== undefined ? { responsible: responsibleInvalid ? null : node('СвЛицОргПрвз', {}, [node('Тлф', {}, [responsible!.phone]), node('ФИО', { Фамилия: responsible!.surname, Имя: responsible!.name, Отчество: responsible!.patronymic })]) } : {}), ...(record.carrierFill?.paymentCalculation !== undefined ? { paymentCalculation: record.carrierFill.paymentCalculation } : {}), blockers: [...driverErrors, ...vehicleErrors, ...(responsibleInvalid ? ['Проверьте серверную настройку ФИО и телефона ответственного НК.'] : [])] };
 }
 
 /** Preserve Saby's current link/signatory and every unrelated field; never replace someone's edits. */
@@ -86,6 +86,19 @@ export function patchCarrierDetails(bytes: Uint8Array, senderBytes: Uint8Array, 
     if (vehicles.length > 1) throw new SabyError('validation', 'Неоднозначные сведения транспортных средств в Saby.');
     if (vehicles.length) replace(vehicles[0], input.vehicle, ['ТС', 'Прицеп', 'СпецУслДвиж', 'ИнфПол']);
     else replace(content, node('СвТС', {}, [input.vehicle]), order);
+  }
+  if (input.paymentCalculation !== undefined) {
+    if (input.paymentCalculation !== 'По договору') throw new SabyError('validation', 'Не подтверждён порядок расчёта платы в поручении НК.');
+    const payments = xmlChildren(content, 'РазмПлатРасчет');
+    if (payments.length > 1) throw new SabyError('validation', 'Неоднозначные сведения расчёта платы в ответе НК.');
+    if (!payments.length) replace(content, node('РазмПлатРасчет', { Расчет: input.paymentCalculation }), order);
+    else {
+      const payment = payments[0];
+      // The user authorized this one field only. Never refresh an existing
+      // different condition, even in our unchanged draft; keep cost/VAT intact.
+      if (payment.attributes.Расчет?.trim() && payment.attributes.Расчет !== input.paymentCalculation) throw new SabyError('validation', 'В Saby уже указан другой расчёт платы. Автоматическая перезапись остановлена; сверьте условия.');
+      payment.attributes.Расчет = input.paymentCalculation;
+    }
   }
   const xml = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(root));
   return { xml, beforeHash, afterHash: carrierXmlHash(xml), driverReady: !!input.driver, vehicleReady: !!input.vehicle, ...(input.responsible !== undefined ? { responsibleReady: !!input.responsible } : {}) };

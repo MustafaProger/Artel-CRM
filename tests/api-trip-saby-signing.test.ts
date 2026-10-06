@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createSnapshotMiddleware } from '../server/local-api';
 import { ApiError } from '../server/api-error';
-import { OperationsStore } from '../server/operations-store';
+import { OperationsStore, type OperationsStorage } from '../server/operations-store';
 import { SabyClient, type SabyConfig, type SabyObject } from '../server/saby-client';
 import { parseXml, type XmlNode } from '../server/saby-order-evidence';
 import { serializeXml } from '../server/saby-carrier-details';
@@ -33,7 +33,7 @@ async function fixture(options: { automatic?: boolean; createOrder?: boolean } =
   let carrierDoc: SabyObject | undefined;
   const senderDoc = () => [...baseApi.docs.values()].find(d => d.Тип === 'TransportOrder')!;
   let lose: 'prepare' | 'execute' | null = null; let pending = false; let wrongCertificate = false; let missingReply = false; let serviceAttachment = false;
-  let hook: ((side: Side, req: IntegrationRpc) => Promise<void>) | undefined;
+  let hook: ((side: Side, req: IntegrationRpc) => Promise<void | Response>) | undefined;
   let carrierPreparation: ((xml: XmlNode) => void) | undefined;
   const changeCarrier = (change: (xml: XmlNode) => void) => { const xml = parseXml(carrierBytes); change(xml); carrierBytes = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(xml)); };
   const certificate = (side: Side) => { const org = side === 'sender' ? config.customer : config.carrier; return { Certificate: { Type: 'Client', CertificateInfo: { Thumbprint: fingerprints[side], IsValid: true, IsQualified: true, NotBefore: '2020-01-01T00:00:00Z', NotAfter: '2099-01-01T00:00:00Z', SubjectName: { '1.2.643.100.4': org.inn, '2.5.4.4': 'Тестовый', '2.5.4.42': 'Подписант' } } }, OurCompany: { Inn: org.inn, Kpp: org.kpp } }; };
@@ -60,7 +60,8 @@ async function fixture(options: { automatic?: boolean; createOrder?: boolean } =
     const side: Side = new Headers(init?.headers).get('X-SBISSessionID') === 'carrier-session' ? 'carrier' : 'sender';
     const action = ((req.params.Документ?.Этап as SabyObject)?.Действие as SabyObject[] | undefined)?.[0];
     const keyType = ((action?.Сертификат as SabyObject)?.Ключ as SabyObject)?.Тип;
-    calls.push({ side, method: req.method, ...(typeof keyType === 'string' ? { keyType } : {}) }); await hook?.(side, req);
+    calls.push({ side, method: req.method, ...(typeof keyType === 'string' ? { keyType } : {}) });
+    const override = await hook?.(side, req); if (override instanceof Response) return override;
     const json = (value: unknown) => baseApi.json(req, value);
     if (req.method === 'СБИС.Аутентифицировать') return json('carrier-session');
     if (req.method === 'sabyCertificate.List') return json([certificate(side)]);
@@ -196,6 +197,8 @@ test('stored manifest validators reject private bytes, tampered digest, side mis
       (v: SabyObject) => { ((v.sender as SabyObject).prepared as SabyObject).preparedHash = '0'.repeat(64); },
       (v: SabyObject) => { ((((v.sender as SabyObject).prepared as SabyObject).attachments as SabyObject[])[0]).bytes = [1, 2]; },
       (v: SabyObject) => { ((v.sender as SabyObject).binding as SabyObject).side = 'carrier'; },
+      (v: SabyObject) => { (v.sender as SabyObject).dispatchState = 'not_sent'; },
+      (v: SabyObject) => { (v.sender as SabyObject).diagnostic = { method: 'СБИС.ВыполнитьДействие', phase: 'response', category: 'provider_error', message: 'private vendor payload' }; },
     ]) { const value = structuredClone(record.signing) as unknown as SabyObject; change(value); assert.throws(() => validateTripSigning(value)); }
     const publicValue = getTripSabyWorkflow({ ...f, data: await f.store.read(f.source), config: f.config }); assert.doesNotMatch(JSON.stringify(publicValue.signing), /preparedHash|private|snapshot|bytes/);
   } finally { await f.close(); }
@@ -238,17 +241,17 @@ test('service files explicitly selected by Saby are included in durable signing 
   } finally { await f.close(); }
 });
 
-test('revocation during final signing preflight prevents the execute HTTP request and retains non-repeatable intent', async () => {
+test('revocation during final signing preflight prevents the execute HTTP request and retains an unsent verified intent', async () => {
   const f = await fixture(); try {
     let revoked = false;
     f.setHook(async (_side, req) => {
-      if (!revoked && req.method === 'СБИС.ПрочитатьДокумент' && (await f.record()).signing?.sender.executeAttempted) {
+      if (!revoked && req.method === 'СБИС.ПрочитатьДокумент' && (await f.record()).signing?.sender.dispatchState === 'not_sent') {
         revoked = true; await f.store.mutate(f.source, data => { data.accounts!.users.find(u => u.id === 'actor')!.active = false; return { changed: true, result: null }; });
       }
     });
     const request = await f.request(); await assert.rejects(f.run({ signingStart: { request, requestedBy: 'actor' } }), e => e instanceof ApiError && e.status === 403);
     assert.equal(f.calls.filter(c => c.method === 'СБИС.ВыполнитьДействие').length, 0);
-    assert.equal((await f.record()).signing!.sender.executeAttempted, true); assert.equal(f.deliveries(), 0);
+    assert.equal((await f.record()).signing!.sender.executeAttempted, undefined); assert.equal((await f.record()).signing!.sender.dispatchState, 'not_sent'); assert.equal(f.deliveries(), 0);
   } finally { await f.close(); }
 });
 
@@ -256,7 +259,7 @@ test('changed stage during final signing preflight prevents execution, and a par
   for (const kind of ['stage', 'partial'] as const) {
     const f = await fixture(); try {
       if (kind === 'stage') f.setHook(async (_side, req) => {
-        if (req.method === 'sabyCertificate.Read' && (await f.record()).signing?.sender.executeAttempted) f.senderDoc().ТекущиеЭтапы = [{ Идентификатор: 'different-stage' }];
+        if (req.method === 'sabyCertificate.Read' && (await f.record()).signing?.sender.dispatchState === 'not_sent') f.senderDoc().ТекущиеЭтапы = [{ Идентификатор: 'different-stage' }];
       });
       else await f.store.mutate(f.source, data => { delete data.directories!.drivers[0].licenseNumber; return { changed: true, result: null }; });
       const request = await f.request(); const result = await f.run({ signingStart: { request, requestedBy: 'actor' } });
@@ -437,7 +440,7 @@ test('revoking the separate reconciliation requester stops final HTTP and future
   const f = await legacyCarrierFixture(); try {
     let revoked = false;
     f.setHook(async (side, req) => {
-      if (!revoked && side === 'carrier' && req.method === 'СБИС.ПрочитатьДокумент' && (await f.record()).signing!.carrier.executeAttempted) {
+      if (!revoked && side === 'carrier' && req.method === 'СБИС.ПрочитатьДокумент' && (await f.record()).signing!.carrier.dispatchState === 'not_sent') {
         revoked = true; await f.store.mutate(f.source, data => { data.accounts!.users.find(u => u.id === 'owner')!.active = false; return { changed: true, result: null }; });
       }
     });
@@ -471,6 +474,118 @@ test('only the authenticated ordinary workflow POST enables legacy recovery; bot
 async function enqueue(f: Awaited<ReturnType<typeof fixture>>, actorId = 'actor') {
   return f.store.mutate(f.source, data => { const result = enqueueAutomaticTripSaby({ ...f, data, actorId }); return { changed: result.enqueued, result }; });
 }
+
+for (const side of ['sender', 'carrier'] as const) test(`a ${side} read-only preflight outage resumes its exact saved manifest once after restart without another Prepare`, async () => {
+  const f = await fixture({ automatic: true, createOrder: false }); try {
+    await enqueue(f);
+    f.setHook(async (requestSide, request) => {
+      if (requestSide === side && request.method === 'sabyCertificate.List' && (await f.record()).signing?.[side].dispatchState === 'not_sent') throw new Error('Synthetic read-only outage');
+    });
+    await f.run();
+    const stopped = (await f.record()).signing![side];
+    assert.equal(stopped.state, 'waiting'); assert.equal(stopped.dispatchState, 'not_sent'); assert.equal(stopped.preparedVerified, true); assert.equal(stopped.executeAttempted, undefined);
+    assert.deepEqual(stopped.diagnostic, { method: 'sabyCertificate.List', phase: 'dispatch', category: 'transport' });
+    assert.equal(f.writes().filter(call => call.side === side && call.method === 'СБИС.ПодготовитьДействие').length, 1);
+    assert.equal(f.writes().filter(call => call.side === side && call.method === 'СБИС.ВыполнитьДействие').length, 0);
+    f.setHook(async (requestSide, request) => {
+      if (requestSide === side && request.method === 'СБИС.ВыполнитьДействие') {
+        const stored = (await f.record()).signing![side]; assert.equal(stored.dispatchState, 'attempted'); assert.equal(stored.executeAttempted, true); assert.deepEqual(stored.prepared, stopped.prepared);
+      }
+    });
+    const resumed = await dispatchTripSaby({ ...f, store: new OperationsStore(`${f.directory}/store`), config: f.config, enabled: true, send: f.send });
+    assert.equal(resumed.continued, 1); assert.equal(resumed.failed, 0);
+    const completed = (await f.record()).signing![side]; assert.equal(completed.state, 'confirmed'); assert.equal(completed.dispatchState, 'acknowledged'); assert.deepEqual(completed.prepared, stopped.prepared);
+    assert.equal(f.writes().filter(call => call.side === side && call.method === 'СБИС.ПодготовитьДействие').length, 1);
+    assert.equal(f.writes().filter(call => call.side === side && call.method === 'СБИС.ВыполнитьДействие').length, 1);
+    await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send }); assert.equal(f.writes().filter(call => call.side === side && call.method === 'СБИС.ВыполнитьДействие').length, 1);
+  } finally { await f.close(); }
+});
+
+test('unsent carrier resumption rejects changed prepared bytes or its signed source before any new mutation', async () => {
+  for (const changed of ['reply', 'source'] as const) {
+    const f = await fixture({ automatic: true, createOrder: false }); try {
+      await enqueue(f);
+      f.setHook(async (side, request) => { if (side === 'carrier' && request.method === 'sabyCertificate.List' && (await f.record()).signing?.carrier.dispatchState === 'not_sent') throw new Error('Synthetic preflight outage'); });
+      await f.run(); assert.equal((await f.record()).signing!.carrier.dispatchState, 'not_sent'); const writes = f.writes().length;
+      if (changed === 'reply') f.changeCarrier(xml => { xml.attributes.ВерсПрог = 'changed-after-verification'; });
+      else f.changeSource();
+      f.setHook(undefined); await f.run({ store: new OperationsStore(`${f.directory}/store`) });
+      assert.equal(f.writes().length, writes); assert.equal(f.deliveries(), 0);
+      const record = await f.record(); assert.equal(changed === 'reply' ? record.signing!.carrier.state : record.signing!.sender.state, 'blocked');
+      assert.equal(record.signing!.carrier.executeAttempted, undefined);
+    } finally { await f.close(); }
+  }
+});
+
+test('a carrier source-read outage resumes semantic verification of new saved files with exact business and vehicle checks', async () => {
+  for (const mode of ['unchanged', 'vehicle_added', 'legacy_unverified'] as const) {
+    const f = await fixture({ automatic: true, createOrder: false }); try {
+      await enqueue(f); if (mode === 'vehicle_added') f.setCarrierPreparation(addVehicleIdentity);
+      f.setHook(async (side, request) => {
+        const carrier = (await f.record()).signing?.carrier;
+        if (side === 'sender' && request.method === 'sabyCertificate.List' && carrier?.dispatchState === 'not_sent' && carrier.preparedVerified === false) throw new Error('Synthetic unavailable signed-source verification');
+      });
+      await f.run(); const stopped = (await f.record()).signing!.carrier;
+      assert.equal(stopped.preparedVerified, false); assert.equal(stopped.dispatchState, 'not_sent'); assert.equal(stopped.executeAttempted, undefined); assert.equal(stopped.state, 'waiting');
+      assert.ok(stopped.businessHash); assert.ok(stopped.prepared); const writes = f.writes().length;
+      if (mode === 'legacy_unverified') await f.store.mutate(f.source, data => { delete data.tripSaby!.trips[f.tripId].signing!.carrier.dispatchState; return { changed: true, result: null }; });
+      f.setHook(undefined); await f.run({ store: new OperationsStore(`${f.directory}/store`) });
+      const current = (await f.record()).signing!.carrier; assert.deepEqual(current.prepared, stopped.prepared);
+      if (mode === 'legacy_unverified') { assert.equal(current.preparedVerified, false); assert.equal(current.state, 'blocked'); assert.equal(f.writes().length, writes); }
+      else {
+        assert.equal(current.preparedVerified, true); assert.equal(current.state, 'confirmed'); assert.equal(current.dispatchState, 'acknowledged');
+        assert.equal(f.writes().filter(call => call.side === 'carrier' && call.method === 'СБИС.ПодготовитьДействие').length, 1);
+        assert.equal(f.writes().filter(call => call.side === 'carrier' && call.method === 'СБИС.ВыполнитьДействие').length, 1);
+      }
+    } finally { await f.close(); }
+  }
+});
+
+test('a legacy prepared record without a dispatch marker is never reinterpreted as safely unsent', async () => {
+  for (const attempted of [true, false]) {
+    const f = await fixture({ automatic: true, createOrder: false }); try {
+      await enqueue(f);
+      f.setHook(async (side, request) => { if (side === 'sender' && request.method === 'sabyCertificate.List' && (await f.record()).signing?.sender.dispatchState === 'not_sent') throw new Error('Synthetic preflight outage'); });
+      await f.run();
+      await f.store.mutate(f.source, data => { const step = data.tripSaby!.trips[f.tripId].signing!.sender; delete step.dispatchState; if (attempted) step.executeAttempted = true; step.state = 'unknown'; return { result: null, changed: true }; });
+      const original = (await f.record()).signing!.sender; const writes = f.writes().length; f.setHook(undefined);
+      await f.run({ store: new OperationsStore(`${f.directory}/store`) });
+      const current = (await f.record()).signing!.sender;
+      assert.equal(current.state, 'unknown'); assert.equal(current.dispatchState, undefined); assert.equal(current.executeAttempted, original.executeAttempted); assert.deepEqual(current.prepared, original.prepared); assert.equal(f.writes().length, writes);
+    } finally { await f.close(); }
+  }
+});
+
+for (const failure of ['generic', 'fee'] as const) test(`provider ${failure} rejection retains only safe diagnostics and cannot resend the dispatched action`, async () => {
+  const f = await fixture({ automatic: true, createOrder: false }); try {
+    const side = failure === 'fee' ? 'carrier' : 'sender';
+    await enqueue(f);
+    f.setHook(async (requestSide, request) => {
+      if (requestSide === side && request.method === 'СБИС.ВыполнитьДействие') return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: failure === 'fee' ? 'private-payload-password; violation 0001.006.406.020' : 'private-payload-password', data: { session: 'private-session', stack: 'private-stack' } } }));
+    });
+    await f.run(); const step = (await f.record()).signing![side];
+    assert.equal(step.dispatchState, 'rejected'); assert.equal(step.executeAttempted, true);
+    assert.deepEqual(step.diagnostic, { method: 'СБИС.ВыполнитьДействие', phase: 'response', category: failure === 'fee' ? 'carrier_payment_missing' : 'provider_error', rpcCode: -32000, ...(failure === 'fee' ? { formatCode: '0001.006.406.020' } : {}) });
+    assert.doesNotMatch(JSON.stringify(await f.record()), /private-payload|private-session|private-stack/);
+    const projected = getTripSabyWorkflow({ ...f, data: await f.store.read(f.source), config: f.config }); assert.doesNotMatch(JSON.stringify(projected.signing), /diagnostic|dispatchState|rpcCode/);
+    f.setHook(undefined); const writes = f.writes().length; await f.run({ store: new OperationsStore(`${f.directory}/store`) }); assert.equal(f.writes().length, writes);
+    if (failure === 'fee') assert.match((await f.record()).signing!.carrier.message!, /расчёта платы.*0001\.006\.406\.020/);
+  } finally { await f.close(); }
+});
+
+test('a dispatched Execute without any visible remote effect remains uncertain and is never resent after restart', async () => {
+  const f = await fixture({ automatic: true, createOrder: false }); try {
+    await enqueue(f);
+    f.setHook(async (_side, request) => { if (request.method === 'СБИС.ВыполнитьДействие') throw new Error('Synthetic connection lost before receiving provider result'); });
+    await f.run();
+    const stopped = (await f.record()).signing!.sender;
+    assert.equal(stopped.dispatchState, 'attempted'); assert.equal(stopped.executeAttempted, true); assert.equal(stopped.state, 'unknown');
+    assert.deepEqual(stopped.diagnostic, { method: 'СБИС.ВыполнитьДействие', phase: 'dispatch', category: 'transport' });
+    f.setHook(undefined); const writes = f.writes().length;
+    await dispatchTripSaby({ ...f, store: new OperationsStore(`${f.directory}/store`), config: f.config, enabled: true, send: f.send });
+    assert.equal(f.writes().length, writes); assert.equal((await f.record()).signing!.sender.dispatchState, 'attempted'); assert.equal((await f.record()).signing!.sender.state, 'unknown'); assert.equal(f.deliveries(), 0);
+  } finally { await f.close(); }
+});
 
 test('a ready saved trip freezes an automatic outbox before RPC and the scheduler signs both sides once without another start', async () => {
   const f = await fixture({ automatic: true, createOrder: false }); try {
@@ -542,18 +657,45 @@ test('automatic mode never falls back to confirmation, and disabling policy at f
       f.setHook(async (side, request) => {
         if (side !== 'sender' || request.method !== 'СБИС.ПрочитатьДокумент') return;
         if (mode === 'capability') for (const stage of f.senderDoc().Этап as SabyObject[]) for (const action of stage.Действие as SabyObject[]) delete action.Сертификат;
-        else if ((await f.record()).signing?.sender.executeAttempted) { disabled = true; f.config.automaticSigning!.enabled = false; }
+        else if ((await f.record()).signing?.sender.dispatchState === 'not_sent') { disabled = true; f.config.automaticSigning!.enabled = false; }
       });
       if (mode === 'disable') await assert.rejects(f.run(), error => error instanceof ApiError && error.status === 403);
       else { const result = await f.run(); assert.equal(result.signing?.sender.state, 'blocked'); }
       assert.equal(f.calls.some(call => call.method === 'СБИС.ВыполнитьДействие'), false);
       const record = await f.record(); assert.equal(record.signing!.mode, 'automatic');
       if (disabled) {
-        assert.equal(record.signing!.sender.executeAttempted, true); f.config.automaticSigning!.enabled = true; f.setHook(undefined);
-        const before = f.writes().length; const reconciled = await f.run(); assert.equal(reconciled.signing?.sender.state, 'unknown'); assert.equal(f.writes().length, before);
+        assert.equal(record.signing!.sender.executeAttempted, undefined); assert.equal(record.signing!.sender.dispatchState, 'not_sent');
+        const before = f.writes().length; const denied = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send }); assert.equal(denied.denied, 1); assert.equal(f.writes().length, before);
+        f.config.automaticSigning!.enabled = true; f.setHook(undefined);
+        const reconciled = await f.run(); assert.equal(reconciled.signing?.state, 'completed'); assert.equal(f.writes().filter(call => call.side === 'sender' && call.method === 'СБИС.ПодготовитьДействие').length, 1);
       } else assert.equal(f.writes().length, 0);
       const corrupted = structuredClone(record); corrupted.signing!.mode = 'with_confirmation';
       assert.throws(() => validateTripSabyData({ trips: { [f.tripId]: corrupted } }));
+    } finally { await f.close(); }
+  }
+});
+
+test('revocation committed while the dispatch marker waits is checked in the marker transaction before HTTP', async () => {
+  for (const mode of ['actor', 'policy'] as const) {
+    const f = await fixture({ automatic: true, createOrder: false }); try {
+      await enqueue(f); let intercepted = false;
+      const store: OperationsStorage = {
+        read: f.store.read.bind(f.store),
+        mutate: async (source, mutation) => {
+          const before = (await f.store.read(source)).tripSaby?.trips[f.tripId]?.signing?.sender;
+          if (!intercepted && before?.dispatchState === 'not_sent' && before.preparedVerified) {
+            // This runs after the client's request guard, as the marker enters persistence.
+            intercepted = true;
+            if (mode === 'actor') await f.store.mutate(source, data => { data.accounts!.users.find(user => user.id === 'actor')!.active = false; return { result: null, changed: true }; });
+            else f.config.automaticSigning!.enabled = false;
+          }
+          return f.store.mutate(source, mutation);
+        },
+      };
+      await assert.rejects(f.run({ store }), error => error instanceof ApiError && error.status === 403);
+      assert.equal(intercepted, true); assert.equal(f.calls.some(call => call.method === 'СБИС.ВыполнитьДействие'), false);
+      const step = (await f.record()).signing!.sender; assert.equal(step.dispatchState, 'not_sent'); assert.equal(step.executeAttempted, undefined);
+      const denied = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send }); assert.equal(denied.denied, 1);
     } finally { await f.close(); }
   }
 });

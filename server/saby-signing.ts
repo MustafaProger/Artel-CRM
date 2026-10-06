@@ -253,6 +253,20 @@ export async function verifyPreparedSigning(client: SabyClient, prepared: SabyPr
   // A final read catches changes while certificate/file reads were in flight.
   assertDocument(await client.readSigningOrder(binding.side, binding.documentId), binding, true);
 }
+/** Rehydrate an already verified, definitely unsent manifest; never invoke preparation here. */
+export async function restorePreparedSigning(client: SabyClient, manifest: SabySigningManifest): Promise<SabyPreparedSigning> {
+  assertSigningManifest(manifest);
+  const binding = structuredClone(manifest.binding);
+  const attachments: SabyPreparedSigning['attachments'] = [];
+  for (const file of manifest.attachments) {
+    const fresh = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision);
+    if (fresh.name !== file.name || hash(fresh.bytes) !== file.sha256) throw new SabyError('validation', 'Файл Saby изменился после подготовки. Подписание остановлено.');
+    attachments.push({ ...file, bytes: fresh.bytes });
+  }
+  const prepared = { binding, attachments, preparedHash: manifest.preparedHash };
+  signingActionRequest(binding, prepared);
+  return prepared;
+}
 /** Capture a pre-existing signature by reading it. The sentinel binding can never be submitted as an action. */
 export async function captureSignedTitle(client: SabyClient, side: SabySigningSide, remote: SabyObject, certificate: SabySigningCertificate): Promise<SabySigningManifest> {
   const organization = side === 'sender' ? client.config.customer : client.config.carrier;

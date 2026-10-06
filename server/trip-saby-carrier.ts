@@ -7,15 +7,18 @@ import { sabyOrderStateCode } from './trip-saby-progress';
 
 export interface CarrierFillRecord extends TripSabyCarrierFill {
   requestedAt: string;
+  /** Frozen only for newly created requests; absent on historical fills. */
+  paymentCalculation?: 'По договору';
   /** Persisted BEFORE the request; an unverified intent is never resubmitted automatically. */
   intent?: { attachmentId: string; revision: string; beforeHash: string; afterHash: string; driverReady: boolean; vehicleReady: boolean; responsibleReady?: boolean; verified: boolean };
 }
-export const newCarrierFill = (): CarrierFillRecord => ({ requestedAt: new Date().toISOString(), state: 'waiting', blockers: [], driverSaved: false, vehicleSaved: false, checkedAt: null });
+export const newCarrierFill = (paymentCalculation?: 'По договору'): CarrierFillRecord => ({ requestedAt: new Date().toISOString(), ...(paymentCalculation !== undefined ? { paymentCalculation } : {}), state: 'waiting', blockers: [], driverSaved: false, vehicleSaved: false, checkedAt: null });
 export const carrierFastPolling = (record: TripSabyRecord, now = Date.now()) => record.carrierFill?.state === 'waiting' && ['3', '4'].includes(record.order.remoteStateCode ?? '') && now - Date.parse(record.carrierFill.requestedAt) < 600_000;
 export function validateCarrierFill(value: unknown): void {
   if (value === undefined) return;
   if (!sabyObject(value) || !['waiting', 'partial', 'saved', 'unknown', 'blocked'].includes(String(value.state)) || !Array.isArray(value.blockers) || value.blockers.some(x => typeof x !== 'string') || typeof value.driverSaved !== 'boolean' || typeof value.vehicleSaved !== 'boolean' || value.checkedAt !== null && (typeof value.checkedAt !== 'string' || !Number.isFinite(Date.parse(value.checkedAt)))) throw new Error('Invalid carrier fill');
   if (value.responsibleSaved !== undefined && typeof value.responsibleSaved !== 'boolean') throw new Error('Invalid responsible fill');
+  if (value.paymentCalculation !== undefined && value.paymentCalculation !== 'По договору') throw new Error('Invalid carrier payment calculation');
   if (typeof value.requestedAt !== 'string' || !Number.isFinite(Date.parse(value.requestedAt))) throw new Error('Invalid carrier fill request time');
   if (value.intent !== undefined) {
     const i = value.intent;
@@ -74,26 +77,32 @@ export async function fillCarrierDetails(options: {
     await checkAccess();
     const sender = await client.downloadCarrierOrderAttachment(record.order.id, title.senderId, title.revision);
     const previous = fill.intent;
+    if (fill.paymentCalculation !== undefined && previous?.verified && (previous.attachmentId !== title.attachmentId || previous.revision !== title.revision || previous.afterHash !== carrierXmlHash(draft.bytes))) throw new SabyError('validation', 'Ранее проверенный ответ НК изменился. Автоматическое заполнение остановлено; сверьте условия.');
     const lastVerifiedHash = previous?.verified && previous.attachmentId === title.attachmentId && previous.revision === title.revision ? previous.afterHash : undefined;
     const patch = patchCarrierDetails(draft.bytes, sender.bytes, input, lastVerifiedHash);
     fill.blockers = input.blockers;
-    if (patch.beforeHash !== patch.afterHash) {
+    if (patch.beforeHash !== patch.afterHash || !previous?.verified) {
       // Last read catches concurrent edits and signing before persisting intent.
       await checkAccess();
       const latest = verifyCarrierOrder(await client.readCarrierOrder(record.order.id), record);
       if (!latest || latest.revision !== title.revision || latest.attachmentId !== title.attachmentId) throw new SabyError('validation', 'Черновик НК изменился во время заполнения. Обновите состояние.');
       const before = await client.downloadCarrierOrderAttachment(record.order.id, title.attachmentId, title.revision);
       if (carrierXmlHash(before.bytes) !== patch.beforeHash) throw new SabyError('validation', 'Данные черновика НК изменились. Автоматическая запись остановлена.');
-      fill.intent = { attachmentId: title.attachmentId, revision: title.revision, beforeHash: patch.beforeHash, afterHash: patch.afterHash, driverReady: patch.driverReady, vehicleReady: patch.vehicleReady, ...(patch.responsibleReady !== undefined ? { responsibleReady: patch.responsibleReady } : {}), verified: false };
-      fill.state = 'unknown'; await save();
-      await checkAccess(); attempted = true;
-      await client.writeCarrierAttachment(record.order.id, title.revision, title.attachmentId, title.name, patch.xml);
-      await checkAccess();
-      const readBack = verifyCarrierOrder(await client.readCarrierOrder(record.order.id), record);
-      if (!readBack || readBack.attachmentId !== title.attachmentId) throw new SabyError('unknown', 'Не подтверждено сохранённое вложение ответа НК.', true);
-      const result = await client.downloadCarrierOrderAttachment(record.order.id, readBack.attachmentId, readBack.revision);
-      if (carrierXmlHash(result.bytes) !== patch.afterHash) throw new SabyError('unknown', 'Saby пока не подтвердил записанные сведения. Повторная запись не выполняется.', true);
-      fill.intent.verified = true;
+      const changes = patch.beforeHash !== patch.afterHash;
+      // An already matching title also needs durable verified evidence before
+      // signing. It is read back above without a gratuitous external write.
+      fill.intent = { attachmentId: title.attachmentId, revision: title.revision, beforeHash: patch.beforeHash, afterHash: patch.afterHash, driverReady: patch.driverReady, vehicleReady: patch.vehicleReady, ...(patch.responsibleReady !== undefined ? { responsibleReady: patch.responsibleReady } : {}), verified: !changes };
+      if (changes) {
+        fill.state = 'unknown'; await save();
+        await checkAccess(); attempted = true;
+        await client.writeCarrierAttachment(record.order.id, title.revision, title.attachmentId, title.name, patch.xml);
+        await checkAccess();
+        const readBack = verifyCarrierOrder(await client.readCarrierOrder(record.order.id), record);
+        if (!readBack || readBack.attachmentId !== title.attachmentId) throw new SabyError('unknown', 'Не подтверждено сохранённое вложение ответа НК.', true);
+        const result = await client.downloadCarrierOrderAttachment(record.order.id, readBack.attachmentId, readBack.revision);
+        if (carrierXmlHash(result.bytes) !== patch.afterHash) throw new SabyError('unknown', 'Saby пока не подтвердил записанные сведения. Повторная запись не выполняется.', true);
+        fill.intent.verified = true;
+      }
     }
     fill.driverSaved = patch.driverReady; fill.vehicleSaved = patch.vehicleReady;
     if (patch.responsibleReady !== undefined) fill.responsibleSaved = patch.responsibleReady;

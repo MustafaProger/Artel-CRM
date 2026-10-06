@@ -8,8 +8,8 @@ import { requireWholeTrip } from './auth-scope';
 import { requireTripSection } from './permissions';
 import type { OperationsData, OperationsStorage } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
-import { SabyClient, SabyError, sabyConfigFromEnv, sabyDocumentWorkflow, sabyObject, sabyText, type SabyObject } from './saby-client';
-import { assertSigningBinding, assertSigningManifest, captureSignedTitle, createCarrierDraftBinding, createSigningBinding, prepareCarrierDraft, prepareBoundSigning, readSigningEvidence, signingCertificateForOrganization, type SabyPreparedSigning, type SabySigningBinding, type SabySigningCertificate, type SabySigningSide } from './saby-signing';
+import { SabyClient, SabyError, isSabyFailureDiagnostic, sabyConfigFromEnv, sabyDocumentWorkflow, sabyFailureDiagnostic, sabyObject, sabyText, type SabyFailureDiagnostic, type SabyObject } from './saby-client';
+import { assertSigningBinding, assertSigningManifest, captureSignedTitle, createCarrierDraftBinding, createSigningBinding, prepareCarrierDraft, prepareBoundSigning, readSigningEvidence, restorePreparedSigning, signingCertificateForOrganization, type SabyPreparedSigning, type SabySigningBinding, type SabySigningCertificate, type SabySigningSide } from './saby-signing';
 import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabyCarrierLink, verifySabyCarrierVehicleAddition, verifySabySenderBusiness, type SabyCarrierVehicleIdentity } from './saby-order-evidence';
 import { carrierXmlHash } from './saby-carrier-details';
 import { serializeSabyTransportOrder } from './saby-transport-order';
@@ -37,6 +37,9 @@ export interface TripSigningStep extends TripSabySigningStep {
   preparedVerified?: boolean;
   recovery?: TripSigningRecovery;
   executeAttempted?: boolean;
+  /** Absent in legacy records: their earlier executeAttempted flag never proves a safe retry. */
+  dispatchState?: 'not_sent' | 'attempted' | 'acknowledged' | 'rejected';
+  diagnostic?: SabyFailureDiagnostic;
   businessHash?: string;
 }
 export interface TripSigningRecord {
@@ -65,8 +68,10 @@ export function validateTripSigning(value: unknown): void {
   }
   for (const side of ['sender', 'carrier'] as const) {
     const step = value[side];
-    if (!sabyObject(step) || Object.keys(step).some(k => !['state', 'message', 'binding', 'prepared', 'executeAttempted', 'businessHash', 'preparedVerified', 'recovery'].includes(k)) || !['not_started', 'preparing', 'requested', 'waiting', 'unknown', 'confirmed', 'blocked'].includes(String(step.state)) || step.message !== undefined && (typeof step.message !== 'string' || step.message.length > 1000) || step.executeAttempted !== undefined && typeof step.executeAttempted !== 'boolean') throw new Error('Invalid signing step');
+    if (!sabyObject(step) || Object.keys(step).some(k => !['state', 'message', 'binding', 'prepared', 'executeAttempted', 'businessHash', 'preparedVerified', 'recovery', 'dispatchState', 'diagnostic'].includes(k)) || !['not_started', 'preparing', 'requested', 'waiting', 'unknown', 'confirmed', 'blocked'].includes(String(step.state)) || step.message !== undefined && (typeof step.message !== 'string' || step.message.length > 1000) || step.executeAttempted !== undefined && typeof step.executeAttempted !== 'boolean') throw new Error('Invalid signing step');
     if (step.preparedVerified !== undefined && (typeof step.preparedVerified !== 'boolean' || !step.prepared || step.preparedVerified === false && (step.executeAttempted || step.state === 'confirmed'))) throw new Error('Invalid signing business verification');
+    if (step.dispatchState !== undefined && (!['not_sent', 'attempted', 'acknowledged', 'rejected'].includes(String(step.dispatchState)) || typeof step.preparedVerified !== 'boolean' || !step.prepared || !sabyObject(step.binding) || step.binding.stageId === 'observed-signed' || (step.dispatchState === 'not_sent' ? step.executeAttempted !== undefined : step.executeAttempted !== true || step.preparedVerified !== true))) throw new Error('Invalid signing dispatch state');
+    if (step.diagnostic !== undefined && !isSabyFailureDiagnostic(step.diagnostic)) throw new Error('Invalid signing diagnostic');
     if (step.businessHash !== undefined && !digest(step.businessHash)) throw new Error('Invalid signing business digest');
     if (step.binding !== undefined) {
       const binding = step.binding;
@@ -196,7 +201,7 @@ export async function beginAutomaticTripSigning(client: SabyClient, record: Trip
 const metadata = (prepared: SabyPreparedSigning): SigningMetadata => ({ binding: prepared.binding, preparedHash: prepared.preparedHash, attachments: prepared.attachments.map(({ id, name, subtype, sha256 }) => ({ id, name, subtype, sha256 })) });
 interface AdvanceContext {
   client: SabyClient; record: () => TripSabyRecord;
-  update: (mutation: (row: TripSabyRecord) => void) => Promise<void>;
+  update: (mutation: (row: TripSabyRecord) => void, requireSigningAccess?: boolean) => Promise<void>;
   checkAccess: () => Promise<void>;
   allowSigningRecovery?: boolean;
   recoveryRequestedBy?: string;
@@ -223,14 +228,52 @@ async function verifyPreparedCarrierSource(client: SabyClient, record: TripSabyR
 
 /** Persist all prepared files even when subsequent semantic validation rejects them. */
 async function finishPreparedSigning(context: AdvanceContext, side: SabySigningSide, prepared: SabyPreparedSigning, verify: () => void | Promise<void>) {
-  const { client, update, checkAccess } = context;
-  await update(row => { row.signing![side] = { ...row.signing![side], state: 'preparing', binding: prepared.binding, prepared: metadata(prepared), preparedVerified: false, message: 'Файлы получены из Saby. CRM проверяет итоговые сведения перед подписанием.' }; });
+  const { update, checkAccess } = context;
+  await update(row => { row.signing![side] = { ...row.signing![side], state: 'preparing', binding: prepared.binding, prepared: metadata(prepared), preparedVerified: false, dispatchState: 'not_sent', message: 'Файлы получены из Saby. CRM проверяет итоговые сведения перед подписанием.' }; });
   await verify();
   await checkAccess();
-  await update(row => { row.signing![side] = { ...row.signing![side], state: 'requested', preparedVerified: true, executeAttempted: true, message: row.signing!.mode === 'automatic' ? 'Запрос на автоматическое подписание передан в Saby. CRM проверяет результат.' : 'Запрос на подпись передан в Saby. Если Saby требует согласие владельца, ожидается его подтверждение.' }; });
-  await checkAccess(); await client.executeDeferredSigning(prepared); await checkAccess();
+  await update(row => { row.signing![side] = { ...row.signing![side], state: 'preparing', preparedVerified: true, dispatchState: 'not_sent', message: 'Сведения проверены. CRM проверяет доступность подписи перед отправкой запроса в Saby.' }; });
+  await dispatchPreparedSigning(context, side, prepared);
+}
+async function dispatchPreparedSigning(context: AdvanceContext, side: SabySigningSide, prepared: SabyPreparedSigning) {
+  const { client, update, checkAccess } = context;
+  await checkAccess();
+  await client.executeDeferredSigning(prepared, async () => {
+    await update(row => {
+      const step = row.signing![side];
+      if (step.dispatchState !== 'not_sent' || step.executeAttempted !== undefined || step.preparedVerified !== true || step.prepared?.preparedHash !== prepared.preparedHash) throw new SabyError('validation', 'Задание на подпись изменилось перед отправкой. Повторное выполнение остановлено.');
+      row.signing![side] = { ...step, state: 'requested', dispatchState: 'attempted', executeAttempted: true, message: 'Запрос на подписание отправляется в Saby. CRM проверит результат без повторной отправки.' };
+    }, true);
+  });
+  await update(row => { row.signing![side] = { ...row.signing![side], dispatchState: 'acknowledged', state: 'waiting', message: 'Saby принял запрос на подписание. CRM проверяет подписи и завершение этапа.' }; });
+  await checkAccess();
   const result = await readSigningEvidence(client, metadata(prepared));
   await update(row => { row.signing![side] = { ...row.signing![side], state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : result.state === 'unconfirmed' ? 'unknown' : 'waiting', message: result.reason }; });
+}
+/** Only a newly persisted not_sent marker permits resumption; legacy attempts remain read-only. */
+async function restoreAndVerifyUnsentSigning(context: AdvanceContext, side: SabySigningSide): Promise<SabyPreparedSigning> {
+  const record = context.record(); const step = record.signing![side];
+  if (step.dispatchState !== 'not_sent' || step.executeAttempted !== undefined || !step.prepared) throw new SabyError('validation', 'Не подтверждено отсутствие прежней отправки на подпись. Выполнение остановлено.');
+  await context.checkAccess();
+  const prepared = await restorePreparedSigning(context.client, step.prepared);
+  const primary = prepared.attachments.find(file => file.id === prepared.binding.attachmentId);
+  if (!primary) throw new SabyError('validation', 'В сохранённых файлах отсутствует выбранный титул.');
+  if (side === 'sender') {
+    const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
+    verifySabySenderBusiness(primary.bytes, frozen.xml);
+  } else {
+    const beforeHash = step.recovery?.acceptedBusinessHash ?? step.businessHash;
+    if (!beforeHash) throw new SabyError('validation', 'Не сохранены сведения ответа НК до подготовки. Продолжение остановлено.');
+    if (carrierBusinessHash(primary.bytes) !== beforeHash) {
+      const expectedVehicle = signingVehicleIdentity(record);
+      if (step.recovery || !expectedVehicle) throw new SabyError('validation', CARRIER_BUSINESS_CHANGED);
+      verifySabyCarrierVehicleAddition(primary.bytes, beforeHash, expectedVehicle);
+    }
+    await verifyPreparedCarrierSource(context.client, record, prepared.binding.revision, primary.bytes);
+  }
+  await context.checkAccess();
+  if (!step.preparedVerified) await context.update(row => { row.signing![side].preparedVerified = true; row.signing![side].state = 'preparing'; });
+  return prepared;
 }
 /** A one-time correction for the known legacy block, never an automatic retry of unknown preparation. */
 async function recoverLegacyCarrierSigning(context: AdvanceContext): Promise<void> {
@@ -301,7 +344,7 @@ export async function ensureSigningCarrierDraft(context: AdvanceContext): Promis
     await update(row => { row.signing!.carrierDraft!.state = 'ready'; });
   } catch (error) {
     const definite = error instanceof SabyError && error.kind === 'validation' && !error.uncertain;
-    await update(row => { if (row.signing!.carrierDraft) row.signing!.carrierDraft!.state = definite ? 'blocked' : 'unknown'; row.signing!.carrier = { state: definite ? 'blocked' : 'unknown', message: definite ? (error as SabyError).message : 'Результат подготовки ответа НК пока неизвестен. CRM сверяет его без повторной подготовки.' }; });
+    await update(row => { if (row.signing!.carrierDraft) row.signing!.carrierDraft!.state = definite ? 'blocked' : 'unknown'; row.signing!.carrier = { state: definite ? 'blocked' : 'unknown', diagnostic: sabyFailureDiagnostic(error, 'preflight', 'СБИС.ПодготовитьДействие'), message: definite ? (error as SabyError).message : 'Результат подготовки ответа НК пока неизвестен. CRM сверяет его без повторной подготовки.' }; });
     if (error instanceof ApiError && [401, 403, 409].includes(error.status)) throw error;
   }
 }
@@ -315,14 +358,23 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
   try {
     await checkAccess();
     if (initialStep.state === 'blocked') { await recoverLegacyCarrierSigning(context); return; }
-    // A prior preparation or execution is reconciled by reads only, including after restart.
+    // Legacy preparation and dispatched attempts are read-only; explicit new not_sent files may resume.
     if (initialStep.prepared) {
+      let restored: SabyPreparedSigning | undefined;
       if (!verifiedManifest(initialStep)) {
-        await save({ ...initialStep, state: 'blocked', message: 'Подготовленные файлы сохранены, но их сведения не прошли проверку. Отправка на подпись не выполняется.' });
-        return;
+        if (initialStep.dispatchState === 'not_sent') restored = await restoreAndVerifyUnsentSigning(context, side);
+        else {
+          await save({ ...initialStep, state: 'blocked', message: 'Подготовленные файлы сохранены, но их сведения не прошли проверку. Отправка на подпись не выполняется.' });
+          return;
+        }
       }
       const result = await readSigningEvidence(client, initialStep.prepared);
-      await save({ ...initialStep, state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : result.state === 'pending' && initialStep.executeAttempted ? 'waiting' : 'unknown', message: result.reason });
+      if (initialStep.dispatchState === 'not_sent' && result.state === 'unconfirmed') {
+        await dispatchPreparedSigning(context, side, restored ?? await restoreAndVerifyUnsentSigning(context, side));
+        return;
+      }
+      const currentStep = context.record().signing![side];
+      await save({ ...currentStep, state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : result.state === 'pending' && currentStep.executeAttempted ? 'waiting' : 'unknown', message: result.state === 'unconfirmed' && currentStep.diagnostic?.category === 'carrier_payment_missing' ? 'Saby сообщил об отсутствии расчёта платы в ответе НК (0001.006.406.020). CRM сверяет результат без повторной отправки.' : result.reason });
       return;
     }
     if (initialStep.binding) {
@@ -406,7 +458,13 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
     // The workflow records the error separately; the original blocked proof stays intact.
     if (side === 'carrier' && context.allowSigningRecovery && initialStep.state === 'blocked' && initialStep.message === CARRIER_BUSINESS_CHANGED && !latest.recovery && !latest.prepared && !latest.executeAttempted) throw error;
     const definite = error instanceof SabyError && ['validation', 'configuration', 'permission', 'authorization'].includes(error.kind) && !error.uncertain;
-    await save({ ...latest, state: definite ? 'blocked' : 'unknown', message: definite ? (error as SabyError).message : 'Результат действия в Saby пока неизвестен. CRM проверяет его и не отправляет повторно.' });
+    const method = latest.dispatchState ? 'СБИС.ВыполнитьДействие' : latest.binding ? 'СБИС.ПодготовитьДействие' : 'other';
+    const diagnostic: SabyFailureDiagnostic = error instanceof ApiError ? { method, phase: 'preflight', category: error.status === 409 ? 'lease_changed' : [401, 403].includes(error.status) ? 'access_denied' : 'unknown' } : sabyFailureDiagnostic(error, 'preflight', method);
+    const rejected = latest.dispatchState === 'attempted' && diagnostic.method === 'СБИС.ВыполнитьДействие' && diagnostic.phase === 'response' && ['provider_error', 'carrier_payment_missing', 'authorization', 'permission'].includes(diagnostic.category);
+    const retryRead = latest.dispatchState === 'not_sent' && error instanceof SabyError && ['transport', 'protocol'].includes(error.kind) && !error.uncertain;
+    await save({ ...latest, ...(rejected ? { dispatchState: 'rejected' as const } : {}), diagnostic,
+      state: definite ? 'blocked' : retryRead ? 'waiting' : 'unknown',
+      message: definite ? (error as SabyError).message : retryRead ? 'Предварительная проверка Saby временно недоступна. Запрос на подпись ещё не отправлен; CRM повторит проверку сохранённых файлов.' : diagnostic.category === 'carrier_payment_missing' ? 'Saby сообщил об отсутствии расчёта платы в ответе НК (0001.006.406.020). CRM сверяет результат без повторной отправки.' : rejected ? `Saby вернул ошибку выполнения${diagnostic.rpcCode === undefined ? '' : ` (код ${diagnostic.rpcCode})`}. CRM сверяет результат без повторной отправки.` : 'Результат действия в Saby пока неизвестен. CRM проверяет его и не отправляет повторно.' });
     if (error instanceof ApiError && [401, 403, 409].includes(error.status)) throw error;
   }
 }

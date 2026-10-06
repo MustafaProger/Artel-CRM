@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { SabyClient, SabyError, sabyConfigFromEnv, type SabyObject } from '../server/saby-client';
-import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningKeyType, type SabySigningSide } from '../server/saby-signing';
+import { SabyClient, SabyError, isSabyFailureDiagnostic, sabyConfigFromEnv, type SabyObject } from '../server/saby-client';
+import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, restorePreparedSigning, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningKeyType, type SabySigningSide } from '../server/saby-signing';
 
 const fp = 'a'.repeat(40);
 const config = { sessionId: 'synthetic-sender-session', login: 'synthetic-login', password: 'synthetic-password', accountNumber: 'synthetic-sender', carrierAccountNumber: 'synthetic-carrier',
@@ -47,6 +47,7 @@ function api(side: SabySigningSide = 'sender', options: { signed?: boolean; alte
     if (init?.method === 'GET') { gets.push(String(url)); return new Response(options.alteredBytes ? 'modified' : bytes); }
     const request = { ...JSON.parse(String(init?.body)), session: new Headers(init?.headers).get('X-SBISSessionID') } as Request; requests.push(request);
     const override = options.onRequest?.(request);
+    if (override instanceof Response) return override;
     const result = override !== undefined ? override : request.method === 'СБИС.Аутентифицировать' ? 'synthetic-carrier-session' : request.method === 'sabyCertificate.Read' ? certificateRow(side) : request.method === 'sabyCertificate.List' ? [certificateRow(side)] : request.method === 'СБИС.ПодготовитьДействие' ? preparation(document(side)) : document(side, options.signed);
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }));
   };
@@ -122,6 +123,72 @@ test('uncertain prepare and execute errors are never blindly retried', async () 
     const fake = api('sender', { onRequest: request => { if (request.method === method) throw new Error('synthetic timeout'); } });
     await assert.rejects(method === 'СБИС.ПодготовитьДействие' ? prepareBoundSigning(fake.client, prepared().binding) : fake.client.executeDeferredSigning(prepared()), (error: unknown) => error instanceof SabyError && error.uncertain);
     assert.equal(fake.requests.filter(row => row.method === method).length, 1);
+  }
+});
+
+test('dispatch marker runs after authentication and final request guard, and marker failure prevents HTTP', async () => {
+  const order: string[] = []; let marker = false;
+  const fake = api('carrier', { onRequest: request => {
+    if (request.method === 'СБИС.ВыполнитьДействие') { assert.equal(marker, true); order.push('http'); }
+  } });
+  const client = fake.client.withRequestGuard(async () => { order.push('guard'); });
+  await client.executeDeferredSigning(prepared('carrier'), async () => {
+    assert.equal(order.at(-1), 'guard'); assert.ok(fake.requests.some(request => request.method === 'СБИС.Аутентифицировать'));
+    assert.ok(fake.gets.length); marker = true; order.push('marker');
+  });
+  assert.deepEqual(order.slice(-3), ['guard', 'marker', 'http']);
+  const stopped = api(); const failure = new SabyError('permission', 'Synthetic durable write denied');
+  await assert.rejects(stopped.client.executeDeferredSigning(prepared(), async () => { throw failure; }), error => error === failure && !failure.uncertain);
+  assert.equal(stopped.requests.some(request => request.method === 'СБИС.ВыполнитьДействие'), false);
+  let marked = false; const changed = api('sender', { alteredBytes: true });
+  await assert.rejects(changed.client.executeDeferredSigning(prepared(), async () => { marked = true; }), SabyError);
+  assert.equal(marked, false);
+});
+
+test('hooked execute rejection is not retried and stores only controlled diagnostic enums and numeric codes', async () => {
+  for (const failure of ['http401', 'rpc', 'fee', 'lost'] as const) {
+    let markers = 0;
+    const fake = api('sender', { onRequest: request => {
+      if (request.method !== 'СБИС.ВыполнитьДействие') return;
+      if (failure === 'http401') return new Response('private-password-session-payload', { status: 401 });
+      if (failure === 'lost') throw new Error('private-password-session-payload');
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: 'private-password-session-payload', data: { detail: failure === 'fee' ? 'private-secret format error [0001.006.406.020]' : 'private-secret', stack: 'private-stack' } } }));
+    } });
+    await assert.rejects(fake.client.executeDeferredSigning(prepared(), async () => { markers++; }), error => {
+      assert.ok(error instanceof SabyError); assert.equal(isSabyFailureDiagnostic(error.diagnostic), true);
+      assert.equal(error.diagnostic!.method, 'СБИС.ВыполнитьДействие');
+      assert.equal(error.diagnostic!.phase, failure === 'lost' ? 'dispatch' : 'response');
+      assert.equal(error.uncertain, failure !== 'http401');
+      if (failure === 'rpc' || failure === 'fee') assert.equal(error.diagnostic!.rpcCode, -32000);
+      if (failure === 'fee') { assert.equal(error.diagnostic!.category, 'carrier_payment_missing'); assert.equal(error.diagnostic!.formatCode, '0001.006.406.020'); assert.match(error.message, /расчёта платы/); }
+      if (failure === 'http401') assert.equal(error.diagnostic!.httpStatus, 401);
+      assert.doesNotMatch(error.message + JSON.stringify(error), /private-|payload|password|session/);
+      return true;
+    });
+    assert.equal(markers, 1); assert.equal(fake.requests.filter(request => request.method === 'СБИС.ВыполнитьДействие').length, 1);
+  }
+  const valid = { method: 'СБИС.ВыполнитьДействие', phase: 'response', category: 'provider_error', rpcCode: -32000 };
+  for (const invalid of [{ ...valid, message: 'private-secret' }, { ...valid, method: 'private-secret' }, { ...valid, rpcCode: 'private-secret' }, { ...valid, rpcCode: Infinity }, { ...valid, httpStatus: 0 }, { ...valid, formatCode: 'private-secret' }, { ...valid, formatCode: '0001.006.406.020' }]) assert.equal(isSabyFailureDiagnostic(invalid), false);
+});
+
+test('restoring a saved manifest reads only its exact files and fails closed on changed bytes', async () => {
+  const original = prepared('carrier'); const manifest = { ...original, attachments: original.attachments.map(({ id, name, subtype, sha256 }) => ({ id, name, subtype, sha256 })) };
+  const fake = api('carrier'); const restored = await restorePreparedSigning(fake.client, manifest);
+  assert.equal(restored.preparedHash, original.preparedHash); assert.deepEqual(restored.attachments[0].bytes, new Uint8Array(bytes));
+  assert.equal(fake.requests.some(request => ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(request.method)), false);
+  await assert.rejects(restorePreparedSigning(api('carrier', { alteredBytes: true }).client, manifest), SabyError);
+});
+
+test('malformed or wrong-document execution results are uncertain response diagnostics after the durable marker', async () => {
+  for (const result of [{}, { Документ: {} }, { Идентификатор: 'unexpected-document' }]) {
+    let marked = false;
+    const fake = api('sender', { onRequest: request => request.method === 'СБИС.ВыполнитьДействие' ? result : undefined });
+    await assert.rejects(fake.client.executeDeferredSigning(prepared(), async () => { marked = true; }), error => {
+      assert.ok(error instanceof SabyError); assert.equal(marked, true); assert.equal(error.uncertain, true);
+      assert.deepEqual(error.diagnostic, { method: 'СБИС.ВыполнитьДействие', phase: 'response', category: 'protocol' });
+      return true;
+    });
+    assert.equal(fake.requests.filter(request => request.method === 'СБИС.ВыполнитьДействие').length, 1);
   }
 });
 
