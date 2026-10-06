@@ -222,7 +222,7 @@ try {
   // Additional shared surfaces use synthetic DOM, with the real loaded CSS.
   await page.evaluate(() => {
     const fixture = document.createElement('section'); fixture.id = 'focus-fixture';
-    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-shell', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
+    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-shell', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
     document.body.append(fixture);
   });
   for (const [index, field] of (await page.locator('#focus-fixture input, #focus-fixture select, #focus-fixture textarea').all()).entries()) {
