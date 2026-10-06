@@ -9,9 +9,11 @@
   align-items: stretch;
   flex-wrap: nowrap;
   gap: 12px;
-  padding: 14px;
+  padding: 32px 28px 24px;
   background: #F5F5F7;
   border-color: var(--border);
+  border-bottom: 0;
+  flex-shrink: 0;
 }
 .shipments-focus .shipment-header {
   display: flex;
@@ -34,7 +36,7 @@
   align-items: center;
   gap: 8px;
 }
-.shipments-workspace :is(.shipment-toolbar, .shipment-template-row) .button {
+.shipments-workspace :is(.shipment-toolbar, .shipment-search-row, .shipment-template-row) .button {
   min-height: var(--ui-control-size);
   padding: 10px 19px;
   border-radius: var(--ui-action-radius);
@@ -62,9 +64,23 @@
 }
 .shipments-focus .shipment-toolbar .shipment-header-action.primary { border-color: var(--accent); }
 .shipments-focus .shipment-header-action svg { width: 21px; height: 21px; }
-.shipments-workspace .shipment-toolbar .shipment-search {
+.shipments-workspace .shipment-search-row {
+  display: flex;
   flex: 0 0 auto;
-  width: 100%;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 28px 24px;
+  background: #F5F5F7;
+}
+.shipments-workspace .shipment-search-row .shipment-add {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.shipments-workspace .shipment-add svg { flex-shrink: 0; }
+.shipments-workspace .shipment-search-row .shipment-search {
+  flex: 1 1 0;
+  width: auto;
   max-width: none;
   min-width: 0;
   margin: 0;
@@ -73,7 +89,7 @@
   background: var(--surface);
   box-shadow: none;
 }
-.shipments-workspace .shipment-toolbar .shipment-search input {
+.shipments-workspace .shipment-search-row .shipment-search input {
   min-width: 0;
   min-height: 42px;
   font-size: var(--ui-field-font);
@@ -97,7 +113,7 @@
   line-height: 1.4;
   box-shadow: none;
 }
-.shipments-workspace :is(.shipment-toolbar, .shipment-template-row) :is(button, a, select):focus-visible {
+.shipments-workspace :is(.shipment-toolbar, .shipment-search-row, .shipment-template-row) :is(button, a, select):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -110,7 +126,7 @@
   min-width: 0;
   min-height: 0;
   max-width: 100%;
-  padding: 6px 12px;
+  padding: 10px 28px;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
@@ -157,11 +173,26 @@
   .shipments-workspace .shipment-template-row .button { padding-inline: 14px; }
   .shipments-focus .shipment-toolbar h1 { font-size: 30px; }
 }
+@media (max-width: 768px) {
+  .shipments-focus .shipment-toolbar { padding: 24px 16px 20px; }
+  .shipments-workspace .shipment-search-row { padding: 0 16px 20px; }
+  .shipments-workspace .shipment-template-row { padding-inline: 16px; }
+  .shipments-workspace .shipment-search-row .shipment-add {
+    width: var(--ui-control-size);
+    height: var(--ui-control-size);
+    min-width: var(--ui-control-size);
+    padding: 0;
+    gap: 0;
+    border-radius: 50%;
+  }
+  .shipments-workspace .shipment-add span { display: none; }
+}
 @media (max-width: 360px) {
   .shipments-focus .shipment-toolbar { padding-inline: 12px; }
+  .shipments-workspace :is(.shipment-search-row, .shipment-template-row) { padding-inline: 12px; }
   .shipments-focus .shipment-toolbar h1 { font-size: 26px; }
   .shipments-focus .shipment-header-actions { gap: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .shipments-workspace :is(.shipment-toolbar, .shipment-template-row) .button { transition: none; }
+  .shipments-workspace :is(.shipment-toolbar, .shipment-search-row, .shipment-template-row) .button { transition: none; }
 }

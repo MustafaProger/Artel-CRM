@@ -130,11 +130,12 @@ try {
     await page.setViewportSize({ width, height: 900 });
     await visit('shipments');
     await expect(page.locator('h1')).toHaveCount(1);
-    await expect(page.locator('.shipment-header-actions > *')).toHaveCount(3);
+    await expect(page.locator('.shipment-header-actions > *')).toHaveCount(1);
     const add = page.getByRole('button', { name: 'Добавить отгрузку', exact: true });
-    await expect(add).toHaveText('');
+    await expect(add).toHaveText('Добавить отгрузку');
+    await expect(page.locator('.shipment-search-row .shipment-add')).toHaveCount(1);
     await expect(add).toHaveClass(/primary/);
-    await expect(page.getByRole('link', { name: 'Справочники', exact: true })).toHaveAttribute('href', '#directories');
+    await expect(page.locator('.shipment-toolbar a')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Открыть меню', exact: true })).toHaveCount(1);
     const headingRow = await page.locator('.shipment-header').evaluate(header => {
       const title = header.querySelector('h1').getBoundingClientRect();
@@ -143,7 +144,7 @@ try {
         return { width: r.width, height: r.height, afterTitle: r.left >= title.right, sameRow: r.top < title.bottom && r.bottom > title.top };
       });
     });
-    assert.ok(headingRow.every(action => action.afterTitle && action.sameRow && action.width >= 44 && action.height >= 44 && Math.abs(action.width - action.height) <= 1), `Shipment title and three square actions share a row at ${width}px: ${JSON.stringify(headingRow)}`);
+    assert.ok(headingRow.every(action => action.afterTitle && action.sameRow && action.width >= 44 && action.height >= 44 && Math.abs(action.width - action.height) <= 1), `Shipment title and menu share a row at ${width}px: ${JSON.stringify(headingRow)}`);
     assert.ok(headingRow.every(action => Math.abs(action.height - headingRow[0].height) <= 1), 'Shipment action sizes match');
     await expect(page.locator('.shipment-grid-resizable')).toHaveCount(width >= 1100 ? 1 : 0);
     const readLedger = () => page.locator('.shipment-grid, .shipment-grid *').evaluateAll(elements => elements.map(element => {
@@ -175,7 +176,7 @@ try {
     });
     const selects = await strip.locator('select').evaluateAll(elements => elements.map(element => ({ label: element.getAttribute('aria-label'), height: element.getBoundingClientRect().height, appearance: getComputedStyle(element).appearance })));
     assert.ok(selects.every(select => select.height >= 44 && select.appearance === 'none'), `Shipment selects keep styled 44px controls in both engines at ${width}px: ${JSON.stringify(selects)}`);
-    assert.ok(row.height <= 66, `Filter strip stays compact at ${width}px`);
+    assert.ok(row.height <= 74, `Filter strip keeps one row with 10px vertical padding at ${width}px`);
     assert.ok(row.controls.every(control => Math.abs(control.middle - row.controls[0].middle) <= 1), 'All filters, types and actions share one row');
     if (width <= 760) assert.ok(row.overflow, 'Narrow strip scrolls instead of wrapping');
     // Native focus must reveal controls without shifting the page/table.
