@@ -1,5 +1,6 @@
 // Synthetic browser acceptance only: no working snapshot, credentials or providers.
 import assert from 'node:assert/strict';
+import { verifyFocusFeedback } from './qa-focus-feedback.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -97,8 +98,9 @@ try {
       const surface = element.closest('.company-combobox, .shipment-search, .bank-search') || element, style = getComputedStyle(surface);
       return { focused: document.activeElement === element, focusVisible: element.matches(':focus-visible'), temporal: ['date', 'time', 'datetime-local', 'month'].includes(element.type), style: style.outlineStyle, width: parseFloat(style.outlineWidth), shadow: style.boxShadow };
     });
-    assert.ok(ring.focused && (ring.temporal || ring.focusVisible) && ((ring.style !== 'none' && ring.width >= 2) || ring.shadow !== 'none'), `${name}: visible keyboard focus ${JSON.stringify(ring)}`);
+    assert.ok(ring.focused && (ring.temporal || ring.focusVisible) && ((ring.style !== 'none' && ring.width === 1) || ring.shadow !== 'none'), `${name}: visible keyboard focus ${JSON.stringify(ring)}`);
     report.checks.push(`${name}: keyboard focus visible`);
+    (report.focusFeedback ||= []).push(await verifyFocusFeedback(page, locator, name));
   };
   const capture = async name => {
     const layout = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth, dialogs: [...document.querySelectorAll('dialog[open]')].map(element => { const rect = element.getBoundingClientRect(); return { left: rect.left, right: rect.right, client: element.clientWidth, scroll: element.scrollWidth }; }) }));
@@ -170,7 +172,9 @@ try {
     await page.getByLabel('Период с', { exact: true }).fill('2026-10-01'); await expect(page.getByLabel('Период с', { exact: true })).toHaveValue('2026-10-01');
     await focusRing(page.getByLabel('Период с', { exact: true }), `bank-date-${width}`); await capture(`bank-period-${width}`);
 
-    await visit('directories'); await page.getByRole('button', { name: 'Сотрудники', exact: true }).click();
+    await visit('directories');
+    (report.focusFeedback ||= []).push(await verifyFocusFeedback(page, page.locator('.directory-toolbar .shipment-search input'), `directory-search-${width}`));
+    await page.getByRole('button', { name: 'Сотрудники', exact: true }).click();
     const roleFilters = page.locator('.directory-list .account-role-filters'); await expect(roleFilters).toBeVisible();
     await expect(roleFilters.locator('button').first()).toBeEnabled();
     const gap = await page.locator('.directory-list').evaluate(element => element.querySelector('.account-role-filters').getBoundingClientRect().top - element.querySelector('.directory-toolbar').getBoundingClientRect().bottom);
@@ -207,6 +211,27 @@ try {
     await capture(`driver-account-${width}`); await page.getByRole('button', { name: 'Закрыть доступ водителя', exact: true }).click();
     report.checks.push(`${width}px: rounded fields, dates, select triggers, save/cancel; editable drafts; cancellation; employee and account spacing; no page/dialog overflow`);
     console.log('PASS', report.checks.at(-1));
+  }
+  await page.goto(`${runtime.base}/#work`);
+  await page.getByRole('button', { name: 'Новая задача', exact: true }).click();
+  await expect(page.locator('.work-editor')).toBeVisible();
+  for (const [index, field] of (await page.locator('.work-editor input:not([type="checkbox"]), .work-editor textarea, .work-editor select').all()).entries()) {
+    if (await field.isVisible() && await field.isEnabled()) report.focusFeedback.push(await verifyFocusFeedback(page, field, `work-field-${index}`));
+  }
+  await page.locator('.work-editor').getByRole('button', { name: 'Отмена', exact: true }).click();
+  // Additional shared surfaces use synthetic DOM, with the real loaded CSS.
+  await page.evaluate(() => {
+    const fixture = document.createElement('section'); fixture.id = 'focus-fixture';
+    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-shell', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
+    document.body.append(fixture);
+  });
+  for (const [index, field] of (await page.locator('#focus-fixture input, #focus-fixture select, #focus-fixture textarea').all()).entries()) {
+    // Portal dialogs only contain shipment-field controls and filter-search.
+    const applicable = await field.evaluate(element => {
+      const shell = element.closest('.shipment-filter-dialog, .auth-shell');
+      return !shell || (shell.matches('.auth-shell') ? !element.closest('label:not(.shipment-field)') : !!element.closest('.shipment-field, .filter-search'));
+    });
+    if (applicable) report.focusFeedback.push(await verifyFocusFeedback(page, field, `shared-surface-${index}`));
   }
   assert.equal(report.providerCalls, 0); assert.deepEqual(report.unexpectedRequests, []); assert.deepEqual(report.mutationRequests, []); assert.deepEqual(report.errors, []); assert.deepEqual(report.consoleErrors, []);
   report.status = 'passed';

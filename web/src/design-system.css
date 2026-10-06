@@ -101,11 +101,6 @@ div.scrollable-segments[class] > button {
   line-height: 1.4;
   box-shadow: none;
 }
-:is(.app-shell.app-shell, .driver-shell.driver-shell, .auth-shell.auth-shell) :is(input, select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input)):focus-visible,
-.shipment-filter-dialog .shipment-field :is(input, select):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 :is(.directory-toolbar, .trips-toolbar) .shipment-search,
 :is(.overview-search, .team-search, .bank-search, .table-search, .company-combobox):not(:where(.shipment-grid *, table *)) {
   min-height: var(--ui-control-size);
@@ -116,7 +111,6 @@ div.scrollable-segments[class] > button {
 :is(.directory-toolbar, .trips-toolbar, .overview-search, .team-search, .bank-search, .table-search) input:not(:where(.shipment-grid *, table *)) { font-size: var(--ui-field-font); }
 /* The wrapper owns the focus ring, including keyboard focus. */
 .app-shell :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search):not(:where(table *)) > input:focus-visible { outline: none; box-shadow: none; }
-.app-shell :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search):not(:where(table *)):focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Multiline text keeps usable corners; single-line fields share the search capsule.
  * Native date/time pickers and select menus retain platform keyboard behaviour. */
@@ -131,13 +125,6 @@ div.scrollable-segments[class] > button {
   background-size: 16px;
   background-repeat: no-repeat;
   padding-right: 42px;
-}
-
-/* WebKit's native temporal fields can have keyboard focus without matching
- * :focus-visible. Keep their focus indicator visible for both input methods. */
-:is(.app-shell.app-shell, .driver-shell.driver-shell, .auth-shell.auth-shell) input:is([type="date"], [type="time"], [type="datetime-local"], [type="month"]):not(:where(.shipment-grid *, table *)):focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* Native date segments need room for the full year and calendar affordance.
@@ -258,7 +245,6 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   outline: none;
 }
 :is(.app-shell, .driver-shell) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search) > svg { flex-shrink: 0; }
-.driver-shell .driver-search:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Column filters use the shared form/actions and grow only to their content. */
 .shipment-filter-dialog.shipment-filter-dialog {
@@ -427,4 +413,20 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   }
   .app-shell .work-page .work-toolbar-actions .mobile-action-label { display: none; }
   .app-shell .work-page .work-toolbar-actions .mobile-icon-action > svg { width: 20px; height: 20px; }
+}
+
+/* Keep the ring present but transparent at rest: changing only its colour
+ * animates focus AND blur without moving the field. Embedded search inputs
+ * delegate to their surface. Ledger editors retain their existing styling. */
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-shell.auth-shell.auth-shell) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input)),
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search):not(:where(.shipment-grid *, table *)),
+.shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog .shipment-field :is(input, select) {
+  outline: 1px solid transparent;
+  outline-offset: 2px;
+  transition: outline-color var(--ui-feedback), border-color var(--ui-feedback), box-shadow var(--ui-feedback);
+}
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-shell.auth-shell.auth-shell) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input)):focus,
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search):not(:where(.shipment-grid *, table *)):focus-within,
+.shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog .shipment-field :is(input, select):focus {
+  outline-color: var(--accent);
 }
