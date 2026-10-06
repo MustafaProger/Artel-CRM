@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readSabyTransportProfile, type SabyTransportProfile } from './saby-transport-order';
+import { signingActionRequest, verifyPreparedSigning, type SabyPreparedSigning, type SabySigningBinding, type SabySigningSide } from './saby-signing';
 
 /** Server-only Saby TMS JSON-RPC transport. See docs/saby-integration.md. */
 export type SabyObject = Record<string, unknown>;
@@ -161,11 +162,19 @@ export class SabyClient {
   private authenticating?: Promise<string>;
   private carrierClient?: SabyClient;
   private requestId = 0;
-  constructor(readonly config: SabyConfig, private readonly send: typeof fetch = fetch) { this.session = config.sessionId; }
+  constructor(readonly config: SabyConfig, private readonly send: typeof fetch = fetch, private readonly beforeRequest?: () => Promise<void>) { this.session = config.sessionId; }
+
+  /** Independent wrapper: every HTTP request, including auth/downloads, rechecks the durable lease and user rights. */
+  withRequestGuard(checkAccess: () => Promise<void>): SabyClient {
+    const guard = async () => { await this.beforeRequest?.(); await checkAccess(); };
+    return new SabyClient({ ...this.config, sessionId: this.session }, this.send, guard);
+  }
 
   private async request(url: string, method: string, params: SabyObject, session?: string, writing = false): Promise<unknown> {
     let response: Response;
     const id = ++this.requestId;
+    // A local access failure occurs before any HTTP and must not become an uncertain transport error.
+    await this.beforeRequest?.();
     try {
       response = await this.send(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(this.config.timeoutMs ?? 25_000), headers: { 'Content-Type': 'application/json-rpc; charset=utf-8', ...(session ? { 'X-SBISSessionID': session } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', method, params, id }) });
     } catch { throw new SabyError('transport', writing ? 'Нет подтверждения результата Saby. Перед повтором нужна сверка существующего документа.' : 'Не удалось соединиться с API Saby.', writing); }
@@ -208,7 +217,7 @@ export class SabyClient {
     if (!accountNumber) return this;
     if (!sabyText(this.config.login) || !sabyText(this.config.password)) throw new SabyError('configuration', CARRIER_CREDENTIALS_ERROR);
     // A session is bound to one account. Never seed the carrier client with the customer's session.
-    this.carrierClient ??= new SabyClient({ ...this.config, accountNumber, carrierAccountNumber: undefined, sessionId: undefined }, this.send);
+    this.carrierClient ??= new SabyClient({ ...this.config, accountNumber, carrierAccountNumber: undefined, sessionId: undefined }, this.send, this.beforeRequest);
     return this.carrierClient;
   }
 
@@ -277,10 +286,48 @@ export class SabyClient {
     for (let page = 0; page < 20; page++) {
       const result = await this.call('sabyCertificate.List', { Parameter: { AddTrustedCertificates: true, PageNumber: page, PageSize: 20 } }, false, true);
       if (!Array.isArray(result)) throw new SabyError('protocol', 'Saby вернул некорректный список зарегистрированных сертификатов.');
-      certificates.push(...result.filter(sabyObject));
+      if (result.some(row => !sabyObject(row))) throw new SabyError('protocol', 'Saby вернул неполные сведения о доступных подписях.');
+      certificates.push(...result as SabyObject[]);
       if (result.length < 20) return certificates;
     }
     throw new SabyError('protocol', 'Список сертификатов слишком велик для полной проверки.');
+  }
+
+  /** Account selection is server-owned; never pass the sender's session to the carrier. */
+  private signingClient(side: SabySigningSide): SabyClient {
+    if (side !== 'sender' && side !== 'carrier') throw new SabyError('validation', 'Не определена сторона подписания Saby.');
+    return side === 'carrier' ? this.carrierOrganizationClient() : this;
+  }
+  async listSigningCertificates(side: SabySigningSide): Promise<SabyObject[]> {
+    return this.signingClient(side).listRegisteredCertificates();
+  }
+  async readSigningCertificate(side: SabySigningSide, thumbprint: string): Promise<SabyObject> {
+    if (!/^[a-fA-F0-9]{40,128}$/.test(thumbprint)) throw new SabyError('validation', 'Не определена выбранная подпись Saby.');
+    const result = await this.signingClient(side).call('sabyCertificate.Read', { Parameter: { CertificateThumbprint: thumbprint } }, false, true);
+    if (!sabyObject(result)) throw new SabyError('protocol', 'Saby не вернул сведения о выбранной подписи.');
+    return result;
+  }
+  async readSigningOrder(side: SabySigningSide, id: string): Promise<SabyObject> {
+    return this.signingClient(side).readTransportOrder(id);
+  }
+  async downloadSigningAttachment(side: SabySigningSide, id: string, attachmentId: string, revision: string): Promise<SabyDownloadedAttachment> {
+    return this.signingClient(side).downloadTransportOrderAttachment(id, attachmentId, revision);
+  }
+  /** Preparation can regenerate XML, so a lost response is an uncertain write. */
+  async prepareSigningAction(binding: SabySigningBinding): Promise<SabyObject> {
+    return this.document(await this.signingClient(binding.side).call('СБИС.ПодготовитьДействие', signingActionRequest(binding), true), true);
+  }
+  /** Only consume links returned by this preparation, and only through the safe download transport. */
+  async downloadPreparedSigningAttachment(binding: SabySigningBinding, prepared: SabyObject, attachmentId: string): Promise<SabyDownloadedAttachment> {
+    const stages = objects(prepared.Этап).filter(stage => stage.Идентификатор === binding.stageId);
+    if (prepared.Идентификатор !== binding.documentId || stages.length !== 1 || sabyDocumentWorkflow(prepared).revision !== binding.revision) throw new SabyError('validation', 'Подготовленные файлы относятся к другому этапу или редакции Saby.');
+    return this.signingClient(binding.side).downloadDocumentAttachment({ ...prepared, Вложение: stages[0].Вложение }, attachmentId, binding.revision);
+  }
+  /** Call only after persisting an execute intent. Never retry an uncertain result. */
+  async executeDeferredSigning(prepared: SabyPreparedSigning): Promise<SabyObject> {
+    await verifyPreparedSigning(this, prepared);
+    const params = signingActionRequest(prepared.binding, prepared);
+    return this.document(await this.signingClient(prepared.binding.side).call('СБИС.ВыполнитьДействие', params, true), true);
   }
 
   /** Fresh read resolves the file from a document ID, never from a caller-supplied URL. */
@@ -299,8 +346,10 @@ export class SabyClient {
     // These are the documented/observed download hosts, not arbitrary Saby subdomains.
     if (!['disk.saby.ru', 'disk.sbis.ru', 'online.saby.ru', 'online.sbis.ru', 'tms.saby.ru'].includes(new URL(url).hostname)) throw new SabyError('protocol', 'Saby вернул неподдерживаемый адрес скачивания файла.');
     let response: Response;
+    const session = await this.authenticate();
+    await this.beforeRequest?.();
     try {
-      response = await this.send(url, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(this.config.timeoutMs ?? 25_000), headers: { 'X-SBISSessionID': await this.authenticate() } });
+      response = await this.send(url, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(this.config.timeoutMs ?? 25_000), headers: { 'X-SBISSessionID': session } });
     } catch { throw new SabyError('transport', 'Не удалось скачать вложение из Saby.'); }
     if (!response.ok || response.redirected) throw new SabyError('transport', 'Saby не подтвердил скачивание вложения. Обновите статус документа.');
     const maximumBytes = 20 * 1024 * 1024;

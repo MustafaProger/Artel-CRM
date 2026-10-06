@@ -6,6 +6,7 @@ import type { EtrnTripResponse } from './etrn-api-model'
 import type { TripSabyResponse } from './trip-saby-model'
 import type { SabyTripResponse } from './saby-model'
 import { exchangeStageLabels, workflowTime, workflowView } from './trip-workflow-view'
+import TripSabySigningPanel from './TripSabySigningPanel'
 import './trip-workflow.css'
 
 interface LoadingFacts { arrivedAt: string; departedAt: string; deliveries: Record<string, { grossMassTonnes: string; massMethod: string }> }
@@ -69,6 +70,32 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     }
     finally { lock.current = false; if (mounted.current) setBusy(false) }
   }, [endpoint, loadDocuments, read])
+  const signingBusyChanged = useCallback((value: boolean) => {
+    lock.current = value
+    if (value) requestGeneration.current++
+    setBusy(value)
+  }, [])
+  const signingChanged = useCallback(async (body: TripSabyResponse) => {
+    if (!mounted.current) return
+    setResult(body as Workflow)
+    await loadDocuments(requestGeneration.current)
+  }, [loadDocuments])
+  const reconcileSigning = useCallback(async () => {
+    // Only a persisted explicit signing launch allows this button to continue
+    // the existing workflow. An unresolved launch without that proof stays GET-only.
+    if (!result?.signing) { await read(); return }
+    const generation = requestGeneration.current
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const body = await response.json()
+      if (!response.ok) throw new Error(body.error || 'Не удалось сверить подписание с Saby')
+      if (mounted.current && generation === requestGeneration.current) setResult(body)
+      await loadDocuments(generation)
+    } catch (reason) {
+      await read().catch(() => {})
+      throw reason
+    }
+  }, [endpoint, result?.signing, read, loadDocuments])
   // Browser polling only reads durable state. The server owns automatic continuation,
   // so multiple tabs cannot schedule duplicate writes and drafts never start on open.
   useEffect(() => {
@@ -113,6 +140,7 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
       {!result.locked && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || !result.ready} onClick={() => void perform()}><FilePlus2 size={16}/>Создать заявку в Saby</button><button type="button" className="button" disabled={busy} onClick={() => { void read().catch(reason => setError(String(reason))) }}><RefreshCw size={15}/>Проверить готовность</button></div>}
       {!!result.blockers.length && <div className="trip-saby-blockers"><p>Для создания заявки заполните:</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
       {result.order && <div className="etrn-result workflow-order"><div><span className="workflow-eyebrow">ОБЩАЯ ЗАЯВКА</span><h4>{result.order.number ? `№ ${result.order.number}` : 'Номер ожидается'}</h4><p>{result.order.remoteStatus || 'Состояние уточняется'}</p>{result.phase === 'completed' && <p className="etrn-note">Последнее состояние перед созданием ЭТрН. Дальше автоматически проверяются ЭТрН доставок.</p>}</div>{orderUrl && <a className="button" href={orderUrl} target="_blank" rel="noreferrer">Открыть заявку в Saby <ArrowUpRight size={14}/></a>}</div>}
+      {result.order?.id && (result.signing || (!result.carrierConfirmed && !['rejected', 'cancelled', 'operator_error'].includes(result.order.exchangeStage || ''))) && <TripSabySigningPanel key={`${trip.id}:${result.order.id}`} endpoint={endpoint} order={result.order} signing={result.signing} disabled={busy} onBusyChange={signingBusyChanged} onWorkflowChange={signingChanged} onRefresh={read} onReconcile={reconcileSigning}/>}
       {handoff && !result.carrierConfirmed && <details className="workflow-handoff" open={['carrier_details_required', 'carrier_action_required'].includes(result.order?.exchangeStage ?? '') || undefined}><summary>Данные водителя и автомобиля для НК АРТЕЛЬ</summary><p className="etrn-note">Сведения выбранного водителя и машины заполняются в ответе НК до подписи и утверждения.</p><dl>{[['Водитель', handoff.driverName], ['Телефон', handoff.driverPhone], ['Госномер', handoff.vehiclePlate], ['Автомобиль', handoff.vehicleType]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Не указано'}</dd></div>)}</dl><button className="button" type="button" onClick={() => void copyHandoff()}><Copy size={14}/>{copied ? 'Скопировано' : 'Скопировать данные'}</button></details>}
       {result.locked && !result.carrierConfirmed && <section className="workflow-handoff workflow-carrier-fill" aria-label="Заполнение ответа НК">
         <header><h4>Водитель и машина</h4>{result.carrierFill?.checkedAt && <span className="workflow-fill-checked">Проверено {workflowTime(result.carrierFill.checkedAt)} · Москва</span>}</header>
@@ -125,8 +153,8 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
             {saved ? <Check size={17} aria-hidden="true"/> : <Clock3 size={17} aria-hidden="true"/>}<div><strong>{label}</strong><span>{saved ? 'Сохранено в Saby' : 'Ожидает подтверждения в Saby'}</span></div>
           </li>)}</ul>
           {!!result.carrierFill.blockers.length && <ul className="workflow-fill-blockers">{result.carrierFill.blockers.map(message => <li key={message}>{message}</li>)}</ul>}
-          {result.carrierFill.state === 'saved' && <div className="workflow-fill-next"><Clock3 size={18} aria-hidden="true"/><div><strong>Следующий шаг — подтверждение НК</strong><p>Уполномоченный подписант сможет подтвердить заявку после подключения подписи и МЧД.</p></div></div>}
-        </> : <><p className="etrn-note">Заполнить ответ НК сведениями выбранного водителя и автомобиля. CRM дождётся готовности входящей заявки и проверит результат.</p><button type="button" className="button primary" disabled={busy} onClick={() => void perform(undefined, true)}>Заполнить водителя и машину</button></>}
+          {result.carrierFill.state === 'saved' && <div className="workflow-fill-next"><Clock3 size={18} aria-hidden="true"/><div><strong>Следующий шаг — подтверждение НК</strong><p>{result.signing ? 'Запуск подписания сохранён. Состояние подписи НК показано выше.' : 'CRM использует выбранную подпись НК после явного запуска подписания. Если Saby потребует согласие владельца, подождём его подтверждения.'}</p></div></div>}
+        </> : <><p className="etrn-note">CRM дождётся готовности входящей заявки, заполнит ответ НК сведениями выбранного водителя и автомобиля и проверит результат.</p>{!result.signing && <button type="button" className="button primary" disabled={busy} onClick={() => void perform(undefined, true)}>Заполнить водителя и машину</button>}</>}
       </section>}
       {result.carrierConfirmed && !result.loadingFacts && <form className="etrn-loading-facts" onSubmit={event => { event.preventDefault(); if (confirmed) void perform(facts) }}>
         <h3>Фактическая погрузка</h3><p className="etrn-note">Заполняется сотрудником по факту. Расчётный тоннаж автоматически сюда не переносится.</p>

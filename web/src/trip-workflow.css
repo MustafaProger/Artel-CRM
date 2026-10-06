@@ -45,6 +45,24 @@
 .etrn-panel .workflow-history li { display: flex; justify-content: space-between; gap: .8rem; padding: .7rem 0; border-top: 1px solid var(--line, #dce5de); font-size: .78rem; }
 .etrn-panel .workflow-history time { flex: 0 0 auto; color: var(--text-secondary, #63776b); }
 .etrn-panel .workflow-sync-warning { font-size: .85rem; line-height: 1.5; background: var(--surface, #fff); padding: .8rem; border: 1px solid var(--line, #dce5de); border-radius: 12px; }
+.etrn-panel .workflow-signing { margin: 1rem 0; padding: 20px; border: 1px solid var(--line, #dce5de); border-radius: 16px; background: var(--surface, #fff); min-width: 0; }
+.workflow-signing header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.workflow-signing h4 { margin: 0; font-size: 16px; line-height: 1.4; }
+.workflow-signing header > span { font-size: 13px; line-height: 1.5; color: var(--text-secondary, #63776b); overflow-wrap: anywhere; }
+.workflow-signing .workflow-signing-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; padding: 0; list-style: none; }
+.workflow-signing-side { min-width: 0; border: 1px solid var(--line, #dce5de); border-radius: 12px; padding: 14px; }
+.workflow-signing-side > strong { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1.5; }
+.workflow-signing-side > strong svg { flex: 0 0 auto; color: var(--primary, #176448); }
+.workflow-signing-side > p { margin: 8px 0 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary, #63776b); overflow-wrap: anywhere; }
+.workflow-signing-side .shipment-field { margin-top: 12px; }
+.workflow-signing-side :is(select, option) { max-width: 100%; }
+.workflow-signing-confirmation { display: flex; align-items: flex-start; gap: 10px; margin: 16px 0; font-size: 13px; line-height: 1.6; }
+.workflow-signing-confirmation input { flex: 0 0 auto; margin-top: 4px; }
+.workflow-signing-confirmation span { min-width: 0; overflow-wrap: anywhere; }
+.workflow-signing .etrn-actions { flex-wrap: wrap; }
+.workflow-signing .button { max-width: 100%; white-space: normal; text-align: center; }
+.workflow-signing .button svg { flex: 0 0 auto; }
+@media (max-width: 760px) { .workflow-signing .workflow-signing-sides { grid-template-columns: 1fr; } }
 @media (max-width: 540px) {
   .etrn-panel .workflow-steps { gap: .65rem; grid-template-columns: 1fr; }
   .etrn-panel .workflow-steps li { flex-direction: row; text-align: left; }
@@ -52,4 +70,6 @@
   .etrn-panel .workflow-handoff dl { grid-template-columns: 1fr; }
   .etrn-panel .workflow-history li { flex-direction: column; gap: .2rem; }
   .etrn-panel .workflow-order > a { width: 100%; justify-content: center; }
+  .etrn-panel .workflow-signing { padding: 16px; }
+  .workflow-signing .etrn-actions > .button { width: 100%; justify-content: center; }
 }

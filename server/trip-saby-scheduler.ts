@@ -9,6 +9,7 @@ import { exchangeEtrn, exchangePreparedEtrn, type EtrnOptions } from './etrn-ser
 import { SabyClient, sabyCredentialBlockers, type SabyConfig } from './saby-client';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
+import { authorizeSigningActor } from './trip-saby-signing';
 import { carrierFastPolling } from './trip-saby-carrier';
 
 export const SABY_WORKFLOW_TICK_MS = 5 * 60_000;
@@ -53,16 +54,18 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
   const initial = await store.read(source);
   for (const [tripId, record] of Object.entries(initial.tripSaby?.trips ?? {})) {
     if (options.carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
-    if (!record.initiatorId) continue;
+    const authorityId = record.signing?.requestedBy ?? record.initiatorId;
+    if (!authorityId) continue;
     const expiredSubmission = record.phase === 'submitting' && !!record.leaseId
       && (!record.leaseUntil || Date.parse(record.leaseUntil) <= (options.now ?? Date.now()));
     const continuing = ['awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'unknown'].includes(record.phase) || expiredSubmission;
     if (!continuing && record.phase !== 'completed') continue;
     const authorize = (snapshot: Snapshot, data: OperationsData) => {
       const current = data.tripSaby?.trips[tripId];
-      if (!current || current.attemptId !== record.attemptId || current.initiatorId !== record.initiatorId) throw new ApiError(403, 'Основание фонового обмена изменилось.');
-      const user = data.accounts?.users.find(row => row.id === record.initiatorId && row.active && !row.deletedAt);
+      if (!current || current.attemptId !== record.attemptId || current.initiatorId !== record.initiatorId || current.signing?.requestId !== record.signing?.requestId || (current.signing?.requestedBy ?? current.initiatorId) !== authorityId) throw new ApiError(403, 'Основание фонового обмена изменилось.');
+      const user = data.accounts?.users.find(row => row.id === authorityId && row.active && !row.deletedAt);
       if (!user) throw new ApiError(403, 'Инициатор обмена больше не имеет доступа.');
+      authorizeSigningActor(snapshot, data, tripId, current);
       const actor = publicUser(user);
       requireTripSection(actor, true); requireWholeTrip(actor, snapshot, tripId);
     };
@@ -75,7 +78,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
     try {
       await checkAccess();
       if (continuing) {
-        await runTripSabyWorkflow({ ...context, monitoringEnabled: true, prepare: options.prepare ?? prepareTripSaby, createDelivery: input => exchangePreparedEtrn(context, input) });
+        await runTripSabyWorkflow({ ...context, monitoringEnabled: true, prepare: options.prepare ?? prepareTripSaby, createDelivery: (input, guardedClient) => exchangePreparedEtrn({ ...context, client: guardedClient }, input) });
         result.continued++;
       } else {
         for (const row of record.deliveries) {

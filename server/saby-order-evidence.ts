@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import Decimal from 'decimal.js';
 import { SabyError } from './saby-client';
 
 export interface XmlNode { name: string; attributes: Record<string, string>; children: Array<XmlNode | string> }
@@ -64,14 +66,52 @@ function identity(root: XmlNode): SabySenderTitleIdentity {
   if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) failure();
   return { fileId: root.attributes.ИдФайл, date: doc.attributes.ДатИнфГО, time: doc.attributes.ВрИнфГО };
 }
-function canonical(node: XmlNode, path = ''): unknown {
+function legalCompanyName(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim().toUpperCase();
+  const form = '(?:ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|ООО)';
+  const prefix = new RegExp(`^${form} (.+)$`).exec(normalized);
+  const suffix = new RegExp(`^(.+), ${form}$`).exec(normalized);
+  const name = prefix?.[1] ?? suffix?.[1];
+  if (!name) return JSON.stringify(['literal', normalized]);
+  const unquoted = /^(?:"([^"]+)"|«([^»]+)»)$/.exec(name);
+  return JSON.stringify(['ООО', unquoted?.[1] ?? unquoted?.[2] ?? name]);
+}
+function permitAddedCoordinates(current: XmlNode, frozen: XmlNode, path = ''): void {
+  if (current.name !== frozen.name) return;
+  const here = `${path}/${current.name}`;
+  const nodes = (node: XmlNode) => node.children.filter((value): value is XmlNode => typeof value !== 'string' && !(here === '/Файл/Документ' && value.name === 'ПодпИнфГО'));
+  if (['/Файл/Документ/СодИнфГО/ПунктПод/АдрПунктПод', '/Файл/Документ/СодИнфГО/АдрПункт/АдресПункт'].includes(here)) {
+    const existing = nodes(frozen).filter(node => node.name === 'Коорд');
+    const added = nodes(current).filter(node => node.name === 'Коорд');
+    // User instruction 06.10.2026: accept coordinates added by Saby only while the address stays unchanged.
+    // Remove them from the comparison copy only; comparison of every remaining address field still follows.
+    if (!existing.length && added.length === 1) {
+      const point = added[0]; const latitude = point.attributes.Широта; const longitude = point.attributes.Долгота;
+      if (Object.keys(point.attributes).length === 2 && [latitude, longitude].every(value => typeof value === 'string' && /^[+-]?\d{1,3}(?:\.\d{1,32})?$/.test(value)) &&
+          new Decimal(latitude).abs().lte(90) && new Decimal(longitude).abs().lte(180) && !point.children.some(value => typeof value !== 'string' || value.trim())) {
+        current.children = current.children.filter(node => node !== point);
+      }
+    }
+  }
+  const actual = nodes(current); const expected = nodes(frozen);
+  if (actual.length !== expected.length) return;
+  actual.forEach((node, index) => permitAddedCoordinates(node, expected[index], here));
+}
+function canonical(node: XmlNode, path = '', diagnosticIgnoreCoordinates = false): unknown {
   const current = `${path}/${node.name}`;
   const ignored: Record<string, string[]> = {
     '/Файл': ['ИдФайл', 'ВерсПрог'],
     '/Файл/Документ': ['ДатИнфГО', 'ВрИнфГО', 'НаимЭкСубСост'],
     '/Файл/Документ/СодИнфГО': ['УИД_Зак'],
   };
-  const attributes = Object.fromEntries(Object.entries(node.attributes).filter(([name]) => !ignored[current]?.includes(name)).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => [name, value.replace(/\s+/g, ' ').trim()]));
+  const attributes = Object.fromEntries(Object.entries(node.attributes).filter(([name]) => !ignored[current]?.includes(name)).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => {
+    let normalized = value.replace(/\s+/g, ' ').trim();
+    // Same legal name, including Saby's short "Name, ООО" form. INN/KPP remain strictly compared.
+    if (name === 'НаимОрг' && ['/Файл/Документ/СодИнфГО/СвГО/ИдСв/СвЮЛУч', '/Файл/Документ/СодИнфГО/СвПрв/ИдСв/СвЮЛУч'].includes(current)) normalized = legalCompanyName(normalized);
+    // XML decimals can gain trailing zeroes. No rounding, numeric IDs or unit conversions.
+    if (current === '/Файл/Документ/СодИнфГО/ОпГруз/МасГруз' && ['МасБрутЗнач', 'МасНетЗнач'].includes(name) && /^\d{1,18}(?:\.\d{1,8})?$/.test(normalized)) normalized = new Decimal(normalized).toFixed();
+    return [name, normalized];
+  }));
   const children: unknown[] = [];
   let text = '';
   const flush = () => { const value = text.replace(/\s+/g, ' ').trim(); if (value) children.push(value); text = ''; };
@@ -80,7 +120,9 @@ function canonical(node: XmlNode, path = ''): unknown {
     flush();
     // Saby preparation fills the current authorized signer's details; they are not cargo facts.
     if (current === '/Файл/Документ' && value.name === 'ПодпИнфГО') continue;
-    children.push(canonical(value, current));
+    // Used only to choose an actionable error; never makes differing coordinates acceptable.
+    if (diagnosticIgnoreCoordinates && value.name === 'Коорд' && ['/Файл/Документ/СодИнфГО/ПунктПод/АдрПунктПод', '/Файл/Документ/СодИнфГО/АдрПункт/АдресПункт'].includes(current)) continue;
+    children.push(canonical(value, current, diagnosticIgnoreCoordinates));
   }
   flush(); return [node.name, attributes, children];
 }
@@ -88,11 +130,56 @@ function canonical(node: XmlNode, path = ''): unknown {
 export function verifySabySenderBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array): SabySenderTitleIdentity {
   const current = parseXml(currentBytes); const frozen = parseXml(frozenBytes);
   const currentIdentity = identity(current); identity(frozen);
-  if (JSON.stringify(canonical(current)) !== JSON.stringify(canonical(frozen))) failure();
+  permitAddedCoordinates(current, frozen);
+  if (JSON.stringify(canonical(current)) !== JSON.stringify(canonical(frozen))) {
+    if (JSON.stringify(canonical(current, '', true)) === JSON.stringify(canonical(frozen, '', true))) {
+      throw new SabyError('validation', 'Координаты маршрута в Saby отличаются от сохранённых сведений CRM. Требуется сверка координат перед продолжением; документ не изменён.');
+    }
+    failure();
+  }
   return currentIdentity;
 }
 export function verifySabyCarrierLink(bytes: Uint8Array, sender: SabySenderTitleIdentity): void {
   const root = parseXml(bytes); if (root.name !== 'Файл') failure();
   const document = child(root, 'Документ'); const link = child(document, 'ИдИнфГО'); const content = child(document, 'СодИнфПрв');
   if (document.attributes.КНД !== '1110362' || link.attributes.ИдФайлИнфГО !== sender.fileId || link.attributes.ДатФайлИнфГО !== sender.date || link.attributes.ВрФайлИнфГО !== sender.time || !link.attributes.ЭП || content.attributes.СодОпер !== '1' || !content.attributes.УИД_Зак) throw new SabyError('unknown', 'Подписанный ответ перевозчика не подтверждает приём именно этой заявки. Проверьте связь титулов в Saby.', true);
+}
+
+function carrierIdentity(root: XmlNode): void {
+  if (root.name !== 'Файл' || root.attributes.ВерсФорм !== '5.01' || !root.attributes.ИдФайл?.trim() || !root.attributes.ВерсПрог?.trim()) failure();
+  const document = child(root, 'Документ');
+  child(document, 'ИдИнфГО'); child(document, 'СодИнфПрв'); child(document, 'ПодпИнфПрв');
+  if (document.attributes.КНД !== '1110362') failure();
+  const date = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(document.attributes.ДатИнфПрв ?? '');
+  if (!date || !/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(document.attributes.ВрИнфПрв ?? '')) failure();
+  const iso = `${date[3]}-${date[2]}-${date[1]}`; const parsed = new Date(`${iso}T00:00:00Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) failure();
+}
+function carrierBusiness(node: XmlNode, path = ''): unknown {
+  const current = `${path}/${node.name}`;
+  // Preparation may regenerate its own file identifier, producer version and creation timestamp.
+  // The source-title link, legal signatory, authority, VAT/payment and all transport data are immutable.
+  const generated: Record<string, string[]> = {
+    '/Файл': ['ИдФайл', 'ВерсПрог'],
+    '/Файл/Документ': ['ДатИнфПрв', 'ВрИнфПрв'],
+  };
+  const attributes = Object.entries(node.attributes).filter(([name]) => !generated[current]?.includes(name)).sort(([a], [b]) => a.localeCompare(b));
+  const children: unknown[] = []; let text = '';
+  const flush = () => { if (text.trim()) children.push(text); text = ''; };
+  for (const value of node.children) {
+    if (typeof value === 'string') { text += value; continue; }
+    flush(); children.push(carrierBusiness(value, current));
+  }
+  flush(); return [node.name, attributes, children];
+}
+/** Compare the verified filled reply with final preparation; this is not a signature or XML digest. */
+export function verifySabyCarrierBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array): void {
+  if (carrierBusinessHash(currentBytes) !== carrierBusinessHash(frozenBytes)) {
+    throw new SabyError('validation', 'Saby изменил сведения ответа НК при подготовке. Подписание остановлено; требуется сверка.');
+  }
+}
+/** Durable semantic digest for lost-preparation reconciliation; distinct from raw file SHA-256. */
+export function carrierBusinessHash(bytes: Uint8Array): string {
+  const root = parseXml(bytes); carrierIdentity(root);
+  return createHash('sha256').update(JSON.stringify(carrierBusiness(root))).digest('hex');
 }

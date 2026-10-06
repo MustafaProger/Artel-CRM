@@ -41,6 +41,7 @@ import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
 import { getSabyTrip, submitSabyTrip } from './saby-service';
 import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile, saveTripLoadingFacts, exchangePreparedEtrn } from './etrn-service';
+import { getTripSigningPreview, validateSigningStart } from './trip-saby-signing';
 import { getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { sabyConfigFromEnv, sabyCredentialBlockers, type SabyClient } from './saby-client';
@@ -642,19 +643,25 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
-      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(loading-facts|carrier-details))?$/);
+      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(loading-facts|carrier-details|signing|signing\/start))?$/);
       if (workflowMatch) {
         const tripId = decodeURIComponent(workflowMatch[1]);
         const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
         const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
         const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
         const read = (latest: import('./operations-store').OperationsData) => ({ ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled }), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+        if (request.method === 'GET' && workflowMatch[2] === 'signing') return write(response, 200, JSON.stringify(await getTripSigningPreview(context)));
+        if (workflowMatch[2] === 'signing') throw new ApiError(405, 'Метод не поддерживается.');
         if (request.method === 'GET' && !workflowMatch[2]) return write(response, 200, JSON.stringify(read(data)));
         if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request);
-        if (workflowMatch[2] === 'loading-facts') await saveTripLoadingFacts(context, body, actor?.id || 'local-operator');
+        let signingStart: import('./trip-saby-workflow').RunTripSabyOptions['signingStart'];
+        if (workflowMatch[2] === 'signing/start') {
+          if (!actor) throw new ApiError(403, 'Войдите под своей учётной записью для подписания.');
+          validateSigningStart(body); signingStart = { request: body, requestedBy: actor.id };
+        } else if (workflowMatch[2] === 'loading-facts') await saveTripLoadingFacts(context, body, actor?.id || 'local-operator');
         else if (Object.keys(body).length) throw new ApiError(400, 'Данные отправки берутся из сохранённого рейса.');
-        const workflow = await runTripSabyWorkflow({ ...context, initiatorId: actor?.id, enableCarrierFill: workflowMatch[2] === 'carrier-details', prepare: prepareTripSaby, createDelivery: input => exchangePreparedEtrn(context, input) });
+        const workflow = await runTripSabyWorkflow({ ...context, signingStart, initiatorId: actor?.id, enableCarrierFill: workflowMatch[2] === 'carrier-details', prepare: prepareTripSaby, createDelivery: (input, guardedClient) => exchangePreparedEtrn({ ...context, client: guardedClient }, input) });
         if (workflow.phase === 'completed') for (const delivery of workflow.deliveries) if (delivery.id) await refreshTripSabyDelivery(context, delivery.shipmentId);
         const latest = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, latest), latest);
         return write(response, 200, JSON.stringify(read(latest)));

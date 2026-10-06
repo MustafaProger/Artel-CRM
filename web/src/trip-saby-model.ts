@@ -24,6 +24,40 @@ export interface TripSabyOrderSummary {
   remoteStateCode?: string | null;
   exchangeStage?: TripSabyExchangeStage;
 }
+export type TripSabySigningStepState = 'not_started' | 'preparing' | 'requested' | 'waiting' | 'unknown' | 'confirmed' | 'blocked';
+export interface TripSabySigningStep {
+  state: TripSabySigningStepState;
+  message?: string;
+}
+export interface TripSabySigning {
+  state: 'active' | 'blocked' | 'unknown' | 'completed';
+  requestedAt: string;
+  sender: TripSabySigningStep;
+  carrier: TripSabySigningStep;
+}
+export interface TripSabySigningSignature { id: string; owner: string; expiresAt: string | null }
+export interface TripSabySigningSideOptions {
+  organization: string;
+  signatures: TripSabySigningSignature[];
+  message?: string;
+}
+export interface TripSabySigningPreview {
+  order: Pick<TripSabyOrderSummary, 'id' | 'number' | 'date' | 'revision'>;
+  previewToken: string | null;
+  ready: boolean;
+  blockers: string[];
+  checkedAt: string;
+  sender: TripSabySigningSideOptions;
+  carrier: TripSabySigningSideOptions;
+  signing?: TripSabySigning;
+}
+export interface TripSabySigningStartRequest {
+  requestId: string;
+  previewToken: string;
+  senderSignatureId: string;
+  carrierSignatureId: string;
+  confirmed: true;
+}
 export interface TripSabyResponse {
   status: 'not_sent' | 'sent' | 'error';
   phase: 'preparation' | 'submitting' | 'unknown' | 'awaiting_carrier' | 'awaiting_loading' | 'creating_etrn' | 'completed' | 'error';
@@ -41,4 +75,5 @@ export interface TripSabyResponse {
   history: TripSabyHistoryEntry[];
   carrierHandoff?: TripSabyCarrierHandoff;
   carrierFill?: TripSabyCarrierFill;
+  signing?: TripSabySigning;
 }
