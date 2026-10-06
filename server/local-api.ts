@@ -661,7 +661,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           validateSigningStart(body); signingStart = { request: body, requestedBy: actor.id };
         } else if (workflowMatch[2] === 'loading-facts') await saveTripLoadingFacts(context, body, actor?.id || 'local-operator');
         else if (Object.keys(body).length) throw new ApiError(400, 'Данные отправки берутся из сохранённого рейса.');
-        const workflow = await runTripSabyWorkflow({ ...context, signingStart, initiatorId: actor?.id, enableCarrierFill: workflowMatch[2] === 'carrier-details', prepare: prepareTripSaby, createDelivery: (input, guardedClient) => exchangePreparedEtrn({ ...context, client: guardedClient }, input) });
+        const workflow = await runTripSabyWorkflow({ ...context, signingStart, allowSigningRecovery: !workflowMatch[2] && !!actor, initiatorId: actor?.id, enableCarrierFill: workflowMatch[2] === 'carrier-details', prepare: prepareTripSaby, createDelivery: (input, guardedClient) => exchangePreparedEtrn({ ...context, client: guardedClient }, input) });
         if (workflow.phase === 'completed') for (const delivery of workflow.deliveries) if (delivery.id) await refreshTripSabyDelivery(context, delivery.shipmentId);
         const latest = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, latest), latest);
         return write(response, 200, JSON.stringify(read(latest)));

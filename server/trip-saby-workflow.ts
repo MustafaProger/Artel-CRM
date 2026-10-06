@@ -188,6 +188,8 @@ export interface RunTripSabyOptions {
   initiatorId?: string;
   monitoringEnabled?: boolean;
   enableCarrierFill?: boolean;
+  /** Only the authenticated manual reconcile route may opt into the narrowly verified legacy repair. */
+  allowSigningRecovery?: boolean;
   signingStart?: { request: TripSabySigningStartRequest; requestedBy: string };
   authorize: (snapshot: Snapshot, data: OperationsData) => void; client?: SabyClient;
   /** Must preserve ETRN ID-before-read and unknown-result recovery in its own durable record. */
@@ -204,6 +206,11 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId); const existing = data.tripSaby?.trips[tripId];
     if (existing?.signing) authorizeSigningActor(snapshot, data, tripId, existing);
+    if (options.allowSigningRecovery) {
+      const requester = data.accounts?.users.find(row => row.id === options.initiatorId && row.active && !row.deletedAt);
+      if (!requester) throw new ApiError(403, 'Для сверки подписи нужен действующий доступ сотрудника.');
+      const actor = publicUser(requester); requireTripSection(actor, true); requireWholeTrip(actor, snapshot, tripId);
+    }
     if (options.signingStart) {
       const requester = data.accounts?.users.find(row => row.id === options.signingStart!.requestedBy && row.active && !row.deletedAt);
       if (!requester) throw new ApiError(403, 'Для подписания нужен действующий доступ сотрудника.');
@@ -250,7 +257,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
     authorizeSigningActor(snapshot, data, tripId, current);
   };
   client = client.withRequestGuard(checkAccess);
-  const signingContext = { client, record: () => record, update, checkAccess };
+  const signingContext = { client, record: () => record, update, checkAccess, allowSigningRecovery: options.allowSigningRecovery === true, recoveryRequestedBy: options.initiatorId };
   let signingStarted = !options.signingStart;
   let writing: 'reservation' | 'upload' | null = null;
   let armedAction: 'reservation' | 'upload' | null = null;

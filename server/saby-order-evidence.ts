@@ -4,6 +4,7 @@ import { SabyError } from './saby-client';
 
 export interface XmlNode { name: string; attributes: Record<string, string>; children: Array<XmlNode | string> }
 export interface SabySenderTitleIdentity { fileId: string; date: string; time: string }
+export interface SabyCarrierVehicleIdentity { plate: string; vin: string; stsNumber: string }
 function failure(): never { throw new SabyError('unknown', 'Текущий титул заявки в Saby не подтверждает сохранённые сведения рейса. Новые ЭТрН не создаются; требуется сверка.', true); }
 const namePattern = /^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё.:-]*$/u;
 function xmlText(value: string): string {
@@ -173,13 +174,42 @@ function carrierBusiness(node: XmlNode, path = ''): unknown {
   flush(); return [node.name, attributes, children];
 }
 /** Compare the verified filled reply with final preparation; this is not a signature or XML digest. */
-export function verifySabyCarrierBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array): void {
-  if (carrierBusinessHash(currentBytes) !== carrierBusinessHash(frozenBytes)) {
-    throw new SabyError('validation', 'Saby изменил сведения ответа НК при подготовке. Подписание остановлено; требуется сверка.');
+export function verifySabyCarrierBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array, expectedVehicle?: SabyCarrierVehicleIdentity): void {
+  const before = carrierBusinessHash(frozenBytes);
+  if (carrierBusinessHash(currentBytes) === before) return;
+  if (expectedVehicle) { verifySabyCarrierVehicleAddition(currentBytes, before, expectedVehicle); return; }
+  carrierChanged();
+}
+function carrierChanged(): never { throw new SabyError('validation', 'Saby изменил сведения ответа НК при подготовке. Подписание остановлено; требуется сверка.'); }
+function carrierRootHash(root: XmlNode): string {
+  carrierIdentity(root);
+  return createHash('sha256').update(JSON.stringify(carrierBusiness(root))).digest('hex');
+}
+function onlyCarrierVehicle(root: XmlNode): XmlNode | undefined {
+  let current = root;
+  for (const name of ['Документ', 'СодИнфПрв', 'СвТС', 'ТС']) {
+    const found = current.children.filter((n): n is XmlNode => typeof n !== 'string' && n.name === name);
+    if (found.length !== 1) return undefined;
+    current = found[0];
   }
+  return current;
+}
+/** Prove additions against the original complete digest; never globally ignore vehicle identifiers. */
+export function verifySabyCarrierVehicleAddition(currentBytes: Uint8Array, beforeHash: string, expected: SabyCarrierVehicleIdentity): { businessHash: string } {
+  const current = parseXml(currentBytes); const businessHash = carrierRootHash(current);
+  const vehicle = onlyCarrierVehicle(current);
+  if (!/^[a-f0-9]{64}$/.test(beforeHash) || !expected?.plate || !vehicle || vehicle.attributes.РегНомер !== expected.plate) carrierChanged();
+  const possible = ([['НомерВИН', expected.vin, /^[A-Z0-9]{17}$/], ['НомСТС', expected.stsNumber, /^\d{10}$/]] as const)
+    .filter(([attribute, value, format]) => typeof value === 'string' && format.test(value) && vehicle.attributes[attribute] === value)
+    .map(([attribute]) => attribute);
+  for (let mask = 1; mask < 1 << possible.length; mask++) {
+    const candidate = structuredClone(current); const copy = onlyCarrierVehicle(candidate)!;
+    possible.forEach((attribute, index) => { if (mask & 1 << index) delete copy.attributes[attribute]; });
+    if (carrierRootHash(candidate) === beforeHash) return { businessHash };
+  }
+  carrierChanged();
 }
 /** Durable semantic digest for lost-preparation reconciliation; distinct from raw file SHA-256. */
 export function carrierBusinessHash(bytes: Uint8Array): string {
-  const root = parseXml(bytes); carrierIdentity(root);
-  return createHash('sha256').update(JSON.stringify(carrierBusiness(root))).digest('hex');
+  return carrierRootHash(parseXml(bytes));
 }

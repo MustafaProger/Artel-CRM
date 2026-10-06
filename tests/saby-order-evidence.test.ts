@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabySenderBusiness } from '../server/saby-order-evidence';
+import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabySenderBusiness, verifySabyCarrierVehicleAddition } from '../server/saby-order-evidence';
 import { encodeWindows1251 } from '../server/saby-transport-order';
 
 // Deliberately synthetic: no real IDs, personal details, signature files or keys.
@@ -56,6 +56,39 @@ test('carrier preparation rejects invalid dates, absent required headers and dup
     xml.replace('ВрИнфПрв="12:34:56"', 'ВрИнфПрв="25:00:00"'), xml.replace('ИдФайл="SYNTHETIC-CARRIER"', 'ИдФайл=""'),
     xml.replace('ВерсФорм="5.01"', 'ВерсФорм="5.02"'), xml.replace('</Документ>', '<ПодпИнфПрв/></Документ>'),
   ]) assert.throws(() => verifySabyCarrierBusiness(bytes(corrupt), bytes(xml)));
+});
+
+const vehicleIdentity = { plate: 'Т001ЕЕ777', vin: 'WDB9300321L123456', stsNumber: '9900123456' };
+const addVehicleIds = (source: string, attributes = `НомерВИН="${vehicleIdentity.vin}" НомСТС="${vehicleIdentity.stsNumber}"`) => source.replace('<ТС РегНомер=', `<ТС ${attributes} РегНомер=`);
+test('carrier preparation accepts only added vehicle identifiers proven by the complete frozen business hash', () => {
+  for (const attributes of [`НомерВИН="${vehicleIdentity.vin}"`, `НомСТС="${vehicleIdentity.stsNumber}"`, `НомерВИН="${vehicleIdentity.vin}" НомСТС="${vehicleIdentity.stsNumber}"`]) {
+    const prepared = addVehicleIds(xml, attributes);
+    assert.doesNotThrow(() => verifySabyCarrierBusiness(bytes(prepared), bytes(xml), vehicleIdentity));
+    assert.throws(() => verifySabyCarrierBusiness(bytes(prepared), bytes(xml)), /Saby изменил/);
+    const result = verifySabyCarrierVehicleAddition(bytes(prepared), carrierBusinessHash(bytes(xml)), vehicleIdentity);
+    assert.equal(result.businessHash, carrierBusinessHash(bytes(prepared)));
+    assert.notEqual(result.businessHash, carrierBusinessHash(bytes(xml)));
+  }
+  const vinAlreadyPresent = addVehicleIds(xml, `НомерВИН="${vehicleIdentity.vin}"`);
+  assert.doesNotThrow(() => verifySabyCarrierBusiness(bytes(addVehicleIds(xml)), bytes(vinAlreadyPresent), vehicleIdentity));
+});
+test('carrier preparation cannot use known vehicle additions to hide an existing identifier or other business changes', () => {
+  const prepared = addVehicleIds(xml), baseline = carrierBusinessHash(bytes(xml));
+  for (const corrupt of [
+    prepared.replace(vehicleIdentity.vin, 'WDB9300321L654321'), prepared.replace(vehicleIdentity.stsNumber, '9900654321'),
+    prepared.replace(vehicleIdentity.plate, 'Т002ЕЕ777'), prepared.replace('ПодписантТест', 'ДругойПодписант'),
+    prepared.replace('СпосПодтПолном="1"', 'СпосПодтПолном="2"'), prepared.replace('synthetic-source-signature', 'other-source-signature'),
+    prepared.replace('Грузопод="27.9"', 'Грузопод="28.9"'), prepared.replace('</СодИнфПрв>', '<НДС Ставка="0"/></СодИнфПрв>'),
+    prepared.replace('</СвТС>', '<ТС РегНомер="Т001ЕЕ777"/></СвТС>'),
+    xml.replace('<ПодпИнфПрв ', `<ПодпИнфПрв НомерВИН="${vehicleIdentity.vin}" `),
+  ]) assert.throws(() => verifySabyCarrierVehicleAddition(bytes(corrupt), baseline, vehicleIdentity));
+  for (const unknown of [{ ...vehicleIdentity, vin: '', stsNumber: '' }, { ...vehicleIdentity, plate: '' }, { ...vehicleIdentity, vin: 'OTHER', stsNumber: 'OTHER' }]) {
+    assert.throws(() => verifySabyCarrierVehicleAddition(bytes(prepared), baseline, unknown));
+  }
+  const knownVin = addVehicleIds(xml, `НомерВИН="WDB9300321L654321"`);
+  assert.throws(() => verifySabyCarrierBusiness(bytes(prepared), bytes(knownVin), vehicleIdentity));
+  assert.throws(() => verifySabyCarrierBusiness(bytes(xml), bytes(prepared), vehicleIdentity));
+  assert.throws(() => verifySabyCarrierVehicleAddition(bytes(xml), baseline, vehicleIdentity));
 });
 
 const sender = `<?xml version="1.0" encoding="utf-8"?><Файл ВерсФорм="5.01" ВерсПрог="Synthetic" ИдФайл="SYNTHETIC-SENDER"><Документ КНД="1110361" ДатИнфГО="01.04.2025" ВрИнфГО="11:22:33"><СодИнфГО УИД_Зак="SYNTHETIC-ORDER"><СвГО><ИдСв><СвЮЛУч ИННЮЛ="0148372956" КПП="010101001" НаимОрг="Общество с ограниченной ответственностью &quot;ТЕСТ&quot;"/></ИдСв></СвГО><СвПрв><ИдСв><СвЮЛУч ИННЮЛ="0392816475" КПП="030101001" НаимОрг="ООО «ПЕРЕВОЗЧИК ТЕСТ»"/></ИдСв></СвПрв><ПунктПод><АдрПунктПод><Адрес><АдрРФ>Синтетический адрес</АдрРФ></Адрес></АдрПунктПод></ПунктПод><ОпГруз><МасГруз МасБрутЗнач="14740" МасНетЗнач="14740"/></ОпГруз></СодИнфГО><ПодпИнфГО/></Документ></Файл>`;

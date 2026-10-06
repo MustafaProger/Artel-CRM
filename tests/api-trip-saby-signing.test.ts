@@ -7,13 +7,23 @@ import { createSnapshotMiddleware } from '../server/local-api';
 import { ApiError } from '../server/api-error';
 import { OperationsStore } from '../server/operations-store';
 import { SabyClient, type SabyObject } from '../server/saby-client';
-import { parseXml } from '../server/saby-order-evidence';
+import { parseXml, type XmlNode } from '../server/saby-order-evidence';
+import { serializeXml } from '../server/saby-carrier-details';
+import { encodeWindows1251 } from '../server/saby-transport-order';
 import { getTripSigningPreview, validateTripSigning } from '../server/trip-saby-signing';
 import { getTripSabyWorkflow, runTripSabyWorkflow, validateTripSabyData } from '../server/trip-saby-workflow';
 import { dispatchTripSaby } from '../server/trip-saby-scheduler';
 import { integrationApi, integrationConfig, integrationRuntime, type IntegrationRpc } from './helpers/trip-saby-integration';
 
 const fingerprints = { sender: 'abcdef'.repeat(6) + 'abcd', carrier: 'fedcba'.repeat(6) + 'fedc' };
+const vehicleIdentity = { vin: 'XTA12345678901234', stsNumber: '9900123456' };
+const legacyBusinessMessage = 'Saby изменил сведения ответа НК при подготовке. Подписание остановлено; требуется сверка.';
+function xmlNode(root: XmlNode, name: string): XmlNode {
+  if (root.name === name) return root;
+  for (const child of root.children) if (typeof child !== 'string') { try { return xmlNode(child, name); } catch { /* Continue to the next child. */ } }
+  throw new Error(`Missing synthetic XML element: ${name}`);
+}
+const addVehicleIdentity = (xml: XmlNode) => Object.assign(xmlNode(xml, 'ТС').attributes, { НомерВИН: vehicleIdentity.vin, НомСТС: vehicleIdentity.stsNumber });
 type Side = keyof typeof fingerprints;
 async function fixture() {
   const rt = await integrationRuntime(); const baseApi = integrationApi();
@@ -23,6 +33,8 @@ async function fixture() {
   const senderDoc = () => [...baseApi.docs.values()].find(d => d.Тип === 'TransportOrder')!;
   let lose: 'prepare' | 'execute' | null = null; let pending = false; let wrongCertificate = false; let missingReply = false; let serviceAttachment = false;
   let hook: ((side: Side, req: IntegrationRpc) => Promise<void>) | undefined;
+  let carrierPreparation: ((xml: XmlNode) => void) | undefined;
+  const changeCarrier = (change: (xml: XmlNode) => void) => { const xml = parseXml(carrierBytes); change(xml); carrierBytes = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(xml)); };
   const certificate = (side: Side) => { const org = side === 'sender' ? config.customer : config.carrier; return { Certificate: { Type: 'Client', CertificateInfo: { Thumbprint: fingerprints[side], IsValid: true, IsQualified: true, NotBefore: '2020-01-01T00:00:00Z', NotAfter: '2099-01-01T00:00:00Z', SubjectName: { '1.2.643.100.4': org.inn, '2.5.4.4': 'Тестовый', '2.5.4.42': 'Подписант' } } }, OurCompany: { Inn: org.inn, Kpp: org.kpp } }; };
   const stage = (side: Side) => ({ Идентификатор: `stage-${side}`, Название: side === 'sender' ? 'Отправка' : 'Утверждение', Действие: [{ Название: side === 'sender' ? 'Отправить' : 'Утвердить', ТребуетПодписания: 'Да' }] });
   const annotate = (doc: SabyObject, side: Side) => { doc.Направление = side === 'sender' ? 'Исходящий' : 'Входящий'; doc.Этап = [stage(side)]; doc.ТекущиеЭтапы = [{ Идентификатор: stage(side).Идентификатор, Наименование: stage(side).Название }]; for (const a of doc.Вложение as SabyObject[]) a.Направление = (a.Подтип === '1110361') === (side === 'sender') ? 'Исходящий' : 'Входящий'; };
@@ -54,6 +66,7 @@ async function fixture() {
     if (req.method === 'СБИС.ЗаписатьВложение') { carrierBytes = Buffer.from(String(((req.params.Документ.Вложение as SabyObject[])[0].Файл as SabyObject).ДвоичныеДанные), 'base64'); return json(carrierDoc); }
     if (req.method === 'СБИС.ПодготовитьДействие') {
       if (side === 'carrier' && !(carrierDoc!.Вложение as SabyObject[]).some(a => a.Подтип === '1110362')) await addReply();
+      if (side === 'carrier' && carrierPreparation) changeCarrier(carrierPreparation);
       if (lose === 'prepare') { lose = null; throw new Error('Synthetic timeout'); }
       if (side === 'sender' && serviceAttachment && !(senderDoc().Вложение as SabyObject[]).some(a => a.Идентификатор === 'service-file')) (senderDoc().Вложение as SabyObject[]).push({ Идентификатор: 'service-file', Направление: 'Исходящий', Файл: { Имя: 'service.xml', Ссылка: 'https://disk.saby.ru/service.xml' } });
       const doc = structuredClone(side === 'sender' ? senderDoc() : carrierDoc!);
@@ -74,6 +87,7 @@ async function fixture() {
   await rt.store.mutate(rt.source, data => {
     data.accounts = { users: [{ id: 'actor', login: 'actor', name: 'Тестовый сотрудник', role: 'director', managerId: null, active: true, version: 1, passwordHash: 'a'.repeat(128), salt: 'a'.repeat(32) }, { id: 'owner', login: 'owner', name: 'Другой директор', role: 'director', managerId: null, active: true, version: 1, passwordHash: 'b'.repeat(128), salt: 'b'.repeat(32) }], sessions: [], attempts: {} };
     Object.assign(data.directories!.drivers[0], { inn: '010000000102', licenseSeries: '9900', licenseNumber: '123456', licenseIssuedAt: '2024-01-01' });
+    Object.assign(data.directories!.vehicles[0], { vin: vehicleIdentity.vin, stsSeries: '9900', stsNumber: '123456' });
     return { changed: true, result: null };
   });
   const client = () => new SabyClient(config, send);
@@ -82,7 +96,18 @@ async function fixture() {
   await run();
   const preview = () => getTripSigningPreview({ ...rt, client: client() });
   const request = async () => { const p = await preview(); assert.equal(p.ready, true, p.blockers.join(' ')); return { requestId: randomUUID(), previewToken: p.previewToken!, senderSignatureId: fingerprints.sender, carrierSignatureId: fingerprints.carrier, confirmed: true as const }; };
-  return { ...rt, config, send, run, preview, request, calls, senderDoc, carrierDoc: () => carrierDoc!, exposeCarrier, setLose: (value: typeof lose) => { lose = value; }, setPending: (v: boolean) => { pending = v; }, setWrongCertificate: (v: boolean) => { wrongCertificate = v; }, setServiceAttachment: (v: boolean) => { serviceAttachment = v; }, setMissingReply: (v: boolean) => { missingReply = v; }, setHook: (fn: typeof hook) => { hook = fn; }, record: async () => (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId], writes: () => calls.filter(c => ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(c.method)), deliveries: () => deliveries };
+  return { ...rt, config, send, run, preview, request, calls, senderDoc, carrierDoc: () => carrierDoc!, exposeCarrier, changeCarrier, changeSource: baseApi.prepareSender, setCarrierPreparation: (change: typeof carrierPreparation) => { carrierPreparation = change; }, setLose: (value: typeof lose) => { lose = value; }, setPending: (v: boolean) => { pending = v; }, setWrongCertificate: (v: boolean) => { wrongCertificate = v; }, setServiceAttachment: (v: boolean) => { serviceAttachment = v; }, setMissingReply: (v: boolean) => { missingReply = v; }, setHook: (fn: typeof hook) => { hook = fn; }, record: async () => (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId], writes: () => calls.filter(c => ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(c.method)), deliveries: () => deliveries };
+}
+
+/** Reconstruct the old persisted shape from an actual synthetic preparation with no execution. */
+async function legacyCarrierFixture() {
+  const f = await fixture();
+  await f.exposeCarrier(); f.setCarrierPreparation(addVehicleIdentity); f.setLose('prepare');
+  await f.run({ signingStart: { request: await f.request(), requestedBy: 'actor' } });
+  const stopped = (await f.record()).signing!.carrier;
+  assert.ok(stopped.binding && stopped.businessHash); assert.equal(stopped.prepared, undefined); assert.equal(stopped.executeAttempted, undefined);
+  await f.store.mutate(f.source, data => { const step = data.tripSaby!.trips[f.tripId].signing!.carrier; step.state = 'blocked'; step.message = legacyBusinessMessage; return { changed: true, result: null }; });
+  return f;
 }
 
 test('GET preview, old POST and scheduler never initiate signing; public projection contains no signing bytes or private state', async () => {
@@ -278,4 +303,164 @@ test('the active signing requester authorizes background continuation independen
     const result = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
     assert.equal(result.continued, 1); assert.equal(result.denied, 0); assert.equal(f.writes().length, 2);
   } finally { await f.close(); }
+});
+
+test('known VIN and STS added by Saby are accepted during the first carrier preparation and protect the complete prepared files', async () => {
+  const f = await fixture(); try {
+    f.setCarrierPreparation(addVehicleIdentity);
+    const result = await f.run({ signingStart: { request: await f.request(), requestedBy: 'actor' } });
+    assert.equal(result.signing?.state, 'completed', JSON.stringify(result));
+    const carrier = (await f.record()).signing!.carrier;
+    assert.equal(carrier.preparedVerified, true); assert.equal(carrier.executeAttempted, true); assert.equal(carrier.recovery, undefined);
+    assert.equal(f.writes().filter(c => c.side === 'carrier').length, 2);
+  } finally { await f.close(); }
+});
+
+test('a failed semantic check retains an unverified complete manifest and can never be used for signing or signed adoption', async () => {
+  const f = await fixture(); try {
+    f.setCarrierPreparation(xml => { addVehicleIdentity(xml); xmlNode(xml, 'ТС').attributes.НомерВИН = 'XTA99999999999999'; });
+    const result = await f.run({ signingStart: { request: await f.request(), requestedBy: 'actor' } });
+    assert.equal(result.signing?.carrier.state, 'blocked');
+    const step = (await f.record()).signing!.carrier;
+    assert.ok(step.prepared); assert.equal(step.preparedVerified, false); assert.equal(step.executeAttempted, undefined);
+    const before = f.writes().length;
+    // A crash can leave the unverified manifest in unknown/preparing, and an external signature
+    // still cannot turn unchecked content into an authorized manifest.
+    await f.store.mutate(f.source, data => { data.tripSaby!.trips[f.tripId].signing!.carrier.state = 'unknown'; return { changed: true, result: null }; });
+    (f.carrierDoc().Вложение as SabyObject[]).find(a => a.Подтип === '1110362')!.Подпись = [{ Сертификат: { Отпечаток: fingerprints.carrier, ИНН: f.config.carrier.inn } }];
+    f.carrierDoc().Состояние = { Код: '7' };
+    await f.run({ allowSigningRecovery: true }); await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.equal(f.writes().length, before); assert.equal((await f.record()).signing!.carrier.preparedVerified, false);
+    const corrupt = structuredClone((await f.record()).signing)!; corrupt.carrier.state = 'confirmed';
+    assert.throws(() => validateTripSigning(corrupt));
+    assert.equal(f.deliveries(), 0);
+  } finally { await f.close(); }
+});
+
+test('legacy carrier recovery requires an explicit reconciliation and preserves the original fill digest, binding and history', async () => {
+  const f = await legacyCarrierFixture(); try {
+    const original = await f.record(); const initialWrites = f.writes().length;
+    await f.preview(); await f.run(); await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.equal(f.writes().length, initialWrites); assert.equal((await f.record()).signing!.carrier.recovery, undefined);
+    const result = await f.run({ allowSigningRecovery: true });
+    assert.equal(result.signing?.state, 'completed', JSON.stringify(result));
+    const record = await f.record(); const step = record.signing!.carrier;
+    assert.deepEqual(step.recovery!.originalBinding, original.signing!.carrier.binding);
+    assert.equal(step.businessHash, original.signing!.carrier.businessHash); assert.equal(step.recovery!.originalBusinessHash, step.businessHash);
+    assert.equal(step.recovery!.originalMessage, legacyBusinessMessage); assert.equal(step.recovery!.requestedBy, 'owner');
+    assert.notEqual(step.recovery!.acceptedBusinessHash, step.businessHash);
+    assert.equal(record.carrierFill!.intent!.afterHash, original.carrierFill!.intent!.afterHash);
+    assert.deepEqual(record.history!.slice(0, original.history!.length), original.history);
+    assert.equal(step.preparedVerified, true); assert.equal(f.writes().length, initialWrites + 2);
+    validateTripSabyData({ trips: { [f.tripId]: record } });
+    const corrupted = structuredClone(record.signing)!; corrupted.carrier.recovery!.originalBinding.stageId = 'changed-original-stage';
+    assert.throws(() => validateTripSigning(corrupted));
+    await f.run({ allowSigningRecovery: true, store: new OperationsStore(`${f.directory}/store`) });
+    assert.equal(f.writes().length, initialWrites + 2);
+    assert.doesNotMatch(JSON.stringify(result.signing), /recovery|originalBinding|businessHash|requestedBy|preparedVerified/);
+  } finally { await f.close(); }
+});
+
+test('lost controlled reprepare is consumed durably and reconciled after restart without retry or execution', async () => {
+  const f = await legacyCarrierFixture(); try {
+    const before = f.writes().length; f.setLose('prepare');
+    const first = await f.run({ allowSigningRecovery: true }); assert.equal(first.signing?.carrier.state, 'unknown');
+    const stopped = (await f.record()).signing!.carrier;
+    assert.equal(stopped.recovery!.prepareAttempted, true); assert.equal(stopped.prepared, undefined); assert.equal(stopped.executeAttempted, undefined);
+    const reads = f.calls.filter(c => c.method === 'СБИС.ПрочитатьДокумент').length;
+    await f.run({ allowSigningRecovery: true, store: new OperationsStore(`${f.directory}/store`) });
+    await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.ok(f.calls.filter(c => c.method === 'СБИС.ПрочитатьДокумент').length > reads);
+    assert.equal(f.writes().length, before + 1); assert.equal(f.deliveries(), 0);
+    assert.equal((await f.record()).signing!.carrier.recovery!.id, stopped.recovery!.id);
+  } finally { await f.close(); }
+});
+
+test('a read-only recovery preflight failure retains the original block and permits a later explicit reconciliation', async () => {
+  const f = await legacyCarrierFixture(); try {
+    let failed = false;
+    f.setHook(async (side, req) => { if (!failed && side === 'carrier' && req.method === 'СБИС.ПрочитатьДокумент') { failed = true; throw new Error('Synthetic read timeout'); } });
+    const before = f.writes().length; await f.run({ allowSigningRecovery: true });
+    const stopped = (await f.record()).signing!.carrier;
+    assert.equal(stopped.state, 'blocked'); assert.equal(stopped.message, legacyBusinessMessage); assert.equal(stopped.recovery, undefined);
+    assert.equal(f.writes().length, before);
+    f.setHook(undefined); const result = await f.run({ allowSigningRecovery: true });
+    assert.equal(result.signing?.state, 'completed', JSON.stringify(result)); assert.equal(f.writes().length, before + 2);
+  } finally { await f.close(); }
+});
+
+test('legacy recovery rejects a changed value, source link, signature authority, stage, or inconsistent frozen vehicle without new preparation', async () => {
+  for (const mode of ['vin', 'source', 'authority', 'signature', 'stage', 'frozen'] as const) {
+    const f = await legacyCarrierFixture(); try {
+      if (mode === 'vin') f.changeCarrier(xml => { xmlNode(xml, 'ТС').attributes.НомерВИН = 'XTA99999999999999'; });
+      if (mode === 'source') f.changeCarrier(xml => { xmlNode(xml, 'ИдИнфГО').attributes.ИдФайлИнфГО = 'changed-source'; });
+      if (mode === 'authority') f.changeCarrier(xml => { xmlNode(xml, 'ПодпИнфПрв').attributes.СпосПодтПолном = '6'; });
+      if (mode === 'signature') (f.carrierDoc().Вложение as SabyObject[]).find(a => a.Подтип === '1110362')!.Подпись = [{ Сертификат: { Отпечаток: fingerprints.carrier, ИНН: f.config.carrier.inn } }];
+      if (mode === 'stage') f.carrierDoc().ТекущиеЭтапы = [{ Идентификатор: 'changed-stage', Наименование: 'Утверждение' }];
+      if (mode === 'frozen') await f.store.mutate(f.source, data => { const row = data.tripSaby!.trips[f.tripId].deliveries[1]; row.snapshot.vehicle.vin = 'XTA99999999999999'; row.payloadHash = createHash('sha256').update(JSON.stringify(row.snapshot)).digest('hex'); return { changed: true, result: null }; });
+      const before = f.writes().length; const result = await f.run({ allowSigningRecovery: true });
+      assert.equal(result.signing?.carrier.state, 'blocked', mode); assert.equal(f.writes().length, before, mode);
+      assert.equal((await f.record()).signing!.carrier.recovery, undefined, mode); assert.equal(f.deliveries(), 0, mode);
+    } finally { await f.close(); }
+  }
+});
+
+test('business changes during controlled reprepare retain the manifest as unverified and block execution forever', async () => {
+  const f = await legacyCarrierFixture(); try {
+    f.setCarrierPreparation(xml => { xmlNode(xml, 'ПодпИнфПрв').attributes.Должн = 'Изменённая должность'; });
+    const before = f.writes().length; const result = await f.run({ allowSigningRecovery: true });
+    assert.equal(result.signing?.carrier.state, 'blocked');
+    const step = (await f.record()).signing!.carrier;
+    assert.ok(step.prepared); assert.ok(step.recovery); assert.equal(step.preparedVerified, false); assert.equal(step.executeAttempted, undefined);
+    await f.run({ allowSigningRecovery: true }); await f.run();
+    assert.equal(f.writes().length, before + 1); assert.equal(f.deliveries(), 0);
+  } finally { await f.close(); }
+});
+
+test('a source change during first preparation or controlled reprepare cannot authorize unchanged carrier contents', async () => {
+  for (const recovery of [false, true]) {
+    const f = await (recovery ? legacyCarrierFixture() : fixture()); try {
+      f.setCarrierPreparation(() => f.changeSource());
+      const before = f.writes().filter(c => c.side === 'carrier').length;
+      await f.run(recovery ? { allowSigningRecovery: true } : { signingStart: { request: await f.request(), requestedBy: 'actor' } });
+      const step = (await f.record()).signing!.carrier;
+      assert.equal(step.state, 'blocked'); assert.ok(step.prepared); assert.equal(step.preparedVerified, false); assert.equal(step.executeAttempted, undefined);
+      assert.equal(f.writes().filter(c => c.side === 'carrier').length, before + 1); assert.equal(f.deliveries(), 0);
+    } finally { await f.close(); }
+  }
+});
+
+test('revoking the separate reconciliation requester stops final HTTP and future scheduler continuation', async () => {
+  const f = await legacyCarrierFixture(); try {
+    let revoked = false;
+    f.setHook(async (side, req) => {
+      if (!revoked && side === 'carrier' && req.method === 'СБИС.ПрочитатьДокумент' && (await f.record()).signing!.carrier.executeAttempted) {
+        revoked = true; await f.store.mutate(f.source, data => { data.accounts!.users.find(u => u.id === 'owner')!.active = false; return { changed: true, result: null }; });
+      }
+    });
+    const before = f.writes().length;
+    await assert.rejects(f.run({ allowSigningRecovery: true }), e => e instanceof ApiError && e.status === 403);
+    assert.equal(f.writes().length, before + 1); assert.equal(f.calls.some(c => c.side === 'carrier' && c.method === 'СБИС.ВыполнитьДействие'), false);
+    const calls = f.calls.length; const background = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.equal(background.denied, 1); assert.equal(f.calls.length, calls);
+  } finally { await f.close(); }
+});
+
+test('only the authenticated ordinary workflow POST enables legacy recovery; both GET endpoints remain read-only', async () => {
+  const f = await legacyCarrierFixture(); const token = 'd'.repeat(64);
+  await f.store.mutate(f.source, data => { data.accounts!.sessions.push({ userId: 'actor', hash: createHash('sha256').update(token).digest('hex'), expiresAt: Date.now() + 60_000 }); return { changed: true, result: null }; });
+  const middleware = createSnapshotMiddleware(f.snapshotDirectory, { operationsStore: f.store, sabyClient: new SabyClient(f.config, f.send) });
+  const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/shipment-trips/${f.tripId}/saby-workflow`;
+  const headers = { 'Content-Type': 'application/json', Cookie: `artel_session=${token}` };
+  try {
+    const before = f.writes().length;
+    assert.equal((await fetch(url, { headers })).status, 200); assert.equal((await fetch(`${url}/signing`, { headers })).status, 200);
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+    assert.equal(f.writes().length, before); assert.equal((await f.record()).signing!.carrier.recovery, undefined);
+    const response = await fetch(url, { method: 'POST', headers, body: '{}' });
+    assert.equal(response.status, 200); const result = await response.json(); assert.equal(result.signing.state, 'completed', JSON.stringify(result));
+    assert.equal((await f.record()).signing!.carrier.recovery!.requestedBy, 'actor'); assert.equal(f.writes().length, before + 2);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); await f.close(); }
 });
