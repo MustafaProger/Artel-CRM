@@ -29,7 +29,6 @@ input:is([type="date"], [type="datetime-local"], [type="time"], [type="month"]):
 .work-push-settings [role="alert"] { color: #B54837; }
 .work-push-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .work-push-actions .button { white-space: normal; text-align: left; }
-.work-company-search { margin-top: 16px; }
 @media (max-width: 650px) {
   .work-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 42px; padding: 12px; }
   .work-views { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }

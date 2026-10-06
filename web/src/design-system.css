@@ -201,8 +201,7 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
 
 /* A single capsule shape for every search surface, including editors and driver UI.
  * The wrapper owns the border/focus; its input must remain borderless. */
-:is(.app-shell.app-shell, .driver-shell.driver-shell) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .company-combobox, .filter-search):not(:where(.shipment-grid *)),
-.app-shell.app-shell .work-company-search > input {
+:is(.app-shell.app-shell, .driver-shell.driver-shell) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .company-combobox, .filter-search):not(:where(.shipment-grid *)) {
   border-radius: var(--ui-search-radius);
   min-height: var(--ui-control-size);
 }
