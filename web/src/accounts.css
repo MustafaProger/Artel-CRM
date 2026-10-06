@@ -19,7 +19,6 @@
   box-sizing: border-box;
   margin: 0 0 20px;
 }
-.account-driver-editor { margin-bottom: 28px; }
 .account-driver-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
 .account-driver-fields label { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 8px; font-size: 13px; }
 .account-driver-fields select { min-width: 0; max-width: 100%; width: 100%; overflow: hidden; text-overflow: ellipsis; min-height: 44px; border: 1px solid #dedfe4; border-radius: 12px; padding: 10px 12px; background: #fff; font: inherit; }
@@ -67,7 +66,6 @@
 .account-panel .account-form .active-field { display: flex; gap: 10px; cursor: pointer; }
 .account-panel .account-actions { display: flex; gap: 10px; }
 .account-list-heading { display: flex; align-items: center; gap: 9px; margin-top: 0; }
-.account-panel > .account-form + .account-list-heading { margin-top: 28px; }
 .account-list-heading > span { background: #f0f1f4; color: #62666d; font-size: 12px; padding: 3px 8px; border-radius: 7px; }
 .account-panel .account-list { gap: 0; margin: 12px 0 0; }
 .account-panel .account-row { flex-wrap: nowrap; gap: 16px; padding: 20px 0; border-bottom: 1px solid #eceef1; align-items: start; }
@@ -117,4 +115,4 @@
 @media (prefers-reduced-motion: reduce) { .account-panel .account-form input.account-toggle, .account-panel .account-form input.account-toggle::after { transition: none; } .account-panel .button:active { transform: none; } }
 @media (prefers-contrast: more) { .account-panel .account-form input.account-toggle { outline: 1px solid #555; } .account-panel .account-row small, .account-panel .account-form .work-hint { color: #454950; } }
 
-.account-editor { scroll-margin-top: 24px; }
+.account-editor { scroll-margin-top: 24px; margin-bottom: 28px; }
