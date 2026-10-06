@@ -5,7 +5,7 @@ export async function verifyFocusFeedback(page, locator, name) {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const result = await locator.evaluate(element => {
     const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search, .auth-input-wrap') || element;
-    const native = element.matches('input:is([type="checkbox"], [type="radio"], [type="range"], [type="file"])');
+    const native = element.matches('input:is([type="checkbox"], [type="radio"])');
     const style = () => getComputedStyle(surface);
     const colour = () => native ? style().outlineColor : style().borderTopColor;
     const finish = () => { colour(); surface.getAnimations().forEach(animation => animation.finish()); colour(); };
