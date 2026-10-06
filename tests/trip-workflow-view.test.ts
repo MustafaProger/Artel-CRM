@@ -101,7 +101,7 @@ test('lost signing responses explain reconciliation without suggesting another s
   const state = failedWorkflow('sender_action_required');
   state.phase = 'awaiting_carrier';
   state.signing = { state: 'unknown', requestedAt: '2026-10-06T10:00:00Z', sender: { state: 'unknown' }, carrier: { state: 'not_started' } };
-  assert.match(workflowView(state).title, /сверяем/);
+  assert.match(workflowView(state).title, /не подтверждён/);
   assert.match(workflowView(state).text, /повторная отправка не выполняется/);
 });
 
@@ -120,4 +120,49 @@ test('provider owner/device instructions are visible without claiming completion
   assert.match(signingStepView({ state: 'confirmed' }, 'carrier').text, /ответ НК/);
   assert.doesNotMatch(signingStepView({ state: 'waiting' }, 'carrier').text, /ваш|этом устройстве|текущем устройстве/);
   assert.match(signingStepView({ state: 'waiting' }, 'carrier').text, /доступный компьютер/);
+});
+
+test('automatic waiting does not claim an owner approval is needed', () => {
+  const view = signingStepView({ state: 'waiting' }, 'carrier', 'automatic');
+  assert.match(view.text, /ещё не подтвердил подпись/);
+  assert.doesNotMatch(view.text, /подтверждение владельца|ваш компьютер|запустите/);
+});
+
+test('automatic enrollment before an order exists shows the queue and incomplete data separately', () => {
+  const state = failedWorkflow();
+  state.phase = 'preparation'; state.order = null; state.locked = false;
+  state.automation = { enabled: true, enrolled: true };
+  assert.equal(workflowView(state).title, 'Автоматическая отправка в очереди');
+  assert.equal(workflowView(state).step, 0);
+  state.ready = false; state.blockers = ['Не указан адрес нефтебазы'];
+  assert.equal(workflowView(state).title, 'Рейс сохранён · отправка приостановлена');
+  assert.doesNotMatch(workflowView(state).text, /нажмите|подтвердите|проверьте подписи/i);
+});
+
+test('a global automatic policy alone never presents a legacy order as enrolled', () => {
+  const state = failedWorkflow('sender_action_required');
+  state.phase = 'awaiting_carrier'; state.automation = { enabled: true, enrolled: false };
+  assert.equal(workflowView(state).title, 'Состояние существующей заявки');
+  assert.match(workflowView(state).text, /не запускает повторную отправку/);
+});
+
+test('legacy carrier uncertainty preserves sender evidence and does not promise automatic completion', () => {
+  const state = failedWorkflow('carrier_action_required');
+  state.phase = 'awaiting_carrier'; state.automation = { enabled: true, enrolled: false };
+  state.signing = { state: 'unknown', mode: 'with_confirmation', requestedAt: '2026-10-06T10:00:00Z', sender: { state: 'confirmed' }, carrier: { state: 'unknown' } };
+  assert.equal(workflowView(state).step, 3);
+  assert.match(workflowView(state).title, /^НК АРТЕЛЬ/);
+  assert.match(workflowView(state).text, /Продолжение приостановлено/);
+  assert.doesNotMatch(workflowView(state).text, /подтверждение владельца|после запуска|дождитесь|начнётся/);
+  state.phase = 'unknown';
+  assert.equal(workflowView(state).step, 3);
+});
+
+test('automatic sender and carrier stages do not ask for another launch', () => {
+  for (const stage of ['sender_action_required', 'carrier_action_required'] as const) {
+    const state = failedWorkflow(stage);
+    state.phase = 'awaiting_carrier'; state.automation = { enabled: true, enrolled: true };
+    assert.match(workflowView(state).text, /автоматически/);
+    assert.doesNotMatch(workflowView(state).text, /запустите|после запуска|выбранной подписью/i);
+  }
 });

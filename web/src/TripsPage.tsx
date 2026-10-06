@@ -6,7 +6,7 @@ import ShipmentTripEditor from './ShipmentTripEditor'
 import { safeMapUrl } from './TripLocationPicker'
 import { formatDate, number } from './utils'
 import TripEtrnPanel from './TripEtrnPanel'
-import type { TripSabyResponse } from './trip-saby-model'
+import type { TripSabyAutomationCapability, TripSabyResponse } from './trip-saby-model'
 import type { SabyTripResponse } from './saby-model'
 import type { EtrnTripResponse } from './etrn-api-model'
 import { readIntermediateStops } from './trip-route'
@@ -17,11 +17,12 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
   const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyId, setSabyId] = useState<string | null>(null), [notice, setNotice] = useState('')
+  const [automation, setAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true); setError('')
     fetch('/api/shipment-trips', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы'); return result })
-      .then(result => setTrips(result.trips))
+      .then(result => { setTrips(result.trips); setAutomation(result.automation ?? { enabled: false }) })
       .catch(reason => { if (!controller.signal.aborted) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
@@ -53,7 +54,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       {!!filtered.length && <div className="pagination"><span>Рейсов: {filtered.length}</span><div><button className="icon-button" aria-label="Предыдущая страница рейсов" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={18}/></button><span>{currentPage + 1} / {lastPage + 1}</span><button className="icon-button" aria-label="Следующая страница рейсов" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}><ChevronRight size={18}/></button></div></div>}
     </>}
     {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); setRefresh(value => value + 1); onChanged() }}/> }
-    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); setRefresh(value => value + 1); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
+    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); setRefresh(value => value + 1); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
   </div>
 }
 

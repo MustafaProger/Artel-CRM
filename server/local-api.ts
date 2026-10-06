@@ -42,7 +42,8 @@ import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipmen
 import { getSabyTrip, submitSabyTrip } from './saby-service';
 import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile, saveTripLoadingFacts, exchangePreparedEtrn } from './etrn-service';
 import { getTripSigningPreview, validateSigningStart } from './trip-saby-signing';
-import { getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
+import { enqueueAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
+import { automaticSigningCapability } from './saby-auto-policy';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { sabyConfigFromEnv, sabyCredentialBlockers, type SabyClient } from './saby-client';
 import { dispatchTripSaby, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
@@ -732,7 +733,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
             try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
           }).map(id => getShipmentTrip(snapshot, id)).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
-          return write(response, 200, JSON.stringify({ trips }));
+          const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
+          return write(response, 200, JSON.stringify({ trips, automation }));
         }
         if (tripIdMatch) {
           const id = decodeURIComponent(tripIdMatch[1]);
@@ -792,8 +794,9 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       if (pathname === '/api/shipment-trips' || tripIdMatch) {
         const id = tripIdMatch ? decodeURIComponent(tripIdMatch[1]) : undefined;
-        const result = request.method === 'DELETE'
-          ? await operations.mutate(base.provenance.sourceSha256, data => {if(actor)requireManage(authorized(data));return { result: deleteShipmentTrip(base, data, body, id!), changed: true };})
+        const signingConfig = options.sabyClient?.config ?? sabyConfigFromEnv();
+        const saved = request.method === 'DELETE'
+          ? await operations.mutate(base.provenance.sourceSha256, data => {if(actor)requireManage(authorized(data));return { result: { value: deleteShipmentTrip(base, data, body, id!), queued: false }, changed: true };})
           : await operations.mutate(base.provenance.sourceSha256, data => {
             const currentActor=actor?authorized(data):null;
             const snapshot = currentSnapshot(base, data);
@@ -802,17 +805,38 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
               if (!customer || typeof customer !== 'object' || Array.isArray(customer)) return customer;
               return { ...customer, fields: ownShipmentInput(currentActor, customer.fields, snapshot) };
             });
+            const replayed = !id && typeof body.idempotencyKey === 'string' && !!data.tripCreateRequests?.[body.idempotencyKey];
             const result=saveShipmentTrip(base,data,body,id,currentActor?.id ?? null);
             if (currentActor) requireWholeTrip(currentActor, currentSnapshot(base, data), result.trip.id);
             if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
-            return {result,changed:true};
+            // The saved trip and its immutable exchange intent commit together. A repeated
+            // create request never authorizes a new exchange under a later configuration.
+            const automatic = currentActor && !replayed
+              ? enqueueAutomaticTripSaby({ base, data, tripId: result.trip.id, actorId: currentActor.id, config: signingConfig })
+              : { enqueued: false };
+            return { result: { value: result, queued: automatic.enqueued }, changed: !replayed };
           });
+        const result = saved.value;
         if ('trip' in result && pushReady(config)) {
           // The assignment is already committed. A provider failure must not turn a saved trip into an error.
           try { await dispatchTripAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.trip.id); }
           catch { console.error('Уведомление водителю ожидает повторной отправки планировщиком.'); }
         }
-        return write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
+        write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
+        if (saved.queued && 'trip' in result) {
+          const tripId = result.trip.id;
+          const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => {
+            const currentActor = authorized(data);
+            requireTripSection(currentActor, true); requireWholeTrip(currentActor, snapshot, tripId);
+          };
+          const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
+          // Respond to the successful save first. The durable queue survives a process stop;
+          // the authorized scheduler completes it when this immediate attempt cannot finish.
+          void runTripSabyWorkflow({ ...context, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, prepare: prepareTripSaby,
+            createDelivery: (input, guardedClient) => exchangePreparedEtrn({ ...context, client: guardedClient }, input) })
+            .catch(() => { /* Details remain in the workflow; no provider payload enters logs. */ });
+        }
+        return;
       }
       if (Object.keys(body).some(key => !['fields', 'version'].includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
       const result = await operations.mutate<{ shipment: Shipment } | { deleted: boolean; id: string }>(base.provenance.sourceSha256, data => {

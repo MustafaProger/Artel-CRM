@@ -8,7 +8,7 @@ import { currentSnapshot } from './shipment-operations';
 import { exchangeEtrn, exchangePreparedEtrn, type EtrnOptions } from './etrn-service';
 import { SabyClient, sabyCredentialBlockers, type SabyConfig } from './saby-client';
 import { prepareTripSaby } from './trip-saby-preparation';
-import { runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
+import { authorizeAutomaticTripSaby, runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
 import { authorizeSigningActor } from './trip-saby-signing';
 import { carrierFastPolling } from './trip-saby-carrier';
 
@@ -20,6 +20,8 @@ export interface TripSabySchedulerOptions {
   base: Snapshot; store: OperationsStorage; config: SabyConfig; enabled: boolean;
   prepare?: PrepareTripSaby; send?: typeof fetch; now?: number;
   carrierWaitingOnly?: boolean;
+  /** The post-save dispatch processes only the newly enqueued trip. */
+  tripId?: string;
 }
 export interface TripSabyDispatchResult { continued: number; refreshed: number; denied: number; failed: number }
 
@@ -53,19 +55,22 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
   const source = base.provenance.sourceSha256;
   const initial = await store.read(source);
   for (const [tripId, record] of Object.entries(initial.tripSaby?.trips ?? {})) {
+    if (options.tripId && options.tripId !== tripId) continue;
     if (options.carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
     const authorityId = record.signing?.requestedBy ?? record.initiatorId;
     if (!authorityId) continue;
     const expiredSubmission = record.phase === 'submitting' && !!record.leaseId
       && (!record.leaseUntil || Date.parse(record.leaseUntil) <= (options.now ?? Date.now()));
-    const continuing = ['awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'unknown'].includes(record.phase) || expiredSubmission;
+    const queuedAutomatic = !!record.autoAuthorization && record.phase === 'submitting' && !record.leaseId && !record.reservationAttempted && !record.uploadAttempted && !record.order.id;
+    const continuing = ['awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic;
     if (!continuing && record.phase !== 'completed') continue;
     const authorize = (snapshot: Snapshot, data: OperationsData) => {
       const current = data.tripSaby?.trips[tripId];
-      if (!current || current.attemptId !== record.attemptId || current.initiatorId !== record.initiatorId || current.signing?.requestId !== record.signing?.requestId || (current.signing?.requestedBy ?? current.initiatorId) !== authorityId) throw new ApiError(403, 'Основание фонового обмена изменилось.');
+      if (!current || current.attemptId !== record.attemptId || current.initiatorId !== record.initiatorId || (current.signing?.requestId ?? current.autoAuthorization?.requestId) !== (record.signing?.requestId ?? record.autoAuthorization?.requestId) || (current.signing?.requestedBy ?? current.initiatorId) !== authorityId) throw new ApiError(403, 'Основание фонового обмена изменилось.');
       const user = data.accounts?.users.find(row => row.id === authorityId && row.active && !row.deletedAt);
       if (!user) throw new ApiError(403, 'Инициатор обмена больше не имеет доступа.');
       authorizeSigningActor(snapshot, data, tripId, current);
+      authorizeAutomaticTripSaby(snapshot, data, tripId, current, config);
       const actor = publicUser(user);
       requireTripSection(actor, true); requireWholeTrip(actor, snapshot, tripId);
     };

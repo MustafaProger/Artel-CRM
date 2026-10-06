@@ -171,7 +171,7 @@ try {
 
   workflow = initial(); startMode = 'lost-saved'; await page.reload(); await page.getByRole('button', { name: 'Saby', exact: true }).click();
   await diagnose(); await consent().check(); const priorDiagnostics = diagnostics; await launch().click();
-  await expect(panel).toContainText('Сверяем результат подписания');
+  await expect(panel).toContainText('Результат подписания не подтверждён');
   await expect.poll(() => diagnostics).toBeGreaterThan(priorDiagnostics);
   await expect(launch()).toHaveCount(0); assert.equal(starts.length, 2); assert.equal(reconciles, 1);
   await panel.getByRole('button', { name: 'Сверить состояние подписания', exact: true }).click();

@@ -31,6 +31,7 @@ export interface TripSabySigningStep {
 }
 export interface TripSabySigning {
   state: 'active' | 'blocked' | 'unknown' | 'completed';
+  mode?: 'automatic' | 'with_confirmation';
   requestedAt: string;
   sender: TripSabySigningStep;
   carrier: TripSabySigningStep;
@@ -58,6 +59,8 @@ export interface TripSabySigningStartRequest {
   carrierSignatureId: string;
   confirmed: true;
 }
+export interface TripSabyAutomationCapability { enabled: boolean; message?: string }
+export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean }
 export interface TripSabyResponse {
   status: 'not_sent' | 'sent' | 'error';
   phase: 'preparation' | 'submitting' | 'unknown' | 'awaiting_carrier' | 'awaiting_loading' | 'creating_etrn' | 'completed' | 'error';
@@ -76,4 +79,5 @@ export interface TripSabyResponse {
   carrierHandoff?: TripSabyCarrierHandoff;
   carrierFill?: TripSabyCarrierFill;
   signing?: TripSabySigning;
+  automation?: TripSabyAutomation;
 }

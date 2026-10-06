@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readSabyTransportProfile, type SabyTransportProfile } from './saby-transport-order';
 import { signingActionRequest, verifyPreparedSigning, type SabyPreparedSigning, type SabySigningBinding, type SabySigningSide } from './saby-signing';
+import { readAutomaticSigningPolicy, type SabyAutomaticSigningPolicy } from './saby-auto-policy';
 
 /** Server-only Saby TMS JSON-RPC transport. See docs/saby-integration.md. */
 export type SabyObject = Record<string, unknown>;
@@ -12,6 +13,7 @@ export interface SabyConfig {
   customer: SabyOrganization; carrier: SabyOrganization;
   timeoutMs?: number; transportProfile?: SabyTransportProfile; consignmentSigner?: SabyConsignmentSigner;
   carrierResponsible?: SabyCarrierResponsible | null;
+  automaticSigning?: SabyAutomaticSigningPolicy; automaticSigningError?: string;
 }
 export const sabyObject = (value: unknown): value is SabyObject => !!value && typeof value === 'object' && !Array.isArray(value);
 export const sabyText = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -41,7 +43,8 @@ function consignmentSignerFromEnv(raw: string | undefined): SabyConsignmentSigne
 }
 export function sabyConfigFromEnv(env: NodeJS.ProcessEnv = process.env): SabyConfig {
   const organization = (prefix: string): SabyOrganization => ({ inn: env[`${prefix}_INN`]?.trim() ?? '', kpp: env[`${prefix}_KPP`]?.trim() ?? '', name: env[`${prefix}_NAME`]?.trim() ?? '', address: env[`${prefix}_ADDRESS`]?.trim() ?? '', phone: env[`${prefix}_PHONE`]?.trim(), edoId: env[`${prefix}_EDO_ID`]?.trim() });
-  return { login: env.SABY_LOGIN, password: env.SABY_PASSWORD, accountNumber: env.SABY_ACCOUNT_NUMBER, carrierAccountNumber: env.SABY_CARRIER_ACCOUNT_NUMBER?.trim() || undefined, sessionId: env.SABY_SESSION_ID, customer: organization('SABY_CUSTOMER'), carrier: organization('SABY_CARRIER'), transportProfile: readSabyTransportProfile(env.SABY_TRANSPORT_PROFILE_JSON), consignmentSigner: consignmentSignerFromEnv(env.SABY_CONSIGNMENT_SIGNER_JSON), carrierResponsible: carrierResponsibleFromEnv(env.SABY_CARRIER_RESPONSIBLE_JSON) };
+  const automatic = readAutomaticSigningPolicy(env.SABY_AUTO_SIGNING_JSON);
+  return { login: env.SABY_LOGIN, password: env.SABY_PASSWORD, accountNumber: env.SABY_ACCOUNT_NUMBER, carrierAccountNumber: env.SABY_CARRIER_ACCOUNT_NUMBER?.trim() || undefined, sessionId: env.SABY_SESSION_ID, customer: organization('SABY_CUSTOMER'), carrier: organization('SABY_CARRIER'), transportProfile: readSabyTransportProfile(env.SABY_TRANSPORT_PROFILE_JSON), consignmentSigner: consignmentSignerFromEnv(env.SABY_CONSIGNMENT_SIGNER_JSON), carrierResponsible: carrierResponsibleFromEnv(env.SABY_CARRIER_RESPONSIBLE_JSON), automaticSigning: automatic.policy, automaticSigningError: automatic.error };
 }
 const CARRIER_CREDENTIALS_ERROR = 'Для проверки отдельного кабинета перевозчика Saby нужны серверные логин и пароль.';
 function separateCarrierAccountNumber(config: SabyConfig): string | null {

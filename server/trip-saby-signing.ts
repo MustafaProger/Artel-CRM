@@ -43,21 +43,25 @@ export interface TripSigningRecord {
   requestedBy: string; requestedAt: string; requestId: string; previewToken: string;
   workflowAttemptId: string; documentId: string; revision: string; payloadHash: string;
   selection: { sender: string; carrier: string };
+  mode?: 'automatic' | 'with_confirmation';
   sender: TripSigningStep; carrier: TripSigningStep;
   carrierDraft?: { binding: SabySigningBinding; state: 'preparing' | 'ready' | 'unknown' | 'blocked' };
 }
 export function publicTripSigning(value: TripSigningRecord | undefined): TripSabySigning | undefined {
   if (!value) return undefined;
   const state = [value.sender.state, value.carrier.state];
-  return { requestedAt: value.requestedAt, state: state.every(x => x === 'confirmed') ? 'completed' : state.includes('blocked') ? 'blocked' : state.some(x => ['unknown', 'preparing'].includes(x)) ? 'unknown' : 'active', sender: { state: value.sender.state, ...(value.sender.message ? { message: value.sender.message } : {}) }, carrier: { state: value.carrier.state, ...(value.carrier.message ? { message: value.carrier.message } : {}) } };
+  return { requestedAt: value.requestedAt, mode: value.mode ?? 'with_confirmation', state: state.every(x => x === 'confirmed') ? 'completed' : state.includes('blocked') ? 'blocked' : state.some(x => ['unknown', 'preparing'].includes(x)) ? 'unknown' : 'active', sender: { state: value.sender.state, ...(value.sender.message ? { message: value.sender.message } : {}) }, carrier: { state: value.carrier.state, ...(value.carrier.message ? { message: value.carrier.message } : {}) } };
 }
 export function validateTripSigning(value: unknown): void {
   if (value === undefined) return;
-  if (!sabyObject(value) || Object.keys(value).some(k => !['requestedBy', 'requestedAt', 'requestId', 'previewToken', 'workflowAttemptId', 'documentId', 'revision', 'payloadHash', 'selection', 'sender', 'carrier', 'carrierDraft'].includes(k)) || !['requestedBy', 'requestId', 'workflowAttemptId', 'documentId', 'revision'].every(k => sabyText(value[k])) || !date(value.requestedAt) || !digest(value.previewToken) || !digest(value.payloadHash) || !sabyObject(value.selection) || Object.keys(value.selection).length !== 2 || !['sender', 'carrier'].every(k => typeof (value.selection as SabyObject)[k] === 'string' && /^[A-Fa-f0-9]{40,128}$/.test(String((value.selection as SabyObject)[k])))) throw new Error('Invalid trip signing intent');
+  if (!sabyObject(value) || Object.keys(value).some(k => !['requestedBy', 'requestedAt', 'requestId', 'previewToken', 'workflowAttemptId', 'documentId', 'revision', 'payloadHash', 'selection', 'sender', 'carrier', 'carrierDraft', 'mode'].includes(k)) || !['requestedBy', 'requestId', 'workflowAttemptId', 'documentId', 'revision'].every(k => sabyText(value[k])) || !date(value.requestedAt) || !digest(value.previewToken) || !digest(value.payloadHash) || !sabyObject(value.selection) || Object.keys(value.selection).length !== 2 || !['sender', 'carrier'].every(k => typeof (value.selection as SabyObject)[k] === 'string' && /^[A-Fa-f0-9]{40,128}$/.test(String((value.selection as SabyObject)[k])))) throw new Error('Invalid trip signing intent');
+  if (value.mode !== undefined && !['automatic', 'with_confirmation'].includes(String(value.mode))) throw new Error('Invalid signing mode');
+  const expectedKey = value.mode === 'automatic' ? 'Отложенный' : 'ОтложенныйСПодтверждением';
   if (value.carrierDraft !== undefined) {
     const draft = value.carrierDraft;
     if (!sabyObject(draft) || Object.keys(draft).some(k => !['binding', 'state'].includes(k)) || !['preparing', 'ready', 'unknown', 'blocked'].includes(String(draft.state)) || !sabyObject(draft.binding) || draft.binding.side !== 'carrier' || draft.binding.documentId !== value.documentId || draft.binding.certificateThumbprint !== (value.selection as SabyObject).carrier || draft.binding.attachmentId !== 'unprepared-carrier-title') throw new Error('Invalid carrier draft preparation');
     assertSigningBinding(draft.binding as unknown as SabySigningBinding);
+    if ((draft.binding.keyType ?? 'ОтложенныйСПодтверждением') !== expectedKey) throw new Error('Carrier draft signing mode changed');
   }
   for (const side of ['sender', 'carrier'] as const) {
     const step = value[side];
@@ -67,7 +71,8 @@ export function validateTripSigning(value: unknown): void {
     if (step.binding !== undefined) {
       const binding = step.binding;
       const keys = ['side', 'documentId', 'revision', 'stageId', 'stageName', 'actionName', 'certificateThumbprint', 'organizationInn', 'organizationKpp', 'counterpartyInn', 'counterpartyKpp', 'attachmentSubtype', 'attachmentId'];
-      if (!sabyObject(binding) || Object.keys(binding).some(k => !keys.includes(k)) || !keys.every(k => sabyText(binding[k])) || binding.side !== side || binding.documentId !== value.documentId || binding.certificateThumbprint !== (value.selection as SabyObject)[side] || binding.attachmentSubtype !== (side === 'sender' ? '1110361' : '1110362')) throw new Error('Invalid signing binding');
+      if (!sabyObject(binding) || Object.keys(binding).some(k => ![...keys, 'keyType'].includes(k)) || !keys.every(k => sabyText(binding[k])) || binding.side !== side || binding.documentId !== value.documentId || binding.certificateThumbprint !== (value.selection as SabyObject)[side] || binding.attachmentSubtype !== (side === 'sender' ? '1110361' : '1110362')) throw new Error('Invalid signing binding');
+      if (binding.stageId !== 'observed-signed' && (binding.keyType ?? 'ОтложенныйСПодтверждением') !== expectedKey || binding.keyType !== undefined && !['Отложенный', 'ОтложенныйСПодтверждением'].includes(String(binding.keyType))) throw new Error('Signing mode changed');
     }
     if (step.prepared !== undefined) {
       const prepared = step.prepared;
@@ -81,7 +86,7 @@ export function validateTripSigning(value: unknown): void {
       const original = recovery.originalBinding;
       const keys = ['side', 'documentId', 'revision', 'stageId', 'stageName', 'actionName', 'certificateThumbprint', 'organizationInn', 'organizationKpp', 'counterpartyInn', 'counterpartyKpp', 'attachmentSubtype', 'attachmentId'];
       const sameKeys = (step.binding as SabyObject).stageId === 'observed-signed' ? keys.filter(k => !['stageId', 'stageName', 'actionName'].includes(k)) : keys;
-      if (Object.keys(original).length !== keys.length || Object.keys(original).some(k => !keys.includes(k)) || !sameKeys.every(k => original[k] === (step.binding as SabyObject)[k]) || original.stageId === 'observed-signed') throw new Error('Signing recovery changed original binding');
+      if (Object.keys(original).length !== keys.length + (original.keyType === undefined ? 0 : 1) || Object.keys(original).some(k => ![...keys, 'keyType'].includes(k)) || original.keyType !== (step.binding as SabyObject).keyType || !sameKeys.every(k => original[k] === (step.binding as SabyObject)[k]) || original.stageId === 'observed-signed') throw new Error('Signing recovery changed original binding');
     }
     if (['preparing', 'requested', 'confirmed'].includes(String(step.state)) && !step.binding || step.executeAttempted && !step.prepared || step.state === 'confirmed' && !step.prepared) throw new Error('Incomplete signing step');
   }
@@ -171,10 +176,22 @@ export async function beginTripSigning(client: SabyClient, record: TripSabyRecor
     if (previous.requestId !== request.requestId || previous.requestedBy !== requestedBy || previous.previewToken !== request.previewToken || previous.selection.sender !== request.senderSignatureId || previous.selection.carrier !== request.carrierSignatureId) throw new ApiError(409, 'По этой заявке уже запущено другое поручение. Обновите состояние.');
     return;
   }
+  if (record.autoAuthorization) throw new ApiError(409, 'По этому рейсу уже сохранено поручение на автоматическую отправку.');
   const preview = await previewFor(client, record);
   if (!preview.ready || !preview.previewToken || preview.previewToken !== request.previewToken) throw new ApiError(409, 'Заявка или доступные подписи изменились. Проверьте сведения ещё раз перед запуском.');
   if (!preview.sender.signatures.some(c => c.id === request.senderSignatureId) || !preview.carrier.signatures.some(c => c.id === request.carrierSignatureId)) throw new ApiError(422, 'Выбранная подпись не принадлежит нужной стороне или больше недоступна.');
   await update(row => { row.initiatorId ??= requestedBy; row.carrierFill ??= newCarrierFill(); row.signing = { requestedBy, requestedAt: stamp(), requestId: request.requestId, previewToken: request.previewToken, workflowAttemptId: row.attemptId, documentId: row.order.id!, revision: preview.order.revision!, payloadHash: row.payloadHash, selection: { sender: request.senderSignatureId, carrier: request.carrierSignatureId }, sender: { state: 'not_started' }, carrier: { state: 'not_started' } }; });
+}
+/** Promotes only the request frozen by the trip-save transaction, after the source title exists. */
+export async function beginAutomaticTripSigning(client: SabyClient, record: TripSabyRecord, update: (mutation: (row: TripSabyRecord) => void) => Promise<void>) {
+  const authorization = record.autoAuthorization;
+  if (!authorization || record.signing) return;
+  const preview = await previewFor(client, record);
+  if (!preview.ready || !preview.previewToken || !preview.order.revision || !preview.sender.signatures.some(cert => cert.id === authorization.selection.sender) || !preview.carrier.signatures.some(cert => cert.id === authorization.selection.carrier)) throw new SabyError('validation', preview.blockers.join(' ') || 'Сохранённые подписи организаций сейчас недоступны. Автоотправка остановлена.');
+  await update(row => {
+    if (!row.autoAuthorization || row.autoAuthorization.requestId !== authorization.requestId || row.signing) throw new ApiError(409, 'Сохранённое поручение автоотправки изменилось.');
+    row.signing = { requestedBy: authorization.requestedBy, requestedAt: authorization.requestedAt, requestId: authorization.requestId, previewToken: preview.previewToken!, workflowAttemptId: row.attemptId, documentId: row.order.id!, revision: preview.order.revision!, payloadHash: row.payloadHash, selection: { ...authorization.selection }, mode: 'automatic', sender: { state: 'not_started' }, carrier: { state: 'not_started' } };
+  });
 }
 const metadata = (prepared: SabyPreparedSigning): SigningMetadata => ({ binding: prepared.binding, preparedHash: prepared.preparedHash, attachments: prepared.attachments.map(({ id, name, subtype, sha256 }) => ({ id, name, subtype, sha256 })) });
 interface AdvanceContext {
@@ -210,10 +227,10 @@ async function finishPreparedSigning(context: AdvanceContext, side: SabySigningS
   await update(row => { row.signing![side] = { ...row.signing![side], state: 'preparing', binding: prepared.binding, prepared: metadata(prepared), preparedVerified: false, message: 'Файлы получены из Saby. CRM проверяет итоговые сведения перед подписанием.' }; });
   await verify();
   await checkAccess();
-  await update(row => { row.signing![side] = { ...row.signing![side], state: 'requested', preparedVerified: true, executeAttempted: true, message: 'Запрос на подпись передан в Saby. Если Saby требует согласие владельца, ожидается его подтверждение.' }; });
+  await update(row => { row.signing![side] = { ...row.signing![side], state: 'requested', preparedVerified: true, executeAttempted: true, message: row.signing!.mode === 'automatic' ? 'Запрос на автоматическое подписание передан в Saby. CRM проверяет результат.' : 'Запрос на подпись передан в Saby. Если Saby требует согласие владельца, ожидается его подтверждение.' }; });
   await checkAccess(); await client.executeDeferredSigning(prepared); await checkAccess();
   const result = await readSigningEvidence(client, metadata(prepared));
-  await update(row => { row.signing![side] = { ...row.signing![side], state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : 'waiting', message: result.reason }; });
+  await update(row => { row.signing![side] = { ...row.signing![side], state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : result.state === 'unconfirmed' ? 'unknown' : 'waiting', message: result.reason }; });
 }
 /** A one-time correction for the known legacy block, never an automatic retry of unknown preparation. */
 async function recoverLegacyCarrierSigning(context: AdvanceContext): Promise<void> {
@@ -232,7 +249,7 @@ async function recoverLegacyCarrierSigning(context: AdvanceContext): Promise<voi
   if (sabyOrderStateCode(remote) !== '10' || business.revision !== step.binding.revision || !attachment || attachment.Идентификатор !== step.binding.attachmentId || rows(attachment.Подпись).length || fill?.state !== 'saved' || !fill.driverSaved || !fill.vehicleSaved || fill.responsibleSaved === false || fill.blockers.length || !fill.intent?.verified || fill.intent.revision !== step.binding.revision || fill.intent.attachmentId !== step.binding.attachmentId) throw new SabyError('validation', 'Состояние или заполнение ответа НК изменилось. Продолжение остановлено.');
   const cert = signingCertificateForOrganization(await client.readSigningCertificate('carrier', intent.selection.carrier), record.snapshot.carrierOrganization);
   if (!cert || cert.thumbprint !== intent.selection.carrier) throw new SabyError('validation', 'Выбранная подпись НК больше не подтверждена.');
-  const binding = createSigningBinding(remote, 'carrier', cert, client.config);
+  const binding = createSigningBinding(remote, 'carrier', cert, client.config, intent.mode === 'automatic' ? 'Отложенный' : undefined);
   if (hash(binding) !== hash(step.binding)) throw new SabyError('validation', 'Этап или действие НК изменились после остановки. Продолжение остановлено.');
   const current = await client.downloadSigningAttachment('carrier', intent.documentId, binding.attachmentId, binding.revision);
   verifySabyCarrierLink(current.bytes, business.sourceIdentity);
@@ -260,7 +277,7 @@ export async function ensureSigningCarrierDraft(context: AdvanceContext): Promis
   try {
     await checkAccess();
     const sourceEvidence = await readSigningEvidence(client, intent.sender.prepared!);
-    if (sourceEvidence.state !== 'confirmed') { await update(row => { row.signing!.sender.state = sourceEvidence.state === 'changed' ? 'blocked' : 'waiting'; row.signing!.sender.message = sourceEvidence.reason; }); return; }
+    if (sourceEvidence.state !== 'confirmed') { await update(row => { row.signing!.sender.state = sourceEvidence.state === 'changed' ? 'blocked' : sourceEvidence.state === 'unconfirmed' ? 'unknown' : 'waiting'; row.signing!.sender.message = sourceEvidence.reason; }); return; }
     const remote = await client.readSigningOrder('carrier', intent.documentId);
     const business = await readBusiness(client, record, remote, 'carrier');
     const senderFile = intent.sender.prepared!.attachments.find(file => file.id === intent.sender.prepared!.binding.attachmentId);
@@ -278,7 +295,7 @@ export async function ensureSigningCarrierDraft(context: AdvanceContext): Promis
     if (sabyOrderStateCode(remote) !== '10') return;
     const cert = signingCertificateForOrganization(await client.readSigningCertificate('carrier', intent.selection.carrier), record.snapshot.carrierOrganization);
     if (!cert || cert.thumbprint !== intent.selection.carrier) throw new SabyError('validation', 'Подпись НК больше не доступна выбранному сотруднику.');
-    const binding = createCarrierDraftBinding(remote, cert, client.config);
+    const binding = createCarrierDraftBinding(remote, cert, client.config, intent.mode === 'automatic' ? 'Отложенный' : undefined);
     await update(row => { row.signing!.carrierDraft = { binding, state: 'preparing' }; row.signing!.carrier = { state: 'waiting', message: 'Saby формирует черновик ответа НК; подписание ещё не выполняется.' }; });
     await checkAccess(); await prepareCarrierDraft(client, binding);
     await update(row => { row.signing!.carrierDraft!.state = 'ready'; });
@@ -305,7 +322,7 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
         return;
       }
       const result = await readSigningEvidence(client, initialStep.prepared);
-      await save({ ...initialStep, state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : initialStep.executeAttempted ? 'waiting' : 'unknown', message: result.reason });
+      await save({ ...initialStep, state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : result.state === 'pending' && initialStep.executeAttempted ? 'waiting' : 'unknown', message: result.reason });
       return;
     }
     if (initialStep.binding) {
@@ -353,7 +370,7 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
       const prepared = await captureSignedTitle(client, side, remote, cert);
       const binding = prepared.binding;
       const result = await readSigningEvidence(client, prepared);
-      await save({ ...initialStep, state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : 'waiting', message: result.reason, binding, prepared, preparedVerified: true });
+      await save({ ...initialStep, state: result.state === 'confirmed' ? 'confirmed' : result.state === 'changed' ? 'blocked' : result.state === 'unconfirmed' ? 'unknown' : 'waiting', message: result.reason, binding, prepared, preparedVerified: true });
       return;
     }
     if (side === 'sender' && business.revision !== intent.revision) throw new SabyError('validation', 'Редакция исходной заявки изменилась после подтверждения.');
@@ -366,7 +383,7 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
       verifySabyCarrierLink(file.bytes, business.sourceIdentity);
       carrierBefore = file.bytes;
     }
-    const binding = createSigningBinding(remote, side, cert, client.config);
+    const binding = createSigningBinding(remote, side, cert, client.config, intent.mode === 'automatic' ? 'Отложенный' : undefined);
     await save({ state: 'preparing', binding, ...(carrierBefore ? { businessHash: carrierBusinessHash(carrierBefore) } : {}), message: 'Saby подготавливает выбранный титул к подписанию.' });
     await checkAccess();
     const prepared = await prepareBoundSigning(client, binding);

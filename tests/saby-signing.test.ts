@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { SabyClient, SabyError, type SabyObject } from '../server/saby-client';
-import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningSide } from '../server/saby-signing';
+import { SabyClient, SabyError, sabyConfigFromEnv, type SabyObject } from '../server/saby-client';
+import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningKeyType, type SabySigningSide } from '../server/saby-signing';
 
 const fp = 'a'.repeat(40);
 const config = { sessionId: 'synthetic-sender-session', login: 'synthetic-login', password: 'synthetic-password', accountNumber: 'synthetic-sender', carrierAccountNumber: 'synthetic-carrier',
@@ -28,8 +28,15 @@ function preparation(doc: SabyObject): SabyObject {
   stage.Вложение = (result.Вложение as SabyObject[]).map(file => ({ ...file, ТребуемоеДействие: 'Подписать', Модифицирован: 'Да' }));
   return result;
 }
-function prepared(side: SabySigningSide = 'sender'): SabyPreparedSigning {
-  const binding = createSigningBinding(document(side), side, normalizeSigningCertificate(certificateRow(side))!, config);
+function advertiseAutomaticSigning(doc: SabyObject, asArray = false): SabyObject {
+  const action = ((doc.Этап as SabyObject[])[0].Действие as SabyObject[])[0];
+  const certificate = { Отпечаток: fp.toUpperCase(), Ключ: { Тип: 'Отложенный', Активирован: 'Да' } };
+  action.Сертификат = asArray ? [certificate] : certificate;
+  return doc;
+}
+function prepared(side: SabySigningSide = 'sender', keyType?: SabySigningKeyType): SabyPreparedSigning {
+  const doc = keyType === 'Отложенный' ? advertiseAutomaticSigning(document(side)) : document(side);
+  const binding = createSigningBinding(doc, side, normalizeSigningCertificate(certificateRow(side))!, config, keyType);
   const attachments = [{ id: 'title-synthetic', name: 'synthetic.xml', subtype: binding.attachmentSubtype, sha256: digest(bytes), bytes }];
   return { binding, attachments, preparedHash: signingManifestHash({ binding, attachments }) };
 }
@@ -121,7 +128,7 @@ test('uncertain prepare and execute errors are never blindly retried', async () 
 test('read-back requires final state, the target title, exact content and the chosen organization signature', async () => {
   for (const side of ['sender', 'carrier'] as const) {
     assert.equal((await readSigningEvidence(api(side, { signed: true }).client, prepared(side))).state, 'confirmed');
-    assert.equal((await readSigningEvidence(api(side).client, prepared(side))).state, 'pending');
+    assert.equal((await readSigningEvidence(api(side).client, prepared(side))).state, 'unconfirmed');
     assert.equal((await readSigningEvidence(api(side, { signed: true, alteredBytes: true }).client, prepared(side))).state, 'changed');
   }
   for (const change of [
@@ -133,6 +140,93 @@ test('read-back requires final state, the target title, exact content and the ch
   }
   const pending = api('carrier', { onRequest: request => { if (request.method !== 'СБИС.ПрочитатьДокумент') return; const doc = document('carrier', true); doc.Состояние = { Код: '23' }; return doc; } });
   assert.equal((await readSigningEvidence(pending.client, prepared('carrier'))).state, 'pending');
+});
+
+test('unsigned original stages are unconfirmed; only provider state 23 proves a waiting queue', async () => {
+  for (const side of ['sender', 'carrier'] as const) {
+    for (const code of [side === 'sender' ? '0' : '10', '23']) {
+      const fake = api(side, { onRequest: request => {
+        if (request.method !== 'СБИС.ПрочитатьДокумент') return;
+        const doc = document(side); doc.Состояние = { Код: code }; return doc;
+      } });
+      const evidence = await readSigningEvidence(fake.client, prepared(side));
+      assert.equal(evidence.state, code === '23' ? 'pending' : 'unconfirmed');
+      assert.ok(fake.requests.every(row => ['СБИС.Аутентифицировать', 'СБИС.ПрочитатьДокумент'].includes(row.method)));
+    }
+  }
+});
+
+test('explicit automatic mode is immutable in the manifest and appears only in execution wire payload', async () => {
+  for (const side of ['sender', 'carrier'] as const) {
+    const fake = api(side, { onRequest: request => {
+      if (request.method === 'СБИС.ПрочитатьДокумент') return advertiseAutomaticSigning(document(side), true);
+      if (request.method === 'СБИС.ПодготовитьДействие') return preparation(advertiseAutomaticSigning(document(side)));
+    } });
+    const binding = prepared(side, 'Отложенный').binding;
+    const result = await prepareBoundSigning(fake.client, binding);
+    assert.equal(result.binding.keyType, 'Отложенный');
+    const prepare = fake.requests.find(row => row.method === 'СБИС.ПодготовитьДействие')!;
+    assert.equal((((prepare.params.Документ.Этап as SabyObject).Действие as SabyObject).Сертификат as SabyObject).Ключ, undefined);
+    await fake.client.executeDeferredSigning(result);
+    const execute = fake.requests.find(row => row.method === 'СБИС.ВыполнитьДействие')!;
+    assert.deepEqual((((execute.params.Документ.Этап as SabyObject).Действие as SabyObject[])[0].Сертификат as SabyObject).Ключ, { Тип: 'Отложенный' });
+    assert.equal(fake.requests.filter(row => row.method === 'СБИС.ВыполнитьДействие').length, 1);
+    const modified = structuredClone(result); modified.binding.keyType = 'ОтложенныйСПодтверждением';
+    assert.throws(() => signingActionRequest(modified.binding, modified), SabyError);
+    delete modified.binding.keyType;
+    assert.throws(() => signingActionRequest(modified.binding, modified), SabyError);
+  }
+  const legacy = prepared();
+  assert.equal(legacy.preparedHash, 'baeb825f2a843c04f3891c9339ca9b79fcb2295e5211f3a6d6322ba61988e675');
+  const explicitConfirmation = prepared('sender', 'ОтложенныйСПодтверждением');
+  assert.notEqual(legacy.preparedHash, explicitConfirmation.preparedHash);
+  assert.notEqual(legacy.preparedHash, prepared('sender', 'Отложенный').preparedHash);
+  const invalid = { ...legacy.binding, keyType: 'Серверный' as SabySigningKeyType };
+  assert.throws(() => signingActionRequest(invalid), SabyError);
+  // Completed documents no longer advertise actionable certificate capabilities.
+  assert.equal((await readSigningEvidence(api('sender', { signed: true }).client, prepared('sender', 'Отложенный'))).state, 'confirmed');
+});
+
+test('automatic mode requires advertised selected-certificate capability and stops if it changes before execute', async () => {
+  const certificate = normalizeSigningCertificate(certificateRow())!;
+  const unsupported: Array<(action: SabyObject) => void> = [
+    action => { delete action.Сертификат; },
+    action => { action.Сертификат = { Отпечаток: fp }; },
+    action => { action.Сертификат = { Отпечаток: 'b'.repeat(40), Ключ: { Тип: 'Отложенный' } }; },
+    action => { action.Сертификат = { Отпечаток: fp, Ключ: { Тип: 'ОтложенныйСПодтверждением' } }; },
+    action => { action.Сертификат = { Отпечаток: fp, Ключ: { Тип: 'Отложенный', Активирован: 'Нет' } }; },
+    action => { action.Сертификат = [action.Сертификат, action.Сертификат]; },
+  ];
+  for (const mutate of unsupported) {
+    const doc = advertiseAutomaticSigning(document()); mutate(((doc.Этап as SabyObject[])[0].Действие as SabyObject[])[0]);
+    assert.throws(() => createSigningBinding(doc, 'sender', certificate, config, 'Отложенный'), SabyError);
+    // Missing old metadata must not make legacy confirmation intents unreadable or unexecutable.
+    assert.equal(createSigningBinding(doc, 'sender', certificate, config).keyType, undefined);
+    const fake = api('sender', { onRequest: request => request.method === 'СБИС.ПрочитатьДокумент' ? doc : undefined });
+    await assert.rejects(fake.client.executeDeferredSigning(prepared('sender', 'Отложенный')), SabyError);
+    assert.equal(fake.requests.filter(row => row.method === 'СБИС.ВыполнитьДействие').length, 0);
+  }
+  let reads = 0;
+  const fake = api('sender', { onRequest: request => {
+    if (request.method === 'СБИС.ПрочитатьДокумент') return ++reads === 1 ? advertiseAutomaticSigning(document()) : document();
+  } });
+  await assert.rejects(fake.client.executeDeferredSigning(prepared('sender', 'Отложенный')), SabyError);
+  assert.equal(fake.requests.filter(row => row.method === 'СБИС.ВыполнитьДействие').length, 0);
+});
+
+test('automatic carrier draft keeps mode but cannot execute until the real reply has been prepared', () => {
+  const binding = createCarrierDraftBinding(advertiseAutomaticSigning(carrierWithoutReply()), normalizeSigningCertificate(certificateRow('carrier'))!, config, 'Отложенный');
+  assert.equal(binding.keyType, 'Отложенный');
+  assert.equal(binding.attachmentId, 'unprepared-carrier-title');
+  const pending = prepared('carrier', 'Отложенный'); pending.binding = binding;
+  assert.throws(() => signingActionRequest(binding, pending), SabyError);
+});
+
+test('Saby config parses automatic policy without changing legacy default', () => {
+  assert.equal(sabyConfigFromEnv({}).automaticSigning, undefined);
+  assert.equal(sabyConfigFromEnv({}).automaticSigningError, undefined);
+  assert.equal(sabyConfigFromEnv({ SABY_AUTO_SIGNING_JSON: 'invalid' }).automaticSigning, undefined);
+  assert.ok(sabyConfigFromEnv({ SABY_AUTO_SIGNING_JSON: 'invalid' }).automaticSigningError);
 });
 
 test('a previously signed sender title is capturable by reads and cannot become a write request', async () => {

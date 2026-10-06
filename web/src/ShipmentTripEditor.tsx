@@ -16,6 +16,7 @@ import { isOurOrganizationId, ourOrganizations } from './our-organizations'
 import { type TripIntermediateStop } from './trip-route'
 import { isUnpackagedDiesel } from './trip-input-rules'
 import { driverVehicleId, initialUnloadingFields, loadingDateFields } from './trip-editor-rules'
+import type { TripSabyAutomationCapability } from './trip-saby-model'
 
 interface CustomerDraft {
   key: string
@@ -47,9 +48,9 @@ const sameFields = (expected: Record<string, string | null>, actual: Record<stri
   ? actual.date === value?.slice(0, 10) && actual.loading_planned_at === value && actual.loading_actual_at === value
   : comparable(key, value) === comparable(key, actual[key]))
 
-interface TripEditorProps extends ShipmentEditorProps { tripId?: string; tripMode?: boolean; canManagePlaces?: boolean; onDirectoriesChanged?: () => void }
+interface TripEditorProps extends ShipmentEditorProps { tripId?: string; tripMode?: boolean; canManagePlaces?: boolean; onDirectoriesChanged?: () => void; sabyAutomation?: TripSabyAutomationCapability }
 
-export default function ShipmentTripEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved, tripId: selectedTripId, tripMode = false, canManagePlaces = false, onDirectoriesChanged }: TripEditorProps) {
+export default function ShipmentTripEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved, tripId: selectedTripId, tripMode = false, canManagePlaces = false, onDirectoriesChanged, sabyAutomation }: TripEditorProps) {
   const tripId = selectedTripId ?? shipment?.fields.trip_id
   const idempotencyKey = useRef(crypto.randomUUID())
   const savingLock = useRef(false)
@@ -79,9 +80,24 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [confirmClose, setConfirmClose] = useState(false)
+  const [readAutomation, setReadAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
+  const automation = sabyAutomation ?? readAutomation
   const dirty = serialize(draft) !== initial
   const fields = draft.fields
   const disabled = saving || loading || uncertain
+
+  useEffect(() => {
+    if (sabyAutomation !== undefined) return
+    // Other entry points read the same capability once on open. Saving never
+    // chains a signing call; the Trips page supplies its existing list result.
+    const controller = new AbortController()
+    void fetch('/api/shipment-trips', { signal: controller.signal }).then(async response => {
+      if (!response.ok) return
+      const body = await response.json()
+      if (!controller.signal.aborted) setReadAutomation(body.automation ?? { enabled: false })
+    }).catch(() => {})
+    return () => controller.abort()
+  }, [sabyAutomation])
 
   useEffect(() => {
     const element = dialog.current
@@ -309,7 +325,9 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       <header className="shipment-editor-heading"><div><span>{tripMode ? (tripId ? 'РЕДАКТИРОВАНИЕ РЕЙСА' : 'НОВЫЙ РЕЙС') : (tripId ? 'РЕДАКТИРОВАНИЕ ОТГРУЗКИ' : 'НОВАЯ ОТГРУЗКА')}</span><h2 id="shipment-trip-title">{tripMode ? (tripId ? 'Изменить рейс' : 'Новый рейс') : (tripId ? 'Изменить отгрузку' : 'Добавить отгрузку')}</h2></div><button type="button" className="icon-button" aria-label="Закрыть редактор" disabled={saving} onClick={close}><X size={23}/></button></header>
       <div className="shipment-editor-body" aria-busy={loading || saving}>
         {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={24}/><span>Загружаем отгрузку и всех её клиентов…</span></div> : loadError ? <div className="shipment-trip-loading"><p className="shipment-error" role="alert">{loadError}</p><button type="button" className="button" onClick={() => setReload(value => value + 1)}>Повторить загрузку</button></div> : <>
-          <p className="shipment-editor-note shipment-trip-intro">{tripMode ? 'Сохранение создаёт рабочий рейс и строки клиентов в «Отгрузках». Передать его в Saby можно после сохранения.' : 'Одна машина — одна отгрузка. Укажите общий тоннаж, затем литры и условия для каждого клиента.'}</p>
+          <p className="shipment-editor-note shipment-trip-intro">{tripMode ? 'Сохранение создаёт рабочий рейс и строки клиентов в «Отгрузках».' : 'Одна машина — одна отгрузка. Укажите общий тоннаж, затем литры и условия для каждого клиента.'}</p>
+          {automation?.enabled && <p className="shipment-editor-note" role="note">После сохранения готового рейса CRM автоматически начнёт обмен с Saby и запросит подписи обеих сторон. Если данных не хватает, рейс сохранится, а причина остановки будет показана в Saby.</p>}
+          {!automation?.enabled && automation?.message && <p className="shipment-editor-note" role="note">{automation.message}</p>}
           {uncertain && <p className="shipment-calculation-warning" role="status">Ответ сервера не подтверждён. Повторите сохранение: будет проверен тот же запрос без создания второго рейса.</p>}
           {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
           {conflict && <button type="button" className="button" disabled={saving} onClick={() => setReload(value => value + 1)}>Загрузить актуальный рейс</button>}
