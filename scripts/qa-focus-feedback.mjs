@@ -1,38 +1,49 @@
 import assert from 'node:assert/strict';
 
-// Sample the browser's real CSS transitions, in both directions and on reversal.
+// Sample real CSS transitions and enforce one border, including composed fields.
 export async function verifyFocusFeedback(page, locator, name) {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const result = await locator.evaluate(element => {
     const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search, .auth-input-wrap') || element;
+    const native = element.matches('input:is([type="checkbox"], [type="radio"], [type="range"], [type="file"])');
     const style = () => getComputedStyle(surface);
-    const flush = () => style().outlineColor;
-    const finish = () => { flush(); surface.getAnimations().forEach(animation => animation.finish()); flush(); };
-    const alpha = () => { const color = flush(); return color.startsWith('rgba') ? Number(color.split(',').at(-1).replace(')', '')) : 1; };
+    const colour = () => native ? style().outlineColor : style().borderTopColor;
+    const finish = () => { colour(); surface.getAnimations().forEach(animation => animation.finish()); colour(); };
+    const geometry = () => {
+      const rect = surface.getBoundingClientRect(), css = style();
+      return [rect.width, rect.height, ...['Top', 'Right', 'Bottom', 'Left'].map(side => css[`border${side}Width`])];
+    };
+    const layers = () => ({ outline: style().outlineWidth, shadow: style().boxShadow, innerOutline: getComputedStyle(element).outlineWidth, innerShadow: getComputedStyle(element).boxShadow });
     const sample = () => {
-      flush();
-      const animation = surface.getAnimations().find(animation => animation.transitionProperty === 'outline-color');
-      if (!animation) return { animated: false, alpha: alpha() };
+      colour();
+      const animation = surface.getAnimations().find(animation => animation.transitionProperty === (native ? 'outline-color' : 'border-top-color'));
+      if (!animation) return { animated: false, colour: colour() };
       animation.pause(); animation.currentTime = Number(animation.effect.getTiming().duration) / 2;
-      return { animated: true, duration: animation.effect.getTiming().duration, alpha: alpha() };
+      return { animated: true, duration: animation.effect.getTiming().duration, colour: colour() };
     };
     element.blur(); finish();
-    const rect = surface.getBoundingClientRect(), rest = alpha();
+    const before = geometry(), rest = colour();
     element.focus(); const enter = sample(); finish();
-    const focused = alpha(), width = style().outlineWidth;
+    const focused = colour(), focusLayers = layers();
     element.blur(); const leave = sample();
     element.focus(); const reverse = sample(); finish();
-    const finalRect = surface.getBoundingClientRect();
+    const after = geometry();
     element.blur(); finish();
-    return { rest, enter, focused, width, leave, reverse, end: alpha(), unchangedSize: rect.width === finalRect.width && rect.height === finalRect.height };
+    return { native, rest, enter, focused, focusLayers, leave, reverse, end: colour(), before, after, endLayers: layers(), hasBorder: parseFloat(style().borderTopWidth) > 0 };
   });
-  assert.equal(result.width, '1px', `${name}: ring thickness`);
-  assert.equal(result.rest, 0, `${name}: transparent at rest`);
-  assert.equal(result.focused, 1, `${name}: full focus colour`);
-  assert.equal(result.end, 0, `${name}: transparent after blur`);
-  assert.ok(result.unchangedSize, `${name}: focus must not change geometry`);
+  assert.notEqual(result.rest, result.focused, `${name}: focus changes colour`);
+  assert.equal(result.focused, 'rgb(23, 102, 71)', `${name}: green focus`);
+  assert.equal(result.end, result.rest, `${name}: original colour restored`);
+  assert.deepEqual(result.after, result.before, `${name}: border thickness and dimensions preserved`);
+  if (!result.native) {
+    assert.ok(result.hasBorder, `${name}: existing border is present`);
+    for (const layers of [result.focusLayers, result.endLayers]) {
+      assert.deepEqual(layers, { outline: '0px', shadow: 'none', innerOutline: '0px', innerShadow: 'none' }, `${name}: no second layer`);
+    }
+  }
   for (const direction of ['enter', 'leave']) {
-    assert.ok(result[direction].animated && result[direction].duration === 160 && result[direction].alpha > 0 && result[direction].alpha < 1, `${name}: ${direction} ${JSON.stringify(result)}`);
+    const sample = result[direction];
+    assert.ok(sample.animated && sample.duration === 160 && sample.colour !== result.rest && sample.colour !== result.focused, `${name}: ${direction} ${JSON.stringify(result)}`);
   }
   assert.ok(result.reverse.animated, `${name}: rapid reversal stays animated`);
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -40,9 +51,9 @@ export async function verifyFocusFeedback(page, locator, name) {
     element.focus();
     const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search, .auth-input-wrap') || element;
     const style = getComputedStyle(surface);
-    return { duration: style.transitionDuration, width: style.outlineWidth, colour: style.outlineColor };
+    return { duration: style.transitionDuration, outline: style.outlineWidth, colour: style.borderTopColor };
   });
   assert.equal(reduced.duration, '0s', `${name}: reduced motion`);
-  assert.equal(reduced.width, '1px');
+  if (!result.native) { assert.equal(reduced.outline, '0px'); assert.equal(reduced.colour, result.focused); }
   return { name, ...result, reduced };
 }

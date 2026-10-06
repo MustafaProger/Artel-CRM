@@ -96,9 +96,9 @@ try {
     await expect(locator).toBeFocused();
     const ring = await locator.evaluate(element => {
       const surface = element.closest('.company-combobox, .shipment-search, .bank-search') || element, style = getComputedStyle(surface);
-      return { focused: document.activeElement === element, focusVisible: element.matches(':focus-visible'), temporal: ['date', 'time', 'datetime-local', 'month'].includes(element.type), style: style.outlineStyle, width: parseFloat(style.outlineWidth), shadow: style.boxShadow };
+      return { focused: document.activeElement === element, focusVisible: element.matches(':focus-visible'), temporal: ['date', 'time', 'datetime-local', 'month'].includes(element.type), style: style.outlineStyle, width: parseFloat(style.outlineWidth), shadow: style.boxShadow, border: style.borderTopColor, accent: style.getPropertyValue('--accent').trim() };
     });
-    assert.ok(ring.focused && (ring.temporal || ring.focusVisible) && ((ring.style !== 'none' && ring.width === 1) || ring.shadow !== 'none'), `${name}: visible keyboard focus ${JSON.stringify(ring)}`);
+    assert.ok(ring.focused && (ring.temporal || ring.focusVisible) && ring.width === 0 && ring.shadow === 'none', `${name}: single keyboard focus border ${JSON.stringify(ring)}`);
     report.checks.push(`${name}: keyboard focus visible`);
     (report.focusFeedback ||= []).push(await verifyFocusFeedback(page, locator, name));
   };
@@ -218,11 +218,15 @@ try {
   for (const [index, field] of (await page.locator('.work-editor input:not([type="checkbox"]), .work-editor textarea, .work-editor select').all()).entries()) {
     if (await field.isVisible() && await field.isEnabled()) report.focusFeedback.push(await verifyFocusFeedback(page, field, `work-field-${index}`));
   }
+  await page.getByLabel('Название', { exact: true }).focus();
+  await page.screenshot({ path: resolve(output, 'work-border-focus.png'), fullPage: true });
   await page.locator('.work-editor').getByRole('button', { name: 'Отмена', exact: true }).click();
+  // Include the optional team screen's own stylesheet and variable scope.
+  await page.addStyleTag({ path: resolve(root, 'web/src/team.css') });
   // Additional shared surfaces use synthetic DOM, with the real loaded CSS.
   await page.evaluate(() => {
     const fixture = document.createElement('section'); fixture.id = 'focus-fixture';
-    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-screen', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
+    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-screen', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].filter(wrapper => wrapper !== 'driver-search' || shell === 'driver-shell').map(wrapper => `<div class="${wrapper === 'team-search' ? 'team-page' : ''}"><label class="${wrapper}"><input type="text"></label></div>`).join('')}</div>`).join('');
     document.body.append(fixture);
   });
   for (const [index, field] of (await page.locator('#focus-fixture input, #focus-fixture select, #focus-fixture textarea').all()).entries()) {
