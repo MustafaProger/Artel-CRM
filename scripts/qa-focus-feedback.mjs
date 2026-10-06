@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 export async function verifyFocusFeedback(page, locator, name) {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const result = await locator.evaluate(element => {
-    const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search') || element;
+    const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search, .auth-input-wrap') || element;
     const style = () => getComputedStyle(surface);
     const flush = () => style().outlineColor;
     const finish = () => { flush(); surface.getAnimations().forEach(animation => animation.finish()); flush(); };
@@ -38,7 +38,7 @@ export async function verifyFocusFeedback(page, locator, name) {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const reduced = await locator.evaluate(element => {
     element.focus();
-    const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search') || element;
+    const surface = element.closest('.company-combobox, .shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search, .auth-input-wrap') || element;
     const style = getComputedStyle(surface);
     return { duration: style.transitionDuration, width: style.outlineWidth, colour: style.outlineColor };
   });

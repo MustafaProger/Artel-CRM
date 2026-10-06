@@ -222,17 +222,33 @@ try {
   // Additional shared surfaces use synthetic DOM, with the real loaded CSS.
   await page.evaluate(() => {
     const fixture = document.createElement('section'); fixture.id = 'focus-fixture';
-    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-shell', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
+    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-screen', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
     document.body.append(fixture);
   });
   for (const [index, field] of (await page.locator('#focus-fixture input, #focus-fixture select, #focus-fixture textarea').all()).entries()) {
     // Portal dialogs only contain shipment-field controls and filter-search.
     const applicable = await field.evaluate(element => {
-      const shell = element.closest('.shipment-filter-dialog, .auth-shell');
-      return !shell || (shell.matches('.auth-shell') ? !element.closest('label:not(.shipment-field)') : !!element.closest('.shipment-field, .filter-search'));
+      const shell = element.closest('.shipment-filter-dialog, .auth-screen');
+      return !shell || (shell.matches('.auth-screen') ? !element.closest('label:not(.shipment-field)') : !!element.closest('.shipment-field, .filter-search'));
     });
     if (applicable) report.focusFeedback.push(await verifyFocusFeedback(page, field, `shared-surface-${index}`));
   }
+  const authContext = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
+  await authContext.route('**/*', route => {
+    const request = route.request();
+    assert.equal(new URL(request.url()).origin, runtime.base);
+    assert.ok(['GET', 'HEAD', 'OPTIONS'].includes(request.method()));
+    return route.continue();
+  });
+  const authPage = await authContext.newPage();
+  await authPage.goto(runtime.base);
+  for (const label of ['Логин', 'Пароль']) {
+    const input = authPage.getByLabel(label, { exact: true });
+    await expect(input).toBeVisible();
+    report.focusFeedback.push(await verifyFocusFeedback(authPage, input, `real-auth-${label}`));
+  }
+  await authPage.screenshot({ path: resolve(output, 'auth-focus.png') });
+  await authContext.close();
   assert.equal(report.providerCalls, 0); assert.deepEqual(report.unexpectedRequests, []); assert.deepEqual(report.mutationRequests, []); assert.deepEqual(report.errors, []); assert.deepEqual(report.consoleErrors, []);
   report.status = 'passed';
   report.checks.push('Zero external requests, UI mutations, page errors and console errors');

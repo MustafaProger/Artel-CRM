@@ -418,15 +418,17 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
 /* Keep the ring present but transparent at rest: changing only its colour
  * animates focus AND blur without moving the field. Embedded search inputs
  * delegate to their surface. Ledger editors retain their existing styling. */
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-shell.auth-shell.auth-shell) :is(input:not([type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input)),
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search):not(:where(.shipment-grid *, table *)),
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen) :is(input:not([type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input, .auth-input-wrap > input)),
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog, .auth-screen.auth-screen.auth-screen) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search, .auth-input-wrap):not(:where(.shipment-grid *, table *)),
 .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog .shipment-field :is(input, select) {
   outline: 1px solid transparent;
   outline-offset: 2px;
   transition: outline-color var(--ui-feedback), border-color var(--ui-feedback), box-shadow var(--ui-feedback);
 }
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-shell.auth-shell.auth-shell) :is(input:not([type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input)):focus,
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search):not(:where(.shipment-grid *, table *)):focus-within,
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen) :is(input:not([type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input, .auth-input-wrap > input)):focus,
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog, .auth-screen.auth-screen.auth-screen) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search, .auth-input-wrap):not(:where(.shipment-grid *, table *)):focus-within,
 .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog .shipment-field :is(input, select):focus {
   outline-color: var(--accent);
 }
+
+.auth-screen .auth-input-wrap { box-shadow: none; }
