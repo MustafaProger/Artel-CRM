@@ -35,7 +35,7 @@ export interface SabyConsignmentProfile {
   /** Planned delivery mass; legacy profiles without massSource explicitly confirmed it as actual too. */
   deliveryMassTonnes: string;
   /** Calculated allocation is not evidence of an actual weighing or loading event. */
-  massSource?: 'calculated' | 'confirmed';
+  massSource?: 'calculated' | 'confirmed' | 'driver';
   /** Explicit net mass must never be serialized as the schema's mandatory planned gross. */
   plannedMassKind?: 'net' | 'gross';
   plannedGrossMassTonnes?: string;

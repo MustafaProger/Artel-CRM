@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { Shipment, ShipmentTrip, ShipmentTripResponse, Snapshot } from '../web/src/model';
-import { allocateTrip } from '../web/src/trip-calculations';
+import { allocateTrip, allocateMeasuredTrip } from '../web/src/trip-calculations';
 import { ApiError } from './api-error';
 import type { OperationsData } from './operations-store';
 import { allocateShipmentNumber } from './shipment-numbering';
@@ -11,7 +11,7 @@ import { hasSabyDocuments } from './saby-service';
 import { isUnpackagedDiesel, validLoadingDate } from '../web/src/trip-input-rules';
 import { readIntermediateStops } from '../web/src/trip-route';
 
-const sharedFields = ['organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'quantity_gross_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs', 'trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order'] as const;
+const sharedFields = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'quantity_gross_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs', 'trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order'] as const;
 const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
 const sharedSnapshots = ['loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude'] as const;
 const customerSnapshots = ['unloading_address', 'unloading_map_url', 'unloading_latitude', 'unloading_longitude'] as const;
@@ -19,7 +19,7 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : object(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const pick = (fields: Record<string, string | null>, keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, fields[key] ?? null]));
 
-function checkTripVersions(versions: unknown, rows: Shipment[]) {
+export function checkTripVersions(versions: unknown, rows: Shipment[]) {
   if (!object(versions) || Object.values(versions).some(version => !Number.isSafeInteger(version) || Number(version) < 0)) throw new ApiError(400, 'Передайте версии всех клиентов отгрузки.');
   if (Object.keys(versions).length !== rows.length || rows.some(row => versions[row.id] !== (row.version ?? 0))) throw new ApiError(409, 'Состав или данные отгрузки уже изменены в другом окне. Обновите отгрузку и повторите изменение.');
 }
@@ -50,7 +50,7 @@ export function getShipmentTrip(snapshot: Snapshot, id: string): ShipmentTrip {
   fields.additional_costs = rows[0].fields.trip_additional_costs;
   return {
     id, fields,
-    customers: rows.map(row => ({ id: row.id, version: row.version ?? 0, paidAmount: row.fields.paid_amount_source, fields: pick(row.fields, [...customerFields, ...customerSnapshots]) })),
+    customers: rows.map(row => ({ id: row.id, version: row.version ?? 0, paidAmount: row.fields.paid_amount_source, fields: pick(row.fields, [...customerFields, ...customerSnapshots, ...(fields.trip_flow_version === 'driver-v1' ? ['quantity_tonnes', 'quantity_gross_tonnes'] : [])]) })),
   };
 }
 
@@ -75,6 +75,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   if (existingId && !previousRows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
   if (existingId && hasSabyDocuments(data, existingId)) throw new ApiError(409, 'Рейс уже передаётся или сохранён в Saby. Изменение отправленных данных требует отдельной сверки документа.');
   if (existingId) checkTripVersions(body.versions, previousRows);
+  if (existingId && data.driverTripProgress?.[existingId]?.arrivedAt) throw new ApiError(409, 'Водитель уже зафиксировал прибытие. Состав рейса и факты защищены от изменения.');
   const cleanSnapshots = (raw: unknown, keys: readonly string[], previous?: Shipment) => {
     if (!object(raw)) return raw;
     const copy = { ...raw };
@@ -85,6 +86,15 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     return copy;
   };
   const fields = inputFields(cleanSnapshots(body.fields, sharedSnapshots, previousRows[0]), [...sharedFields, 'loading_at']);
+  const flowVersion = fields.trip_flow_version ?? previousRows[0]?.fields.trip_flow_version ?? null;
+  if (flowVersion !== null && flowVersion !== 'driver-v1' || previousRows.length && flowVersion !== (previousRows[0].fields.trip_flow_version ?? null)) throw new ApiError(400, 'Сценарий существующего рейса изменять нельзя.');
+  const driverFlow = flowVersion === 'driver-v1';
+  if (driverFlow) {
+    for (const key of ['quantity_tonnes', 'quantity_gross_tonnes', 'loading_actual_at']) if (fields[key] != null) throw new ApiError(400, 'Массу и фактические события сохраняет назначенный водитель.');
+    fields.trip_flow_version = flowVersion;
+    fields.quantity_tonnes = previousRows[0]?.fields.trip_total_tonnes ?? null;
+    fields.quantity_gross_tonnes = null;
+  }
   for (const key of ['trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order', 'quantity_gross_tonnes', 'oil_depot_id', 'carrier_id']) {
     if (!Object.hasOwn(fields, key) && previousRows.length) fields[key] = previousRows[0].fields[key] ?? null;
   }
@@ -97,15 +107,16 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   // plan/fact values retain their original distinct values.
   const loadingAt = fields.loading_at;
   if (Object.hasOwn(fields, 'loading_at')) {
-    if (!loadingAt || !validLoadingDate(loadingAt)) throw new ApiError(400, 'Укажите корректную дату отгрузки / погрузки.');
+    if (!loadingAt || !validLoadingDate(loadingAt) || driverFlow && !loadingAt.includes('T')) throw new ApiError(400, 'Укажите корректную дату отгрузки / погрузки.');
     fields.date = loadingAt.slice(0, 10);
     fields.loading_planned_at = loadingAt;
-    fields.loading_actual_at = loadingAt;
+    if (!driverFlow && !previousRows.length) fields.loading_actual_at = loadingAt;
     delete fields.loading_at;
-  } else if (!previousRows.length && fields.date) {
+  } else if (!previousRows.length && fields.date && !driverFlow) {
     fields.loading_planned_at ||= fields.date;
     fields.loading_actual_at ||= fields.loading_planned_at;
   }
+  if (driverFlow && (!fields.loading_planned_at?.includes('T') || !validLoadingDate(fields.loading_planned_at))) throw new ApiError(400, 'Укажите плановую дату и время рейса.');
   // Retain historical legal company links without treating them as fleet filters
   // when the ordinary workflow changes only the actual driver or vehicle.
   const carrierSelectionChanged = (fields.carrier_id ?? null) !== (previousRows[0]?.fields.carrier_id ?? null);
@@ -126,7 +137,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   if (!fields.driver_id) throw new ApiError(400, 'Выберите водителя.');
   const product = snapshot.directories!.products.find(row => row.id === fields.product_id);
   const massChanged = !previousRows.length || fields.quantity_tonnes !== previousRows[0].fields.trip_total_tonnes || fields.product_id !== previousRows[0].fields.product_id || fields.quantity_gross_tonnes !== previousRows[0].fields.quantity_gross_tonnes;
-  if (isUnpackagedDiesel(product) && (massChanged || !fields.quantity_gross_tonnes)) fields.quantity_gross_tonnes = fields.quantity_tonnes;
+  if (!driverFlow && isUnpackagedDiesel(product) && (massChanged || !fields.quantity_gross_tonnes)) fields.quantity_gross_tonnes = fields.quantity_tonnes;
 
   if (fields.quantity_gross_tonnes) {
     const gross = fields.quantity_gross_tonnes.replace(',', '.');
@@ -140,13 +151,14 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     const previous = value.id ? previousRows.find(row => row.id === value.id) : undefined;
     if (value.id && !previous) throw new ApiError(400, 'Клиент не принадлежит этой отгрузке.');
     const customer = inputFields(cleanSnapshots(value.fields, customerSnapshots, previous), customerFields);
+    if (driverFlow && (customer.unloading_planned_at != null || customer.unloading_actual_at != null)) throw new ApiError(400, 'Плановое время выгрузки не задано; фактические события сохраняет водитель.');
     if (!Object.hasOwn(customer, 'intermediate_stops_after') && previous) customer.intermediate_stops_after = previous.fields.intermediate_stops_after ?? null;
     try { if (customer.intermediate_stops_after) customer.intermediate_stops_after = JSON.stringify(readIntermediateStops(customer.intermediate_stops_after)); }
     catch (error) { throw new ApiError(400, error instanceof Error ? error.message : 'Проверьте промежуточные остановки.'); }
     for (const key of ['unloading_planned_at', 'unloading_actual_at']) {
       if (!Object.hasOwn(customer, key) && previous) customer[key] = previous.fields[key] ?? null;
       // Default only a new delivery. Null in an existing record may be an intentional manual clearing.
-      if (!previous && !Object.hasOwn(customer, key)) customer[key] = loadingAt ?? fields.loading_planned_at ?? fields.date ?? null;
+      if (!driverFlow && !previous && !Object.hasOwn(customer, key)) customer[key] = loadingAt ?? fields.loading_planned_at ?? fields.date ?? null;
     }
     return { previous, fields: customer };
   });
@@ -157,15 +169,19 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   for (const customer of customers) {
     if (customer.previous && Object.hasOwn(customer.fields, 'customer_id') && customer.fields.customer_id !== customer.previous.customerId && data.paymentAllocations?.some(allocation => allocation.shipmentId === customer.previous!.id)) throw new ApiError(409, 'Нельзя заменить клиента с привязанными банковскими платежами. Сначала отмените привязку платежей.');
   }
-  let allocation: ReturnType<typeof allocateTrip>;
-  try { allocation = allocateTrip(fields.quantity_tonnes ?? '', customers.map(customer => customer.fields.quantity_litres ?? ''), fields.additional_costs ?? '0'); }
+  let allocation: { tonnes: (string | null)[]; additionalCosts: string[] };
+  try { allocation = driverFlow
+    ? allocateMeasuredTrip(customers.map(customer => customer.previous?.fields.quantity_tonnes ?? null), customers.map(customer => customer.fields.quantity_litres ?? ''), fields.additional_costs ?? '0')
+    : allocateTrip(fields.quantity_tonnes ?? '', customers.map(customer => customer.fields.quantity_litres ?? ''), fields.additional_costs ?? '0'); }
   catch (error) { throw new ApiError(400, error instanceof Error ? error.message : 'Некорректная разбивка отгрузки.'); }
   const exact = Decimal.clone({ precision: 100 });
-  const totalTonnes = allocation.tonnes.reduce((sum, value) => sum.plus(value), new exact(0)).toFixed();
+  const totalTonnes = allocation.tonnes[0] === null ? null : allocation.tonnes.reduce((sum, value) => sum.plus(value!), new exact(0)).toFixed();
   const totalCosts = allocation.additionalCosts.reduce((sum, value) => sum.plus(value), new exact(0)).toFixed();
   const prepared = customers.map((customer, index) => {
-    const input = { ...fields, ...customer.fields, purchase_unit: 'tonnes', quantity_tonnes: allocation.tonnes[index], additional_costs: allocation.additionalCosts[index] };
-    const result = prepareShipmentFields(input, customer.previous, snapshot, { historicalCarrierId: previousRows[0]?.fields.carrier_id });
+    const input: Record<string, string | null> = { ...fields, ...customer.fields, purchase_unit: 'tonnes', quantity_tonnes: allocation.tonnes[index], ...(driverFlow ? { quantity_gross_tonnes: allocation.tonnes[index] } : {}), additional_costs: allocation.additionalCosts[index] };
+    delete input.trip_flow_version;
+    const result = prepareShipmentFields(input, customer.previous, snapshot, { historicalCarrierId: previousRows[0]?.fields.carrier_id, allowMissingMass: driverFlow });
+    if (driverFlow) result.trip_flow_version = 'driver-v1';
     if (previousRows.length && previousRows[0].fields.loading_address_id === result.loading_address_id && previousRows[0].fields.oil_depot_id === result.oil_depot_id) {
       for (const key of sharedSnapshots) if (!result.oil_depot_id || previousRows[0].fields[key]) result[key] = previousRows[0].fields[key] ?? null;
     }

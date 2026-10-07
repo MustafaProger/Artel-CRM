@@ -12,7 +12,8 @@ export interface SabySigningCertificate {
 export interface SabySigningBinding {
   side: SabySigningSide; documentId: string; revision: string; stageId: string; stageName: string; actionName: string;
   certificateThumbprint: string; organizationInn: string; organizationKpp: string; counterpartyInn: string; counterpartyKpp: string;
-  attachmentSubtype: '1110361' | '1110362'; attachmentId: string;
+  documentType?: 'ConsignmentNote';
+  attachmentSubtype: '1110361' | '1110362' | '1110339' | '1110340'; attachmentId: string;
   /** Omitted only by legacy records; they retain owner confirmation. */
   keyType?: SabySigningKeyType;
 }
@@ -72,7 +73,7 @@ function availableStages(document: SabyObject): SabyObject[] {
   // ТекущиеЭтапы: [] and advertises its initial send action in Этап.
   // Only this explicit draft shape may use that action; a nonempty, malformed,
   // or stale current-stage list must never fall back to historical stages.
-  if (document.Тип === 'TransportOrder' && document.Направление === 'Исходящий' && sabyOrderStateCode(document) === '0' &&
+  if (['TransportOrder', 'ConsignmentNote'].includes(String(document.Тип)) && document.Направление === 'Исходящий' && sabyOrderStateCode(document) === '0' &&
       Array.isArray(document.ТекущиеЭтапы) && document.ТекущиеЭтапы.length === 0) {
     return stages.filter(stage => stage.Название === 'Отправка' && stage.Служебный !== 'Да' && stage.Завершен !== 'Да' && stage.Актуален !== 'Нет');
   }
@@ -88,16 +89,18 @@ export function assertSigningBinding(binding: SabySigningBinding): void {
       ![binding.documentId, binding.revision, binding.stageId, binding.stageName, binding.actionName, binding.attachmentId].every(safeIdentifier) ||
       !thumbprint(binding.certificateThumbprint) || ![binding.organizationInn, binding.counterpartyInn].every(value => /^\d{10}$/.test(value)) ||
       ![binding.organizationKpp, binding.counterpartyKpp].every(value => /^\d{9}$/.test(value)) || binding.organizationInn === binding.counterpartyInn ||
-      (binding.side === 'sender' ? binding.attachmentSubtype !== '1110361' || binding.stageName !== 'Отправка' || binding.actionName !== 'Отправить' :
-        binding.attachmentSubtype !== '1110362' || binding.stageName !== 'Утверждение' || !['Утвердить', 'Утверждено'].includes(binding.actionName))) {
+      (binding.documentType === 'ConsignmentNote'
+        ? binding.side === 'sender' ? binding.attachmentSubtype !== '1110339' || binding.stageName !== 'Отправка' || binding.actionName !== 'Погружен' : binding.attachmentSubtype !== '1110340' || binding.stageName !== 'Получение груза' || binding.actionName !== 'Принят'
+        : binding.documentType !== undefined || (binding.side === 'sender' ? binding.attachmentSubtype !== '1110361' || binding.stageName !== 'Отправка' || binding.actionName !== 'Отправить' :
+          binding.attachmentSubtype !== '1110362' || binding.stageName !== 'Утверждение' || !['Утвердить', 'Утверждено'].includes(binding.actionName)))) {
     throw new SabyError('validation', 'Не удалось однозначно привязать подписание к стороне, заявке и этапу Saby.');
   }
 }
 function assertDocumentIdentity(document: SabyObject, binding: SabySigningBinding) {
   assertSigningBinding(binding);
-  if (document.Идентификатор !== binding.documentId || document.Тип !== 'TransportOrder' || document.Удален === 'Да' || document.ЧастичныеДанные === 'Да' ||
+  if (document.Идентификатор !== binding.documentId || document.Тип !== (binding.documentType ?? 'TransportOrder') || document.Удален === 'Да' || document.ЧастичныеДанные === 'Да' ||
       document.Направление !== (binding.side === 'sender' ? 'Исходящий' : 'Входящий') || currentRevision(document) !== binding.revision ||
-      !organizationMatches(document.НашаОрганизация, binding.organizationInn, binding.organizationKpp) || !organizationMatches(document.Контрагент, binding.counterpartyInn, binding.counterpartyKpp)) {
+      !organizationMatches(document.НашаОрганизация, binding.organizationInn, binding.organizationKpp) || !organizationMatches(binding.documentType === 'ConsignmentNote' ? (binding.side === 'sender' ? document.ТранспортнаяКомпания : document.Грузоотправитель) : document.Контрагент, binding.counterpartyInn, binding.counterpartyKpp)) {
     throw new SabyError('validation', 'Заявка, её редакция или участники изменились. Подписание остановлено.');
   }
   if (hasErrors(document) || ['6', '9', '22'].includes(sabyOrderStateCode(document) ?? '')) throw new SabyError('validation', 'Saby сообщил ошибку, отклонение или отмену заявки. Подписание остановлено.');
@@ -138,47 +141,48 @@ function assertDocument(document: SabyObject, binding: SabySigningBinding, requi
   }
   return { attachments, title: title[0] };
 }
-export function createSigningBinding(remote: SabyObject, side: SabySigningSide, certificate: SabySigningCertificate, config: SabyConfig, keyType?: SabySigningKeyType): SabySigningBinding {
+export function createSigningBinding(remote: SabyObject, side: SabySigningSide, certificate: SabySigningCertificate, config: SabyConfig, keyType?: SabySigningKeyType, documentType?: 'ConsignmentNote'): SabySigningBinding {
   const organization = side === 'sender' ? config.customer : config.carrier;
   const counterparty = side === 'sender' ? config.carrier : config.customer;
   if (certificate.organizationInn !== organization.inn || certificate.organizationKpp !== organization.kpp || !certificate.valid || !certificate.qualified ||
       certificateDate(certificate.notBefore) > Date.now() || !(certificateDate(certificate.notAfter) > Date.now())) throw new SabyError('validation', 'Выбранная подпись не подтверждена для этой организации.');
-  const revision = currentRevision(remote); const subtype = side === 'sender' ? '1110361' : '1110362';
+  const revision = currentRevision(remote); const subtype = documentType ? (side === 'sender' ? '1110339' : '1110340') : (side === 'sender' ? '1110361' : '1110362');
   const title = currentAttachments(remote, revision ?? '').filter(row => row.Подтип === subtype);
-  const candidates = availableStages(remote).flatMap(stage => rows(stage.Действие).filter(action => side === 'sender' ? stage.Название === 'Отправка' && action.Название === 'Отправить' : stage.Название === 'Утверждение' && ['Утвердить', 'Утверждено'].includes(String(action.Название))).map(action => ({ stage, action })));
+  const candidates = availableStages(remote).flatMap(stage => rows(stage.Действие).filter(action => side === 'sender' ? stage.Название === 'Отправка' && action.Название === (documentType ? 'Погружен' : 'Отправить') : stage.Название === (documentType ? 'Получение груза' : 'Утверждение') && (documentType ? ['Принят'] : ['Утвердить', 'Утверждено']).includes(String(action.Название))).map(action => ({ stage, action })));
   if (!revision || title.length !== 1 || candidates.length !== 1) throw new SabyError('validation', SIGNING_STAGE_UNAVAILABLE);
   const { stage, action } = candidates[0];
   const binding: SabySigningBinding = { side, documentId: String(remote.Идентификатор ?? ''), revision, stageId: String(stage.Идентификатор ?? ''), stageName: String(stage.Название), actionName: String(action.Название),
     certificateThumbprint: certificate.thumbprint, organizationInn: organization.inn, organizationKpp: organization.kpp, counterpartyInn: counterparty.inn, counterpartyKpp: counterparty.kpp,
-    attachmentSubtype: subtype, attachmentId: String(title[0].Идентификатор ?? ''), ...(keyType !== undefined ? { keyType } : {}) };
+    ...(documentType ? { documentType } : {}), attachmentSubtype: subtype, attachmentId: String(title[0].Идентификатор ?? ''), ...(keyType !== undefined ? { keyType } : {}) };
   assertDocument(remote, binding, true); return binding;
 }
 /** Saby's documented preparation creates the missing reply; this is never a made-up title generator. */
-export function createCarrierDraftBinding(remote: SabyObject, certificate: SabySigningCertificate, config: SabyConfig, keyType?: SabySigningKeyType): SabySigningBinding {
+export function createCarrierDraftBinding(remote: SabyObject, certificate: SabySigningCertificate, config: SabyConfig, keyType?: SabySigningKeyType, documentType?: 'ConsignmentNote'): SabySigningBinding {
   const revision = currentRevision(remote);
-  if (!revision || currentAttachments(remote, revision).some(row => row.Подтип === '1110362')) throw new SabyError('validation', 'Ответ НК уже существует или его редакция не подтверждена. Новая подготовка остановлена.');
+  const subtype = documentType ? '1110340' : '1110362';
+  if (!revision || currentAttachments(remote, revision).some(row => row.Подтип === subtype)) throw new SabyError('validation', 'Ответ НК уже существует или его редакция не подтверждена. Новая подготовка остановлена.');
   const synthetic = structuredClone(remote);
-  synthetic.Вложение = [...rows(remote.Вложение), { Идентификатор: 'unprepared-carrier-title', Подтип: '1110362', ВерсияФормата: '5.01', Направление: 'Исходящий' }];
-  const binding = createSigningBinding(synthetic, 'carrier', certificate, config, keyType);
+  synthetic.Вложение = [...rows(remote.Вложение), { Идентификатор: 'unprepared-carrier-title', Подтип: subtype, ВерсияФормата: '5.01', Направление: 'Исходящий' }];
+  const binding = createSigningBinding(synthetic, 'carrier', certificate, config, keyType, documentType);
   assertCarrierDraftSource(remote, binding); return binding;
 }
 function assertCarrierDraftSource(remote: SabyObject, binding: SabySigningBinding) {
   assertDocumentIdentity(remote, binding); assertCurrentAction(remote, binding);
   const attachments = currentAttachments(remote, binding.revision);
-  const sender = attachments.filter(row => row.Подтип === '1110361' && row.ВерсияФормата === '5.01' && row.Направление === 'Входящий');
+  const sender = attachments.filter(row => row.Подтип === (binding.documentType ? '1110339' : '1110361') && row.ВерсияФормата === '5.01' && row.Направление === 'Входящий');
   if (binding.side !== 'carrier' || binding.attachmentId !== 'unprepared-carrier-title' || sabyOrderStateCode(remote) !== '10' ||
-      attachments.some(row => row.Подтип === '1110362') || sender.length !== 1 || !rows(sender[0].Подпись).some(signature => !hasErrors(signature) && sabyObject(signature.Сертификат) && signature.Сертификат.ИНН === binding.counterpartyInn && thumbprint(signature.Сертификат.Отпечаток))) {
+      attachments.some(row => row.Подтип === (binding.documentType ? '1110340' : '1110362')) || sender.length !== 1 || !rows(sender[0].Подпись).some(signature => !hasErrors(signature) && sabyObject(signature.Сертификат) && signature.Сертификат.ИНН === binding.counterpartyInn && thumbprint(signature.Сертификат.Отпечаток))) {
     throw new SabyError('validation', 'Для подготовки ответа НК не подтверждён подписанный исходный титул и текущий этап.');
   }
 }
 /** Persist a separate draft-preparation intent before calling; a lost response is reconciled by reads only. */
 export async function prepareCarrierDraft(client: SabyClient, binding: SabySigningBinding): Promise<SabyObject> {
-  assertCarrierDraftSource(await client.readSigningOrder('carrier', binding.documentId), binding);
+  assertCarrierDraftSource(await client.readSigningDocument('carrier', binding.documentId, binding.documentType), binding);
   await assertCurrentCertificate(client, binding);
   const prepared = await client.prepareSigningAction(binding);
   if (prepared.Идентификатор !== binding.documentId || currentRevision(prepared) !== binding.revision) throw new SabyError('unknown', 'Saby не подтвердил редакцию подготовленного ответа НК.', true);
-  const fresh = await client.readSigningOrder('carrier', binding.documentId);
-  const titles = currentAttachments(fresh, binding.revision).filter(row => row.Подтип === '1110362');
+  const fresh = await client.readSigningDocument('carrier', binding.documentId, binding.documentType);
+  const titles = currentAttachments(fresh, binding.revision).filter(row => row.Подтип === (binding.documentType ? '1110340' : '1110362'));
   if (titles.length !== 1 || !sabyText(titles[0].Идентификатор)) throw new SabyError('unknown', 'Saby ещё не подтвердил созданный ответ НК. Повторная подготовка не выполняется.', true);
   assertDocument(fresh, { ...binding, attachmentId: String(titles[0].Идентификатор) }, true);
   return fresh;
@@ -188,6 +192,7 @@ export function signingManifestHash(manifest: Pick<SabySigningManifest, 'binding
   const identity = [b.side, b.documentId, b.revision, b.stageId, b.stageName, b.actionName, b.certificateThumbprint, b.organizationInn, b.organizationKpp, b.counterpartyInn, b.counterpartyKpp, b.attachmentSubtype, b.attachmentId];
   // Legacy manifests must retain their original digest. Explicit modes are immutable signed intent.
   if (b.keyType !== undefined) identity.push(b.keyType);
+  if (b.documentType !== undefined) identity.push(b.documentType);
   return hash(JSON.stringify([identity,
     manifest.attachments.map(file => [file.id, file.name, file.subtype, file.sha256]).sort((a, b) => a[0].localeCompare(b[0]))]));
 }
@@ -225,7 +230,7 @@ async function assertCurrentCertificate(client: SabyClient, binding: SabySigning
 }
 /** Caller must durably record its preparation intent BEFORE invoking this mutating helper. */
 export async function prepareBoundSigning(client: SabyClient, binding: SabySigningBinding): Promise<SabyPreparedSigning> {
-  assertDocument(await client.readSigningOrder(binding.side, binding.documentId), binding, true);
+  assertDocument(await client.readSigningDocument(binding.side, binding.documentId, binding.documentType), binding, true);
   await assertCurrentCertificate(client, binding);
   const prepared = await client.prepareSigningAction(binding);
   if (prepared.Идентификатор !== binding.documentId || currentRevision(prepared) !== binding.revision) throw new SabyError('unknown', 'Saby подготовил неподтверждённую редакцию. Новая подготовка без сверки запрещена.', true);
@@ -236,14 +241,14 @@ export async function prepareBoundSigning(client: SabyClient, binding: SabySigni
   // mode from fresh Read below and again immediately before Execute instead.
   const signable = rows(stages[0].Вложение).filter(file => file.ТребуемоеДействие === 'Подписать');
   if (!signable.length || signable.length > 100 || new Set(signable.map(file => file.Идентификатор)).size !== signable.length) throw new SabyError('unknown', 'Saby не вернул однозначный список итоговых файлов для подписи.', true);
-  const fresh = await client.readSigningOrder(binding.side, binding.documentId);
+  const fresh = await client.readSigningDocument(binding.side, binding.documentId, binding.documentType);
   const { attachments: current } = assertDocument(fresh, binding, true);
   const attachments: SabyPreparedSigning['attachments'] = [];
   for (const file of signable) {
     const id = sabyText(file.Идентификатор); const metadata = current.find(row => row.Идентификатор === id);
     if (!id || !metadata) throw new SabyError('unknown', 'Подготовленный файл отсутствует в текущей редакции. Выполнение остановлено.', true);
     const download = await client.downloadPreparedSigningAttachment(binding, prepared, id);
-    const actual = await client.downloadSigningAttachment(binding.side, binding.documentId, id, binding.revision);
+    const actual = await client.downloadSigningAttachment(binding.side, binding.documentId, id, binding.revision, binding.documentType);
     if (!download.bytes.length || hash(download.bytes) !== hash(actual.bytes) || download.name !== actual.name) throw new SabyError('unknown', 'Итоговые файлы Saby изменились после подготовки. Выполнение остановлено.', true);
     attachments.push({ id, name: download.name, subtype: sabyText(metadata.Подтип) ?? '', sha256: hash(download.bytes), bytes: download.bytes });
   }
@@ -255,14 +260,14 @@ export async function verifyPreparedSigning(client: SabyClient, prepared: SabyPr
   assertSigningManifest(prepared);
   signingActionRequest(prepared.binding, prepared); // Also validate the transient bytes.
   const binding = prepared.binding;
-  assertDocument(await client.readSigningOrder(binding.side, binding.documentId), binding, true);
+  assertDocument(await client.readSigningDocument(binding.side, binding.documentId, binding.documentType), binding, true);
   await assertCurrentCertificate(client, binding);
   for (const file of prepared.attachments) {
-    const fresh = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision);
+    const fresh = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision, binding.documentType);
     if (fresh.name !== file.name || hash(fresh.bytes) !== file.sha256) throw new SabyError('validation', 'Файл Saby изменился после подготовки. Подписание остановлено.');
   }
   // A final read catches changes while certificate/file reads were in flight.
-  assertDocument(await client.readSigningOrder(binding.side, binding.documentId), binding, true);
+  assertDocument(await client.readSigningDocument(binding.side, binding.documentId, binding.documentType), binding, true);
 }
 /** Rehydrate an already verified, definitely unsent manifest; never invoke preparation here. */
 export async function restorePreparedSigning(client: SabyClient, manifest: SabySigningManifest): Promise<SabyPreparedSigning> {
@@ -270,7 +275,7 @@ export async function restorePreparedSigning(client: SabyClient, manifest: SabyS
   const binding = structuredClone(manifest.binding);
   const attachments: SabyPreparedSigning['attachments'] = [];
   for (const file of manifest.attachments) {
-    const fresh = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision);
+    const fresh = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision, binding.documentType);
     if (fresh.name !== file.name || hash(fresh.bytes) !== file.sha256) throw new SabyError('validation', 'Файл Saby изменился после подготовки. Подписание остановлено.');
     attachments.push({ ...file, bytes: fresh.bytes });
   }
@@ -299,7 +304,7 @@ export async function captureSignedTitle(client: SabyClient, side: SabySigningSi
 export async function readSigningEvidence(client: SabyClient, manifest: SabySigningManifest): Promise<SabySigningEvidence> {
   assertSigningManifest(manifest); const binding = manifest.binding;
   const changed = (reason: string): SabySigningEvidence => ({ state: 'changed', reason, signatureThumbprints: [] });
-  const document = await client.readSigningOrder(binding.side, binding.documentId);
+  const document = await client.readSigningDocument(binding.side, binding.documentId, binding.documentType);
   let attachments: SabyObject[];
   try { ({ attachments } = assertDocument(document, binding, false)); }
   catch (error) { if (error instanceof SabyError && error.kind === 'validation') return changed(error.message); throw error; }
@@ -307,7 +312,7 @@ export async function readSigningEvidence(client: SabyClient, manifest: SabySign
   for (const file of manifest.attachments) {
     const current = attachments.find(row => row.Идентификатор === file.id);
     if (!current || (sabyText(current.Подтип) ?? '') !== file.subtype) return changed('Набор подписываемых файлов изменился. Продолжение остановлено.');
-    const download = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision);
+    const download = await client.downloadSigningAttachment(binding.side, binding.documentId, file.id, binding.revision, binding.documentType);
     if (download.name !== file.name || hash(download.bytes) !== file.sha256) return changed('Полученные подписанные файлы отличаются от подготовленных. Продолжение остановлено.');
     const signatures = rows(current.Подпись);
     if (!signatures.length) { unsigned = true; continue; }
@@ -329,6 +334,6 @@ export async function readSigningEvidence(client: SabyClient, manifest: SabySign
   if (unsigned && ['0', '10'].includes(code)) return { state: 'unconfirmed', reason: 'Saby не подтвердил постановку на подписание: заявка остаётся на исходном этапе без подписей всех подготовленных файлов.', signatureThumbprints: [...fingerprints] };
   if (unsigned) return { state: 'pending', reason: code === '23' ? 'Saby поставил заявку в ожидание подписания.' : 'Saby ещё не вернул подписи всех подготовленных файлов.', signatureThumbprints: [...fingerprints] };
   await assertCurrentCertificate(client, binding);
-  const complete = binding.side === 'sender' ? ['3', '4', '7'].includes(code) : code === '7';
+  const complete = binding.documentType === 'ConsignmentNote' ? ['3', '4', '7'].includes(code) : binding.side === 'sender' ? ['3', '4', '7'].includes(code) : code === '7';
   return { state: complete ? 'confirmed' : 'pending', reason: complete ? 'Saby подтвердил выбранную подпись и завершение этапа.' : 'Подпись получена; ожидается завершение этапа Saby.', signatureThumbprints: [...fingerprints] };
 }

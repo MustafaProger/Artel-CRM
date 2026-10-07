@@ -28,7 +28,7 @@ export const SHIPMENT_FIELDS = [
   'trip_notes', 'delivery_notes', 'invoice_not_required', 'intermediate_stops_after', 'intermediate_stops_in_order', 'trip_delivery_order', 'quantity_gross_tonnes',
   'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude',
   'loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at',
-  'trip_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
+  'trip_flow_version', 'trip_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
   'opening_payment_date', 'opening_paid_amount', 'loading_address_id', 'unloading_address_id', 'purchase_unit', 'payment_due_date', 'overdue_days', 'calculation_mode', 'profit_rule',
 ] as const;
 const allowedFields = new Set<string>(SHIPMENT_FIELDS);
@@ -145,18 +145,24 @@ function validateStoredTrips(shipments: Shipment[]) {
     const members = groups.get(row.fields.trip_id) ?? [];
     members.push(row); groups.set(row.fields.trip_id, members);
   }
-  const shared = ['organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order', 'quantity_gross_tonnes'];
+  const shared = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order'];
   for (const rows of groups.values()) {
     const first = rows[0].fields;
+    const driverFlow = first.trip_flow_version === 'driver-v1';
+    if (first.trip_flow_version != null && !driverFlow) throw new StoreError('Invalid trip flow version');
+    const awaitingMass = driverFlow && rows.every(row => row.fields.quantity_tonnes == null && row.fields.quantity_gross_tonnes == null && row.fields.trip_total_tonnes == null);
+    if (!driverFlow && rows.some(row => (row.fields.quantity_gross_tonnes ?? null) !== (first.quantity_gross_tonnes ?? null))) throw new StoreError('Inconsistent gross mass');
+    if (driverFlow && rows.some(row => row.fields.quantity_gross_tonnes !== row.fields.quantity_tonnes)) throw new StoreError('Invalid driver gross mass');
     const ordered = rows.filter(row => row.fields.trip_delivery_order);
     if (ordered.length && (ordered.length !== rows.length || new Set(ordered.map(row => row.fields.trip_delivery_order)).size !== rows.length || ordered.some(row => !/^[1-9]\d{0,2}$/.test(row.fields.trip_delivery_order!)))) throw new StoreError('Invalid trip delivery order');
-    if (!numeric(first.trip_total_tonnes) || !new Exact(first.trip_total_tonnes!).gt(0) || !numeric(first.trip_additional_costs) || new Exact(first.trip_additional_costs!).lt(0)) throw new StoreError('Invalid trip totals');
+    if (!awaitingMass && (!numeric(first.trip_total_tonnes) || !new Exact(first.trip_total_tonnes!).gt(0)) || !numeric(first.trip_additional_costs) || new Exact(first.trip_additional_costs!).lt(0)) throw new StoreError('Invalid trip totals');
     if (rows.some(row => row.fields.purchase_unit !== 'tonnes' || row.fields.calculation_mode !== 'automatic' || shared.some(key => (row.fields[key] ?? null) !== (first[key] ?? null)))) throw new StoreError('Inconsistent trip fields');
     for (const [field, total] of [['quantity_tonnes', 'trip_total_tonnes'], ['additional_costs', 'trip_additional_costs']] as const) {
+      if (awaitingMass && field === 'quantity_tonnes') continue;
       if (rows.some(row => !numeric(row.fields[field]) || new Exact(row.fields[field]!).lt(0))) throw new StoreError('Invalid trip allocation');
       if (!rows.reduce((sum, row) => sum.plus(row.fields[field]!), new Exact(0)).eq(first[total]!)) throw new StoreError('Trip allocation does not equal total');
     }
-    if (rows.some(row => !numeric(row.fields.quantity_litres) || !new Exact(row.fields.quantity_litres!).gt(0) || !new Exact(row.fields.quantity_tonnes!).gt(0))) throw new StoreError('Empty trip allocation');
+    if (rows.some(row => !numeric(row.fields.quantity_litres) || !new Exact(row.fields.quantity_litres!).gt(0) || !awaitingMass && !new Exact(row.fields.quantity_tonnes!).gt(0))) throw new StoreError('Empty trip allocation');
   }
 }
 
@@ -369,7 +375,7 @@ export function inferCalculationRules(cells: Record<string, { formula?: string |
   };
 }
 
-export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot, options: { historicalCarrierId?: string | null } = {}) {
+export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot, options: { historicalCarrierId?: string | null; allowMissingMass?: boolean } = {}) {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400,'Укажите поля операции.');
   const data = { ...input }, catalog = snapshot.directories!;
   if (Object.hasOwn(data, 'shipment_type') && !['tanker', 'azs'].includes(data.shipment_type as string)) throw new ApiError(400, 'Выберите тип отгрузки: бензовозы или АЗС.');
@@ -382,7 +388,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   }
   data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
-  automatic.push('trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
+  automatic.push('trip_flow_version', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);
@@ -473,7 +479,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
     return calculateShipment(fields,{sale:null,purchase:null,profit:AZS_PROFIT_RULE,debtSign:'paid-minus-sale'}).fields;
   }
   if (!previous || previous.fields.calculation_mode === 'automatic') {
-    for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit']) if (!fields[key]) throw new ApiError(400,`Заполните обязательное поле: ${key}.`);
+    for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit']) if (!(key === 'quantity_tonnes' && options.allowMissingMass) && !fields[key]) throw new ApiError(400,`Заполните обязательное поле: ${key}.`);
     fields.calculation_mode = 'automatic';
     fields.profit_rule = TEMPLATE_PROFIT_RULE;
     fields.transport_amount ??= '0'; fields.additional_costs ??= '0';
@@ -481,7 +487,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   if (fields.purchase_unit && !['litres','tonnes'].includes(fields.purchase_unit)) throw new ApiError(400,'Выберите закупочную цену за тонну или за литр.');
   for (const key of ['quantity_litres','quantity_tonnes','sale_price_per_litre','purchase_price_unspecified_unit','transport_amount','additional_costs']) {
     if (Object.hasOwn(data,key) && fields[key] && new Exact(fields[key]).lt(0)) throw new ApiError(400,'Количество, цены и расходы не могут быть отрицательными.');
-    if ((!previous || previous.fields.calculation_mode === 'automatic') && ['quantity_litres','quantity_tonnes'].includes(key) && !new Exact(fields[key]!).gt(0)) throw new ApiError(400,'Количество должно быть больше нуля.');
+    if ((!previous || previous.fields.calculation_mode === 'automatic') && ['quantity_litres','quantity_tonnes'].includes(key) && !(key === 'quantity_tonnes' && options.allowMissingMass && fields[key] == null) && !new Exact(fields[key]!).gt(0)) throw new ApiError(400,'Количество должно быть больше нуля.');
   }
   const historical = !!previous && previous.fields.calculation_mode !== 'automatic';
   const saleChanged = ['quantity_litres','quantity_tonnes','sale_price_per_litre'].some(k => Object.hasOwn(data,k));

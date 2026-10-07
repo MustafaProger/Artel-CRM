@@ -1,3 +1,4 @@
+import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
 import { oilDepotDetails } from './oil-depots';
 import { migrateOilDepots } from './migrations/003-oil-depots';
 import { locationDetails } from './location-details';
@@ -39,6 +40,7 @@ export interface OperationsData {
   companies: Company[];
   directories?: Directories;
   paymentAllocations?: PaymentAllocation[];
+  driverTripProgress?: Record<string, DriverTripProgress>;
   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
   saby?: SabyData;
   etrn?: EtrnData;
@@ -68,6 +70,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
     if (!object(data.tripCreateRequests)) throw new StoreError('Invalid trip requests');
     for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
   }
+  try { validateDriverTripProgress(data.driverTripProgress); } catch { throw new StoreError('Invalid driver trip progress'); }
   try { validateSabyData(data.saby); } catch { throw new StoreError('Invalid Saby storage'); }
   try { validateEtrnData(data.etrn); } catch { throw new StoreError('Invalid ETRN storage'); }
   try { validateTripSabyData(data.tripSaby); } catch { throw new StoreError('Invalid trip Saby storage'); }

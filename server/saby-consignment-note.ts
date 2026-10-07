@@ -56,7 +56,7 @@ export function readSabyConsignmentProfile(raw: unknown): SabyConsignmentProfile
       ...(sabyObject(cargo.dimensions) ? { dimensions: strings(cargo.dimensions, ['heightMetres', 'lengthMetres', 'widthMetres']) } : {}) },
     deliveryMassTonnes: str(value.deliveryMassTonnes),
     // An invalid explicit source must not silently recover legacy actual-mass semantics.
-    ...(value.massSource !== undefined ? { massSource: value.massSource === 'confirmed' ? 'confirmed' as const : 'calculated' as const } : {}),
+    ...(value.massSource !== undefined ? { massSource: value.massSource === 'driver' ? 'driver' as const : value.massSource === 'confirmed' ? 'confirmed' as const : 'calculated' as const } : {}),
     ...(value.plannedMassKind !== undefined ? { plannedMassKind: value.plannedMassKind === 'gross' ? 'gross' as const : 'net' as const } : {}),
     ...(value.plannedGrossMassTonnes !== undefined ? { plannedGrossMassTonnes: str(value.plannedGrossMassTonnes) } : {}),
     vehicle: { ...strings(vehicle, ['type', 'brand', 'payloadTonnes', 'capacityCubicMetres', 'ownershipType']), ...(sabyObject(vehicle.ownershipDocument) ? { ownershipDocument: basis(vehicle.ownershipDocument) } : {}) },
@@ -91,7 +91,7 @@ export function buildSabyConsignmentSnapshot(source: Snapshot, trip: ShipmentTri
   }
   return structuredClone({
     documentType: 'ConsignmentNote', formatVersion: '5.01', tripId: trip.id, shipmentId, version: delivery.version,
-    fields: Object.fromEntries(copyFields.map(key => [key, fields[key] ?? null])), calculatedMassTonnes: row?.fields.quantity_tonnes ?? null,
+    fields: Object.fromEntries([...copyFields, ...(trip.fields.trip_flow_version === 'driver-v1' ? ['trip_flow_version', 'quantity_tonnes', 'quantity_gross_tonnes'] : [])].map(key => [key, fields[key] ?? null])), calculatedMassTonnes: row?.fields.quantity_tonnes ?? null,
     tripTotalMassTonnes: trip.fields.quantity_tonnes ?? null,
     tripTotalLitres: trip.customers.every(item => validDecimal(item.fields.quantity_litres, 17, 3, true)) ? trip.customers.reduce((sum, item) => sum.plus(item.fields.quantity_litres!), new Decimal(0)).toFixed() : null,
     customer: recipient,
@@ -123,9 +123,10 @@ const validParty = (value: SabyOrganization | EtrnParty) => text(value.name) && 
 const validBasis = (value?: EtrnDocumentBasis) => !!value && text(value.name, 255) && text(value.number, 255) && day(value.date) && value.issuerInns.length > 0 && value.issuerInns.every(inn => /^\d{10}(?:\d{2})?$/.test(inn));
 const uuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 /** Runtime format and business preconditions. A pass does not establish signing authority. */
-export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, options: { stage?: 'preparation' | 'complete' } = {}): string[] {
+export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, options: { stage?: 'preparation' | 'driver_draft' | 'complete' } = {}): string[] {
   const result: string[] = []; const p = snapshot.profile;
-  const preparing = options.stage === 'preparation';
+  const preparing = options.stage === 'preparation' || options.stage === 'driver_draft';
+  const driverDraft = options.stage === 'driver_draft' && snapshot.fields.trip_flow_version === 'driver-v1' && p.massSource === 'driver';
   if (!p.confirmed) result.push('Подтвердите сведения именно этой доставки перед формированием ЭТрН.');
   if (!['artel', 'nk-artel'].includes(snapshot.fields.organization_id || '')) result.push('Для ЭТрН выберите нашу организацию рейса: грузоотправитель Артэль, перевозчик НК Артэль.');
   if (!day(snapshot.fields.date)) result.push('Укажите корректную дату рейса.');
@@ -164,9 +165,9 @@ export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, optio
   if ((['3', '4', '5'].includes(p.vehicle.ownershipType) || p.vehicle.ownershipDocument) && !validBasis(p.vehicle.ownershipDocument)) result.push('Заполните документ основания владения ТС: название, номер, дата и ИНН составителей.');
   const volume = amount(snapshot.fields.quantity_litres ?? '', 0.001); const mass = amount(p.deliveryMassTonnes, 1000);
   if (!validDecimal(volume, 17, 3, true)) result.push('Объём выбранной доставки должен быть положительным и представляться в м³ с точностью до 3 знаков.');
-  if (!validDecimal(mass, 17, 3, true)) result.push('Проверьте массу именно выбранной доставки в т (точность до 6 знаков).');
+  if ((!driverDraft || p.deliveryMassTonnes) && !validDecimal(mass, 17, 3, true)) result.push('Проверьте массу именно выбранной доставки в т (точность до 6 знаков).');
   const plannedGross = amount(p.plannedGrossMassTonnes ?? (p.plannedMassKind === 'net' ? '' : p.deliveryMassTonnes), 1000);
-  if (!validDecimal(plannedGross, 17, 3, true)) result.push('Заполните корректную плановую массу груза доставки для ЭТрН.');
+  if ((!driverDraft || p.plannedGrossMassTonnes) && !validDecimal(plannedGross, 17, 3, true)) result.push('Заполните корректную плановую массу груза доставки для ЭТрН.');
   if (p.plannedMassKind === 'net' && validDecimal(plannedGross, 17, 3, true) && validDecimal(mass, 17, 3, true) && new Decimal(plannedGross).lt(mass)) result.push('Плановая масса брутто не может быть меньше указанного нетто.');
   const separateFacts = p.massSource === 'calculated' || p.plannedMassKind === 'net';
   const actualMass = amount(p.loading.grossMassTonnes ?? (separateFacts ? '' : p.deliveryMassTonnes), 1000);

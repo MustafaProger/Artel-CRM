@@ -6,9 +6,9 @@ export function driverVehicleId(directories: Directories, driverId: string) {
   return vehicleId && directories.vehicles.some(vehicle => vehicle.id === vehicleId) ? vehicleId : ''
 }
 
-/** An explicit edit synchronizes loading only. Nonempty or manually cleared unloading stays intact. */
+/** A planned date never creates or changes an actual driver event. */
 export function loadingDateFields(value: string) {
-  return { loading_at: value, date: value.slice(0, 10), loading_planned_at: value, loading_actual_at: value }
+  return { loading_at: value, date: value.slice(0, 10), loading_planned_at: value }
 }
 
 export function initialUnloadingFields(value: string) {

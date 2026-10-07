@@ -85,6 +85,7 @@ export function requireDriverRoute(actor: AccountUser, path: string, method: str
   if (actor.role !== 'driver') return;
   if (path === '/api/auth/session' && method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(path) && method === 'POST') return;
   if (/^\/api\/driver\/trips(?:\/[^/]+)?$/.test(path) && method === 'GET') return;
+  if (/^\/api\/driver\/trips\/[^/]+\/(arrive|depart)$/.test(path) && method === 'POST') return;
   if (['/api/push/config', '/api/push/test-status'].includes(path) && method === 'GET' || path === '/api/push/subscription' && ['POST', 'DELETE'].includes(method) || path === '/api/push/test' && method === 'POST') return;
-  throw new ApiError(403, 'Водителю доступен только просмотр своих рейсов.');
+  throw new ApiError(403, 'Водителю доступны только назначенные рейсы и их разрешённые действия.');
 }

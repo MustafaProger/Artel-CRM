@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import Decimal from 'decimal.js';
 import type { ShipmentTrip, Snapshot } from '../web/src/model';
 import type { TripSabyHistoryEntry, TripSabyMonitoring, TripSabyOrderSummary, TripSabyResponse } from '../web/src/trip-saby-model';
 import { advanceTripSigning, authorizeSigningActor, beginAutomaticTripSigning, beginTripSigning, ensureSigningCarrierDraft, publicTripSigning, validateSigningStart, validateTripSigning, type TripSigningRecord } from './trip-saby-signing';
@@ -15,9 +16,10 @@ import { currentSnapshot } from './shipment-operations';
 import { getShipmentTrip } from './shipment-trips';
 import type { SabyConsignmentSnapshot } from './saby-consignment-note';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyCredentialBlockers, sabyDocumentWorkflow, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
-import { buildSabyTransportDocument, sabyTransportBlockers, serializeSabyTransportOrder, type SabyTransportSnapshot } from './saby-transport-order';
+import { buildSabyTransportDocument, buildSabyTransportDraftDocument, sabyTransportBlockers, sabyTransportDraftBlockers, serializeSabyTransportDraft, serializeSabyTransportOrder, type SabyTransportSnapshot } from './saby-transport-order';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { automaticSigningCapability, type SabyAutomaticSigningPolicy } from './saby-auto-policy';
+import { continueEtrnDispatch } from './etrn-dispatch';
 
 export interface TripSabyPreparation {
   scenario: 'artel_customer' | 'nk_own_customer';
@@ -46,6 +48,13 @@ export interface TripSabyAutomaticAuthorization {
   selection: { sender: string; carrier: string };
 }
 export interface TripSabyRecord {
+  driverFlow?: {
+    state: 'waiting_driver' | 'mass_pending' | 'ready'; processingAllowanceHours: 10;
+    draftSnapshot?: SabyTransportSnapshot;
+    draftAttachment?: { id: string; revision: string; sha256: string; name: string };
+    massUpdateAttempted?: boolean;
+  };
+  stage6CompletedAt?: string;
   /** User who explicitly initiated this workflow; background continuation rechecks current rights. */
   initiatorId?: string;
   scenario: TripSabyPreparation['scenario'];
@@ -74,7 +83,7 @@ const dated = (value: unknown) => typeof value === 'string' && Number.isFinite(D
 const nullable = (value: unknown) => value === null || typeof value === 'string';
 const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const rows = (value: unknown): SabyObject[] => Array.isArray(value) ? value.filter(sabyObject) : sabyObject(value) ? [value] : [];
-const phases = ['preparation', 'submitting', 'unknown', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'completed', 'error'];
+const phases = ['preparation', 'submitting', 'awaiting_driver', 'unknown', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'completed', 'error'];
 const policyHash = (policy: SabyAutomaticSigningPolicy) => hash([policy.id, policy.enabled, policy.approvedAt, policy.mode, policy.sender.inn, policy.sender.kpp, policy.sender.thumbprint, policy.carrier.inn, policy.carrier.kpp, policy.carrier.thumbprint]);
 
 export function authorizeAutomaticTripSaby(snapshot: Snapshot, data: OperationsData, tripId: string, record: TripSabyRecord, config: SabyConfig): void {
@@ -88,7 +97,7 @@ export function authorizeAutomaticTripSaby(snapshot: Snapshot, data: OperationsD
 
 function newTripSabyRecord(prepared: TripSabyPreparation, initiatorId?: string): TripSabyRecord {
   const stamp = now();
-  return { ...(initiatorId ? { initiatorId } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill('По договору'), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
+  return { ...(initiatorId ? { initiatorId } : {}), ...(prepared.order.fields.trip_flow_version === 'driver-v1' ? { driverFlow: { state: 'waiting_driver', processingAllowanceHours: 10 } as const } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill('По договору'), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
 }
 
 /** Called only from a successful non-replayed trip save, in its storage transaction. No network. */
@@ -121,6 +130,14 @@ export function validateTripSabyData(value: unknown): asserts value is TripSabyD
       const auto = record.autoAuthorization;
       if (!sabyObject(auto) || Object.keys(auto).some(key => !['requestId', 'requestedBy', 'requestedAt', 'policyId', 'policyHash', 'mode', 'selection'].includes(key)) || !['requestId', 'requestedBy', 'policyId'].every(key => sabyText(auto[key])) || !dated(auto.requestedAt) || !digest(auto.policyHash) || auto.mode !== 'deferred' || record.initiatorId !== auto.requestedBy || !sabyObject(auto.selection) || Object.keys(auto.selection).length !== 2 || !['sender', 'carrier'].every(side => typeof (auto.selection as SabyObject)[side] === 'string' && /^[a-f0-9]{40,128}$/.test(String((auto.selection as SabyObject)[side])))) throw new Error('Invalid automatic signing authorization');
     }
+    if (record.driverFlow !== undefined) {
+      const flow = record.driverFlow;
+      if (!sabyObject(flow) || record.snapshot.fields === undefined || !sabyObject(record.snapshot.fields) || record.snapshot.fields.trip_flow_version !== 'driver-v1' || !['waiting_driver', 'mass_pending', 'ready'].includes(String(flow.state)) || flow.processingAllowanceHours !== 10 || flow.massUpdateAttempted !== undefined && typeof flow.massUpdateAttempted !== 'boolean') throw new Error('Invalid driver draft lifecycle');
+      if (flow.draftAttachment !== undefined && (!sabyObject(flow.draftAttachment) || !['id', 'revision', 'name'].every(key => sabyText((flow.draftAttachment as SabyObject)[key])) || !digest(flow.draftAttachment.sha256))) throw new Error('Invalid driver draft evidence');
+      if (flow.state !== 'waiting_driver' && (!flow.draftAttachment || !sabyObject(flow.draftSnapshot))) throw new Error('Missing original driver draft');
+      if (record.signing && flow.state !== 'ready') throw new Error('Premature driver-flow signing');
+    }
+    if (record.stage6CompletedAt !== undefined && (!record.driverFlow || !dated(record.stage6CompletedAt) || record.phase !== 'completed')) throw new Error('Invalid stage six completion');
     if (record.signing) {
       const intent = record.signing as unknown as TripSigningRecord;
       if (intent.workflowAttemptId !== record.attemptId || intent.documentId !== record.order.id || intent.payloadHash !== record.payloadHash) throw new Error('Signing intent differs from saved trip');
@@ -153,7 +170,7 @@ const legacyBlockers = (data: OperationsData, tripId: string) => data.saby?.trip
 function preparationBlockers(preparation: TripSabyPreparation, trip: ShipmentTrip, data: OperationsData): string[] {
   const ids = preparation.deliveries.map(row => row.shipmentId);
   const actualIds = trip.customers.map(row => row.id);
-  const errors = [...preparation.blockers, ...sabyTransportBlockers(preparation.order), ...legacyBlockers(data, trip.id)];
+  const errors = [...preparation.blockers, ...(preparation.order.fields.trip_flow_version === 'driver-v1' ? sabyTransportDraftBlockers(preparation.order) : sabyTransportBlockers(preparation.order)), ...legacyBlockers(data, trip.id)];
   if (!actualIds.length || ids.length !== actualIds.length || new Set(ids).size !== ids.length || actualIds.some(id => !ids.includes(id)) || preparation.order.tripId !== trip.id || preparation.order.shipmentId !== trip.id || preparation.deliveries.some(row => row.snapshot.tripId !== trip.id || row.snapshot.shipmentId !== row.shipmentId)) errors.push('Подготовка должна охватывать каждую доставку сохранённого рейса.');
   if (!preparation.order.deliveries || preparation.order.deliveries.length !== actualIds.length || preparation.order.deliveries.some((row, index) => row.shipmentId !== actualIds[index])) errors.push('Маршрут общей заявки должен сохранять порядок всех доставок рейса.');
   return [...new Set(errors)];
@@ -189,7 +206,7 @@ export function getTripSabyWorkflow({ base, data, tripId, prepare, config = saby
   const expired = record.leaseId !== null && (!record.leaseUntil || Date.parse(record.leaseUntil) <= Date.now());
   const phase = expired && ['submitting', 'creating_etrn'].includes(record.phase) ? 'unknown' : record.phase;
   const sent = !!record.carrierEvidence || ['3', '4', '7'].includes(record.order.remoteStateCode ?? '');
-  return { status: ['error', 'unknown'].includes(phase) ? 'error' : sent ? 'sent' : 'not_sent', phase, ready: blockers.length === 0, blockers, locked: true, updatedAt: record.updatedAt, lastError: record.lastError, order: { ...record.order, exchangeStage: record.order.exchangeStage ?? (record.carrierEvidence ? 'carrier_confirmed' : 'unknown'), status: expired && record.order.status === 'pending' ? 'unknown' : record.order.status }, deliveries: record.deliveries.map(({ shipmentId, id, status, lastError }) => ({ shipmentId, id, status: expired && status === 'pending' ? 'unknown' : status, lastError })), carrierConfirmed: !!record.carrierEvidence, lastCheckedAt: record.lastCheckedAt ?? null, lastCheckAttemptAt: record.lastCheckAttemptAt ?? null, monitoring, automation, history: record.history ?? [], ...(record.carrierFill ? { carrierFill: { state: record.carrierFill.state, blockers: record.carrierFill.blockers, driverSaved: record.carrierFill.driverSaved, vehicleSaved: record.carrierFill.vehicleSaved, ...(record.carrierFill.responsibleSaved !== undefined ? { responsibleSaved: record.carrierFill.responsibleSaved } : {}), checkedAt: record.carrierFill.checkedAt } } : {}), ...(record.signing ? { signing: publicTripSigning(record.signing) } : {}), carrierHandoff: { driverName: record.snapshot.driver?.name ?? null, driverPhone: record.snapshot.driver?.phone ?? null, vehiclePlate: record.snapshot.vehicle?.plate ?? null, vehicleType: record.snapshot.vehicle?.type ?? null } };
+  return { status: ['error', 'unknown'].includes(phase) ? 'error' : sent ? 'sent' : 'not_sent', phase, ready: blockers.length === 0, blockers, locked: true, updatedAt: record.updatedAt, lastError: record.lastError, order: { ...record.order, exchangeStage: record.order.exchangeStage ?? (record.carrierEvidence ? 'carrier_confirmed' : 'unknown'), status: expired && record.order.status === 'pending' ? 'unknown' : record.order.status }, deliveries: record.deliveries.map(({ shipmentId, id, status, lastError }) => ({ shipmentId, id, status: expired && status === 'pending' ? 'unknown' : status, lastError })), carrierConfirmed: !!record.carrierEvidence, lastCheckedAt: record.lastCheckedAt ?? null, lastCheckAttemptAt: record.lastCheckAttemptAt ?? null, monitoring, automation, history: record.history ?? [], ...(record.driverFlow ? { driverFlow: { state: record.driverFlow.state, processingAllowanceHours: 10 as const }, stage6CompletedAt: record.stage6CompletedAt ?? null } : {}), ...(record.carrierFill ? { carrierFill: { state: record.carrierFill.state, blockers: record.carrierFill.blockers, driverSaved: record.carrierFill.driverSaved, vehicleSaved: record.carrierFill.vehicleSaved, ...(record.carrierFill.responsibleSaved !== undefined ? { responsibleSaved: record.carrierFill.responsibleSaved } : {}), checkedAt: record.carrierFill.checkedAt } } : {}), ...(record.signing ? { signing: publicTripSigning(record.signing) } : {}), carrierHandoff: { driverName: record.snapshot.driver?.name ?? null, driverPhone: record.snapshot.driver?.phone ?? null, vehiclePlate: record.snapshot.vehicle?.plate ?? null, vehicleType: record.snapshot.vehicle?.type ?? null } };
 }
 function sameOrganization(raw: unknown, organization: SabyTransportSnapshot['customerOrganization']) {
   return sabyObject(raw) && sabyObject(raw.СвЮЛ) && raw.СвЮЛ.ИНН === organization.inn && raw.СвЮЛ.КПП === organization.kpp;
@@ -273,7 +290,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
     if (existing?.leaseId && existing.leaseUntil && Date.parse(existing.leaseUntil) > Date.now()) throw new ApiError(409, 'Обмен этого рейса уже выполняется. Обновите состояние позже.');
     const credentials = sabyCredentialBlockers(client.config); if (credentials.length) throw new ApiError(422, credentials.join(' '));
     if (options.signingStart && !existing?.order.id) throw new ApiError(409, 'Сначала создайте заявку рейса в Saby.');
-    if (existing?.phase === 'completed') return { result: null, changed: false };
+    if (existing?.phase === 'completed' && (!existing.driverFlow || existing.stage6CompletedAt)) return { result: null, changed: false };
     let record = existing;
     if (options.enableCarrierFill && !existing?.order.id) throw new ApiError(409, 'Сначала создайте заявку рейса в Saby.');
     if (!record) {
@@ -321,6 +338,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
   let writing: 'reservation' | 'upload' | null = null;
   let armedAction: 'reservation' | 'upload' | null = null;
   try {
+    if (options.signingStart && record.driverFlow?.state !== undefined && record.driverFlow.state !== 'ready') throw new ApiError(409, 'Подписание доступно после масс и убытия назначенного водителя.');
     if (options.signingStart) {
       await beginTripSigning(client, record, options.signingStart.request, options.signingStart.requestedBy, update);
       signingStarted = true;
@@ -350,7 +368,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
     const hasTitle = activeAttachments(remote).some(row => row.Подтип === '1110361');
     if (!hasTitle && !['6', '9', '22'].includes(sabyOrderStateCode(remote) ?? '')) {
       if (record.uploadAttempted) throw new SabyError('unknown', 'Результат загрузки титула заявки пока не подтверждён. Повторная загрузка запрещена; проверьте сохранённую заявку в Saby.', true);
-      const document = buildSabyTransportDocument(record.snapshot, record.marker, record.attemptId, record.createdAt, record.order.number!);
+      const document = (record.driverFlow?.state === 'waiting_driver' ? buildSabyTransportDraftDocument : buildSabyTransportDocument)(record.snapshot, record.marker, record.attemptId, record.createdAt, record.order.number!);
       armedAction = 'upload';
       await update(row => { row.uploadAttempted = true; row.order.status = 'pending'; row.phase = 'submitting'; });
       await checkAccess(); writing = 'upload'; armedAction = null;
@@ -363,6 +381,20 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
       await checkAccess();
       await update(row => { row.lastCheckAttemptAt = now(); });
       remote = await client.readTransportOrder(record.order.id!);
+    }
+    if (record.driverFlow) {
+      remote = await advanceDriverDraft({ record: () => record, update, checkAccess, client, remote, readFacts: async () => {
+        const latest = await store.read(source); authorize(currentSnapshot(base, latest), latest);
+        const progress = latest.driverTripProgress?.[tripId];
+        if (!progress?.departedAt || !progress.continuationRequestedAt) return undefined;
+        const facts = latest.etrn?.trips[tripId]?.loadingFacts;
+        if (!facts || Object.keys(progress.masses ?? {}).length !== Object.keys(facts.deliveries).length || Object.entries(facts.deliveries).some(([id, fact]) => progress.masses?.[id] !== fact.grossMassTonnes)) throw new ApiError(409, 'Факты погрузки не совпадают с принятым действием водителя.');
+        return facts;
+      } });
+      if (record.driverFlow.state !== 'ready') {
+        const latest = await store.read(source); authorize(currentSnapshot(base, latest), latest);
+        return getTripSabyWorkflow({ base, data: latest, tripId, prepare, config: client.config, monitoringEnabled: options.monitoringEnabled });
+      }
     }
     if (record.autoAuthorization && !record.signing) await beginAutomaticTripSigning(client, record, update);
     if (record.signing) {
@@ -441,7 +473,17 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
           break;
         }
       }
-      await update(row => { const failure = row.deliveries.find(item => item.status !== 'draft'); row.phase = !failure ? 'completed' : failure.waitingForLoading ? 'awaiting_loading' : failure.status === 'unknown' || failure.status === 'pending' ? 'unknown' : 'error'; row.lastError = failure?.lastError ?? null; });
+      await update(row => { const failure = row.deliveries.find(item => item.status !== 'draft'); row.phase = !failure ? row.driverFlow ? 'sending_etrn' : 'completed' : failure.waitingForLoading ? 'awaiting_loading' : failure.status === 'unknown' || failure.status === 'pending' ? 'unknown' : 'error'; row.lastError = failure?.lastError ?? null; });
+      if (record.driverFlow && record.phase === 'sending_etrn') {
+        let allSent = true;
+        for (const delivery of record.deliveries) {
+          await checkAccess();
+          const sent = await continueEtrnDispatch({ base, store, tripId, authorize, client }, delivery.shipmentId);
+          if (!sent.completedAt) { allSent = false; await update(row => { row.lastError = sent.lastError; }); break; }
+          await update(() => {});
+        }
+        if (allSent) await update(row => { row.stage6CompletedAt ??= now(); row.phase = 'completed'; row.lastError = null; });
+      }
     }
   } catch (error) {
     if (!signingStarted) throw error;
@@ -468,4 +510,82 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
   }
   const data = await store.read(source); authorize(currentSnapshot(base, data), data);
   return getTripSabyWorkflow({ base, data, tripId, prepare, config: client.config, monitoringEnabled: options.monitoringEnabled });
+}
+
+/** Versioned draft path: only the driver's immutable facts may enrich this frozen snapshot. */
+async function advanceDriverDraft(context: {
+  record: () => TripSabyRecord;
+  update: (mutate: (current: TripSabyRecord) => void, requireSigningAccess?: boolean) => Promise<void>;
+  checkAccess: () => Promise<void>; client: SabyClient; remote: SabyObject;
+  readFacts: () => Promise<import('./etrn-service').TripLoadingFacts | undefined>;
+}): Promise<SabyObject> {
+  const { update, checkAccess, client } = context;
+  let remote = context.remote;
+  let record = context.record();
+  if (record.driverFlow?.state === 'ready') return remote;
+  const titleFile = async (document: SabyObject) => {
+    validateRemoteIdentity(document, context.record());
+    const revision = sabyDocumentWorkflow(document).revision;
+    const attachments = activeAttachments(document);
+    const titles = attachments.filter(file => file.Подтип === '1110361' && file.ВерсияФормата === '5.01');
+    if (sabyOrderStateCode(document) !== '0' || !revision || attachments.length !== 1 || titles.length !== 1 || !sabyText(titles[0].Идентификатор) || rows(titles[0].Подпись).length) throw new SabyError('validation', 'Черновик изменён, подписан или уже отправлен в Saby. Дозаполнение массы остановлено.');
+    const file = await client.downloadTransportOrderAttachment(record.order.id!, String(titles[0].Идентификатор), revision);
+    return { file, revision, id: String(titles[0].Идентификатор) };
+  };
+  let actual = await titleFile(remote);
+  if (record.driverFlow!.state === 'waiting_driver') {
+    const expected = serializeSabyTransportDraft(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
+    verifySabySenderBusiness(actual.file.bytes, expected.xml);
+    const previous = record.driverFlow!.draftAttachment;
+    const digest = createHash('sha256').update(actual.file.bytes).digest('hex');
+    if (previous && (previous.id !== actual.id || previous.revision !== actual.revision || previous.sha256 !== digest || previous.name !== actual.file.name)) throw new SabyError('validation', 'Черновик Saby изменился после сохранения. Ручные изменения не перезаписываются.');
+    await update(row => {
+      row.driverFlow!.draftAttachment ??= { id: actual.id, revision: actual.revision, sha256: digest, name: actual.file.name };
+      row.order = { ...row.order, status: 'draft', revision: actual.revision, signatureStatus: 'not_signed', ...sabyOrderProgress(remote) };
+      row.phase = 'awaiting_driver'; row.lastCheckedAt = now(); row.lastError = null;
+    });
+    record = context.record();
+    const facts = await context.readFacts();
+    if (!facts) return remote;
+    const ids = record.deliveries.map(delivery => delivery.shipmentId);
+    if (Object.keys(facts.deliveries).length !== ids.length || ids.some(id => !facts.deliveries[id] || facts.deliveries[id].massMethod !== '03')) throw new SabyError('validation', 'Состав подтверждённых водителем масс не совпадает с черновиком Saby.');
+    const next = structuredClone(record);
+    next.driverFlow!.draftSnapshot = structuredClone(record.snapshot);
+    const total = ids.reduce((sum, id) => sum.plus(facts.deliveries[id].grossMassTonnes), new Decimal(0)).toFixed();
+    next.snapshot.fields.quantity_tonnes = total; next.snapshot.fields.quantity_gross_tonnes = total;
+    for (const delivery of next.deliveries) {
+      const mass = facts.deliveries[delivery.shipmentId].grossMassTonnes;
+      const snapshot = delivery.snapshot;
+      snapshot.fields.quantity_tonnes = mass; snapshot.fields.quantity_gross_tonnes = mass;
+      snapshot.profile.deliveryMassTonnes = mass; snapshot.profile.plannedGrossMassTonnes = mass;
+      snapshot.profile.loading = { arrivedAt: facts.arrivedAt, departedAt: facts.departedAt, grossMassTonnes: mass, massMethod: '03' };
+      delivery.payloadHash = hash(snapshot);
+      const cargo = next.snapshot.deliveries!.find(row => row.shipmentId === delivery.shipmentId)!;
+      cargo.fields.quantity_tonnes = mass; cargo.fields.quantity_gross_tonnes = mass;
+    }
+    const errors = sabyTransportBlockers(next.snapshot);
+    if (errors.length) throw new SabyError('validation', errors.join(' '));
+    next.payloadHash = hash(next.snapshot); next.driverFlow!.state = 'mass_pending';
+    await update(row => { row.snapshot = next.snapshot; row.payloadHash = next.payloadHash; row.deliveries = next.deliveries; row.driverFlow = next.driverFlow; }, true);
+    record = context.record();
+  }
+  const frozen = record.driverFlow!.draftAttachment!;
+  const expected = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
+  if (!record.driverFlow!.massUpdateAttempted) {
+    // Protect every byte of the draft, its only attachment, revision and signature state.
+    await checkAccess(); remote = await client.readTransportOrder(record.order.id!); actual = await titleFile(remote);
+    if (actual.id !== frozen.id || actual.revision !== frozen.revision || actual.file.name !== frozen.name || createHash('sha256').update(actual.file.bytes).digest('hex') !== frozen.sha256) throw new SabyError('validation', 'Saby содержит ручные изменения черновика. Массы сохранены в CRM, внешнее дозаполнение остановлено.');
+    const document = buildSabyTransportDocument(record.snapshot, record.marker, record.attemptId, record.createdAt, record.order.number!);
+    const attachments = rows(document.Вложение).map(file => ({ ...file, Идентификатор: frozen.id }));
+    await update(row => { row.driverFlow!.massUpdateAttempted = true; }, true);
+    await checkAccess();
+    const uploaded = await client.writeDocument({ ...document, Идентификатор: record.order.id, Редакция: { Идентификатор: frozen.revision }, Вложение: attachments });
+    if (uploaded.Идентификатор !== record.order.id) throw new SabyError('unknown', 'Saby не подтвердил прежний ID при дозаполнении массы. Повтор запрещён.', true);
+    remote = await client.readTransportOrder(record.order.id!); actual = await titleFile(remote);
+  }
+  // On lost responses only read-back runs. An old or different title never causes another Write.
+  verifySabySenderBusiness(actual.file.bytes, expected.xml);
+  const confirmed = confirmOrder(remote, record);
+  await update(row => { row.order = { ...confirmed, ...sabyOrderProgress(remote) }; row.driverFlow!.state = 'ready'; row.phase = 'awaiting_carrier'; row.lastError = null; row.lastCheckedAt = now(); });
+  return remote;
 }

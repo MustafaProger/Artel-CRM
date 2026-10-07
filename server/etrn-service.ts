@@ -10,6 +10,7 @@ import { getShipmentTrip } from './shipment-trips';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyDocumentWorkflow, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
 import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, sabyConsignmentBlockers, buildSabyConsignmentDocument, serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
 import type { CreateTripSabyDelivery } from './trip-saby-workflow';
+import { validateEtrnDispatch, type EtrnDispatch } from './etrn-dispatch';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -19,7 +20,8 @@ const nullable = (v: unknown) => v === null || typeof v === 'string';
 const LEASE_MS = 300_000;
 
 interface EtrnArtifact { key: string; attachmentId: string; revision: string | null; name: string; extension: string; sha256?: string; size?: number; content?: string }
-interface EtrnDocument extends Omit<EtrnDocumentSummary, 'files'> {
+export interface EtrnDocument extends Omit<EtrnDocumentSummary, 'files'> {
+  dispatch?: EtrnDispatch;
   number?: string; reservationAttempted?: boolean; uploadAttempted?: boolean;
   unexpectedDocumentIds?: string[];
   marker: string; attemptId: string; createdAt: string; payloadHash: string;
@@ -54,6 +56,7 @@ export function validateEtrnData(value: unknown): asserts value is EtrnData | un
       if (!shipmentId || !sabyObject(delivery) || !sabyObject(delivery.profile) || !sabyObject(delivery.snapshot) || delivery.snapshot.tripId !== tripId || delivery.snapshot.shipmentId !== shipmentId || delivery.preparedHash !== hash(delivery.snapshot) || !isDate(delivery.updatedAt)) throw new Error('Invalid ETRN preparation');
       const doc = delivery.document;
       if (doc === null) continue;
+      if (sabyObject(doc)) validateEtrnDispatch(doc.dispatch, typeof doc.id === 'string' ? doc.id : null);
       if (sabyObject(doc) && doc.unexpectedDocumentIds !== undefined && (!Array.isArray(doc.unexpectedDocumentIds) || doc.unexpectedDocumentIds.length > 10 || !doc.unexpectedDocumentIds.every(id => typeof id === 'string' && id.trim() && id.length <= 256))) throw new Error('Invalid unexpected ETRN identifiers');
       if (sabyObject(doc) && (doc.number !== undefined && (typeof doc.number !== 'string' || !doc.number.trim()) || doc.reservationAttempted !== undefined && typeof doc.reservationAttempted !== 'boolean' || doc.uploadAttempted !== undefined && typeof doc.uploadAttempted !== 'boolean')) throw new Error('Invalid ETRN numbering');
       if (!sabyObject(doc) || !['pending', 'unknown', 'draft', 'error'].includes(String(doc.status)) || !nullable(doc.id) || !nullable(doc.revision) || !nullable(doc.url) || !nullable(doc.remoteStatus) || !nullable(doc.lastError) || !nullable(doc.gisStatus) || !['not_signed','reported_by_saby','unknown'].includes(String(doc.signatureStatus)) || !Array.isArray(doc.availableActions) || !doc.availableActions.every(v => typeof v === 'string') || !isDate(doc.updatedAt) || !isDate(doc.createdAt) || typeof doc.marker !== 'string' || !doc.marker.startsWith('ARTEL-CRM:ETRN:') || typeof doc.attemptId !== 'string' || !doc.attemptId || !sabyObject(doc.snapshot) || doc.snapshot.tripId !== tripId || doc.snapshot.shipmentId !== shipmentId || doc.payloadHash !== hash(doc.snapshot) || !nullable(doc.leaseId) || !(doc.leaseUntil === null || isDate(doc.leaseUntil)) || !Array.isArray(doc.artifacts) || doc.artifacts.length > 500 || doc.status === 'draft' && !doc.id) throw new Error('Invalid ETRN document');
@@ -239,6 +242,7 @@ export async function saveTripLoadingFacts(options: EtrnOptions, raw: unknown, a
   await store.mutate(base.provenance.sourceSha256, data => {
     authorize(currentSnapshot(base, data), data);
     const workflow = data.tripSaby?.trips[tripId];
+    if (getShipmentTrip(currentSnapshot(base, data), tripId).fields.trip_flow_version === 'driver-v1') throw new ApiError(409, 'Факты этого рейса фиксирует назначенный водитель действиями «Прибыл» и «Убыл».');
     if (!workflow?.carrierEvidence) throw new ApiError(409, 'Сначала дождитесь подтверждения заявки перевозчиком в Saby.');
     if (workflow.leaseId && workflow.leaseUntil && Date.parse(workflow.leaseUntil) > Date.now()) throw new ApiError(409, 'Обмен выполняется. Дождитесь его завершения.');
     const ids = workflow.deliveries.map(row => row.shipmentId);

@@ -51,19 +51,30 @@ export const exchangeStageLabels: Record<string, string> = {
 
 export function workflowView(result: TripSabyResponse) {
   const stage = result.order?.exchangeStage
-  if (result.phase === 'unknown') return { title: 'Нужна сверка с Saby', text: 'Ответ не подтверждён. Продолжение приостановлено; повторная заявка не создаётся.', step: result.signing?.sender.state === 'confirmed' ? 3 : 1 }
+  if (result.stage6CompletedAt) return { title: 'Все этапы рейса завершены', text: 'Подписи и отправка ЭТрН клиентам подтверждены для каждой доставки. Рейс доступен водителю в архиве.', step: 6 }
+  if (result.phase === 'unknown') return { title: 'Нужна сверка с Saby', text: 'Ответ не подтверждён. Продолжение приостановлено; повторная заявка не создаётся.', step: result.driverFlow && result.driverFlow.state !== 'ready' ? 0 : result.signing?.sender.state === 'confirmed' ? 3 : 1 }
   if (result.phase === 'error') {
     const terminalStage = stage === 'rejected' || stage === 'operator_error' || stage === 'cancelled'
     const afterConfirmation = stage === 'carrier_confirmed' || result.carrierConfirmed
+    if (result.driverFlow && result.driverFlow.state !== 'ready') return { title: 'Подготовка заявки приостановлена', text: 'Проверьте сообщение ниже. Подписание не запускалось; сохранённые данные водителя и связь с заявкой остаются в CRM.', step: 0 }
     return {
       title: terminalStage ? exchangeStageLabels[stage] : afterConfirmation ? 'Создание ЭТрН приостановлено' : 'Обмен приостановлен',
       text: 'Проверьте сообщение Saby и сохранённый документ. Уже полученные номера и связи сохранены.',
       step: terminalStage ? (stage === 'rejected' ? 3 : 1) : afterConfirmation ? 4 : 1,
     }
   }
+  if (result.phase === 'awaiting_driver' || result.driverFlow?.state === 'waiting_driver') return {
+    title: result.order?.id ? 'Черновик заявки · ожидаем водителя' : 'Подготовка · ожидаем водителя',
+    text: result.order?.id ? 'Неподписанная заявка сохранена в Saby. Водитель фиксирует прибытие, затем вводит массы всех доставок и нажимает «Убыл». До этого отправка не начнётся.' : 'Водитель может фиксировать прибытие и массы. Создание неподписанного черновика в Saby ещё не подтверждено; состояние подготовки показано ниже.',
+    step: 0,
+  }
+  if (result.driverFlow?.state === 'mass_pending') return { title: 'Массы получены · дополняем заявку', text: 'CRM проверяет сохранение масс всех доставок в той же заявке. Подписание начнётся после подтверждённого сохранения.', step: 0 }
+  if (result.phase === 'sending_etrn' || result.phase === 'completed' && result.driverFlow) return { title: 'ЭТрН созданы · отправка клиентам', text: 'CRM проверяет подписи и отправку каждой ЭТрН клиенту. Рейс остаётся активным до подтверждения всех доставок.', step: 5 }
   if (result.phase === 'completed') return { title: 'ЭТрН созданы · ожидают обработки', text: 'В АРТЕЛЬ откройте каждую ЭТрН, проверьте заполнение и подпишите отправку клиенту. Состояния документов и подписей обновляются ниже.', step: 5 }
   if (result.phase === 'creating_etrn') return { title: 'АРТЕЛЬ · создание ЭТрН', text: 'По подтверждённой заявке создаётся отдельная ЭТрН для каждой доставки.', step: 4 }
-  if (result.phase === 'awaiting_loading') return { title: 'Заявка подтверждена · нужны факты погрузки', text: 'НК АРТЕЛЬ подтвердило заявку. Внесите фактическую погрузку, чтобы CRM создала ЭТрН для клиентов.', step: 4 }
+  if (result.phase === 'awaiting_loading') return result.driverFlow
+    ? { title: 'Заявка подтверждена · проверяем погрузку', text: 'CRM проверяет ранее сохранённые водителем массы и события перед созданием ЭТрН для клиентов.', step: 4 }
+    : { title: 'Заявка подтверждена · нужны факты погрузки', text: 'НК АРТЕЛЬ подтвердило заявку. Внесите фактическую погрузку, чтобы CRM создала ЭТрН для клиентов.', step: 4 }
   if (result.automation?.enabled && !result.order?.id) {
     if (!result.ready) return { title: 'Рейс сохранён · отправка приостановлена', text: result.automation.message || 'Для автоматического обмена нужны сведения, перечисленные ниже. Заполните их и сохраните рейс.', step: 0 }
     return result.automation.enrolled

@@ -10,12 +10,12 @@ import './trips.css'
 import './form-refinements.css'
 import { calculateShipment, daysSinceShipment, today, unpaidShipmentDays } from './shipment-calculations'
 import { customerManagerId, availableShipmentCustomer } from './customer-manager'
-import { allocateTrip } from './trip-calculations'
+import { allocateMeasuredTrip, allocateTrip } from './trip-calculations'
 import { number } from './utils'
 import { isOurOrganizationId, ourOrganizations } from './our-organizations'
 import { type TripIntermediateStop } from './trip-route'
 import { isUnpackagedDiesel } from './trip-input-rules'
-import { driverVehicleId, initialUnloadingFields, loadingDateFields } from './trip-editor-rules'
+import { driverVehicleId, loadingDateFields } from './trip-editor-rules'
 import type { TripSabyAutomationCapability } from './trip-saby-model'
 
 interface CustomerDraft {
@@ -45,7 +45,7 @@ const serialize = (draft: TripDraft) => JSON.stringify(draft)
 const numericKeys = new Set(['purchase_price_unspecified_unit', 'quantity_tonnes', 'additional_costs', 'quantity_litres', 'sale_price_per_litre', 'transport_amount'])
 const comparable = (key: string, value: string | null | undefined) => numericKeys.has(key) && value ? numericValue(value)?.toFixed() ?? value : value?.trim() || null
 const sameFields = (expected: Record<string, string | null>, actual: Record<string, string | null>) => Object.entries(expected).every(([key, value]) => key === 'loading_at'
-  ? actual.date === value?.slice(0, 10) && actual.loading_planned_at === value && actual.loading_actual_at === value
+  ? actual.date === value?.slice(0, 10) && actual.loading_planned_at === value
   : comparable(key, value) === comparable(key, actual[key]))
 
 interface TripEditorProps extends ShipmentEditorProps { tripId?: string; tripMode?: boolean; canManagePlaces?: boolean; onDirectoriesChanged?: () => void; sabyAutomation?: TripSabyAutomationCapability }
@@ -62,14 +62,13 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const dialog = useRef<HTMLDialogElement>(null)
   const errorElement = useRef<HTMLDivElement>(null)
   const pendingCustomerFocus = useRef<string | null>(null)
-  const manuallyEditedUnloading = useRef(new Set<string>())
   const defaultPaymentId = directories.paymentForms.find(p => p.name === defaultPaymentForm)?.id ?? ''
-  const newCustomer = (loadingAt = today()): CustomerDraft => ({
+  const newCustomer = (): CustomerDraft => ({
     key: crypto.randomUUID(),
-    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', delivery_notes: '', ...initialUnloadingFields(loadingAt) },
+    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', delivery_notes: '' },
   })
   const [draft, setDraft] = useState<TripDraft>(() => ({
-    fields: { organization_id: tripMode ? 'artel' : '', ...loadingDateFields(today()), supplier_id: '', oil_depot_id: '', carrier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', intermediate_stops_in_order: '' },
+    fields: { trip_flow_version: 'driver-v1', organization_id: tripMode ? 'artel' : '', ...loadingDateFields(today()), supplier_id: '', oil_depot_id: '', carrier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', intermediate_stops_in_order: '' },
     customers: [newCustomer()],
   }))
   const [initial, setInitial] = useState(() => serialize(draft))
@@ -84,6 +83,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const automation = sabyAutomation ?? readAutomation
   const dirty = serialize(draft) !== initial
   const fields = draft.fields
+  const driverFlow = fields.trip_flow_version === 'driver-v1'
   const disabled = saving || loading || uncertain
 
   useEffect(() => {
@@ -155,9 +155,9 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   }, [draft.customers])
 
   const allocation = useMemo(() => {
-    try { return allocateTrip(fields.quantity_tonnes, draft.customers.map(customer => customer.fields.quantity_litres), fields.additional_costs || '0') }
+    try { return driverFlow ? allocateMeasuredTrip(draft.customers.map(customer => customer.fields.quantity_tonnes || null), draft.customers.map(customer => customer.fields.quantity_litres), fields.additional_costs || '0') : allocateTrip(fields.quantity_tonnes, draft.customers.map(customer => customer.fields.quantity_litres), fields.additional_costs || '0') }
     catch { return null }
-  }, [fields.quantity_tonnes, fields.additional_costs, draft.customers])
+  }, [driverFlow, fields.quantity_tonnes, fields.additional_costs, draft.customers])
   const totalLitres = draft.customers.reduce((total, customer) => total.plus(numericValue(customer.fields.quantity_litres) ?? 0), new Decimal(0))
   const unpaidDays = draft.customers.some(customer => {
     const litres = numericValue(customer.fields.quantity_litres), price = numericValue(customer.fields.sale_price_per_litre)
@@ -183,21 +183,16 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
         next.vehicle_id = driverVehicleId(directories, value)
       }
       if ((key === 'quantity_tonnes' || key === 'product_id') && isUnpackagedDiesel(directories.products.find(entry => entry.id === next.product_id))) next.quantity_gross_tonnes = next.quantity_tonnes
-      const customers = key === 'loading_at' ? previous.customers.map(customer => ({ ...customer, fields: {
-        ...customer.fields,
-        ...Object.fromEntries(['unloading_planned_at', 'unloading_actual_at'].filter(field => (!customer.fields[field] || !tripId && customer.fields[field] === (previous.fields.loading_at || previous.fields.loading_planned_at || previous.fields.date)) && !manuallyEditedUnloading.current.has(`${customer.key}:${field}`)).map(field => [field, value])),
-      } })) : previous.customers
-      return { ...previous, fields: next, customers }
+      return { ...previous, fields: next }
     })
     changed()
   }
   const updateCustomer = (customerKey: string, key: string, value: string) => {
-    if (key === 'unloading_planned_at' || key === 'unloading_actual_at') manuallyEditedUnloading.current.add(`${customerKey}:${key}`)
     setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'unloading_address_id' ? { unloading_address: '', unloading_map_url: '' } : {}), ...(key === 'customer_id' ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
     changed()
   }
   const addCustomer = () => {
-    const customer = newCustomer(fields.loading_at || fields.loading_planned_at || fields.date)
+    const customer = newCustomer()
     pendingCustomerFocus.current = customer.key
     setDraft(previous => ({ ...previous, customers: [...previous.customers, customer] }))
     changed()
@@ -219,7 +214,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     if (!fields.date) return 'Укажите дату отгрузки.'
     if (!companies.some(company => company.id === fields.supplier_id)) return 'Выберите поставщика из списка.'
     if (!numericValue(fields.purchase_price_unspecified_unit)?.gt(0)) return 'Укажите цену поставщика за тонну больше нуля.'
-    if (!numericValue(fields.quantity_tonnes)?.gt(0)) return 'Укажите плановую массу груза больше нуля.'
+    if (driverFlow && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(fields.loading_at || fields.loading_planned_at || '')) return 'Укажите плановые дату и время рейса по Москве.'
+    if (!driverFlow && !numericValue(fields.quantity_tonnes)?.gt(0)) return 'Укажите плановую массу груза больше нуля.'
     if (!directories.products.some(product => product.id === fields.product_id)) return 'Выберите товар из списка.'
     for (const [index, customer] of draft.customers.entries()) {
       const values = customer.fields
@@ -234,7 +230,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     if (!driver) return 'Выберите водителя из списка.'
     if (!vehicle) return 'Выберите автомобиль из списка.'
     if (!numericValue(fields.additional_costs || '0')?.gte(0)) return 'Дополнительные затраты должны быть неотрицательным числом.'
-    try { allocateTrip(fields.quantity_tonnes, draft.customers.map(customer => customer.fields.quantity_litres), fields.additional_costs || '0') }
+    try { if (!driverFlow) allocateTrip(fields.quantity_tonnes, draft.customers.map(customer => customer.fields.quantity_litres), fields.additional_costs || '0') }
     catch (reason) { return reason instanceof Error ? reason.message : 'Проверьте тоннаж и литры клиентов.' }
     return null
   }
@@ -247,7 +243,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     setSaving(true)
     savingLock.current = true
     const snapshotFields = new Set(['loading_address', 'loading_map_url', 'unloading_address', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude'])
-    const clean = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).filter(([key]) => !snapshotFields.has(key)).map(([key, value]) => [key, value.trim() || null]))
+    const driverOwnedFields = new Set(['quantity_tonnes', 'quantity_gross_tonnes', 'loading_actual_at', 'loading_arrived_at', 'loading_departed_at', 'unloading_planned_at', 'unloading_actual_at'])
+    const clean = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).filter(([key]) => !snapshotFields.has(key) && !(driverFlow && driverOwnedFields.has(key))).map(([key, value]) => [key, value.trim() || null]))
     const payload = {
       fields: clean({ ...fields, additional_costs: fields.additional_costs || '0' }),
       customers: draft.customers.map(customer => ({ ...(customer.id ? { id: customer.id } : {}), fields: clean({ ...customer.fields, transport_amount: customer.fields.transport_amount || '0' }) })),
@@ -308,7 +305,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     <span>{label}{required && ' *'}</span>
     <div className="trip-date-controls">
       <label><span className="form-control-caption">Дата</span><input aria-label={label} type="date" value={value.slice(0, 10)} required={required} disabled={disabled} onChange={event => onChange(event.target.value ? `${event.target.value}${value.includes('T') ? `T${value.split('T')[1]}` : ''}` : '')}/></label>
-      <label><span className="form-control-caption" title="Время можно не указывать">Время</span><input aria-label={`${label} — время`} type="time" value={value.split('T')[1]?.slice(0, 5) ?? ''} disabled={disabled || !value.slice(0, 10)} onChange={event => onChange(`${value.slice(0, 10)}${event.target.value ? `T${event.target.value}` : ''}`)}/></label>
+      <label><span className="form-control-caption" title={driverFlow && required ? 'Укажите время по Москве' : 'Время можно не указывать'}>Время</span><input aria-label={`${label} — время`} type="time" required={driverFlow && required} value={value.split('T')[1]?.slice(0, 5) ?? ''} disabled={disabled || !value.slice(0, 10)} onChange={event => onChange(`${value.slice(0, 10)}${event.target.value ? `T${event.target.value}` : ''}`)}/></label>
     </div>
   </div>
   const companyName = (id: string | undefined) => companies.find(company => company.id === id)?.name || 'Не указано'
@@ -325,29 +322,29 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       <header className="shipment-editor-heading"><div><span>{tripMode ? (tripId ? 'РЕДАКТИРОВАНИЕ РЕЙСА' : 'НОВЫЙ РЕЙС') : (tripId ? 'РЕДАКТИРОВАНИЕ ОТГРУЗКИ' : 'НОВАЯ ОТГРУЗКА')}</span><h2 id="shipment-trip-title">{tripMode ? (tripId ? 'Изменить рейс' : 'Новый рейс') : (tripId ? 'Изменить отгрузку' : 'Добавить отгрузку')}</h2></div><button type="button" className="icon-button" aria-label="Закрыть редактор" disabled={saving} onClick={close}><X size={23}/></button></header>
       <div className="shipment-editor-body" aria-busy={loading || saving}>
         {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={24}/><span>Загружаем отгрузку и всех её клиентов…</span></div> : loadError ? <div className="shipment-trip-loading"><p className="shipment-error" role="alert">{loadError}</p><button type="button" className="button" onClick={() => setReload(value => value + 1)}>Повторить загрузку</button></div> : <>
-          <p className="shipment-editor-note shipment-trip-intro">{tripMode ? 'Сохранение создаёт рабочий рейс и строки клиентов в «Отгрузках».' : 'Одна машина — одна отгрузка. Укажите общий тоннаж, затем литры и условия для каждого клиента.'}</p>
-          {automation?.enabled && <p className="shipment-editor-note" role="note">После сохранения готового рейса CRM автоматически начнёт обмен с Saby и запросит подписи обеих сторон. Если данных не хватает, рейс сохранится, а причина остановки будет показана в Saby.</p>}
+          <p className="shipment-editor-note shipment-trip-intro">{driverFlow ? 'Сохранение создаёт рейс, строки доставок в «Отгрузках» и задание водителю. Массы водитель внесёт по бумажной ТТН после погрузки.' : 'Исторический рейс. Сохранённые массы и фактические даты не меняются автоматически.'}</p>
+          {automation?.enabled && <p className="shipment-editor-note" role="note">{driverFlow ? 'До убытия водителя заявка остаётся неподписанной. После получения всех масс CRM продолжит обмен автоматически; состояние видно в блоке Saby.' : 'Изменения учёта сохраняются в CRM. Исправления документов выполняются вручную в Saby.'}</p>}
           {!automation?.enabled && automation?.message && <p className="shipment-editor-note" role="note">{automation.message}</p>}
           {uncertain && <p className="shipment-calculation-warning" role="status">Ответ сервера не подтверждён. Повторите сохранение: будет проверен тот же запрос без создания второго рейса.</p>}
           {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
           {conflict && <button type="button" className="button" disabled={saving} onClick={() => setReload(value => value + 1)}>Загрузить актуальный рейс</button>}
           <fieldset className="shipment-fieldset group-purchase"><legend>Отгрузка и поставщик</legend><div className="shipment-field-grid">
             {select('Наша организация', 'organization_id', ourOrganizations.map(organization => ({ ...organization })), { required: !tripId })}
-            {dateTimeInput('Дата отгрузки / погрузки', loadingValue, value => update('loading_at', value), true)}
+            {dateTimeInput(driverFlow ? 'Плановая дата рейса · Москва' : 'Дата отгрузки / погрузки', loadingValue, value => update('loading_at', value), true)}
             {tripMode && <label className="trip-invoice-option form-field-wide"><input type="checkbox" checked={fields.organization_id === 'nk-artel'} disabled={disabled} onChange={event => update('organization_id', event.target.checked ? 'nk-artel' : 'artel')}/>Собственный клиент НК Артэль — НК отправитель и перевозчик</label>}
             {select('Поставщик', 'supplier_id', companyEntries('supplier', draft.fields.supplier_id), { required: true })}
             {select('Нефтебаза', 'oil_depot_id', (directories.oilDepots ?? []).map(entry => ({ id: entry.id, name: entry.name, detail: entry.address })))}
             {select('Товар', 'product_id', directories.products, { required: true })}
             {input('Цена поставщика за тонну, ₽', 'purchase_price_unspecified_unit', { required: true })}
-            {input('Плановая масса груза, т', 'quantity_tonnes', { required: true })}
-            {tripMode && !unifiedCargoMass && input('Плановая масса брутто по документам, т', 'quantity_gross_tonnes')}
+            {!driverFlow && input('Плановая масса груза, т', 'quantity_tonnes', { required: true })}
+            {!driverFlow && tripMode && !unifiedCargoMass && input('Плановая масса брутто по документам, т', 'quantity_gross_tonnes')}
           </div>
-          {unifiedCargoMass && <p className="shipment-editor-note">Дизельное топливо без упаковки: одна масса груза используется как нетто и брутто.</p>}
-          {tripId && !fields.loading_at && (fields.loading_actual_at && fields.loading_actual_at !== fields.loading_planned_at || fields.loading_planned_at && fields.loading_planned_at.slice(0, 10) !== fields.date) && <p className="shipment-editor-note">Сохранены исторические даты: отгрузка {fields.date || 'не указана'}, плановая погрузка {fields.loading_planned_at || 'не указана'}, фактическая погрузка {fields.loading_actual_at || 'не указана'}. Они останутся разными, пока вы не измените общую дату погрузки.</p>}
+          {!driverFlow && unifiedCargoMass && <p className="shipment-editor-note">Дизельное топливо без упаковки: одна масса груза используется как нетто и брутто.</p>}
+          {tripId && !fields.loading_at && (fields.loading_actual_at && fields.loading_actual_at !== fields.loading_planned_at || fields.loading_planned_at && fields.loading_planned_at.slice(0, 10) !== fields.date) && <p className="shipment-editor-note">Сохранены исторические даты: отгрузка {fields.date || 'не указана'}, плановая погрузка {fields.loading_planned_at || 'не указана'}, фактическая погрузка {fields.loading_actual_at || 'не указана'}. Фактические даты сохраняются независимо от плановой даты.</p>}
           {depot ? <div className="shipment-trip-fleet"><div><p><span>Пункт подачи / место погрузки</span><strong>{fields.loading_address || depot.address || 'Заполните фактический адрес нефтебазы'}</strong></p><p><span>Владелец нефтебазы</span><strong>{companyName(depot.ownerCompanyId)}</strong></p><p><span>Юридический адрес владельца</span><strong>{companies.find(company => company.id === depot.ownerCompanyId)?.address || 'Не указан'}</strong></p><p><span>Лицо, осуществляющее погрузку</span><strong>{companyName(depot.loadingActorCompanyId)}</strong></p><p><span>Владелец инфраструктуры погрузки</span><strong>{companyName(depot.infrastructureOwnerCompanyId)}</strong></p></div></div> : fields.loading_address && <p className="shipment-editor-note">Историческое место погрузки: {fields.loading_address}. Для нового места выберите нефтебазу.</p>}
           {tripId&&!fields.organization_id&&<p className="shipment-editor-note">Организация старой отгрузки не указана. Выберите её только при подтверждённой принадлежности.</p>}</fieldset>
 
-          <section className="shipment-trip-customers" aria-labelledby="shipment-trip-customers-title"><div className="shipment-trip-section-heading"><div><h3 id="shipment-trip-customers-title">Клиенты машины</h3><p>Тоннаж каждого клиента рассчитывается пропорционально его литрам.</p></div><span className="shipment-trip-count">{draft.customers.length}</span></div>
+          <section className="shipment-trip-customers" aria-labelledby="shipment-trip-customers-title"><div className="shipment-trip-section-heading"><div><h3 id="shipment-trip-customers-title">Доставки клиентам</h3><p>{driverFlow ? 'Каждая строка — клиент и отдельная точка выгрузки. Водитель укажет суммарную массу этой доставки, даже если топливо занимает несколько секций.' : 'Тоннаж каждого клиента рассчитывается пропорционально его литрам.'}</p></div><span className="shipment-trip-count">{draft.customers.length}</span></div>
             {draft.customers.map((customer, index) => {
               const litres = numericValue(customer.fields.quantity_litres)
               const price = numericValue(customer.fields.sale_price_per_litre)
@@ -365,12 +362,12 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                 </div>
                 <div className="shipment-trip-delivery-fields"><h4>Доставка</h4><div className="shipment-field-grid">
                   <div className="form-field-wide">{location(customer)}</div>
-                  {dateTimeInput('Плановая выгрузка', customer.fields.unloading_planned_at || '', value => updateCustomer(customer.key, 'unloading_planned_at', value))}
-                  {dateTimeInput('Фактическая выгрузка', customer.fields.unloading_actual_at || '', value => updateCustomer(customer.key, 'unloading_actual_at', value))}
+                  {!driverFlow && dateTimeInput('Плановая выгрузка', customer.fields.unloading_planned_at || '', value => updateCustomer(customer.key, 'unloading_planned_at', value))}
+                  {!driverFlow && dateTimeInput('Фактическая выгрузка', customer.fields.unloading_actual_at || '', value => updateCustomer(customer.key, 'unloading_actual_at', value))}
                   <label className="shipment-field form-field-wide"><span>Примечание к доставке</span><textarea rows={2} value={customer.fields.delivery_notes ?? ''} disabled={disabled} onChange={event => updateCustomer(customer.key, 'delivery_notes', event.target.value)}/></label>
                   <label className="trip-invoice-option"><input type="checkbox" checked={customer.fields.invoice_not_required === 'true'} disabled={disabled} onChange={event => updateCustomer(customer.key, 'invoice_not_required', String(event.target.checked))}/>Счёт не нужен</label>
                 </div></div>
-                <div className="shipment-calculation-strip shipment-trip-client-totals">{output('Тоннаж клиента, т', allocation?.tonnes[index], 6)}{output('Сумма клиента, ₽', litres && price ? litres.times(price).toFixed(2) : null)}{output('Прибыль, ₽', calculation?.fields.profit_source)}<span className="shipment-trip-auto">Тоннаж · автоматически</span></div>
+                <div className="shipment-calculation-strip shipment-trip-client-totals">{output('Масса доставки, т', driverFlow ? customer.fields.quantity_tonnes : allocation?.tonnes[index], 6)}{output('Сумма клиента, ₽', litres && price ? litres.times(price).toFixed(2) : null)}{output('Прибыль, ₽', calculation?.fields.profit_source)}<span className="shipment-trip-auto">{driverFlow ? customer.fields.quantity_tonnes ? 'Масса от водителя' : 'Масса ожидает водителя' : 'Тоннаж · автоматически'}</span></div>
                 {calculation?.warnings.map(w => <p key={w} className="shipment-calculation-warning">{w}</p>)}
                 <div className="trip-intermediate-stops"><strong>Остановки после доставки {index + 1}</strong><p className="shipment-editor-note">Для собственных нужд бензовоза. В ЭТрН не включаются.</p>
                   {stopsAfter(customer).map((stop, stopIndex) => <div className="shipment-field-grid" key={stop.id}>
@@ -384,7 +381,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
             })}
             <button type="button" className="button shipment-trip-add" disabled={disabled || draft.customers.length >= 100} onClick={addCustomer}><Plus size={18}/>Добавить клиента</button>
             {draft.customers.some(customer => stopsAfter(customer).length > 0) && <label className="shipment-field"><span>Промежуточные остановки в заявке Saby</span><select value={fields.intermediate_stops_in_order || ''} disabled={disabled} onChange={event => update('intermediate_stops_in_order', event.target.value)}><option value="">Выберите перед отправкой</option><option value="true">Включать в заявку</option><option value="false">Только маршрут CRM</option></select></label>}
-            <div className="shipment-trip-distribution"><div className="shipment-calculation-strip">{output('Литров по клиентам, л', totalLitres.toString(), 3)}{output('Масса груза, т', numericValue(fields.quantity_tonnes)?.toString(), 6)}{output('Дней с отгрузки', unpaidDays, 0)}</div><p>{allocation ? 'Масса груза клиента = масса груза рейса × литры клиента ÷ все литры.' : 'Заполните массу груза и литры каждого клиента — распределение рассчитается автоматически.'} Дни отображаются, пока есть неоплаченные отгрузки клиентов.</p></div>
+            <div className="shipment-trip-distribution"><div className="shipment-calculation-strip">{output('Литров по клиентам, л', totalLitres.toString(), 3)}{output('Масса груза, т', numericValue(fields.quantity_tonnes)?.toString(), 6)}{output('Дней с отгрузки', unpaidDays, 0)}</div><p>{driverFlow ? 'Общая масса — сумма фактических масс доставок. До их получения закупка и прибыль ожидают расчёта.' : allocation ? 'Масса груза клиента = масса груза рейса × литры клиента ÷ все литры.' : 'Заполните массу груза и литры каждого клиента — распределение рассчитается автоматически.'} Дни отображаются, пока есть неоплаченные отгрузки клиентов.</p></div>
           </section>
 
           <fieldset className="shipment-fieldset group-delivery"><legend>Водитель и автомобиль</legend><div className="shipment-field-grid">

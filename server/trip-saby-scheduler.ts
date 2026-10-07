@@ -62,7 +62,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
     const expiredSubmission = record.phase === 'submitting' && !!record.leaseId
       && (!record.leaseUntil || Date.parse(record.leaseUntil) <= (options.now ?? Date.now()));
     const queuedAutomatic = !!record.autoAuthorization && record.phase === 'submitting' && !record.leaseId && !record.reservationAttempted && !record.uploadAttempted && !record.order.id;
-    const continuing = ['awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic;
+    const continuing = ['awaiting_driver', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic || !!record.driverFlow && record.phase === 'completed' && !record.stage6CompletedAt;
     if (!continuing && record.phase !== 'completed') continue;
     const authorize = (snapshot: Snapshot, data: OperationsData) => {
       const current = data.tripSaby?.trips[tripId];

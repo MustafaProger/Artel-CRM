@@ -744,7 +744,7 @@ test('HTTP save commits trip and auto outbox atomically, responds before unavail
   } finally { held = false; release(); if (tripId && (await f.store.read(f.source)).tripSaby?.trips[tripId]) await waitFor(async () => !(await f.store.read(f.source)).tripSaby!.trips[tripId].leaseId, 'background cleanup'); await f.close(); }
 });
 
-test('HTTP unfinished save stays editable; create replay cannot enroll it, but a later ready PATCH does', async () => {
+test('HTTP unfinished save stays editable; neither create replay nor a later ready accounting PATCH enrolls it', async () => {
   const f = await automaticHttpFixture(); let tripId = '';
   try {
     await f.store.mutate(f.source, data => { data.directories!.products[0].documentName = ''; return { changed: true, result: null }; });
@@ -753,12 +753,13 @@ test('HTTP unfinished save stays editable; create replay cannot enroll it, but a
     const blocked = await f.http(`/${tripId}/saby-workflow`, 'GET'); const view = await blocked.json(); assert.equal(view.ready, false); assert.equal(view.locked, false); assert.ok(view.blockers.length);
     await f.store.mutate(f.source, data => { data.directories!.products[0].documentName = 'Синтетический ДТ'; return { changed: true, result: null }; });
     const replay = await f.http('', 'POST', f.input); assert.equal(replay.status, 201); assert.equal((await f.store.read(f.source)).tripSaby?.trips[tripId], undefined); assert.equal(f.calls.length, 0);
-    f.setPending(true);
     const patch = { fields: f.input.fields, customers: f.input.customers.map((row, index) => ({ ...row, id: body.trip.customers[index].id })), versions: Object.fromEntries(body.trip.customers.map((row: { id: string; version: number }) => [row.id, row.version])) };
     const saved = await f.http(`/${tripId}`, 'PATCH', patch); assert.equal(saved.status, 200, await saved.text());
-    await waitFor(async () => { const row = (await f.store.read(f.source)).tripSaby?.trips[tripId]; return !!row && row.phase !== 'submitting' && !row.leaseId; }, 'ready edit background completion');
-    const record = (await f.store.read(f.source)).tripSaby!.trips[tripId]; assert.ok(record.autoAuthorization); assert.equal(record.signing!.sender.state, 'waiting');
-    assert.equal(f.calls.filter(call => call.method === 'СБИС.ВыполнитьДействие').length, 1);
+    const ready = await (await f.http(`/${tripId}/saby-workflow`, 'GET')).json();
+    assert.equal(ready.ready, true); assert.equal(ready.locked, false);
+    await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send, tripId });
+    assert.equal((await f.store.read(f.source)).tripSaby?.trips[tripId], undefined);
+    assert.equal(f.calls.length, 0);
   } finally { if (tripId && (await f.store.read(f.source)).tripSaby?.trips[tripId]) await waitFor(async () => !(await f.store.read(f.source)).tripSaby!.trips[tripId].leaseId, 'background cleanup'); await f.close(); }
 });
 

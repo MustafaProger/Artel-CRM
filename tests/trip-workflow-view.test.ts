@@ -166,3 +166,34 @@ test('automatic sender and carrier stages do not ask for another launch', () => 
     assert.doesNotMatch(workflowView(state).text, /запустите|после запуска|выбранной подписью/i);
   }
 });
+
+test('driver preparation distinguishes actual Saby draft from waiting preparation and prevents early stage 2', () => {
+  const state = failedWorkflow('sender_action_required');
+  state.phase = 'awaiting_driver'; state.driverFlow = { state: 'waiting_driver', processingAllowanceHours: 10 };
+  assert.equal(workflowView(state).step, 0);
+  assert.match(workflowView(state).title, /Черновик заявки/);
+  state.order = null;
+  assert.doesNotMatch(workflowView(state).title, /Черновик/);
+  assert.match(workflowView(state).text, /ещё не подтверждено/);
+  state.phase = 'preparation'; state.driverFlow.state = 'mass_pending';
+  assert.equal(workflowView(state).step, 0);
+  assert.match(workflowView(state).text, /после подтверждённого сохранения/);
+  state.phase = 'error';
+  assert.equal(workflowView(state).step, 0);
+  assert.match(workflowView(state).title, /Подготовка/);
+});
+
+test('new ETRN drafts remain at sending stage until terminal evidence is confirmed', () => {
+  const state = failedWorkflow('carrier_confirmed', true);
+  state.driverFlow = { state: 'ready', processingAllowanceHours: 10 };
+  for (const phase of ['completed', 'sending_etrn'] as const) {
+    state.phase = phase;
+    assert.equal(workflowView(state).step, 5);
+    assert.match(workflowView(state).text, /остаётся активным/);
+    assert.doesNotMatch(workflowView(state).text, /откройте|подпишите/);
+  }
+  state.stage6CompletedAt = '2026-10-08T09:00:00Z';
+  assert.equal(workflowView(state).step, 6);
+  assert.match(workflowView(state).title, /Все этапы/);
+  assert.match(workflowView(state).text, /архиве/);
+});

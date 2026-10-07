@@ -7,7 +7,7 @@ import { readIntermediateStops } from '../web/src/trip-route';
 import type { OperationsData } from './operations-store';
 import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, sabyConsignmentBlockers } from './saby-consignment-note';
 import { sabyConfigurationBlockers, sabyObject, type SabyConfig } from './saby-client';
-import { sabyTransportBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
+import { sabyTransportBlockers, sabyTransportDraftBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
 import type { TripSabyPreparation } from './trip-saby-workflow';
 
 /** Server-only confirmed recurring facts. No credentials or historical document payloads. */
@@ -39,6 +39,7 @@ const exact = (value: string | undefined, divisor: number) => value && /^\d+(?:\
 /** Pure preflight: never reserves numbers or creates external counterparty cards. */
 export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): TripSabyPreparation {
   const blockers = [...sabyConfigurationBlockers(config)];
+  const driverFlow = trip.fields.trip_flow_version === 'driver-v1';
   const directories = source.directories;
   const product = directories?.products.find(row => row.id === trip.fields.product_id);
   const vehicle = directories?.vehicles.find(row => row.id === trip.fields.vehicle_id);
@@ -64,11 +65,14 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     if (!linkedCarrier?.inn || linkedCarrier.inn !== config.carrier.inn) blockers.push(`В карточке ${label} указан перевозчик, не соответствующий настроенному юридическому лицу Saby. Сверьте сохранённую связь перед отправкой.`);
   }
   const transportCarrier = { ...config.carrier, phone: driver?.phone || '' };
-  const allocation = allocateTrip(trip.fields.quantity_tonnes || '', trip.customers.map(row => row.fields.quantity_litres || ''));
+  const allocation = driverFlow ? {
+    totalLitres: trip.customers.every(row => /^\d+(?:\.\d+)?$/.test(row.fields.quantity_litres || '')) ? trip.customers.reduce((sum, row) => sum.plus(row.fields.quantity_litres!), new Decimal(0)).toFixed() : '',
+    tonnes: trip.customers.map(row => row.fields.quantity_tonnes || ''),
+  } : allocateTrip(trip.fields.quantity_tonnes || '', trip.customers.map(row => row.fields.quantity_litres || ''));
   const bulkDiesel = isUnpackagedDiesel(product);
   const plannedGross = bulkDiesel ? trip.fields.quantity_tonnes : trip.fields.quantity_gross_tonnes;
-  const grossAllocation = plannedGross ? allocateTrip(plannedGross, trip.customers.map(row => row.fields.quantity_litres || '')) : null;
-  if (!grossAllocation) blockers.push(bulkDiesel ? 'В рейсе укажите плановую массу груза, т.' : 'В рейсе укажите плановую массу брутто груза.');
+  const grossAllocation = driverFlow ? { tonnes: trip.customers.map(row => row.fields.quantity_tonnes || '') } : plannedGross ? allocateTrip(plannedGross, trip.customers.map(row => row.fields.quantity_litres || '')) : null;
+  if (!driverFlow && !grossAllocation) blockers.push(bulkDiesel ? 'В рейсе укажите плановую массу груза, т.' : 'В рейсе укажите плановую массу брутто груза.');
   const cargo: SabyCargoProfile = {
     name: product?.documentName || '', condition: 'Жидкий', packagingCode: 'TY', packageCount: '1',
     // The transport-order format describes the planned method, never a performed weighing.
@@ -97,12 +101,15 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     p.confirmed = true;
     p.order = { number: '', date: trip.fields.date || '' };
     p.consignorIsForwarder = '0';
-    p.recipient.phone = address?.receiverPhone || '';
-    if (!address?.receiverName || !address.receiverPhone) blockers.push(`Доставка ${index + 1}: у выбранного адреса заполните имя и телефон приёмщика.`);
+    // The recipient is the customer company. A site receiver is a different contact.
+    if (!driverFlow) {
+      p.recipient.phone = address?.receiverPhone || '';
+      if (!address?.receiverName || !address.receiverPhone) blockers.push(`Доставка ${index + 1}: у выбранного адреса заполните имя и телефон приёмщика.`);
+    }
     p.carrierPhone = driver?.phone || '';
-    p.cargo = { name: cargo.name, condition: cargo.condition, packagingCode: cargo.packagingCode, packingMethod: 'Налив в цистерну', packageCount: '1', marking: 'Без маркировки', massMethod: '', dangerousGoods: cargo.dangerousGoods!, dimensions: { heightMetres: '1', lengthMetres: '1', widthMetres: '1' } };
+    p.cargo = { name: cargo.name, condition: cargo.condition, packagingCode: cargo.packagingCode, packingMethod: 'Налив в цистерну', packageCount: '1', marking: 'Без маркировки', massMethod: driverFlow ? '03' : '', dangerousGoods: cargo.dangerousGoods!, dimensions: { heightMetres: '1', lengthMetres: '1', widthMetres: '1' } };
     p.deliveryMassTonnes = allocation.tonnes[index];
-    p.massSource = 'calculated';
+    p.massSource = driverFlow ? 'driver' : 'calculated';
     p.plannedMassKind = 'net';
     p.plannedGrossMassTonnes = grossAllocation?.tonnes[index] || '';
     p.vehicle.type = vehicle?.transportVehicleType || vehicle?.vehicleType || '';
@@ -116,8 +123,16 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     p.infrastructureOwner = loadingRole(source, depot?.infrastructureOwnerCompanyId);
     p.instructions = { regulatory, redirectionParty: 'Грузополучатель', redirectionMethod: 'По телефону', redirectionPhone: address?.receiverPhone || '', transshipmentForbidden: '', ...Object.fromEntries(Object.entries(settings.instructions || {}).filter(([, value]) => value)) };
     p.instructions.regulatory = regulatory;
+    if (driverFlow) {
+      p.instructions.redirectionParty = 'Грузоотправитель';
+      p.instructions.redirectionMethod = 'По телефону';
+      // The confirmed recurring contact belongs in protected server settings, not source code.
+      p.instructions.redirectionPhone = settings.instructions?.redirectionPhone || '';
+      snapshot.fields.quantity_tonnes = p.deliveryMassTonnes || null;
+      snapshot.fields.quantity_gross_tonnes = p.plannedGrossMassTonnes || null;
+    }
     // Nothing here copies loading_actual_at or a planning time into an event.
-    blockers.push(...sabyConsignmentBlockers(snapshot, { stage: 'preparation' }).map(message => `Доставка ${index + 1}: ${message}`));
+    blockers.push(...sabyConsignmentBlockers(snapshot, { stage: driverFlow ? 'driver_draft' : 'preparation' }).map(message => `Доставка ${index + 1}: ${message}`));
     return { shipmentId: delivery.id, snapshot };
   });
   const first = deliveries[0].snapshot;
@@ -133,8 +148,9 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     driver: { name: driver?.fullName || '', phone: driver?.phone || '' }, vehicle: { plate: vehicle?.plate || '', type: first.profile.vehicle.type }, customerOrganization: sender, carrierOrganization: transportCarrier, profile,
     deliveries: deliveries.map(row => ({ shipmentId: row.shipmentId, fields: row.snapshot.fields, customer: row.snapshot.profile.recipient })),
     ...(trip.fields.intermediate_stops_in_order === 'true' ? { intermediateStops: stops } : {}),
-    loadingInfrastructureOwner: { name: infrastructureOwner.name, inn: infrastructureOwner.inn }, allowedOperationTime: '19:00:00+03:00',
+    loadingInfrastructureOwner: { name: infrastructureOwner.name, inn: infrastructureOwner.inn },
+    ...(driverFlow ? { processingDurationMinutes: 600 } : { allowedOperationTime: '19:00:00+03:00' }),
   };
-  blockers.push(...sabyTransportBlockers(order));
+  blockers.push(...(driverFlow ? sabyTransportDraftBlockers(order) : sabyTransportBlockers(order)));
   return { scenario, order, deliveries, blockers: [...new Set(blockers)] };
 }

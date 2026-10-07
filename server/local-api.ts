@@ -19,7 +19,7 @@ import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock 
 import { ApiError } from './api-error';
 import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
 import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
-import { readDriverTrips } from './driver-trips';
+import { readDriverTrips, recordDriverTripAction } from './driver-trips';
 import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
 import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
 import { apiSection, requireSection, requireTripSection } from './permissions';
@@ -477,13 +477,22 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return write(response, 200, JSON.stringify(result));
       }
       if (pathname.startsWith('/api/driver/')) {
-        const match = pathname.match(/^\/api\/driver\/trips(?:\/([^/]+))?$/);
+        const match = pathname.match(/^\/api\/driver\/trips(?:\/([^/]+))?(?:\/(arrive|depart))?$/);
         const data = await operations.read(base.provenance.sourceSha256);
         const user = requireUser(data, request);
         requireDriverRoute(user, pathname, request.method ?? '');
         if (!match) throw new ApiError(404, 'Маршрут не найден.');
-        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
-        return write(response, 200, JSON.stringify(readDriverTrips(currentSnapshot(base, data, false), user, match[1] ? decodeURIComponent(match[1]) : undefined, url.searchParams.get('q') ?? '')));
+        if (request.method === 'POST' && match[1] && match[2]) {
+          const body = await jsonBody(request);
+          const result = await operations.mutate(base.provenance.sourceSha256, fresh => {
+            const actor = requireUser(fresh, request);
+            requireDriverRoute(actor, pathname, request.method!);
+            return recordDriverTripAction(base, fresh, actor, decodeURIComponent(match[1]), match[2] as 'arrive' | 'depart', body);
+          });
+          return write(response, 200, JSON.stringify(result));
+        }
+        if (request.method !== 'GET' || match[2]) throw new ApiError(405, 'Метод не поддерживается.');
+        return write(response, 200, JSON.stringify(readDriverTrips(currentSnapshot(base, data, false), user, match[1] ? decodeURIComponent(match[1]) : undefined, url.searchParams.get('q') ?? '', data)));
       }
       const authorized = (data: import('./operations-store').OperationsData) => {
         const user = requireUser(data, request);
@@ -809,9 +818,9 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             const result=saveShipmentTrip(base,data,body,id,currentActor?.id ?? null);
             if (currentActor) requireWholeTrip(currentActor, currentSnapshot(base, data), result.trip.id);
             if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
-            // The saved trip and its immutable exchange intent commit together. A repeated
-            // create request never authorizes a new exchange under a later configuration.
-            const automatic = currentActor && !replayed
+            // Only creation commits a new immutable exchange intent. Editing an existing
+            // trip or replaying creation never authorizes exchange under a later policy.
+            const automatic = currentActor && !id && !replayed
               ? enqueueAutomaticTripSaby({ base, data, tripId: result.trip.id, actorId: currentActor.id, config: signingConfig })
               : { enqueued: false };
             return { result: { value: result, queued: automatic.enqueued }, changed: !replayed };

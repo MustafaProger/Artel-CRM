@@ -47,6 +47,13 @@ function paymentFormatCode(error: unknown): SabyFailureDiagnostic['formatCode'] 
 export class SabyError extends Error {
   constructor(readonly kind: 'configuration' | 'authorization' | 'permission' | 'validation' | 'transport' | 'protocol' | 'unknown', message: string, readonly uncertain = false, readonly diagnostic?: SabyFailureDiagnostic) { super(message); }
 }
+/** Exact bounded signature encoding; Buffer's permissive base64 decoder alone is insufficient. */
+export function decodeSabySignatureBase64(value: unknown): Buffer {
+  if (typeof value !== 'string' || !value.length || value.length > 28 * 1024 * 1024 || value.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new SabyError('validation', 'Saby вернул некорректные данные подписи исходного титула.');
+  const bytes = Buffer.from(value, 'base64');
+  if (!bytes.length || bytes.length > 20 * 1024 * 1024 || bytes.toString('base64') !== value) throw new SabyError('validation', 'Saby вернул некорректные данные подписи исходного титула.');
+  return bytes;
+}
 export function sabyFailureDiagnostic(error: unknown, phase: SabyFailureDiagnostic['phase'] = 'preflight', method: SabyFailureDiagnostic['method'] = 'other'): SabyFailureDiagnostic {
   if (error instanceof SabyError && isSabyFailureDiagnostic(error.diagnostic)) return structuredClone(error.diagnostic);
   return { method, phase, category: error instanceof SabyError ? error.kind : 'unknown' };
@@ -354,8 +361,34 @@ export class SabyClient {
   async readSigningOrder(side: SabySigningSide, id: string): Promise<SabyObject> {
     return this.signingClient(side).readTransportOrder(id);
   }
-  async downloadSigningAttachment(side: SabySigningSide, id: string, attachmentId: string, revision: string): Promise<SabyDownloadedAttachment> {
-    return this.signingClient(side).downloadTransportOrderAttachment(id, attachmentId, revision);
+  async readSigningDocument(side: SabySigningSide, id: string, documentType?: 'ConsignmentNote'): Promise<SabyObject> {
+    return documentType === 'ConsignmentNote' ? this.signingClient(side).readConsignmentNote(id) : this.readSigningOrder(side, id);
+  }
+  async downloadSigningAttachment(side: SabySigningSide, id: string, attachmentId: string, revision: string, documentType?: 'ConsignmentNote'): Promise<SabyDownloadedAttachment> {
+    return documentType === 'ConsignmentNote' ? this.signingClient(side).downloadAttachment(id, attachmentId, revision) : this.signingClient(side).downloadTransportOrderAttachment(id, attachmentId, revision);
+  }
+  /** Fresh exact source-title signature for a linked response, never a caller-supplied URL. */
+  async downloadSigningSignature(side: SabySigningSide, id: string, attachmentId: string, revision: string, selectedThumbprint: string, documentType?: 'ConsignmentNote'): Promise<Uint8Array> {
+    const fingerprint = (value: unknown) => sabyText(value)?.replace(/\s|:/g, '').toLowerCase();
+    const selected = fingerprint(selectedThumbprint);
+    if (!selected || !/^[a-f0-9]{40,128}$/.test(selected)) throw new SabyError('validation', 'Не определена выбранная подпись исходного титула.');
+    const client = this.signingClient(side);
+    const document = documentType === 'ConsignmentNote' ? await client.readConsignmentNote(id) : await client.readTransportOrder(id);
+    const revisions = objects(document.Редакция).filter(row => row.Актуален !== 'Нет');
+    const titles = objects(document.Вложение).filter(row => row.Идентификатор === attachmentId && row.Удален !== 'Да' && row.Актуален !== 'Нет');
+    const invalid = (value: SabyObject) => !!value.Ошибка || Number(value.КоличествоОшибок ?? 0) !== 0 || Array.isArray(value.Ошибки) && value.Ошибки.length > 0;
+    if (document.Удален === 'Да' || document.ЧастичныеДанные === 'Да' || invalid(document) || revisions.length !== 1 || revisions[0].Идентификатор !== revision || titles.length !== 1) throw new SabyError('validation', 'Редакция или исходный титул Saby изменились до чтения подписи.');
+    const title = titles[0];
+    if (title.Подтип !== (documentType === 'ConsignmentNote' ? '1110339' : '1110361') || title.ВерсияФормата !== '5.01' || invalid(title) || sabyObject(title.Редакция) && title.Редакция.Идентификатор && title.Редакция.Идентификатор !== revision) throw new SabyError('validation', 'Не подтверждён актуальный исходный титул Saby.');
+    const signatures = objects(title.Подпись);
+    const matching = signatures.map((signature, index) => ({ signature, index })).filter(({ signature }) => sabyObject(signature.Сертификат) && fingerprint(signature.Сертификат.Отпечаток) === selected);
+    if (matching.length !== 1 || invalid(matching[0].signature) || matching[0].signature.Удален === 'Да' || matching[0].signature.Актуален === 'Нет') throw new SabyError('validation', 'Не подтверждена единственная выбранная подпись исходного титула.');
+    const { signature, index } = matching[0];
+    const file = sabyObject(signature.Файл) ? signature.Файл : {};
+    if (file.ДвоичныеДанные !== undefined) return decodeSabySignatureBase64(file.ДвоичныеДанные);
+    const downloaded = await client.downloadDocumentAttachment(document, `signature:${attachmentId}:${index}:${evidenceHash(attachmentEvidence(title))}`, revision);
+    if (!downloaded.bytes.length) throw new SabyError('validation', 'Saby вернул пустую подпись исходного титула.');
+    return downloaded.bytes;
   }
   /** Preparation can regenerate XML, so a lost response is an uncertain write. */
   async prepareSigningAction(binding: SabySigningBinding): Promise<SabyObject> {
