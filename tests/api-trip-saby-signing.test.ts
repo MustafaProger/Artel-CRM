@@ -25,7 +25,7 @@ function xmlNode(root: XmlNode, name: string): XmlNode {
 }
 const addVehicleIdentity = (xml: XmlNode) => Object.assign(xmlNode(xml, 'ТС').attributes, { НомерВИН: vehicleIdentity.vin, НомСТС: vehicleIdentity.stsNumber });
 type Side = keyof typeof fingerprints;
-async function fixture(options: { automatic?: boolean; createOrder?: boolean } = {}) {
+async function fixture(options: { automatic?: boolean; createOrder?: boolean; prepareMetadataOnly?: boolean } = {}) {
   const rt = await integrationRuntime(); const baseApi = integrationApi();
   const config: SabyConfig = { ...integrationConfig(), login: 'synthetic', password: 'synthetic', accountNumber: 'sender-account', carrierAccountNumber: 'carrier-account', carrierResponsible: { surname: 'Тестовый', name: 'Тест', patronymic: 'Тестович', phone: '+79990000000' } };
   if (options.automatic) config.automaticSigning = { id: 'synthetic-auto-policy', enabled: true, approvedAt: '2025-01-01T00:00:00.000Z', mode: 'deferred', sender: { inn: config.customer.inn, kpp: config.customer.kpp, thumbprint: fingerprints.sender }, carrier: { inn: config.carrier.inn, kpp: config.carrier.kpp, thumbprint: fingerprints.carrier } };
@@ -74,7 +74,9 @@ async function fixture(options: { automatic?: boolean; createOrder?: boolean } =
       if (lose === 'prepare') { lose = null; throw new Error('Synthetic timeout'); }
       if (side === 'sender' && serviceAttachment && !(senderDoc().Вложение as SabyObject[]).some(a => a.Идентификатор === 'service-file')) (senderDoc().Вложение as SabyObject[]).push({ Идентификатор: 'service-file', Направление: 'Исходящий', Файл: { Имя: 'service.xml', Ссылка: 'https://disk.saby.ru/service.xml' } });
       const doc = structuredClone(side === 'sender' ? senderDoc() : carrierDoc!);
-      const resultStage = (doc.Этап as SabyObject[])[0]; resultStage.Вложение = (doc.Вложение as SabyObject[]).filter(a => a.Подтип === (side === 'sender' ? '1110361' : '1110362') || side === 'sender' && a.Идентификатор === 'service-file').map(a => ({ ...a, ТребуемоеДействие: 'Подписать' })); return json(doc);
+      const resultStage = (doc.Этап as SabyObject[])[0]; resultStage.Вложение = (doc.Вложение as SabyObject[]).filter(a => a.Подтип === (side === 'sender' ? '1110361' : '1110362') || side === 'sender' && a.Идентификатор === 'service-file').map(a => ({ ...a, ТребуемоеДействие: 'Подписать' }));
+      if (options.prepareMetadataOnly) for (const action of resultStage.Действие as SabyObject[]) delete action.Сертификат;
+      return json(doc);
     }
     if (req.method === 'СБИС.ВыполнитьДействие') {
       if (!pending) {
@@ -758,4 +760,59 @@ test('HTTP unfinished save stays editable; create replay cannot enroll it, but a
     const record = (await f.store.read(f.source)).tripSaby!.trips[tripId]; assert.ok(record.autoAuthorization); assert.equal(record.signing!.sender.state, 'waiting');
     assert.equal(f.calls.filter(call => call.method === 'СБИС.ВыполнитьДействие').length, 1);
   } finally { if (tripId && (await f.store.read(f.source)).tripSaby?.trips[tripId]) await waitFor(async () => !(await f.store.read(f.source)).tripSaby!.trips[tripId].leaseId, 'background cleanup'); await f.close(); }
+});
+
+test('new automatic drafts with empty current stages sign once through the scheduler', async () => {
+  const f = await fixture({ automatic: true, createOrder: false, prepareMetadataOnly: true }); try {
+    await enqueue(f);
+    f.setHook(async (side, req) => { if (side === 'sender' && req.method === 'СБИС.ПрочитатьДокумент') f.senderDoc().ТекущиеЭтапы = []; });
+    const result = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.equal(result.failed, 0); assert.equal((await f.record()).phase, 'awaiting_loading');
+    assert.equal((await f.record()).signing!.carrier.state, 'confirmed');
+    const writes = f.writes().length;
+    await dispatchTripSaby({ ...f, store: new OperationsStore(`${f.directory}/store`), config: f.config, enabled: true, send: f.send });
+    assert.equal(f.writes().length, writes); assert.equal(f.deliveries(), 0);
+    assert.equal(f.calls.filter(c => c.side === 'sender' && c.method === 'СБИС.ПодготовитьДействие').length, 1);
+    assert.equal(f.calls.filter(c => c.side === 'sender' && c.method === 'СБИС.ВыполнитьДействие').length, 1);
+  } finally { await f.close(); }
+});
+
+test('only an untouched automatic sender preflight failure can resume after the stage parser fix', async () => {
+  for (const mode of ['resume', 'revoked', 'policy', 'other_error', 'prepare_evidence', 'dispatch_evidence', 'manual'] as const) {
+    const f = await fixture({ automatic: true, createOrder: false }); try {
+      await enqueue(f);
+      f.setHook(async (side, req) => { if (side === 'sender' && req.method === 'СБИС.ПрочитатьДокумент') f.senderDoc().ТекущиеЭтапы = [{ Идентификатор: 'unavailable' }]; });
+      await f.run(); const blocked = (await f.record()).signing!.sender;
+      assert.equal(blocked.state, 'blocked'); assert.equal(blocked.binding, undefined); assert.equal(blocked.prepared, undefined); assert.equal(blocked.executeAttempted, undefined);
+      const before = f.writes().length;
+      f.setHook(async (side, req) => { if (side === 'sender' && req.method === 'СБИС.ПрочитатьДокумент') f.senderDoc().ТекущиеЭтапы = []; });
+      await f.store.mutate(f.source, data => {
+        const record = data.tripSaby!.trips[f.tripId]; const step = record.signing!.sender;
+        if (mode === 'revoked') data.accounts!.users.find(u => u.id === 'actor')!.active = false;
+        if (mode === 'other_error') step.message = 'Different validation failure';
+        if (mode === 'dispatch_evidence') step.executeAttempted = false;
+        if (mode === 'manual') { delete record.autoAuthorization; delete record.signing!.mode; }
+        return { changed: true, result: null };
+      });
+      // A valid binding is durable evidence even when Prepare never returned a manifest.
+      if (mode === 'prepare_evidence') {
+        f.setHook(undefined); f.senderDoc().ТекущиеЭтапы = [{ Идентификатор: 'stage-sender' }];
+        f.setLose('prepare'); await f.run();
+        assert.ok((await f.record()).signing!.sender.binding);
+        await f.store.mutate(f.source, data => {
+          Object.assign(data.tripSaby!.trips[f.tripId].signing!.sender, { state: 'blocked', message: blocked.message, diagnostic: blocked.diagnostic });
+          return { changed: true, result: null };
+        });
+      }
+      if (mode === 'policy') f.config.automaticSigning!.enabled = false;
+      const writes = f.writes().length;
+      const result = await dispatchTripSaby({ ...f, store: new OperationsStore(`${f.directory}/store`), config: f.config, enabled: true, send: f.send });
+      if (mode === 'resume') {
+        assert.equal((await f.record()).signing!.carrier.state, 'confirmed'); assert.equal((await f.record()).phase, 'awaiting_loading');
+        assert.equal(f.calls.filter(c => c.side === 'sender' && c.method === 'СБИС.ПодготовитьДействие').length, 1);
+        assert.equal(f.calls.filter(c => c.side === 'sender' && c.method === 'СБИС.ВыполнитьДействие').length, 1);
+      } else { assert.equal(f.writes().length, writes, mode); if (['policy', 'revoked'].includes(mode)) assert.equal(result.denied, 1); }
+      if (mode !== 'resume' && mode !== 'prepare_evidence') assert.equal(f.writes().length, before, mode);
+    } finally { await f.close(); }
+  }
 });

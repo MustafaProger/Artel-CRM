@@ -20,6 +20,7 @@ export interface SabySigningAttachment { id: string; name: string; subtype: stri
 export interface SabySigningManifest { binding: SabySigningBinding; attachments: SabySigningAttachment[]; preparedHash: string }
 export interface SabyPreparedSigning extends SabySigningManifest { attachments: Array<SabySigningAttachment & { bytes: Uint8Array }> }
 export interface SabySigningEvidence { state: 'confirmed' | 'pending' | 'unconfirmed' | 'changed'; reason: string; signatureThumbprints: string[] }
+export const SIGNING_STAGE_UNAVAILABLE = 'Saby не вернул единственный доступный этап и титул для подписания.';
 const rows = (value: unknown): SabyObject[] => Array.isArray(value) ? value.filter(sabyObject) : sabyObject(value) ? [value] : [];
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 const thumbprint = (value: unknown) => {
@@ -67,6 +68,14 @@ function availableStages(document: SabyObject): SabyObject[] {
   // Current-stage rows may be summaries without actions. Resolve their IDs against full Этап records.
   const stages = rows(document.Этап);
   const current = rows(document.ТекущиеЭтапы);
+  // A new outgoing draft has no running workflow yet: Saby returns
+  // ТекущиеЭтапы: [] and advertises its initial send action in Этап.
+  // Only this explicit draft shape may use that action; a nonempty, malformed,
+  // or stale current-stage list must never fall back to historical stages.
+  if (document.Тип === 'TransportOrder' && document.Направление === 'Исходящий' && sabyOrderStateCode(document) === '0' &&
+      Array.isArray(document.ТекущиеЭтапы) && document.ТекущиеЭтапы.length === 0) {
+    return stages.filter(stage => stage.Название === 'Отправка' && stage.Служебный !== 'Да' && stage.Завершен !== 'Да' && stage.Актуален !== 'Нет');
+  }
   const selected = Object.hasOwn(document, 'ТекущиеЭтапы') ? current.map(stage => {
     const detailed = stages.filter(detail => detail.Идентификатор === stage.Идентификатор);
     return detailed.length === 1 ? detailed[0] : stage;
@@ -137,7 +146,7 @@ export function createSigningBinding(remote: SabyObject, side: SabySigningSide, 
   const revision = currentRevision(remote); const subtype = side === 'sender' ? '1110361' : '1110362';
   const title = currentAttachments(remote, revision ?? '').filter(row => row.Подтип === subtype);
   const candidates = availableStages(remote).flatMap(stage => rows(stage.Действие).filter(action => side === 'sender' ? stage.Название === 'Отправка' && action.Название === 'Отправить' : stage.Название === 'Утверждение' && ['Утвердить', 'Утверждено'].includes(String(action.Название))).map(action => ({ stage, action })));
-  if (!revision || title.length !== 1 || candidates.length !== 1) throw new SabyError('validation', 'Saby не вернул единственный доступный этап и титул для подписания.');
+  if (!revision || title.length !== 1 || candidates.length !== 1) throw new SabyError('validation', SIGNING_STAGE_UNAVAILABLE);
   const { stage, action } = candidates[0];
   const binding: SabySigningBinding = { side, documentId: String(remote.Идентификатор ?? ''), revision, stageId: String(stage.Идентификатор ?? ''), stageName: String(stage.Название), actionName: String(action.Название),
     certificateThumbprint: certificate.thumbprint, organizationInn: organization.inn, organizationKpp: organization.kpp, counterpartyInn: counterparty.inn, counterpartyKpp: counterparty.kpp,
@@ -222,7 +231,9 @@ export async function prepareBoundSigning(client: SabyClient, binding: SabySigni
   if (prepared.Идентификатор !== binding.documentId || currentRevision(prepared) !== binding.revision) throw new SabyError('unknown', 'Saby подготовил неподтверждённую редакцию. Новая подготовка без сверки запрещена.', true);
   const stages = rows(prepared.Этап).filter(stage => stage.Идентификатор === binding.stageId && stage.Название === binding.stageName);
   if (stages.length !== 1 || rows(stages[0].Действие).filter(action => action.Название === binding.actionName && action.ТребуетПодписания === 'Да').length !== 1) throw new SabyError('unknown', 'Saby не подтвердил точное подписывающее действие. Выполнение остановлено.', true);
-  assertAdvertisedSigningMode(rows(stages[0].Действие).find(action => action.Название === binding.actionName)!, binding);
+  // Prepare uses the certificate to populate signer details; its response is
+  // not the current action-capability listing. Require the selected deferred
+  // mode from fresh Read below and again immediately before Execute instead.
   const signable = rows(stages[0].Вложение).filter(file => file.ТребуемоеДействие === 'Подписать');
   if (!signable.length || signable.length > 100 || new Set(signable.map(file => file.Идентификатор)).size !== signable.length) throw new SabyError('unknown', 'Saby не вернул однозначный список итоговых файлов для подписи.', true);
   const fresh = await client.readSigningOrder(binding.side, binding.documentId);

@@ -370,3 +370,58 @@ test('read-back rejects signature errors and conflicting structured states, whil
     assert.equal((await readSigningEvidence(fake.client, prepared())).state, mode === 'legacy' ? 'confirmed' : 'changed');
   }
 });
+
+test('initial outgoing draft uses its advertised send action when current stages are explicitly empty', async () => {
+  const doc = advertiseAutomaticSigning(document()); doc.ТекущиеЭтапы = [];
+  const cert = normalizeSigningCertificate(certificateRow())!;
+  assert.equal(createSigningBinding(doc, 'sender', cert, config, 'Отложенный').stageId, 'stage-synthetic');
+  const fake = api('sender', { onRequest: request => request.method === 'СБИС.ПрочитатьДокумент' ? doc : request.method === 'СБИС.ПодготовитьДействие' ? preparation(doc) : undefined });
+  const result = await prepareBoundSigning(fake.client, createSigningBinding(doc, 'sender', cert, config, 'Отложенный'));
+  await fake.client.executeDeferredSigning(result);
+  assert.equal(fake.requests.filter(row => row.method === 'СБИС.ПодготовитьДействие').length, 1);
+  assert.equal(fake.requests.filter(row => row.method === 'СБИС.ВыполнитьДействие').length, 1);
+});
+
+test('empty-stage draft fallback rejects stale, malformed, historical, service and ambiguous actions', () => {
+  const cert = normalizeSigningCertificate(certificateRow())!;
+  for (const mutate of [
+    (doc: SabyObject) => { doc.ТекущиеЭтапы = [{ Идентификатор: 'stale' }]; },
+    (doc: SabyObject) => { doc.ТекущиеЭтапы = null; },
+    (doc: SabyObject) => { doc.ТекущиеЭтапы = {}; },
+    (doc: SabyObject) => { doc.ТекущиеЭтапы = [null]; },
+    (doc: SabyObject) => { doc.Состояние = { Код: '23' }; },
+    (doc: SabyObject) => { doc.Код = { Состояние: '23' }; },
+    (doc: SabyObject) => { (doc.Этап as SabyObject[])[0].Завершен = 'Да'; },
+    (doc: SabyObject) => { (doc.Этап as SabyObject[])[0].Актуален = 'Нет'; },
+    (doc: SabyObject) => { (doc.Этап as SabyObject[])[0].Служебный = 'Да'; },
+    (doc: SabyObject) => { (doc.Этап as SabyObject[]).push(structuredClone((doc.Этап as SabyObject[])[0])); },
+    (doc: SabyObject) => { ((doc.Этап as SabyObject[])[0].Действие as SabyObject[])[0].Название = 'Утвердить'; },
+  ]) {
+    const doc = advertiseAutomaticSigning(document()); doc.ТекущиеЭтапы = []; mutate(doc);
+    assert.throws(() => createSigningBinding(doc, 'sender', cert, config, 'Отложенный'), SabyError);
+  }
+  const carrier = advertiseAutomaticSigning(document('carrier')); carrier.ТекущиеЭтапы = [];
+  assert.throws(() => createSigningBinding(carrier, 'carrier', normalizeSigningCertificate(certificateRow('carrier'))!, config, 'Отложенный'), SabyError);
+});
+
+test('preparation certificate metadata is not a substitute for current deferred-signing capability', async () => {
+  for (const revoked of [false, true]) {
+    const doc = advertiseAutomaticSigning(document()); doc.ТекущиеЭтапы = [];
+    const result = preparation(doc);
+    delete ((result.Этап as SabyObject[])[0].Действие as SabyObject[])[0].Сертификат;
+    let prepared = false;
+    const fake = api('sender', { onRequest: request => {
+      if (request.method === 'СБИС.ПодготовитьДействие') { prepared = true; return result; }
+      if (request.method === 'СБИС.ПрочитатьДокумент') {
+        const current = structuredClone(doc);
+        if (revoked && prepared) delete ((current.Этап as SabyObject[])[0].Действие as SabyObject[])[0].Сертификат;
+        return current;
+      }
+    } });
+    const binding = createSigningBinding(doc, 'sender', normalizeSigningCertificate(certificateRow())!, config, 'Отложенный');
+    if (revoked) await assert.rejects(prepareBoundSigning(fake.client, binding), /без подтверждения владельца/);
+    else await fake.client.executeDeferredSigning(await prepareBoundSigning(fake.client, binding));
+    assert.equal(fake.requests.filter(r => r.method === 'СБИС.ПодготовитьДействие').length, 1);
+    assert.equal(fake.requests.filter(r => r.method === 'СБИС.ВыполнитьДействие').length, revoked ? 0 : 1);
+  }
+});

@@ -9,7 +9,7 @@ import { requireTripSection } from './permissions';
 import type { OperationsData, OperationsStorage } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
 import { SabyClient, SabyError, isSabyFailureDiagnostic, sabyConfigFromEnv, sabyDocumentWorkflow, sabyFailureDiagnostic, sabyObject, sabyText, type SabyFailureDiagnostic, type SabyObject } from './saby-client';
-import { assertSigningBinding, assertSigningManifest, captureSignedTitle, createCarrierDraftBinding, createSigningBinding, prepareCarrierDraft, prepareBoundSigning, readSigningEvidence, restorePreparedSigning, signingCertificateForOrganization, type SabyPreparedSigning, type SabySigningBinding, type SabySigningCertificate, type SabySigningSide } from './saby-signing';
+import { SIGNING_STAGE_UNAVAILABLE, assertSigningBinding, assertSigningManifest, captureSignedTitle, createCarrierDraftBinding, createSigningBinding, prepareCarrierDraft, prepareBoundSigning, readSigningEvidence, restorePreparedSigning, signingCertificateForOrganization, type SabyPreparedSigning, type SabySigningBinding, type SabySigningCertificate, type SabySigningSide } from './saby-signing';
 import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabyCarrierLink, verifySabyCarrierVehicleAddition, verifySabySenderBusiness, type SabyCarrierVehicleIdentity } from './saby-order-evidence';
 import { carrierXmlHash } from './saby-carrier-details';
 import { serializeSabyTransportOrder } from './saby-transport-order';
@@ -353,11 +353,20 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
   const { client, update, checkAccess } = context;
   const initial = context.record(); const intent = initial.signing; if (!intent) return;
   const initialStep = intent[side];
-  if (side === 'carrier' && intent.sender.state !== 'confirmed' || initialStep.state === 'blocked' && (side !== 'carrier' || !context.allowSigningRecovery)) return;
+  // The old draft-stage parser could stop an automatic intent before even
+  // persisting a Prepare binding. Resume only that exact preflight failure;
+  // any evidence of preparation/dispatch keeps the existing reconciliation path.
+  const retrySenderPreflight = side === 'sender' && intent.mode === 'automatic' &&
+    context.record().autoAuthorization?.requestId === intent.requestId && initialStep.state === 'blocked' &&
+    initialStep.message === SIGNING_STAGE_UNAVAILABLE && initialStep.diagnostic?.method === 'other' &&
+    initialStep.diagnostic.phase === 'preflight' && initialStep.diagnostic.category === 'validation' &&
+    Object.keys(initialStep).every(key => ['state', 'message', 'diagnostic'].includes(key)) &&
+    intent.carrier.state === 'not_started' && Object.keys(intent.carrier).every(key => ['state', 'message'].includes(key)) && !intent.carrierDraft;
+  if (side === 'carrier' && intent.sender.state !== 'confirmed' || initialStep.state === 'blocked' && !retrySenderPreflight && (side !== 'carrier' || !context.allowSigningRecovery)) return;
   const save = (step: TripSigningStep) => update(row => { row.signing![side] = step; });
   try {
     await checkAccess();
-    if (initialStep.state === 'blocked') { await recoverLegacyCarrierSigning(context); return; }
+    if (initialStep.state === 'blocked' && !retrySenderPreflight) { await recoverLegacyCarrierSigning(context); return; }
     // Legacy preparation and dispatched attempts are read-only; explicit new not_sent files may resume.
     if (initialStep.prepared) {
       let restored: SabyPreparedSigning | undefined;
