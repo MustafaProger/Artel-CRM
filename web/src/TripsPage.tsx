@@ -1,23 +1,42 @@
+import { tripLabel } from './trip-identity'
+import './trip-identity.css'
+import { useDialogMotion } from './useDialogMotion'
 import { apiFetch as fetch } from './workspace-api'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUpRight, ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
-import type { ShipmentTrip, DirectoryData } from './model'
+import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
+import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
+import type { TripRequest } from './trip-request-model'
+import ScrollableSegments from './ScrollableSegments'
+import TripRequestsPanel from './TripRequestsPanel'
+import TripRequestsMap from './TripRequestsMap'
+import TripRequestEditor from './TripRequestEditor'
+import './trip-requests.css'
 import ShipmentTripEditor from './ShipmentTripEditor'
-import { safeMapUrl } from './TripLocationPicker'
+import { mapLink } from './map-link'
 import { formatDate, number } from './utils'
 import TripEtrnPanel from './TripEtrnPanel'
 import type { TripSabyAutomationCapability, TripSabyResponse } from './trip-saby-model'
 import type { SabyTripResponse } from './saby-model'
 import type { EtrnTripResponse } from './etrn-api-model'
 import { readIntermediateStops } from './trip-route'
+import { compareTripsNewestFirst } from './trip-order'
 import './shipments.css'
 import './trips.css'
 
 export default function TripsPage({ data, canManagePlaces, onChanged, allowDelete = false }: { data: DirectoryData; canManagePlaces: boolean; onChanged: () => void; allowDelete?: boolean }) {
+  const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
+  const [view, setView] = useState<'requests' | 'map' | 'trips'>('requests')
+  const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
+  const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
   const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyId, setSabyId] = useState<string | null>(null), [notice, setNotice] = useState('')
   const [automation, setAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
+  useEffect(() => {
+    const refreshOnFocus = () => setRefresh(value => value + 1)
+    window.addEventListener('focus', refreshOnFocus)
+    return () => window.removeEventListener('focus', refreshOnFocus)
+  }, [])
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true); setError('')
@@ -27,24 +46,37 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [refresh])
+  useEffect(() => {
+    const controller = new AbortController()
+    setRequestsLoading(true); setRequestsError('')
+    void fetch('/api/trip-requests', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить заявки.'); return result })
+      .then(result => { if (!controller.signal.aborted) { setRequests(result.requests); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
+      .catch(reason => { if (!controller.signal.aborted) { setRequestsError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
+      .finally(() => { if (!controller.signal.aborted) setRequestsLoading(false) })
+    return () => controller.abort()
+  }, [refresh])
   const [deleting, setDeleting] = useState<string | null>(null)
   const directories = data.directories
   if (!directories) return <p className="soft-notice">Не удалось загрузить справочники рейсов.</p>
-  const companyName = (id: string | null) => data.companies.find(company => company.id === id)?.name ?? 'Не указано'
+  const companyName = (id: string | null) => data.companies.find(company => company.id === id)?.name ?? requestCompanies.find(company => company.id === id)?.name ?? 'Не указано'
   const driverName = (id: string | null) => directories.drivers.find(driver => driver.id === id)?.name ?? 'Не указан'
-  const filtered = trips.filter(trip => [trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
+  const filtered = trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
-  return <div className="trips-page">
-    <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Клиент, поставщик, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
+  return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
+    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: Map }, { id: 'trips', name: 'Рейсы', icon: Truck }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { setView(item.id); setNotice(''); setRefresh(value => value + 1) }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
+    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={() => setRefresh(value => value + 1)} onChanged={() => { setRefresh(value => value + 1); onChanged() }}/>}
+    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}{requestsLoading && !requests.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/>}</section>}
+    {view === 'trips' && <><div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Номер рейса, клиент, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
+    {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку заявок</button></div>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}
     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем рейсы…</div> : <>
       <div className="trips-list">{filtered.slice(currentPage * 20, (currentPage + 1) * 20).map(trip => {
         const vehicle = directories.vehicles.find(item => item.id === trip.fields.vehicle_id)
         return <article className="panel trip-card" key={trip.id} data-testid="trip-card">
-          <header className="trip-card-heading"><div><h2><Truck size={20}/>{formatDate(trip.fields.date)}</h2><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></header>
-          <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}{safeMapUrl(trip.fields.loading_map_url) && <a target="_blank" rel="noreferrer" href={safeMapUrl(trip.fields.loading_map_url)!}>Яндекс.Карты <ArrowUpRight size={13}/></a>}</div>
-          <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}{safeMapUrl(customer.fields.unloading_map_url) && <a href={safeMapUrl(customer.fields.unloading_map_url)!} target="_blank" rel="noreferrer">Яндекс.Карты <ArrowUpRight size={13}/></a>}</div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
+          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></header>
+          <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}<TripMapLink address={trip.fields.loading_address} mapUrl={trip.fields.loading_map_url}/></div>
+          <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{customer.fields.customer_name || companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.etrn_not_required === 'true' && <small className="trip-invoice-badge">ЭТрН не нужна</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}<TripMapLink address={customer.fields.unloading_address} mapUrl={customer.fields.unloading_map_url}/></div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
           {trip.fields.trip_notes && <p className="trip-card-notes">{trip.fields.trip_notes}</p>}
           <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></footer>
           {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data}/>}
@@ -53,21 +85,19 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       {!filtered.length && !error && <div className="panel trips-empty"><Truck size={30}/><h2>{query ? 'Рейсы не найдены' : 'Рейсов пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}</div>}
       {!!filtered.length && <div className="pagination"><span>Рейсов: {filtered.length}</span><div><button className="icon-button" aria-label="Предыдущая страница рейсов" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={18}/></button><span>{currentPage + 1} / {lastPage + 1}</span><button className="icon-button" aria-label="Следующая страница рейсов" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}><ChevronRight size={18}/></button></div></div>}
     </>}
+    </>}
+    {mapRequest && <TripRequestEditor request={mapRequest} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => { setMapRequest(null); setRefresh(value => value + 1) }} onSaved={() => { setMapRequest(null); setRefresh(value => value + 1); onChanged() }}/>}
     {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); setRefresh(value => value + 1); onChanged() }}/> }
-    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); setRefresh(value => value + 1); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
+    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={() => setRefresh(value => value + 1)} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); setRefresh(value => value + 1); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
   </div>
 }
 
 
-function DeleteTripDialog({ tripId, data, onClose, onDeleted }: { tripId: string; data: DirectoryData; onClose: () => void; onDeleted: () => void }) {
+function DeleteTripDialog({ tripId, data, onClose: onDismiss, onDeleted }: { tripId: string; data: DirectoryData; onClose: () => void; onDeleted: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false)
   const [trip, setTrip] = useState<ShipmentTrip | null>(null), [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false), [error, setError] = useState(''), [blocked, setBlocked] = useState(false), [reload, setReload] = useState(0)
-  useEffect(() => {
-    const element = dialog.current, focused = document.activeElement as HTMLElement | null
-    element?.showModal()
-    return () => { element?.close(); focused?.focus() }
-  }, [])
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   useEffect(() => {
     const controller = new AbortController(), endpoint = `/api/shipment-trips/${encodeURIComponent(tripId)}`
     setLoading(true); setError(''); setTrip(null); setBlocked(false)
@@ -92,14 +122,19 @@ function DeleteTripDialog({ tripId, data, onClose, onDeleted }: { tripId: string
       const response = await fetch(`/api/shipment-trips/${encodeURIComponent(tripId)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) }) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || 'Не удалось удалить рейс.')
-      onDeleted()
+      await complete(onDeleted)
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Ответ не получен. Обновите состав рейса перед повтором.') }
     finally { inFlight.current = false; setSaving(false) }
   }
   return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="trip-delete-title" onCancel={event => { event.preventDefault(); if (!inFlight.current) onClose() }}>
     <h2 id="trip-delete-title">Удалить рейс целиком?</h2>
-    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">Рейс связан с документами Saby. Удаление запрещено до сверки документов.</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
+    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">Рейс связан с документами Saby. Удаление запрещено до сверки документов.</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={loading || saving} onClick={() => setReload(value => value + 1)}>Обновить состав</button></div>}
     <footer><button type="button" className="button" disabled={saving} onClick={onClose} autoFocus>Отмена</button><button type="button" className="button danger" disabled={loading || saving || !trip || blocked || !!error} onClick={() => void remove()}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}Удалить рейс</button></footer>
   </dialog>
+}
+
+function TripMapLink({ address, mapUrl }: { address: string | null; mapUrl: string | null }) {
+  const link = mapLink({ address, mapUrl })
+  return link ? <a href={link.href} target="_blank" rel="noreferrer">{link.label} <ArrowUpRight size={13}/></a> : null
 }

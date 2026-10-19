@@ -36,7 +36,7 @@ test('explicit organization survives save and restart; page totals, facets and s
       created.push((await response.json()).shipment);
     }
     assert.deepEqual(created.map(shipmentOrganizationId), ['nk-artel', 'artel', null]);
-    assert.deepEqual(created.map(row => fieldValue(row, 'organization_id')), ['НК АРТЕЛЬ', 'АРТЕЛЬ', null]);
+    assert.deepEqual(created.map(row => fieldValue(row, 'organization_id')), ['НК АРТЭЛЬ', 'АРТЭЛЬ', null]);
     for (const [index, organization] of ['nk-artel', 'artel', 'unassigned'].entries()) {
       const page = await runtime.get<{ items: Shipment[]; total: number; summary: { revenue: { total: string }; cost: { total: string } }; facetValues: string[] }>(`/api/shipments?period=2029-06&organization=${organization}&facet=organization_id`);
       assert.deepEqual(page.items.map(row => row.id), [created[index].id]);
@@ -45,7 +45,7 @@ test('explicit organization survives save and restart; page totals, facets and s
       assert.equal(page.summary.cost.total, '70000');
       assert.deepEqual(page.facetValues, [fieldValue(created[index], 'organization_id') ?? '']);
     }
-    const query = new URLSearchParams({ period: '2029-06', query: 'НК АРТЕЛЬ' });
+    const query = new URLSearchParams({ period: '2029-06', query: 'НК АРТЭЛЬ' });
     assert.deepEqual((await runtime.get<{ items: Shipment[] }>(`/api/shipments?${query}`)).items.map(row => row.id), [created[0].id]);
     await runtime.close(); runtime = await serve(directory);
     assert.equal((await runtime.get<{ shipment: Shipment }>(`/api/shipments/${created[0].id}`)).shipment.fields.organization_id, 'nk-artel');

@@ -1,4 +1,5 @@
 import { saveOilDepot } from './oil-depots';
+import { deliveryDistances } from './delivery-distances';
 import { locationDetailKeys, locationDetails } from './location-details';
 import { driverTransportDetails } from './driver-transport-details';
 import { productTransportDetails, vehicleTransportDetails } from './directory-transport-details';
@@ -18,8 +19,21 @@ export function directoriesFor(base: Snapshot, store: OperationsData): Directori
   const saved = withFleetDirectories(store.directories ?? emptyDirectories());
   const named = (kind: 'managers' | 'products' | 'paymentForms', labels: string[]) => {
     const unique = new Map<string, NamedEntry>();
-    for (const name of labels) if (name.trim() && name !== '0' && !saved.deletedEntries?.[kind]?.includes(directoryEntryId(kind, name)) && !saved[kind].some(row => row.id === directoryEntryId(kind, name))) unique.set(normalizeName(name), { id: directoryEntryId(kind, name), name: name.trim() });
-    for (const row of saved[kind]) if (!saved.deletedEntries?.[kind]?.includes(row.id)) unique.set(kind === 'managers' ? row.id : normalizeName(row.name), row);
+    const savedIds = new Set(saved[kind].map(row => row.id));
+    const deletedIds = new Set(saved.deletedEntries?.[kind] ?? []);
+    const derived = new Map<string, { key: string; entry: NamedEntry }>();
+    for (const name of labels) {
+      let value = derived.get(name);
+      if (!value) {
+        const trimmed = name.trim();
+        if (!trimmed || name === '0') continue;
+        value = { key: normalizeName(name), entry: { id: directoryEntryId(kind, name), name: trimmed } };
+        derived.set(name, value);
+      }
+      // Process every occurrence: the last spelling of a normalized label still wins.
+      if (!deletedIds.has(value.entry.id) && !savedIds.has(value.entry.id)) unique.set(value.key, value.entry);
+    }
+    for (const row of saved[kind]) if (!deletedIds.has(row.id)) unique.set(kind === 'managers' ? row.id : normalizeName(row.name), row);
     return [...unique.values()].sort((a,b) => a.name.localeCompare(b.name, 'ru'));
   };
   const local = Object.values(store.shipments).filter(row => !row.deleted);
@@ -55,7 +69,7 @@ export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snap
   }
   if (!['managers','products','paymentForms','vehicles','drivers','addresses'].includes(String(kind))) throw new ApiError(400,'Неизвестный справочник.');
   const key = kind as 'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses';
-  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name',...productTransportFields.map(([key])=>key)],paymentForms:['name'],vehicles:['carrierId','plate','name','brand','model','trailer','capacityLitres','compartmentsLitres',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)],drivers:['carrierId','name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind',...locationDetailKeys]};
+  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name',...productTransportFields.map(([key])=>key)],paymentForms:['name'],vehicles:['carrierId','plate','name','brand','model','trailer','capacityLitres','compartmentsLitres',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)],drivers:['carrierId','name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind','pointAddress','oilDepotDistancesKm',...locationDetailKeys]};
   if (Object.keys(input).some(k => k !== 'kind' && !permitted[key].includes(k))) throw new ApiError(400,'Неизвестное поле справочника.');
   const text = (field: string, required = true) => {
     if (typeof input[field] !== 'string' || !(input[field] as string).trim() || (input[field] as string).length > 500) {
@@ -103,7 +117,8 @@ export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snap
       if (!snapshot.companies.some(c => c.id === companyId) || !['loading','delivery'].includes(addressKind)) throw new ApiError(400,'Выберите компанию и тип адреса.');
       const duplicate = catalog.addresses.find(a => a.companyId === companyId && a.kind === addressKind && normalizeName(a.name) === normalizeName(name));
       if (duplicate) return { entry: duplicate, created: false };
-      entry = { id, name, companyId, kind: addressKind as 'loading'|'delivery', ...locationDetails(input, { companies: snapshot.companies, previous: previousAddress }) };
+      const oilDepotDistancesKm = deliveryDistances(input, snapshot, previousAddress);
+      entry = { id, name, companyId, kind: addressKind as 'loading'|'delivery', ...locationDetails(input, { companies: snapshot.companies, previous: previousAddress }), ...(oilDepotDistancesKm ? { oilDepotDistancesKm } : {}) };
     } else {
       const duplicate = catalog[key].find(r => normalizeName(r.name) === normalizeName(name));
       if (duplicate) return { entry: duplicate, created: false };

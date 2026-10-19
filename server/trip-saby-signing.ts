@@ -1,3 +1,4 @@
+import { requiresEtrn } from './trip-etrn-scope';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Snapshot } from '../web/src/model';
 import type { TripSabySigning, TripSabySigningPreview, TripSabySigningStartRequest, TripSabySigningStep } from '../web/src/trip-saby-model';
@@ -10,7 +11,7 @@ import type { OperationsData, OperationsStorage } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
 import { SabyClient, SabyError, isSabyFailureDiagnostic, sabyConfigFromEnv, sabyDocumentWorkflow, sabyFailureDiagnostic, sabyObject, sabyText, type SabyFailureDiagnostic, type SabyObject } from './saby-client';
 import { SIGNING_STAGE_UNAVAILABLE, assertSigningBinding, assertSigningManifest, captureSignedTitle, createCarrierDraftBinding, createSigningBinding, prepareCarrierDraft, prepareBoundSigning, readSigningEvidence, restorePreparedSigning, signingCertificateForOrganization, type SabyPreparedSigning, type SabySigningBinding, type SabySigningCertificate, type SabySigningSide } from './saby-signing';
-import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabyCarrierLink, verifySabyCarrierVehicleAddition, verifySabySenderBusiness, type SabyCarrierVehicleIdentity } from './saby-order-evidence';
+import { SABY_SENDER_COORDINATE_MISMATCH, carrierBusinessHash, verifySabyCarrierBusiness, verifySabyCarrierLink, verifySabyCarrierVehicleAddition, verifySabySenderBusiness, type SabyCarrierVehicleIdentity } from './saby-order-evidence';
 import { carrierXmlHash } from './saby-carrier-details';
 import { serializeSabyTransportOrder } from './saby-transport-order';
 import { sabyOrderStateCode } from './trip-saby-progress';
@@ -24,6 +25,8 @@ const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 export type SigningMetadata = Omit<SabyPreparedSigning, 'attachments'> & { attachments: Array<Omit<SabyPreparedSigning['attachments'][number], 'bytes'>> };
 const CARRIER_BUSINESS_CHANGED = 'Saby изменил сведения ответа НК при подготовке. Подписание остановлено; требуется сверка.';
+const UNVERIFIED_UNSENT_MESSAGE = 'Подготовленные сведения Saby не прошли проверку. Запрос на подпись ещё не отправлялся. Требуется сверка.';
+const UNKNOWN_ACTION_MESSAGE = 'Результат действия в Saby пока неизвестен. CRM проверяет его и не отправляет повторно.';
 export interface TripSigningRecovery {
   kind: 'verified_vehicle_identity_addition'; id: string; requestedAt: string; requestedBy: string;
   originalBinding: SabySigningBinding; originalBusinessHash: string; originalMessage: typeof CARRIER_BUSINESS_CHANGED;
@@ -50,10 +53,12 @@ export interface TripSigningRecord {
   sender: TripSigningStep; carrier: TripSigningStep;
   carrierDraft?: { binding: SabySigningBinding; state: 'preparing' | 'ready' | 'unknown' | 'blocked' };
 }
+const hasUnverifiedUnsentManifest = (step: TripSigningStep) => !!step.prepared && step.preparedVerified === false && step.dispatchState === 'not_sent' && step.executeAttempted === undefined;
 export function publicTripSigning(value: TripSigningRecord | undefined): TripSabySigning | undefined {
   if (!value) return undefined;
   const state = [value.sender.state, value.carrier.state];
-  return { requestedAt: value.requestedAt, mode: value.mode ?? 'with_confirmation', state: state.every(x => x === 'confirmed') ? 'completed' : state.includes('blocked') ? 'blocked' : state.some(x => ['unknown', 'preparing'].includes(x)) ? 'unknown' : 'active', sender: { state: value.sender.state, ...(value.sender.message ? { message: value.sender.message } : {}) }, carrier: { state: value.carrier.state, ...(value.carrier.message ? { message: value.carrier.message } : {}) } };
+  const step = (item: TripSigningStep): TripSabySigningStep => ({ state: item.state, ...(item.message ? { message: item.state === 'unknown' && item.message === UNKNOWN_ACTION_MESSAGE && hasUnverifiedUnsentManifest(item) ? UNVERIFIED_UNSENT_MESSAGE : item.message } : {}) });
+  return { requestedAt: value.requestedAt, mode: value.mode ?? 'with_confirmation', state: state.every(x => x === 'confirmed') ? 'completed' : state.includes('blocked') ? 'blocked' : state.some(x => ['unknown', 'preparing'].includes(x)) ? 'unknown' : 'active', sender: step(value.sender), carrier: step(value.carrier) };
 }
 export function validateTripSigning(value: unknown): void {
   if (value === undefined) return;
@@ -168,7 +173,12 @@ async function previewFor(client: SabyClient, record: TripSabyRecord): Promise<T
 /** Read-only capability check: does not prepare an action, create a request or touch a lease. */
 export async function getTripSigningPreview(context: SigningContext): Promise<TripSabySigningPreview> {
   const { base, store, tripId, authorize } = context; const source = base.provenance.sourceSha256;
-  const check = async () => { const data = await store.read(source); authorize(currentSnapshot(base, data), data); };
+  const check = async () => {
+    const data = await store.read(source), snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+    const record = data.tripSaby?.trips[tripId];
+    const eligible = snapshot.shipments.filter(row => row.fields.trip_id === tripId && requiresEtrn(row));
+    if (!eligible.length || record && (record.deliveries.length !== eligible.length || record.deliveries.some(row => !eligible.some(delivery => delivery.id === row.shipmentId)))) throw new ApiError(409, 'Состав доставок с ЭТрН изменился или ЭТрН не нужна. Обмен остановлен для сверки.');
+  };
   await check(); const data = await store.read(source); const record = data.tripSaby?.trips[tripId];
   if (!record?.order.id) throw new ApiError(409, 'Сначала создайте заявку рейса в Saby.');
   const client = (context.client ?? new SabyClient(sabyConfigFromEnv())).withRequestGuard(check);
@@ -213,6 +223,17 @@ export function signingVehicleIdentity(record: TripSabyRecord): SabyCarrierVehic
   return { plate: first.plate, vin: first.vin, stsNumber: first.stsNumber };
 }
 const verifiedManifest = (step: TripSigningStep) => step.preparedVerified === true || step.preparedVerified === undefined && (step.executeAttempted === true || step.binding?.stageId === 'observed-signed');
+
+/** The approved coordinate rule may resume only the original, definitely unsent sender files. */
+function canResumeSenderCoordinates(context: AdvanceContext, record: TripSabyRecord): boolean {
+  const intent = record.signing!; const step = intent.sender; const authorization = record.autoAuthorization;
+  if (step.state !== 'blocked' || step.message !== SABY_SENDER_COORDINATE_MISMATCH || !hasUnverifiedUnsentManifest(step) || !step.binding || step.binding.stageId === 'observed-signed' || step.binding.revision !== intent.revision ||
+    intent.workflowAttemptId !== record.attemptId || intent.documentId !== record.order.id || intent.payloadHash !== record.payloadHash || record.payloadHash !== hash(record.snapshot) ||
+    intent.carrier.state !== 'not_started' || Object.keys(intent.carrier).some(key => !['state', 'message'].includes(key)) || intent.carrierDraft) return false;
+  if (intent.mode !== 'automatic') return !authorization && context.allowSigningRecovery === true && !!context.recoveryRequestedBy;
+  return !!authorization && authorization.requestId === intent.requestId && authorization.requestedBy === intent.requestedBy && authorization.requestedAt === intent.requestedAt &&
+    authorization.selection.sender === intent.selection.sender && authorization.selection.carrier === intent.selection.carrier;
+}
 
 /** Carrier preparation does not include the incoming source in its signable-file manifest. */
 async function verifyPreparedCarrierSource(client: SabyClient, record: TripSabyRecord, revision: string, carrierBytes: Uint8Array) {
@@ -260,7 +281,13 @@ async function restoreAndVerifyUnsentSigning(context: AdvanceContext, side: Saby
   if (!primary) throw new SabyError('validation', 'В сохранённых файлах отсутствует выбранный титул.');
   if (side === 'sender') {
     const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
-    verifySabySenderBusiness(primary.bytes, frozen.xml);
+    try { verifySabySenderBusiness(primary.bytes, frozen.xml); }
+    catch (error) {
+      // This comparison is local and precedes any Execute. A remaining business
+      // difference must preserve the existing block, not become an unknown action.
+      if (step.state === 'blocked' && step.message === SABY_SENDER_COORDINATE_MISMATCH && error instanceof SabyError) throw new SabyError('validation', error.message);
+      throw error;
+    }
   } else {
     const beforeHash = step.recovery?.acceptedBusinessHash ?? step.businessHash;
     if (!beforeHash) throw new SabyError('validation', 'Не сохранены сведения ответа НК до подготовки. Продолжение остановлено.');
@@ -362,11 +389,12 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
     initialStep.diagnostic.phase === 'preflight' && initialStep.diagnostic.category === 'validation' &&
     Object.keys(initialStep).every(key => ['state', 'message', 'diagnostic'].includes(key)) &&
     intent.carrier.state === 'not_started' && Object.keys(intent.carrier).every(key => ['state', 'message'].includes(key)) && !intent.carrierDraft;
-  if (side === 'carrier' && intent.sender.state !== 'confirmed' || initialStep.state === 'blocked' && !retrySenderPreflight && (side !== 'carrier' || !context.allowSigningRecovery)) return;
+  const resumeSenderCoordinates = side === 'sender' && canResumeSenderCoordinates(context, initial);
+  if (side === 'carrier' && intent.sender.state !== 'confirmed' || initialStep.state === 'blocked' && !retrySenderPreflight && !resumeSenderCoordinates && (side !== 'carrier' || !context.allowSigningRecovery)) return;
   const save = (step: TripSigningStep) => update(row => { row.signing![side] = step; });
   try {
     await checkAccess();
-    if (initialStep.state === 'blocked' && !retrySenderPreflight) { await recoverLegacyCarrierSigning(context); return; }
+    if (initialStep.state === 'blocked' && !retrySenderPreflight && !resumeSenderCoordinates) { await recoverLegacyCarrierSigning(context); return; }
     // Legacy preparation and dispatched attempts are read-only; explicit new not_sent files may resume.
     if (initialStep.prepared) {
       let restored: SabyPreparedSigning | undefined;
@@ -467,13 +495,14 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
     // The workflow records the error separately; the original blocked proof stays intact.
     if (side === 'carrier' && context.allowSigningRecovery && initialStep.state === 'blocked' && initialStep.message === CARRIER_BUSINESS_CHANGED && !latest.recovery && !latest.prepared && !latest.executeAttempted) throw error;
     const definite = error instanceof SabyError && ['validation', 'configuration', 'permission', 'authorization'].includes(error.kind) && !error.uncertain;
-    const method = latest.dispatchState ? 'СБИС.ВыполнитьДействие' : latest.binding ? 'СБИС.ПодготовитьДействие' : 'other';
+    const unverifiedUnsent = hasUnverifiedUnsentManifest(latest);
+    const method = unverifiedUnsent ? 'СБИС.ПодготовитьДействие' : latest.dispatchState ? 'СБИС.ВыполнитьДействие' : latest.binding ? 'СБИС.ПодготовитьДействие' : 'other';
     const diagnostic: SabyFailureDiagnostic = error instanceof ApiError ? { method, phase: 'preflight', category: error.status === 409 ? 'lease_changed' : [401, 403].includes(error.status) ? 'access_denied' : 'unknown' } : sabyFailureDiagnostic(error, 'preflight', method);
     const rejected = latest.dispatchState === 'attempted' && diagnostic.method === 'СБИС.ВыполнитьДействие' && diagnostic.phase === 'response' && ['provider_error', 'carrier_payment_missing', 'authorization', 'permission'].includes(diagnostic.category);
     const retryRead = latest.dispatchState === 'not_sent' && error instanceof SabyError && ['transport', 'protocol'].includes(error.kind) && !error.uncertain;
     await save({ ...latest, ...(rejected ? { dispatchState: 'rejected' as const } : {}), diagnostic,
       state: definite ? 'blocked' : retryRead ? 'waiting' : 'unknown',
-      message: definite ? (error as SabyError).message : retryRead ? 'Предварительная проверка Saby временно недоступна. Запрос на подпись ещё не отправлен; CRM повторит проверку сохранённых файлов.' : diagnostic.category === 'carrier_payment_missing' ? 'Saby сообщил об отсутствии расчёта платы в ответе НК (0001.006.406.020). CRM сверяет результат без повторной отправки.' : rejected ? `Saby вернул ошибку выполнения${diagnostic.rpcCode === undefined ? '' : ` (код ${diagnostic.rpcCode})`}. CRM сверяет результат без повторной отправки.` : 'Результат действия в Saby пока неизвестен. CRM проверяет его и не отправляет повторно.' });
+      message: definite ? (error as SabyError).message : retryRead ? 'Предварительная проверка Saby временно недоступна. Запрос на подпись ещё не отправлен; CRM повторит проверку сохранённых файлов.' : unverifiedUnsent ? UNVERIFIED_UNSENT_MESSAGE : diagnostic.category === 'carrier_payment_missing' ? 'Saby сообщил об отсутствии расчёта платы в ответе НК (0001.006.406.020). CRM сверяет результат без повторной отправки.' : rejected ? `Saby вернул ошибку выполнения${diagnostic.rpcCode === undefined ? '' : ` (код ${diagnostic.rpcCode})`}. CRM сверяет результат без повторной отправки.` : UNKNOWN_ACTION_MESSAGE });
     if (error instanceof ApiError && [401, 403, 409].includes(error.status)) throw error;
   }
 }

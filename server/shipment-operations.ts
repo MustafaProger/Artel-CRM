@@ -25,10 +25,10 @@ export const SHIPMENT_FIELDS = [
   // Explicit picker identities, separate from the workbook's visible columns.
   'customer_id', 'supplier_id', 'carrier_id', 'oil_depot_id',
   'manager_id', 'product_id', 'payment_form_id', 'driver_id', 'vehicle_id', 'driver_name', 'vehicle_plate',
-  'trip_notes', 'delivery_notes', 'invoice_not_required', 'intermediate_stops_after', 'intermediate_stops_in_order', 'trip_delivery_order', 'quantity_gross_tonnes',
+  'trip_notes', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'intermediate_stops_after', 'intermediate_stops_in_order', 'trip_delivery_order', 'quantity_gross_tonnes',
   'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude',
   'loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at',
-  'trip_flow_version', 'trip_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
+  'trip_flow_version', 'trip_id', 'source_request_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
   'opening_payment_date', 'opening_paid_amount', 'loading_address_id', 'unloading_address_id', 'purchase_unit', 'payment_due_date', 'overdue_days', 'calculation_mode', 'profit_rule',
 ] as const;
 const allowedFields = new Set<string>(SHIPMENT_FIELDS);
@@ -84,11 +84,11 @@ export function validateShipmentFields(input: unknown, previous: Shipment | unde
     if (key === 'intermediate_stops_after' && value) {
       try { value = JSON.stringify(readIntermediateStops(value)); } catch { throw new ApiError(400, 'Проверьте названия и адреса промежуточных остановок.'); }
     }
-    if (value !== null && ['invoice_not_required', 'intermediate_stops_in_order'].includes(key) && !['true', 'false'].includes(value)) throw new ApiError(400, 'Значение переключателя должно быть true или false.');
+    if (value !== null && ['invoice_not_required', 'etrn_not_required', 'intermediate_stops_in_order'].includes(key) && !['true', 'false'].includes(value)) throw new ApiError(400, 'Значение переключателя должно быть true или false.');
     if (value !== null && ['loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at'].includes(key)) {
       if (!validLoadingDate(value)) throw new ApiError(400, 'Укажите корректные дату и время площадки (московское время).');
     }
-    if (value !== null && key === 'organization_id' && !isOurOrganizationId(value)) throw new ApiError(400, 'Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.');
+    if (value !== null && key === 'organization_id' && !isOurOrganizationId(value)) throw new ApiError(400, 'Выберите нашу организацию: НК АРТЭЛЬ или АРТЭЛЬ.');
     if (value !== null && (key === 'date' || key === 'payment_date' || key === 'payment_due_date')) {
       const parsed = day(value);
       if (!parsed) throw new ApiError(400, `Поле ${key}: укажите корректную дату ГГГГ-ММ-ДД.`);
@@ -203,6 +203,7 @@ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBa
   }
   for (const row of shipments) {
     const fields = { ...row.fields };
+    if (fields.etrn_not_required != null && !['true', 'false'].includes(fields.etrn_not_required)) throw new StoreError('Invalid ETRN requirement');
     for (const [key,entries] of [['manager_id',directories.managers],['product_id',directories.products],['payment_form_id',directories.paymentForms],['driver_id',directories.drivers],['vehicle_id',directories.vehicles]] as const) {
       // Unresolved historical ownership stays inaccessible to employees, not guessed.
       if (key !== 'manager_id' && fields[key] && !entries.some(entry => entry.id === fields[key])) throw new StoreError('Invalid shipment directory reference');
@@ -377,6 +378,7 @@ export function inferCalculationRules(cells: Record<string, { formula?: string |
 
 export function prepareShipmentFields(input: unknown, previous: Shipment | undefined, snapshot: Snapshot, options: { historicalCarrierId?: string | null; allowMissingMass?: boolean } = {}) {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400,'Укажите поля операции.');
+  if (Object.hasOwn(input, 'source_request_id')) throw new ApiError(400, 'Источник заявки назначается сервером.');
   const data = { ...input }, catalog = snapshot.directories!;
   if (Object.hasOwn(data, 'shipment_type') && !['tanker', 'azs'].includes(data.shipment_type as string)) throw new ApiError(400, 'Выберите тип отгрузки: бензовозы или АЗС.');
   const type = data.shipment_type ?? previous?.fields.shipment_type ?? 'tanker';

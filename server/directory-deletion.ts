@@ -38,6 +38,8 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
   if (!previous || role && !(previous as Company).roles.includes(role)) throw new ApiError(404, 'Запись не найдена.');
   if (input.version !== (previous.version ?? 0)) throw new ApiError(409, 'Запись уже изменена. Обновите справочник и повторите действие.');
   const name = 'plate' in previous ? previous.name || previous.plate : previous.name;
+  const requests = Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active');
+  if (requests.some(row => key === 'companies' && (!role || role === 'customer') && row.companyId === id || key === 'addresses' && row.addressId === id || key === 'managers' && row.managerId === id)) blocked(name, 'в активных заявках на рейс');
   if (key === 'companies') {
     const company = previous as Company;
     if (data.china?.days.some(day => day.fuels.some(fuel => fuel.supplierId === id)) && (!role || role === 'supplier')) blocked(name, 'в заправках Китая');

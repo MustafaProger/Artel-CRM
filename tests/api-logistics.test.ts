@@ -1,3 +1,4 @@
+import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -29,11 +30,12 @@ async function fixture() {
     data.directories!.customerManagers = [{ companyId: 'customer', managerId: 'manager' }];
     return { result: null, changed: true };
   });
-  const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, sabyClient: provider.client(), sabyWorkflowMonitoringEnabled: false });
+  const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, sabyClient: provider.client(), sabyWorkflowMonitoringEnabled: false, tripRequestGeocoder: async () => ({ status: 'not_found', message: 'Синтетический адрес не найден.' }) });
   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const request = async (path: string, method = 'GET', data?: unknown, cookie?: string, extraHeaders: Record<string,string> = {}) => {
+    if (method === 'POST' && path === prefix + '/shipment-trips' && cookie) await prepareTripRequestFixture(rt.store, rt.base, data);
     const response = await fetch(origin + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}), ...extraHeaders }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
     const text = await response.text();
     return { status: response.status, body: response.headers.get('content-type')?.includes('application/json') ? JSON.parse(text) : null, text, cookie: response.headers.get('set-cookie')?.split(';')[0], headers: response.headers };
@@ -91,6 +93,9 @@ test('logistics default-denies banking, administration, raw snapshot, shipments 
   const f = await fixture();
   try {
     const before = await readFile(f.store.path, 'utf8');
+    assert.equal((await f.request(prefix + '/trip-requests/geocode', 'POST', { companyId: 'customer', addressId: 'delivery' }, f.cookie)).status, 200);
+    assert.equal((await f.request(prefix + '/trip-requests/geocode', 'GET', undefined, f.cookie)).status, 405);
+    assert.equal((await f.request(prefix + '/trip-requests/geocode', 'POST', { companyId: 'customer', addressId: 'delivery' }, f.crmCookie)).status, 401);
     for (const [path, method] of [['/snapshot', 'GET'], ['/shipments', 'GET'], ['/auth/users', 'GET'], ['/auth/setup', 'POST'], ['/work', 'GET'], ['/china', 'GET'], ['/settlements', 'GET'], ['/banking', 'GET'], ['/banking/sber/statements', 'GET'], ['/banking/dispatch', 'GET'], ['/push/dispatch', 'GET'], ['/directories/cleanup', 'POST'], ['/companies/from-inn', 'POST'], ['/directories/managers/manager', 'PATCH'], ['/directories/customerManagers/customer', 'DELETE']]) {
       assert.equal((await f.request(prefix + path, method, method === 'GET' ? undefined : {}, f.cookie)).status, 403, path);
     }

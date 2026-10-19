@@ -11,6 +11,8 @@ export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Snapsh
   if (actor.role === 'driver') return false;
   if (canManage(actor)) return true;
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId) || shipmentOwnership(snapshot, row).employeeId !== actor.managerId) return false;
+  // A shared request grants access only to the consumer's own resulting delivery.
+  if (row.fields.source_request_id) return true;
   const assignments = snapshot.directories.customerManagers?.filter(link => link.companyId === row.customerId) ?? [];
   return !assignments.length || assignments.some(link => link.managerId === actor.managerId);
 }
@@ -21,7 +23,7 @@ export function ownCustomerIds(snapshot: Snapshot, actor: AccountUser): Set<stri
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId)) return new Set();
   return new Set([
     ...(snapshot.directories.customerManagers?.filter(link => link.managerId === actor.managerId).map(link => link.companyId) ?? []),
-    ...snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).flatMap(row => row.customerId ? [row.customerId] : []),
+    ...snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot) && !row.fields.source_request_id).flatMap(row => row.customerId ? [row.customerId] : []),
   ]);
 }
 export function requireOwnedShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
@@ -44,12 +46,13 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   }) : [];
   const ids = new Set(shipments.map(row => row.id));
   const customerIds = ownCustomerIds(snapshot, actor);
+  const requestCustomerIds = new Set(shipments.filter(row => row.fields.source_request_id).map(row => row.customerId));
   // Shared company lookup is operational input, never a back door to directory details or records.
   const companies = (directoryAccess || shipmentAccess || hasSection(actor, 'work') ? snapshot.companies : [])
-    .filter(company => canManage(actor) || customerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || company.roles.some(role => role === 'supplier' || role === 'carrier'))
+    .filter(company => canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || company.roles.some(role => role === 'supplier' || role === 'carrier'))
     .map(company => ({
     ...(directoryAccess && (canManage(actor) || customerIds.has(company.id)) ? company : companyLookup(company)),
-    roles: canManage(actor) || customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'supplier' || role === 'carrier'),
+    roles: canManage(actor) || customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'supplier' || role === 'carrier' || role === 'customer' && requestCustomerIds.has(company.id)),
     shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: [], managerLabels: [], flags: [],
   }));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };
@@ -66,7 +69,7 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
     managers: canManage(actor) ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
     deletedEntries: canManage(actor) ? catalog.deletedEntries : undefined,
     customerManagers: canManage(actor) ? catalog.customerManagers : catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
-    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || canManage(actor))),
+    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || canManage(actor) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
     assignedCustomerIds: [...customerIds],
     currentEmployeeId: actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
     duplicates: [],
@@ -83,18 +86,19 @@ export function checkShipmentWrite(actor: AccountUser, fields: Record<string, st
   if (previous) requireOwnedShipment(actor, previous, snapshot);
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId) || fields.manager_id !== actor.managerId) throw new ApiError(403, 'Можно сохранять только свои отгрузки.');
   if (fields.customer_id && fields.customer_id !== previous?.customerId) {
+    if (fields.source_request_id) return;
     const assignments = snapshot.directories.customerManagers?.filter(link => link.companyId === fields.customer_id) ?? [];
     if (assignments.length && !assignments.some(link => link.managerId === actor.managerId)) throw new ApiError(403, 'Клиент закреплён за другим менеджером.');
     if (!ownCustomerIds(snapshot, actor).has(fields.customer_id)) throw new ApiError(403, 'Клиент недоступен. Попросите администратора закрепить его за вами.');
   }
 }
 /** Bind omitted owner to the authenticated employee; reject forged IDs before validation. */
-export function ownShipmentInput(actor: AccountUser, input: unknown, snapshot: Snapshot, previous?: Shipment): unknown {
+export function ownShipmentInput(actor: AccountUser, input: unknown, snapshot: Snapshot, previous?: Shipment, sharedRequest = false): unknown {
   if (canManage(actor)) return input;
   if (previous) requireOwnedShipment(actor, previous, snapshot);
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
   const fields = input as Record<string, unknown>;
   if (Object.hasOwn(fields, 'manager_id') && fields.manager_id !== actor.managerId) throw new ApiError(403, 'Можно сохранять только свои отгрузки.');
-  checkShipmentWrite(actor, { manager_id: actor.managerId, customer_id: typeof fields.customer_id === 'string' ? fields.customer_id : null }, snapshot, previous);
+  checkShipmentWrite(actor, { manager_id: actor.managerId, customer_id: typeof fields.customer_id === 'string' ? fields.customer_id : null, ...(sharedRequest ? { source_request_id: 'validated-request' } : {}) }, snapshot, previous);
   return { ...fields, manager_id: actor.managerId };
 }

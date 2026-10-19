@@ -1,0 +1,4 @@
+.trip-identity-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px 16px;min-width:0}
+.trip-identity-date{font-size:14px;font-weight:400;color:var(--muted,#6e7683)}
+.driver-trip-card .trip-identity-date{display:block;margin:9px 0 0}
+.driver-detail-heading .trip-identity-date{margin:8px 0 0}

@@ -1,3 +1,5 @@
+import { ApiError } from './api-error';
+import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import { isUnpackagedDiesel } from '../web/src/trip-input-rules';
 import Decimal from 'decimal.js';
 import type { Company, ShipmentTrip, Snapshot } from '../web/src/model';
@@ -7,7 +9,7 @@ import { readIntermediateStops } from '../web/src/trip-route';
 import type { OperationsData } from './operations-store';
 import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, sabyConsignmentBlockers } from './saby-consignment-note';
 import { sabyConfigurationBlockers, sabyObject, type SabyConfig } from './saby-client';
-import { sabyTransportBlockers, sabyTransportDraftBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
+import { sabyAllowedPickupAt, sabyTransportBlockers, sabyTransportDraftBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
 import type { TripSabyPreparation } from './trip-saby-workflow';
 
 /** Server-only confirmed recurring facts. No credentials or historical document payloads. */
@@ -38,7 +40,12 @@ const exact = (value: string | undefined, divisor: number) => value && /^\d+(?:\
 
 /** Pure preflight: never reserves numbers or creates external counterparty cards. */
 export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): TripSabyPreparation {
+  const originalCount = trip.customers.length;
+  trip = etrnTrip(source, trip);
+  if (!trip.customers.length) throw new ApiError(409, ETRN_NOT_REQUIRED);
+  const partial = trip.customers.length !== originalCount;
   const blockers = [...sabyConfigurationBlockers(config)];
+  if (partial && trip.fields.trip_flow_version !== 'driver-v1' && !trip.fields.quantity_tonnes) blockers.push('Для выбранных доставок нет сохранённых масс. Общую массу машины нельзя перераспределить между клиентами с ЭТрН.');
   const driverFlow = trip.fields.trip_flow_version === 'driver-v1';
   const directories = source.directories;
   const product = directories?.products.find(row => row.id === trip.fields.product_id);
@@ -65,13 +72,16 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     if (!linkedCarrier?.inn || linkedCarrier.inn !== config.carrier.inn) blockers.push(`В карточке ${label} указан перевозчик, не соответствующий настроенному юридическому лицу Saby. Сверьте сохранённую связь перед отправкой.`);
   }
   const transportCarrier = { ...config.carrier, phone: driver?.phone || '' };
-  const allocation = driverFlow ? {
+  const allocation = driverFlow || partial ? {
     totalLitres: trip.customers.every(row => /^\d+(?:\.\d+)?$/.test(row.fields.quantity_litres || '')) ? trip.customers.reduce((sum, row) => sum.plus(row.fields.quantity_litres!), new Decimal(0)).toFixed() : '',
-    tonnes: trip.customers.map(row => row.fields.quantity_tonnes || ''),
+    tonnes: trip.customers.map(row => driverFlow ? row.fields.quantity_tonnes || '' : source.shipments.find(saved => saved.id === row.id)?.fields.quantity_tonnes || ''),
   } : allocateTrip(trip.fields.quantity_tonnes || '', trip.customers.map(row => row.fields.quantity_litres || ''));
   const bulkDiesel = isUnpackagedDiesel(product);
+  if (partial && !driverFlow && !bulkDiesel) blockers.push('Для частичной отправки исторического рейса нет отдельной подтверждённой массы брутто каждой доставки. Требуется сверка масс.');
   const plannedGross = bulkDiesel ? trip.fields.quantity_tonnes : trip.fields.quantity_gross_tonnes;
-  const grossAllocation = driverFlow ? { tonnes: trip.customers.map(row => row.fields.quantity_tonnes || '') } : plannedGross ? allocateTrip(plannedGross, trip.customers.map(row => row.fields.quantity_litres || '')) : null;
+  const grossAllocation = driverFlow ? { tonnes: trip.customers.map(row => row.fields.quantity_tonnes || '') }
+    : partial ? { tonnes: trip.customers.map(row => { const saved = source.shipments.find(saved => saved.id === row.id); return (bulkDiesel ? saved?.fields.quantity_tonnes : saved?.fields.quantity_gross_tonnes) || ''; }) }
+      : plannedGross ? allocateTrip(plannedGross, trip.customers.map(row => row.fields.quantity_litres || '')) : null;
   if (!driverFlow && !grossAllocation) blockers.push(bulkDiesel ? 'В рейсе укажите плановую массу груза, т.' : 'В рейсе укажите плановую массу брутто груза.');
   const cargo: SabyCargoProfile = {
     name: product?.documentName || '', condition: 'Жидкий', packagingCode: 'TY', packageCount: '1',
@@ -149,7 +159,7 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     deliveries: deliveries.map(row => ({ shipmentId: row.shipmentId, fields: row.snapshot.fields, customer: row.snapshot.profile.recipient })),
     ...(trip.fields.intermediate_stops_in_order === 'true' ? { intermediateStops: stops } : {}),
     loadingInfrastructureOwner: { name: infrastructureOwner.name, inn: infrastructureOwner.inn },
-    ...(driverFlow ? { processingDurationMinutes: 600 } : { allowedOperationTime: '19:00:00+03:00' }),
+    ...(driverFlow ? { allowedPickupAt: sabyAllowedPickupAt(trip.fields.loading_planned_at) ?? '' } : { allowedOperationTime: '19:00:00+03:00' }),
   };
   blockers.push(...(driverFlow ? sabyTransportDraftBlockers(order) : sabyTransportBlockers(order)));
   return { scenario, order, deliveries, blockers: [...new Set(blockers)] };

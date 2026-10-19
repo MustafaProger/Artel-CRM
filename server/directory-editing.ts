@@ -8,6 +8,7 @@ import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { validInn } from './checko';
 import { companyRoleUsed } from './directory-deletion';
 import { saveOilDepot } from './oil-depots';
+import { deliveryDistances, sameDeliveryDistances } from './delivery-distances';
 
 export type EditableDirectory = 'managers' | 'products' | 'paymentForms' | 'vehicles' | 'drivers' | 'addresses';
 export function updateDirectoryEntry(kind: string, id: string, input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
@@ -24,6 +25,7 @@ export function updateDirectoryEntry(kind: string, id: string, input: Record<str
     if (key === 'vehicles' && fields.carrierId && snapshot.directories!.drivers.some(driver => driver.vehicleId === id && driver.carrierId && driver.carrierId !== fields.carrierId)) throw new ApiError(409, 'Автомобиль связан с водителем другого перевозчика. Сначала согласуйте связи в карточках.');
   }
   if (key === 'addresses' && 'companyId' in previous && (fields.companyId !== previous.companyId || fields.addressKind !== previous.kind) && snapshot.shipments.some(row => [row.fields.loading_address_id, row.fields.unloading_address_id].includes(id))) throw new ApiError(409, 'Адрес используется в отгрузке. Нельзя изменить его компанию или тип.');
+  if (key === 'addresses' && 'companyId' in previous && (fields.companyId !== previous.companyId || fields.addressKind !== previous.kind) && Object.values(data.tripRequests ?? {}).some(row => row.status === 'active' && row.addressId === id)) throw new ApiError(409, 'Адрес используется в активной заявке на рейс. Нельзя изменить его компанию или тип.');
   // Reuse creation validation, excluding only the record being edited.
   const catalog = { ...snapshot.directories!, [key]: snapshot.directories![key].filter(row => row.id !== id) };
   const draft = structuredClone(data);
@@ -81,6 +83,8 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   }
   if (snapshot.companies.some(company => company.id !== id && inn && company.inn === inn)) throw new ApiError(409, 'Компания с таким ИНН уже есть в справочнике.');
   const roles = [...new Set([...(input.roles as string[]), ...(previous?.roles.filter(role => !['customer', 'supplier', 'other'].includes(role)) ?? [])])];
+  const activeRequests = Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && row.companyId === previous?.id);
+  if (previous?.roles.includes('customer') && !roles.includes('customer') && activeRequests.length) throw new ApiError(409, 'Нельзя убрать тип «Клиент»: компания используется в активных заявках на рейс.');
   // A new INN identifies a separate entity; hidden name-only history must not block
   // creation or be reassigned to it. Visible entries in the requested role still conflict.
   if (!previous && snapshot.companies.some(company => normalizeName(company.name) === normalizeName(name) &&
@@ -94,7 +98,7 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
   const seen = new Set<string>();
   const oldAddresses = snapshot.directories!.addresses.filter(address => address.companyId === companyId);
   const addresses: ShipmentAddress[] = input.addresses.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['id', 'name', 'kind', 'version', ...locationDetailKeys].includes(key)) || typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 500 || !['loading', 'delivery'].includes(raw.kind)) throw new ApiError(400, 'Проверьте адрес и его тип.');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['id', 'name', 'kind', 'version', 'pointAddress', 'oilDepotDistancesKm', ...locationDetailKeys].includes(key)) || typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 500 || !['loading', 'delivery'].includes(raw.kind)) throw new ApiError(400, 'Проверьте адрес и его тип.');
     if (raw.id && (typeof raw.id !== 'string' || !oldAddresses.some(address => address.id === raw.id && address.kind === raw.kind))) throw new ApiError(400, 'Адрес не принадлежит компании или имеет другой тип.');
     const name = raw.name.normalize('NFKC').trim().replace(/\s+/g, ' ');
     const key = `${raw.kind}:${normalizeName(name)}`;
@@ -103,9 +107,11 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
     const previousAddress = oldAddresses.find(row => row.id === raw.id);
     if (Object.hasOwn(raw, 'version') && (raw.version !== (previousAddress?.version ?? 0))) throw new ApiError(409, 'Адрес компании уже изменён. Закройте карточку и откройте её снова.');
     const details = locationDetails({ ...previousAddress, ...raw }, { companies: snapshot.companies, previous: previousAddress });
-    return { ...details, id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => previousAddress[key] === details[key]) ? 0 : 1) } : {}) };
+    const oilDepotDistancesKm = deliveryDistances(raw, snapshot, previousAddress);
+    return { ...details, ...(oilDepotDistancesKm ? { oilDepotDistancesKm } : {}), id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => previousAddress[key] === details[key]) && sameDeliveryDistances(previousAddress.oilDepotDistancesKm, oilDepotDistancesKm) ? 0 : 1) } : {}) };
   });
   const removed = oldAddresses.filter(address => !addresses.some(row => row.id === address.id));
+  if (activeRequests.some(request => removed.some(address => address.id === request.addressId))) throw new ApiError(409, 'Адрес используется в активной заявке на рейс. Его можно изменить, но нельзя удалить.');
   if (snapshot.shipments.some(row => removed.some(address => [row.fields.loading_address_id, row.fields.unloading_address_id].includes(address.id)))) throw new ApiError(409, 'Адрес используется в отгрузке. Его можно изменить, но нельзя удалить.');
   const details = Object.fromEntries(companyFields.filter(([key])=>Object.hasOwn(input,key)).map(([key])=>{
     if (input[key] !== null && (typeof input[key] !== 'string' || (input[key] as string).length > 500)) throw new ApiError(400, 'Проверьте реквизиты компании.');

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mergeDirectoryPayload, withCurrentAddressVersions } from '../web/src/directory-editor-data';
+import { directoryDraft, directoryPayload, mergeDirectoryPayload, withCurrentAddressVersions } from '../web/src/directory-editor-data';
+import type { DirectoryData } from '../web/src/model';
 
 test('merges unrelated edits and preserves hidden fields from the server',()=>{
   const base={plate:'QA',leaseContractNumber:'1',payloadCapacityTonnes:'8',carrierId:'old'};
@@ -33,4 +34,18 @@ test('missing and empty optional fields compare alike',()=>{
 test('clearing vehicle compartments remains an intentional edit',()=>{
   const result=mergeDirectoryPayload({compartmentsLitres:['5','5']},{compartmentsLitres:undefined},{compartmentsLitres:['5','5']});
   assert.equal(result.merged.compartmentsLitres,undefined);assert.deepEqual(result.conflicts,[]);
+});
+test('address distance draft preserves zero and survives both company and standalone editors',()=>{
+  const address={id:'a',companyId:'c',name:'Site',kind:'delivery',version:2,oilDepotDistancesKm:{depotA:'0',depotB:'12.5'}};
+  const data={companies:[{id:'c',name:'Company',roles:['customer']}],directories:{addresses:[address]}} as unknown as DirectoryData;
+  assert.deepEqual(directoryPayload('addresses',directoryDraft(data,'addresses','a')).oilDepotDistancesKm,address.oilDepotDistancesKm);
+  assert.deepEqual((directoryPayload('customers',directoryDraft(data,'customers','c')).addresses as {oilDepotDistancesKm:unknown}[])[0].oilDepotDistancesKm,address.oilDepotDistancesKm);
+});
+test('unrelated company edits preserve concurrent distances; overlapping address edits require a choice',()=>{
+  const base={name:'A',addresses:[{id:'a',name:'Site',version:1,oilDepotDistancesKm:{depot:'0'}}]};
+  const latest={...base,addresses:[{...base.addresses[0],version:2,oilDepotDistancesKm:{depot:'12'}}]};
+  const merged=mergeDirectoryPayload(base,{...base,name:'B'},latest);
+  assert.deepEqual(merged.conflicts,[]);assert.deepEqual(merged.merged.addresses,latest.addresses);
+  const overlap=mergeDirectoryPayload(base,{...base,addresses:[{...base.addresses[0],oilDepotDistancesKm:{depot:''}}]},latest);
+  assert.deepEqual(overlap.conflicts,['addresses']);
 });

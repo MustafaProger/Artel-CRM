@@ -90,7 +90,7 @@ try {
   await page.getByRole('button', { name: 'Синхронизировать', exact: true }).click();
   await expect.poll(async () => (await read(`/api/banking?from=${fixtureDay}&to=${fixtureDay}`)).total).toBe(32);
   await expect(page.locator('.bank-ledger')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Открыть Т-Банк — НК АРТЕЛЬ' }).click();
+  await page.getByRole('button', { name: 'Открыть Т-Банк — НК АРТЭЛЬ' }).click();
   await expect(page.locator('.bank-ledger-title')).toContainText('32 операций', { timeout: 15000 });
   await expect(page.locator('.bank-totals')).toContainText('3,10 ₽'); await expect(page.locator('.bank-totals')).toContainText('12,34 USD');
   await page.screenshot({ path: resolve(output, 'connected-desktop-fixtures.png'), fullPage: true }); check('Manual synchronization, durable continuation, per-currency summaries');
@@ -101,7 +101,7 @@ try {
   await page.getByRole('button', { name: 'Все подключения', exact: true }).click();
   const bankRequests = [];
   page.on('request', request => { if (request.url().includes('/api/banking')) bankRequests.push(request.url()); });
-  for (const company of ['АРТЕЛЬ']) {
+  for (const company of ['АРТЭЛЬ']) {
     await page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true }).click();
     await expect(page.getByRole('heading', { name: 'СберБизнес ещё не подключён' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Подключение', exact: true })).toBeDisabled();
@@ -125,7 +125,7 @@ try {
     await expect(page.locator('.bank-card')).toHaveCount(3);
   }
   check('Legacy Sber ARTEL layout retains navigation and responsive controls without API requests; NK statements have separate QA');
-  await page.getByRole('button', { name: 'Открыть Т-Банк — НК АРТЕЛЬ' }).click();
+  await page.getByRole('button', { name: 'Открыть Т-Банк — НК АРТЭЛЬ' }).click();
   await page.locator('.bank-row-link').first().click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.locator('.bank-parties')).toContainText('Клиент тестовый');

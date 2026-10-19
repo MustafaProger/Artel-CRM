@@ -1,3 +1,4 @@
+import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { isScopedEmployee, type AccountUser } from './auth-model';
@@ -88,7 +89,7 @@ export default function WorkPage() {
     </div>
     <div className="work-toolbar work-action-toolbar">
       <div className="work-assignee">{isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
-      <div className="work-toolbar-actions">{data && <NotificationMenu key={data.currentUser.id} userId={data.currentUser.id} kind="work" count={reminders.length}>{reminders.length ? <div className="work-reminder-list">{reminders.map(reminder => <button key={reminder.editor.entry!.id} className="work-reminder" onClick={() => setEditor(reminder.editor)}><strong>{reminder.title}</strong><small className={reminder.at <= new Date().toISOString() ? 'work-overdue' : ''}>{dateLabel(reminder.at)}{reminder.at <= new Date().toISOString() ? ' · наступило' : ''}</small></button>)}</div> : <p className="work-empty">Напоминаний пока нет.</p>}</NotificationMenu>}<button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
+      <div className="work-toolbar-actions">{data && <NotificationMenu key={data.currentUser.id} userId={data.currentUser.id} kind="work" count={reminders.length}>{closeWith => reminders.length ? <div className="work-reminder-list">{reminders.map(reminder => <button key={reminder.editor.entry!.id} className="work-reminder" onClick={() => closeWith(() => setEditor(reminder.editor))}><strong>{reminder.title}</strong><small className={reminder.at <= new Date().toISOString() ? 'work-overdue' : ''}>{dateLabel(reminder.at)}{reminder.at <= new Date().toISOString() ? ' · наступило' : ''}</small></button>)}</div> : <p className="work-empty">Напоминаний пока нет.</p>}</NotificationMenu>}<button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
       </div>
     </div>
     {notice && <p className="work-notice" role="status">{notice}</p>}
@@ -121,7 +122,7 @@ export default function WorkPage() {
   </div>;
 }
 
-function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
+function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const [requestId] = useState(() => crypto.randomUUID());
@@ -130,7 +131,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose,
   const [files, setFiles] = useState<File[]>([]);
   const archived = !!task?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState(''), [dirty, setDirty] = useState(false), [confirmClose, setConfirmClose] = useState(false);
-  useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close(); }, []);
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   useEffect(() => { if (!dirty) return; const prevent = (event: BeforeUnloadEvent) => event.preventDefault(); window.addEventListener('beforeunload', prevent); return () => window.removeEventListener('beforeunload', prevent); }, [dirty]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })); setDirty(true); };
   const close = () => { if (inFlight.current) return; if (dirty) setConfirmClose(true); else onClose(); };
@@ -150,7 +151,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose,
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить запись.');
-      onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry);
+      await complete(() => onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry));
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
     finally { inFlight.current = false; setSaving(false); }
   };

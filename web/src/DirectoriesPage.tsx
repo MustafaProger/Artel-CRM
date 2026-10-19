@@ -1,3 +1,4 @@
+import { useDialogMotion } from './useDialogMotion'
 import ScrollableSegments from './ScrollableSegments'
 import RoleFilter, { type RoleFilterValue } from './RoleFilter'
 import { roleNames, type AccountRole, type AccountUser } from './auth-model'
@@ -6,6 +7,9 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import type { Company, ShipmentAddress, DirectoryData, Vehicle } from './model'
 import DirectorySelect from './DirectorySelect'
+import DeliveryPointPicker from './DeliveryPointPicker'
+import { pointNavigationUrl } from './yandex-map-coordinates'
+import { tripRequestExplicitCoordinates } from './trip-request-map-coordinates'
 import { companyFields, driverFields, vehicleFields, stsFields, ptsFields, productTransportFields, vehicleTransportFields } from './directory-fields'
 import { directoryDraft, directoryEntry, directoryPayload, mergeDirectoryPayload, directoryFieldLabel, withCurrentAddressVersions, type EditorTab } from './directory-editor-data'
 import { customerManagerId } from './customer-manager'
@@ -17,6 +21,7 @@ const tabs = [{id:'customers',name:'Клиенты'}, {id:'suppliers',name:'По
  type Tab = DirectoryTab
 const titles: Record<EditorTab, string> = { customers: 'клиента', suppliers: 'поставщика', loadingParty: 'участника погрузки', oilDepots: 'нефтебазы', managers: 'сотрудника', products: 'товара', paymentForms: 'формы оплаты', vehicles: 'автомобиля', drivers: 'водителя', addresses: 'адреса', customerManagers: 'назначения менеджера' }
 const roleLabels = { customer: 'Клиент', supplier: 'Поставщик' }
+const normalizedPlaceAddress = (value:string) => value.trim().replace(/\s+/g,' ')
 const companyTab = (tab: EditorTab) => ['customers', 'suppliers', 'loadingParty'].includes(tab)
 const tabRole = (tab: EditorTab) => tab === 'customers' ? 'customer' : tab === 'suppliers' ? 'supplier' : 'other'
 const bankFields = new Set(['bankName','settlementAccount','correspondentAccount','bik'])
@@ -25,7 +30,7 @@ const vehicleName = (vehicle: Vehicle) => vehicle.name || vehicle.plate
 const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== vehicle.plate ? vehicle.plate : '', vehicle.capacityLitres ? `${Number(vehicle.capacityLitres).toLocaleString('ru-RU')} л` : '', vehicle.compartmentsLitres?.length ? `Секции: ${vehicle.compartmentsLitres.join(' + ')} л` : ''].filter(Boolean).join(' · ')
 type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager?:string;managerId?:string;addresses?:string;roles?:string[];kind?:'managers'|'drivers';accountRoles?:AccountRole[]}
 
-export default function DirectoriesPage({data,onChanged,canManage=true,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void;canManage?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
+export default function DirectoriesPage({data,onChanged,canManage=true,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
   const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
   const [editor,setEditor] = useState<{id?:string;kind?:'managers'|'drivers'} | null>(null), [notice,setNotice] = useState(''), [deleting,setDeleting] = useState<DirectoryRow|null>(null)
   const [accessUsers,setAccessUsers] = useState<AccountUser[]|null>(null), [accessError,setAccessError] = useState(''), [accessRevision,setAccessRevision] = useState(0)
@@ -69,29 +74,30 @@ export default function DirectoriesPage({data,onChanged,canManage=true,initialTa
       {personnel&&<><RoleFilter value={roleFilter} onChange={value=>{setRoleFilter(value);setPage(0)}} includeUnlinked disabled={!accessUsers} counts={{all:personnelRows.length,none:personnelRows.filter(row=>!row.accountRoles?.length).length,...Object.fromEntries(Object.keys(roleNames).map(role=>[role,personnelRows.filter(row=>row.accountRoles?.includes(role as AccountRole)).length]))}}/>{!accessUsers&&!accessError&&<p role="status">Загружаем полномочия…</p>}{accessError&&<p className="shipment-error" role="alert">{accessError} <button type="button" className="button" onClick={()=>setAccessRevision(value=>value+1)}>Повторить загрузку полномочий</button></p>}</>}
       <div className="directory-record-count">Записей: {visible.length}</div>
       <div className="directory-records">{visible.slice(currentPage*30,(currentPage+1)*30).map(row=><div className="directory-record" key={`${row.kind??tab}:${row.id}`}>
-        <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><strong>{row.name}</strong>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
+        <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind==='managers'||row.kind==='drivers'?row.kind:undefined})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><strong>{row.name}</strong>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
           {row.manager !== undefined && <span className="directory-record-manager"><small>Менеджер</small><span>{row.manager}</span></span>}{canManage&&<Pencil size={17}/>}</button>
         {canManage&&<button className="icon-button directory-delete" aria-label={`Удалить: ${row.name}`} onClick={()=>setDeleting(row)}><Trash2 size={17}/></button>}
       </div>)}</div>
       {!visible.length && (!personnel||accessUsers) && <p className="directory-empty">{query||personnel&&roleFilter!=='all' ? 'По выбранным фильтрам ничего не найдено.' : canManage ? 'Записей пока нет. Нажмите «Добавить», чтобы создать первую.' : 'Записей пока нет.'}</p>}
       <div className="directory-pagination"><span>{visible.length ? `${currentPage*30+1}–${Math.min((currentPage+1)*30,visible.length)} из ${visible.length}` : '0 записей'}</span><div><button className="icon-button" aria-label="Предыдущая страница справочника" disabled={!currentPage} onClick={()=>setPage(currentPage-1)}><ChevronLeft size={18}/></button><span>{currentPage+1} / {lastPage+1}</span><button className="icon-button" aria-label="Следующая страница справочника" disabled={currentPage===lastPage} onClick={()=>setPage(currentPage+1)}><ChevronRight size={18}/></button></div></div>
     </section>
-    {editor && canManage && <DirectoryEditor tab={editor.kind??tab} id={editor.id} data={data} onChanged={onChanged} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice(editor.id ? 'Изменения сохранены' : 'Запись добавлена');onChanged()}}/>}
-    {deleting && canManage && <DirectoryDelete tab={deleting.kind??tab} row={deleting} onClose={()=>setDeleting(null)} onDeleted={()=>{setDeleting(null);setNotice('Запись удалена из справочника');onChanged()}}/>}
+    {editor && canManage && <DirectoryEditor tab={editor.kind??tab} id={editor.id} data={data} onChanged={onChanged} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice(editor.id ? 'Изменения сохранены' : 'Запись добавлена')}}/>}
+    {deleting && canManage && <DirectoryDelete tab={deleting.kind==='managers'||deleting.kind==='drivers'?deleting.kind:tab} row={deleting} onChanged={onChanged} onClose={()=>setDeleting(null)} onDeleted={()=>{setDeleting(null);setNotice('Запись удалена из справочника')}}/>}
   </div>
 }
 
-function DirectoryDelete({tab,row,onClose,onDeleted}:{tab:Tab;row:DirectoryRow;onClose:()=>void;onDeleted:()=>void}) {
+function DirectoryDelete({tab,row,onClose: onDismiss,onDeleted,onChanged}:{tab:Tab;row:DirectoryRow;onClose:()=>void;onDeleted:()=>void;onChanged:()=>void|Promise<void>}) {
   const dialog=useRef<HTMLDialogElement>(null),busy=useRef(false)
   const [saving,setSaving]=useState(false),[error,setError]=useState('')
-  useEffect(()=>{const element=dialog.current;element?.showModal();return()=>element?.close()},[])
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   const close=()=>{if(!busy.current)onClose()}
   const remove=async()=>{
     if(busy.current)return;busy.current=true;setSaving(true);setError('')
     try{
       const response=await fetch(`/api/directories/${tab}/${encodeURIComponent(row.id)}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(tab==='customerManagers'?{managerId:row.managerId}:{version:row.version??0})})
       const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось удалить запись')
-      onDeleted()
+      await onChanged()
+      await complete(onDeleted)
     }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{busy.current=false;setSaving(false)}
   }
   const otherRoles=companyTab(tab)&&row.roles?.some(role=>role!==tabRole(tab))
@@ -102,14 +108,14 @@ function DirectoryDelete({tab,row,onClose,onDeleted}:{tab:Tab;row:DirectoryRow;o
   </dialog>
 }
 
-function formatConflictValue(value:unknown):string {
+function formatConflictValue(value:unknown,depots:Record<string,string>={},distances=false):string {
   if(value===undefined||value===null||value==='')return 'пусто'
-  if(Array.isArray(value))return value.map(formatConflictValue).join('; ')||'пусто'
-  if(typeof value==='object')return Object.entries(value).filter(([key])=>!['id','version','companyId'].includes(key)).map(([key,value])=>`${directoryFieldLabel(key)}: ${formatConflictValue(value)}`).join(', ')
+  if(Array.isArray(value))return value.map(item=>formatConflictValue(item,depots)).join('; ')||'пусто'
+  if(typeof value==='object')return Object.entries(value).filter(([key])=>!['id','version','companyId'].includes(key)).map(([key,value])=>`${distances?(depots[key]??'Удалённая нефтебаза'):directoryFieldLabel(key)}: ${formatConflictValue(value,depots,key==='oilDepotDistancesKm')}`).join(', ')||'пусто'
   return String(value)
 }
 
-function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;id?:string;data:DirectoryData;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void}) {
+function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab:EditorTab;id?:string;data:DirectoryData;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void|Promise<void>}) {
   const catalog = data.directories!, dialog = useRef<HTMLDialogElement>(null)
   const [baseline,setBaseline] = useState(data)
   const entry = directoryEntry(baseline,tab,id)
@@ -129,20 +135,33 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
   const relatedCompanies = [...data.companies.filter(company=>!savedCompanies.some(saved=>saved.id===company.id)),...savedCompanies]
   const [companyId,setCompanyId] = useState(id??'')
   const [managerId,setManagerId] = useState(()=>customerManagerId(catalog,id??''))
-  const [addresses,setAddresses] = useState<Omit<ShipmentAddress,'companyId'>[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind,version,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId})=>({id,name,kind,version:version??0,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId})))
+  const [addresses,setAddresses] = useState<(Omit<ShipmentAddress,'companyId'> & {pointAddress?:string})[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind,version,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})=>({id,name,kind,version:version??0,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})))
+  const [oilDepotDistancesKm,setOilDepotDistancesKm] = useState<ShipmentAddress['oilDepotDistancesKm']>(()=>tab==='addresses'?(entry as ShipmentAddress|undefined)?.oilDepotDistancesKm:undefined)
   const [lookupBusy,setLookupBusy] = useState(false), [lookupNotice,setLookupNotice] = useState('')
   const [saving,setSaving] = useState(false), [error,setError] = useState(''), [dirty,setDirty] = useState(false), [confirmClose,setConfirmClose] = useState(false)
-  useEffect(()=>{const element=dialog.current;element?.showModal();return()=>element?.close()},[])
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   useEffect(()=>{if(!dirty)return;const handler=(event:BeforeUnloadEvent)=>{event.preventDefault()};window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler)},[dirty])
   const close = ()=>{if(saving||lookupBusy)return;if(dirty)setConfirmClose(true);else onClose()}
-  const update = (key:string,value:string)=>{setFields(old=>({...old,[key]:value}));setDirty(true)}
+  const update = (key:string,value:string)=>{setFields(old=>{
+    const next={...old,[key]:value}
+    if(tab==='addresses') {
+      if((key==='address'||key==='name'&&!old.address)&&normalizedPlaceAddress(next.address||next.name||'')!==normalizedPlaceAddress(old.address||old.name||'')){next.latitude='';next.longitude='';next.mapUrl='';delete next.pointAddress}
+      if(key==='mapUrl'){next.latitude='';next.longitude='';next.pointAddress=next.address||next.name||''}
+      if(key==='latitude'||key==='longitude'){
+        next.pointAddress=next.address||next.name||''
+        const point=tripRequestExplicitCoordinates({latitude:next.latitude,longitude:next.longitude})
+        next.mapUrl=point?.status==='found'?pointNavigationUrl(String(point.latitude),String(point.longitude)):''
+      }
+    }
+    return next
+  });setDirty(true)}
   const longFields = new Set(['address','registeredAddress','ownerAddress','fullName','documentName','passportIssuedBy','ptsSpecialMarks','stsSpecialMarks'])
   const input = (label:string,key:string,required=false)=><label className={`shipment-field ${longFields.has(key)?'form-field-wide':''}`}><span>{label}{required?' *':''}</span>{longFields.has(key)?<textarea aria-label={label} value={fields[key]??''} required={required} maxLength={500} rows={2} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/>:<input aria-label={label} value={fields[key]??''} required={required} maxLength={500} disabled={saving||lookupBusy} onChange={event=>update(key,event.target.value)}/>}</label>
   const loadingRoleSelect = (label:string,value:string,onChange:(id:string)=>void)=><div className="loading-party-field"><DirectorySelect label={label} entries={relatedCompanies.filter(company=>!company.directoryArchived).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={value} legacy={relatedCompanies.find(company=>company.id===value)?.name} onChange={onChange} disabled={saving||lookupBusy} searchFirst wrapSelection emptyMessage="Введите наименование или ИНН. Новую организацию можно добавить здесь."/><button type="button" className="button" disabled={saving||lookupBusy} aria-label={`${value?'Реквизиты':'Добавить организацию'}: ${label}`} onClick={()=>setParticipant({label,value,onSelect:onChange})}>{value?'Реквизиты':'Добавить организацию'}</button></div>
   const save = async(event:React.FormEvent)=>{
     event.preventDefault();if(busy.current||lookupBusy||conflict)return;busy.current=true;setSaving(true);setError('');setConfirmClose(false)
     try {
-      const payload=editablePayload(directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses}))
+      const payload=editablePayload(directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm}))
       const updating=!!id&&tab!=='customerManagers',kind=companyTab(tab)?'companies':tab
       let result: {entry?:Company;created?:boolean;error?:string} = {}
       for(let attempt=0;attempt<2;attempt++) {
@@ -165,7 +184,10 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
       // Company POST can restore an archived card or add a role to its existing ID.
       // Those committed changes have created:false; actual duplicates return 409.
       if(!id && !companyTab(tab) && tab!=='customerManagers' && !result.created)throw new Error('Такая запись уже есть. Найдите её в списке для редактирования.')
-      onSaved(companyTab(tab) ? result.entry as Company : undefined)
+      // Keep the editor locked until its parent has the saved snapshot. Otherwise
+      // an immediate reopen initializes a new draft from stale directory props.
+      await onChanged()
+      await complete(() => onSaved(companyTab(tab) ? result.entry as Company : undefined))
     }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{busy.current=false;setSaving(false)}
   }
   const resolveConflict = ()=>{
@@ -174,6 +196,7 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
     for(const key of conflict.keys)if(conflict.choices[key]==='saved')resolved[key]=conflict.latest[key]
     setFields(Object.fromEntries(Object.entries(resolved).filter(([,value])=>typeof value==='string')) as Record<string,string>)
     setSections((resolved.compartmentsLitres as string[]|undefined)?.join(' + ')??'')
+    if(tab==='addresses')setOilDepotDistancesKm(resolved.oilDepotDistancesKm as ShipmentAddress['oilDepotDistancesKm'])
     if(companyTab(tab)){setRoles(resolved.roles as string[]);setAddresses(withCurrentAddressVersions(resolved,conflict.latest).addresses as Omit<ShipmentAddress,'companyId'>[]);setManagerId(resolved.managerId as string||'')}
     setBaseline(conflict.snapshot);setConflict(null);setDirty(true);setError('')
   }
@@ -188,14 +211,17 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
     }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{setLookupBusy(false)}
   }
   const extraGroup = (title:string,fields:readonly (readonly [string,string])[],open=false)=><details className="directory-extra-fields" open={open||undefined}><summary>{title}</summary><div className="shipment-field-grid">{fields.map(([key,label])=><div key={key} className={longFields.has(key)?'form-field-wide':undefined}>{input(label,key)}</div>)}</div></details>
+  const distanceFields = (values:ShipmentAddress['oilDepotDistancesKm'],onChange:(depotId:string,value:string)=>void,addressLabel:string)=><fieldset className="directory-depot-distances form-field-wide"><legend>Расстояния до нефтебаз, км</legend>{(catalog.oilDepots??[]).length?<div className="directory-depot-distance-list">{catalog.oilDepots!.map(depot=><label className="shipment-field directory-depot-distance" key={depot.id}><span>{depot.name}</span><input aria-label={`${depot.name}: расстояние, км (${addressLabel})`} inputMode="decimal" value={values?.[depot.id]??''} placeholder="Не указано" maxLength={32} disabled={saving||lookupBusy} onChange={event=>{onChange(depot.id,event.target.value);setDirty(true)}}/></label>)}</div>:<p className="muted">Добавьте нефтебазы в справочник, чтобы указать расстояния для этого адреса.</p>}</fieldset>
   const addressGroup = (kind:'loading'|'delivery',label:string)=><section className="company-address-group">
     <div><h3>{label}</h3><button type="button" className="button" disabled={saving||lookupBusy} onClick={()=>{setAddresses(old=>[...old,{id:'',name:'',kind}]);setDirty(true)}}><Plus size={15}/>Добавить адрес</button></div>
     {addresses.map((address,index)=>{
       if(address.kind!==kind)return null
       const number=addresses.slice(0,index+1).filter(row=>row.kind===kind).length
-      const field=(key:'name'|'receiverName'|'receiverPhone',label:string,required=false)=><label className="shipment-field"><span>{label}</span><input aria-label={`${label} ${number}`} value={address[key]??''} required={required} maxLength={500} disabled={saving||lookupBusy} onChange={event=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,[key]:event.target.value}:row));setDirty(true)}}/></label>
+      const field=(key:'name'|'receiverName'|'receiverPhone',label:string,required=false)=><label className="shipment-field"><span>{label}</span><input aria-label={`${label} ${number}`} value={address[key]??''} required={required} maxLength={500} disabled={saving||lookupBusy} onChange={event=>{setAddresses(old=>old.map((row,i)=>{if(i!==index)return row;const next={...row,[key]:event.target.value};if(key==='name'){if(row.address)next.address=event.target.value;if(normalizedPlaceAddress(next.address||next.name)!==normalizedPlaceAddress(row.address||row.name)){next.latitude='';next.longitude='';next.mapUrl='';delete next.pointAddress}}return next}));setDirty(true)}}/></label>
       return <div className="company-address-row" key={address.id||`new-${index}`}><div className="shipment-field-grid">
         {field('name',kind==='loading'?'Адрес загрузки':'Адрес отгрузки клиента',true)}
+        {kind==='delivery'&&distanceFields(address.oilDepotDistancesKm,(depotId,value)=>setAddresses(old=>old.map((row,i)=>i===index?{...row,oilDepotDistancesKm:{...row.oilDepotDistancesKm,[depotId]:value}}:row)),`адрес ${number}`)}
+        {kind==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={address.latitude} longitude={address.longitude} mapUrl={address.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:row.address||row.name}:row));setDirty(true)}}/></div>}
         {kind==='delivery'&&<>{field('receiverName','Приёмщик адреса')}{field('receiverPhone','Телефон приёмщика адреса')}</>}
         {kind==='loading'&&(['loadingActorCompanyId','infrastructureOwnerCompanyId'] as const).map(key=><div key={key}>{loadingRoleSelect(`${key==='loadingActorCompanyId'?'Погрузчик':'Владелец площадки'} ${number}`,address[key]??'',value=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,[key]:value}:row));setDirty(true)})}</div>)}
       </div><button type="button" className="icon-button" aria-label={`Удалить адрес ${address.name||index+1}`} disabled={saving||lookupBusy} onClick={()=>{if(window.confirm(`Удалить адрес «${address.name||'Новый адрес'}»? Изменение сохранится вместе с карточкой компании.`)){setAddresses(old=>old.filter((_,i)=>i!==index));setDirty(true)}}}><Trash2 size={17}/></button></div>
@@ -221,11 +247,12 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
       </>
       :tab==='vehicles'?<>{input('Автомобиль / номер','plate',true)}{input('Название для выбора','name')}{input('Марка','brand')}{input('Модель','model')}{input('Прицеп','trailer')}{input('Объём автомобиля, л','capacityLitres')}<label className="shipment-field"><span>Секции, л (через +)</span><input aria-label="Секции, л (через +)" value={sections} disabled={saving||lookupBusy} onChange={event=>{setSections(event.target.value);setDirty(true)}}/></label></>
       :tab==='customerManagers'?<><DirectorySelect label="Клиент" entries={data.companies.filter(company=>company.roles.includes('customer'))} value={companyId} onChange={id=>{setCompanyId(id);setManagerId(customerManagerId(catalog,id));setDirty(true)}} required disabled={saving||!!id}/><DirectorySelect label="Менеджер" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} required disabled={saving}/></>
-      :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя сотрудника':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<>{input('Приёмщик','receiverName')}{input('Телефон приёмщика','receiverPhone')}</>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
+      :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя сотрудника':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={fields.latitude} longitude={fields.longitude} mapUrl={fields.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setFields(old=>({...old,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:old.address||old.name||''}));setDirty(true)}}/></div>}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<>{input('Приёмщик','receiverName')}{input('Телефон приёмщика','receiverPhone')}</>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
     </div>
     {lookupNotice&&<p className="directory-notice" role="status">{lookupNotice}</p>}
     {companyTab(tab)&&<>{extraGroup('Реквизиты организации',companyFields.slice(0,5),true)}{extraGroup(isLogisticsWorkspace()?'Контакты':'Контакты и банковские реквизиты',isLogisticsWorkspace()?companyFields.slice(5,7):companyFields.slice(5))}{(roles.includes('customer')||addresses.some(address=>address.kind==='delivery'))&&addressGroup('delivery','Фактические адреса отгрузки клиента')}</>}
     {tab==='oilDepots'&&<p className="directory-context-note">Поставщик выбирается отдельно в рейсе.</p>}
+    {tab==='addresses'&&(fields.addressKind??fields.kind??'delivery')==='delivery'&&distanceFields(oilDepotDistancesKm,(depotId,value)=>setOilDepotDistancesKm(old=>({...old,[depotId]:value})),fields.name||'адрес')}
     {tab==='drivers'&&<>{extraGroup('Водительское удостоверение и ИНН',driverFields.slice(0,4),true)}{extraGroup('Паспортные данные водителя',driverFields.slice(4))}</>}
     {tab==='addresses'&&(fields.addressKind??fields.kind??'delivery')==='loading'&&<div className="shipment-field-grid">{loadingRoleSelect('Погрузчик',fields.loadingActorCompanyId??'',value=>update('loadingActorCompanyId',value))}{loadingRoleSelect('Владелец площадки',fields.infrastructureOwnerCompanyId??'',value=>update('infrastructureOwnerCompanyId',value))}</div>}
     {tab==='products'&&<details className="directory-extra-fields" open><summary>Транспортные документы</summary>
@@ -240,9 +267,9 @@ function DirectoryEditor({tab,id,data,onClose,onSaved,onChanged}:{tab:EditorTab;
       {extraGroup('Договор на пользование этой машиной',vehicleTransportFields.slice(6).filter(([key])=>key!=='cargoDistributable'),['3','4','5'].includes(fields.ownershipType??''))}
     </details>{extraGroup('Данные транспортного средства',vehicleFields)}{extraGroup('Свидетельство о регистрации (СТС)',stsFields)}{extraGroup('Паспорт транспортного средства (ПТС / ЭПТС)',ptsFields)}</>}
     </fieldset>
-    {conflict&&<div className="directory-conflict" ref={conflictPanel} role="region" aria-label="Сверка изменений"><h3>Эти поля изменились во время редактирования</h3><p>Ваш ввод сохранён. Выберите значения для спорных полей. Остальные изменения будут объединены.</p>{conflict.keys.map(key=><fieldset key={key}><legend>{directoryFieldLabel(key)}</legend>{(['mine','saved'] as const).map(choice=><label key={choice}><input type="radio" name={`conflict-${key}`} checked={conflict.choices[key]===choice} onChange={()=>setConflict({...conflict,choices:{...conflict.choices,[key]:choice}})}/><span>{choice==='mine'?'Моё значение':'Сохранённое значение'}: {formatConflictValue((choice==='mine'?conflict.merged:conflict.latest)[key])}</span></label>)}</fieldset>)}<button type="button" className="button" disabled={conflict.keys.some(key=>!conflict.choices[key])} onClick={resolveConflict}>Применить выбор</button><p className="muted">После сверки нажмите «Сохранить».</p></div>}
+    {conflict&&<div className="directory-conflict" ref={conflictPanel} role="region" aria-label="Сверка изменений"><h3>Эти поля изменились во время редактирования</h3><p>Ваш ввод сохранён. Выберите значения для спорных полей. Остальные изменения будут объединены.</p>{conflict.keys.map(key=><fieldset key={key}><legend>{directoryFieldLabel(key)}</legend>{(['mine','saved'] as const).map(choice=><label key={choice}><input type="radio" name={`conflict-${key}`} checked={conflict.choices[key]===choice} onChange={()=>setConflict({...conflict,choices:{...conflict.choices,[key]:choice}})}/><span>{choice==='mine'?'Моё значение':'Сохранённое значение'}: {formatConflictValue((choice==='mine'?conflict.merged:conflict.latest)[key],Object.fromEntries((catalog.oilDepots??[]).map(depot=>[depot.id,depot.name])),key==='oilDepotDistancesKm')}</span></label>)}</fieldset>)}<button type="button" className="button" disabled={conflict.keys.some(key=>!conflict.choices[key])} onClick={resolveConflict}>Применить выбор</button><p className="muted">После сверки нажмите «Сохранить».</p></div>}
     {error&&<p className="shipment-error" role="alert">{error}</p>}
     {confirmClose&&<div className="directory-close-confirm" role="alert"><p>Закрыть карточку без сохранения изменений?</p><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
     </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy||!!conflict}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
-  </form></dialog>{participant&&<DirectoryEditor tab="loadingParty" id={participant.value||undefined} data={{...data,companies:relatedCompanies}} onChanged={onChanged} onClose={()=>setParticipant(null)} onSaved={company=>{if(!company)return;setSavedCompanies(old=>[...old.filter(row=>row.id!==company.id),company]);participant.onSelect(company.id);setParticipant(null);onChanged()}}/>}</>
+  </form></dialog>{participant&&<DirectoryEditor tab="loadingParty" id={participant.value||undefined} data={{...data,companies:relatedCompanies}} onChanged={onChanged} onClose={()=>setParticipant(null)} onSaved={company=>{if(!company)return;setSavedCompanies(old=>[...old.filter(row=>row.id!==company.id),company]);participant.onSelect(company.id);setParticipant(null)}}/>}</>
 }

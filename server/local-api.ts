@@ -1,3 +1,5 @@
+import { readTripNumbers } from './trip-numbering';
+import { cabinetRoutes } from './cabinet-connections';
 import { createHash, randomUUID } from 'node:crypto';
 import { BankingService } from './banking/service';
 import { bankingRoutes } from './banking/routes';
@@ -11,15 +13,15 @@ import { sberRoutes } from './banking/sber-routes';
 import type { SberRequest } from './banking/sber-client';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import Decimal from 'decimal.js';
 import type { Plugin } from 'vite';
-import type { AccountUser } from '../web/src/auth-model';
+import { hasSection, type AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
-import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie } from './auth';
 import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
-import { readDriverTrips, recordDriverTripAction } from './driver-trips';
+import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
 import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
 import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
 import { apiSection, requireSection, requireTripSection } from './permissions';
@@ -39,14 +41,20 @@ import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
 import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
+import { cancelTripRequest, listTripRequests, requireTripRequest, saveTripRequest, tripRequestCatalog } from './trip-requests';
+import { readTripRequestsMapConfig, tripRequestGeocodeTarget } from './trip-request-geocoding';
+import { createNominatimGeocoder, readNominatimCachedLocation } from './nominatim-geocoder';
+import { createTripRequestLocations } from './trip-request-locations';
+import { createYandexTiles, serveYandexTile } from './yandex-tiles';
+import { tripRequestExplicitCoordinates, type TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
 import { getSabyTrip, submitSabyTrip } from './saby-service';
 import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile, saveTripLoadingFacts, exchangePreparedEtrn } from './etrn-service';
 import { getTripSigningPreview, validateSigningStart } from './trip-saby-signing';
-import { enqueueAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
+import { enqueueAutomaticTripSaby, startAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
 import { automaticSigningCapability } from './saby-auto-policy';
 import { prepareTripSaby } from './trip-saby-preparation';
-import { sabyConfigFromEnv, sabyCredentialBlockers, type SabyClient } from './saby-client';
-import { dispatchTripSaby, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
+import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
+import { createTripSabyScheduler, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
 import { dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
@@ -304,6 +312,7 @@ export interface LocalApiOptions {
   /** Only isolated domain tests may disable authentication. Runtime always requires it. */
   requireAuthentication?: boolean;
   bankEnvironment?: Record<string, string | undefined>;
+  cabinetEnvironment?: Record<string, string | undefined>;
   bankRequest?: BankRequest;
   sberRequest?: SberRequest;
   setupToken?: string;
@@ -315,10 +324,17 @@ export interface LocalApiOptions {
   checkoApiKey?: string;
   /** Injectable only on the server, for provider integration tests. */
   fetcher?: typeof fetch;
+  /** Isolated tests replace address lookup; browser input cannot select a provider. */
+  tripRequestGeocoder?: (address: string, retryUnavailable?: boolean) => Promise<TripRequestLocationResult>;
+  geocoderEnvironment?: Record<string, string | undefined>;
+  /** Server-only Tiles credential configuration; never included in map-config responses. */
+  yandexTilesEnvironment?: Record<string, string | undefined>;
   /** Provider adapter injection for isolated integration tests only. */
   sabyClient?: SabyClient;
   /** True only when this runtime has actually registered the authorized background scheduler. */
   sabyWorkflowMonitoringEnabled?: boolean;
+  /** Runtime coordinator resumes an existing saved authority, never the driver's authority. */
+  requestSabyWorkflow?: (tripId: string) => void;
 }
 
 async function jsonBody(request: IncomingMessage, optional = false, limit = 128 * 1024): Promise<Record<string, unknown>> {
@@ -349,6 +365,17 @@ function checkVersion(value: unknown, shipment: Shipment) {
 
 export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, options: LocalApiOptions = {}) {
   const operations = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(dataDirectory, '../local-operations'));
+  const locationsDirectory = operations instanceof OperationsStore ? dirname(operations.path) : options.operationsDirectory ?? resolve(dataDirectory, '../local-operations');
+  const cachePath = resolve(locationsDirectory, 'trip-request-geocoding-cache.json');
+  const geocode = options.tripRequestGeocoder ?? createNominatimGeocoder({ cachePath, environment: options.geocoderEnvironment, fetcher: options.fetcher });
+  const locations = createTripRequestLocations({
+    path: resolve(locationsDirectory, 'trip-request-locations.json'),
+    namespace: JSON.stringify(['openstreetmap-nominatim-v1', (options.geocoderEnvironment ?? process.env).ARTEL_GEOCODER_URL || 'https://nominatim.openstreetmap.org/search']),
+    successTtlMs: null, // OSM-derived points may be retained; another provider must select its own retention policy.
+    geocode,
+    peek: options.tripRequestGeocoder ? undefined : address => readNominatimCachedLocation(address, { cachePath, environment: options.geocoderEnvironment }),
+  });
+  const yandexTiles = createYandexTiles({ environment: options.yandexTilesEnvironment, fetcher: options.fetcher });
   const limitPushReceipt = createPushReceiptLimiter();
   let cache: { signature: string; snapshot: Promise<Snapshot> } | undefined;
   async function baseSnapshot() {
@@ -386,9 +413,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       const url = new URL(request.url!, 'http://localhost');
       const authEnabled = logistics || options.requireAuthentication !== false;
       const base = await baseSnapshot();
+      if (pathname === '/api/maps/yandex/tiles') {
+        return serveYandexTile(request, response, url.searchParams, yandexTiles, async () => {
+          const user = requireUser(await operations.read(base.provenance.sourceSha256), request);
+          requireDriverRoute(user, pathname, request.method ?? '');
+          if (!hasSection(user, 'trips') && !hasSection(user, 'directories')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
+        });
+      }
       // Driver sessions never reach generic routes (including bank/auth subrouters).
       const boundaryUser = authenticate(await operations.read(base.provenance.sourceSha256), request);
       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
+      if (pathname === '/api/cabinets' || pathname.startsWith('/api/cabinets/')) return cabinetRoutes(operations, base.provenance.sourceSha256, options.cabinetEnvironment ?? process.env, request, response, () => jsonBody(request, false, 16384));
       const banking = new BankingService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.bankRequest);
       if (bankCron) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
@@ -426,9 +461,22 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (request.method === 'GET' && pathname === '/api/auth/users') {
           const data = await operations.read(base.provenance.sourceSha256);
           const actor = requireUser(data, request);
-          requireManage(actor);
+          requireAccounts(actor);
           const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(publicUser);
-          return write(response, 200, JSON.stringify({users, currentUserId: actor.id}));
+          const directories = currentSnapshot(base, data, false).directories!;
+          const staff = { managers: directories.managers.map(({ id, name }) => ({ id, name })), drivers: directories.drivers.filter(driver => !directories.deletedEntries?.drivers?.includes(driver.id)).map(({ id, name }) => ({ id, name })) };
+          return write(response, 200, JSON.stringify({users, currentUserId: actor.id, staff}));
+        }
+        if (request.method === 'POST' && pathname === '/api/auth/employees') {
+          requireAccounts(requireUser(await operations.read(base.provenance.sourceSha256), request));
+          const body = await jsonBody(request);
+          if (Object.keys(body).some(key => key !== 'name')) throw new ApiError(400, 'Неизвестное поле сотрудника.');
+          const result = await operations.mutate(base.provenance.sourceSha256, data => {
+            requireAccounts(requireUser(data, request));
+            const result = addDirectoryEntry({ kind: 'managers', name: body.name }, currentSnapshot(base, data), data);
+            return { result, changed: result.created };
+          });
+          return write(response, result.created ? 201 : 200, JSON.stringify(result));
         }
         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
@@ -447,7 +495,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             if (!logistics && data.push) data.push.devices = data.push.devices.filter(device => device.sessionHash !== pushSessionHash(request) && !(device.userId === actor.id && device.endpoint === body.pushEndpoint));
             logout(data,request);return {result:{status:200,token:''},changed:true};
           }
-          requireManage(actor);
+          requireAccounts(actor);
           if (request.method === 'DELETE' && userId) {
             const { changed, ...deleted } = deleteUser(data, actor, decodeURIComponent(userId), body);
             return { result: { status: 200, ...deleted }, changed };
@@ -465,12 +513,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const driverId = decodeURIComponent(driverAccessMatch[1]);
         if (request.method === 'GET') {
           const data = await operations.read(base.provenance.sourceSha256);
-          requireManage(requireUser(data, request));
+          requireAccounts(requireUser(data, request));
           return write(response, 200, JSON.stringify({ access: readDriverAccess(data, currentSnapshot(base, data, false), driverId) }));
         }
         const body = await jsonBody(request);
         const result = await operations.mutate(base.provenance.sourceSha256, async data => {
-          requireManage(requireUser(data, request));
+          requireAccounts(requireUser(data, request));
           const { changed, ...result } = await mutateDriverAccess(data, currentSnapshot(base, data, false), driverId, request.method!, body);
           return { result, changed };
         });
@@ -487,9 +535,15 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const result = await operations.mutate(base.provenance.sourceSha256, fresh => {
             const actor = requireUser(fresh, request);
             requireDriverRoute(actor, pathname, request.method!);
-            return recordDriverTripAction(base, fresh, actor, decodeURIComponent(match[1]), match[2] as 'arrive' | 'depart', body);
+            const action = recordDriverTripAction(base, fresh, actor, decodeURIComponent(match[1]), match[2] as 'arrive' | 'depart', body);
+            return { ...action, result: { value: action.result, continueWorkflow: match[2] === 'depart' && action.changed } };
           });
-          return write(response, 200, JSON.stringify(result));
+          write(response, 200, JSON.stringify(result.value));
+          if (result.continueWorkflow && options.sabyWorkflowMonitoringEnabled) {
+            try { options.requestSabyWorkflow?.(decodeURIComponent(match[1])); }
+            catch { /* The durable departure will be picked up by the next scheduled scan. */ }
+          }
+          return;
         }
         if (request.method !== 'GET' || match[2]) throw new ApiError(405, 'Метод не поддерживается.');
         return write(response, 200, JSON.stringify(readDriverTrips(currentSnapshot(base, data, false), user, match[1] ? decodeURIComponent(match[1]) : undefined, url.searchParams.get('q') ?? '', data)));
@@ -504,6 +558,63 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return user;
       };
       const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
+      const tripRequestMatch = pathname.match(/^\/api\/trip-requests(?:\/([^/]+))?$/);
+      if (tripRequestMatch) {
+        const id = tripRequestMatch[1] ? decodeURIComponent(tripRequestMatch[1]) : undefined;
+        if (id === 'map-config') {
+          if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+          return write(response, 200, JSON.stringify(readTripRequestsMapConfig(options.yandexTilesEnvironment)));
+        }
+        if (id === 'geocode') {
+          if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+          const body = await jsonBody(request, false, 2048);
+          const { fingerprint, retry, version, ...identity } = body;
+          if (version !== undefined && (!Number.isSafeInteger(version) || Number(version) < 0)) throw new ApiError(400, 'Некорректная версия поиска адреса.');
+          if (retry !== undefined && retry !== true) throw new ApiError(400, 'Некорректный запрос повтора поиска адреса.');
+          if (fingerprint !== undefined && (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint))) throw new ApiError(400, 'Некорректный идентификатор поиска адреса.');
+          const stored = await operations.read(base.provenance.sourceSha256);
+          const target = tripRequestGeocodeTarget(stored, currentSnapshot(base, stored, false), actor ? authorized(stored) : null, identity);
+          if (version !== undefined && version !== target.version) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
+          const currentFingerprint = createHash('sha256').update(target.fingerprint).digest('hex');
+          if (fingerprint !== undefined && fingerprint !== currentFingerprint) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
+          // Provider latency must never hold the business-store mutation lock.
+          const location = target.location ?? await locations.poll(target.address, 5000, retry === true);
+          const fresh = await operations.read(base.provenance.sourceSha256);
+          const latest = tripRequestGeocodeTarget(fresh, currentSnapshot(base, fresh, false), actor ? authorized(fresh) : null, identity);
+          if (latest.fingerprint !== target.fingerprint) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
+          return write(response, 200, JSON.stringify(location.status === 'pending' ? { ...location, fingerprint: currentFingerprint } : location));
+        }
+        if (!id && request.method === 'GET') {
+          const stored = await operations.read(base.provenance.sourceSha256);
+          const currentActor = actor ? authorized(stored) : null;
+          const snapshot = currentSnapshot(base, stored, false);
+          const catalog = tripRequestCatalog(snapshot);
+          const requests = await Promise.all(listTripRequests(stored, snapshot, currentActor).map(async row => {
+            const target = tripRequestGeocodeTarget(stored, snapshot, currentActor, { requestId: row.id });
+            return { ...row, location: target.location ?? await locations.read(target.address) };
+          }));
+          const addresses = await Promise.all(catalog.addresses.map(async row => ({ ...row, location: tripRequestExplicitCoordinates(row) ?? await locations.read(row.address) })));
+          // An initial GET reads the local projection only. Legacy active requests backfill once,
+          // without holding the response, fetching every directory row, or rewriting their versions.
+          for (const row of requests) if (row.location.status === 'pending') void locations.resolve(row.address, 'background').catch(() => undefined);
+          return write(response, 200, JSON.stringify({ requests, ...catalog, addresses }));
+        }
+        if (!(id ? ['PATCH', 'DELETE'] : ['POST']).includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
+        const body = await jsonBody(request, request.method === 'DELETE');
+        const saved = await operations.mutate<Record<string, unknown>>(base.provenance.sourceSha256, async data => {
+          const currentActor = actor ? authorized(data) : null;
+          const snapshot = currentSnapshot(base, data, false);
+          if (request.method === 'DELETE') return { result: cancelTripRequest(data, snapshot, currentActor, id!, body), changed: true };
+          const place = !id && snapshot.directories?.addresses.find(row => row.id === body.addressId && row.companyId === body.companyId && row.kind === 'delivery');
+          const known = place ? await locations.read(typeof body.address === 'string' ? body.address : place.address || place.name) : null;
+          const result = saveTripRequest(data, snapshot, currentActor, body, id, known?.status === 'found' ? known : undefined);
+          const target = result.request.status === 'active' ? tripRequestGeocodeTarget(data, snapshot, currentActor, { requestId: result.request.id }) : { address: result.request.address, location: tripRequestExplicitCoordinates(result.request) };
+          return { result: { request: { ...result.request, location: target.location ?? await locations.read(target.address) }, created: result.created }, changed: result.changed };
+        });
+        const savedRequest = saved.request as import('../web/src/trip-request-model').TripRequest | undefined;
+        if (savedRequest?.status === 'active' && savedRequest.location?.status === 'pending') void locations.resolve(savedRequest.address, 'background').catch(() => undefined);
+        return write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(saved));
+      }
       if (logistics && pathname === '/api/context') {
         const stored = await operations.read(base.provenance.sourceSha256);
         return write(response, 200, JSON.stringify(logisticsContext(currentSnapshot(base, stored), authorized(stored))));
@@ -543,7 +654,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { result: { device: { ...device }, ...createPushProbe(data, device) }, changed: true };
           });
           try {
-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артель CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: actor.role === 'driver' ? '/#driver-trips' : '/#work', probe: { id: probeId, token } }), config);
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: actor.role === 'driver' ? '/#driver-trips' : '/#work', probe: { id: probeId, token } }), config);
           } catch (error) {
             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
             // A browser receipt is stronger evidence than a sender timeout after delivery.
@@ -653,18 +764,40 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
-      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(loading-facts|carrier-details|signing|signing\/start))?$/);
+      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(start|loading-facts|carrier-details|signing|signing\/start))?$/);
       if (workflowMatch) {
         const tripId = decodeURIComponent(workflowMatch[1]);
         const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
         const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
         const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
-        const read = (latest: import('./operations-store').OperationsData) => ({ ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled }), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+        const read = (latest: import('./operations-store').OperationsData) => ({ ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
         if (request.method === 'GET' && workflowMatch[2] === 'signing') return write(response, 200, JSON.stringify(await getTripSigningPreview(context)));
         if (workflowMatch[2] === 'signing') throw new ApiError(405, 'Метод не поддерживается.');
         if (request.method === 'GET' && !workflowMatch[2]) return write(response, 200, JSON.stringify(read(data)));
         if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request);
+        if (workflowMatch[2] === 'start') {
+          if (!actor) throw new ApiError(403, 'Войдите под своей учётной записью для запуска обмена.');
+          if (Object.keys(body).length !== 2 || !['draft', 'sign_and_send'].includes(String(body.mode)) || typeof body.previewToken !== 'string' || !/^[a-f0-9]{64}$/.test(body.previewToken)) throw new ApiError(400, 'Обновите состояние рейса перед запуском обмена.');
+          const signingConfig = options.sabyClient?.config ?? sabyConfigFromEnv();
+          const queued = await operations.mutate(base.provenance.sourceSha256, latest => {
+            const currentActor = authorized(latest);
+            startAutomaticTripSaby({ base, data: latest, tripId, actorId: currentActor.id, config: signingConfig, previewToken: body.previewToken as string, mode: body.mode as 'draft' | 'sign_and_send' });
+            return { result: read(latest), changed: true };
+          });
+          // Only a newly committed intent schedules work. Replays fail before this point;
+          // an unavailable provider cannot turn the durable enqueue into a failed request.
+          write(response, 202, JSON.stringify(queued));
+          if (options.requestSabyWorkflow) {
+            try { options.requestSabyWorkflow(tripId); }
+            catch { /* The scheduler will discover the already committed intent. */ }
+          } else {
+            void runTripSabyWorkflow({ ...context, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, prepare: prepareTripSaby,
+              createDelivery: (input, guardedClient) => exchangePreparedEtrn({ ...context, client: guardedClient }, input) })
+              .catch(() => { /* Failure details remain in durable workflow state. */ });
+          }
+          return;
+        }
         let signingStart: import('./trip-saby-workflow').RunTripSabyOptions['signingStart'];
         if (workflowMatch[2] === 'signing/start') {
           if (!actor) throw new ApiError(403, 'Войдите под своей учётной записью для подписания.');
@@ -738,17 +871,18 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           return write(response, 200, JSON.stringify(snapshot));
         }
         if (pathname === '/api/shipment-trips') {
+          const numbers = readTripNumbers(fullSnapshot, stored);
           const currentActor = actor ? authorized(stored) : null;
           const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
             try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
-          }).map(id => getShipmentTrip(snapshot, id)).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
+          }).map(id => getShipmentTrip(snapshot, id, numbers)).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
           return write(response, 200, JSON.stringify({ trips, automation }));
         }
         if (tripIdMatch) {
           const id = decodeURIComponent(tripIdMatch[1]);
           if (actor) requireWholeTrip(authorized(stored), fullSnapshot, id);
-          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
+          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id, readTripNumbers(fullSnapshot, stored)), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
         }
         if (shipmentIdMatch) {
           const shipment = snapshot.shipments.find(row => row.id === decodeURIComponent(shipmentIdMatch[1]));
@@ -761,6 +895,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (logistics) requireLogisticsDirectoryInput(pathname, body);
       if(actor && (pathname.startsWith('/api/directories') || pathname.startsWith('/api/companies') || request.method==='DELETE'))requireManage(actor);
       if (pathname === '/api/directories' || directoryMatch) {
+        const savedAddresses: string[] = [];
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
           if(actor)requireManage(authorized(data));
           const snapshot = currentSnapshot(base, data);
@@ -770,11 +905,16 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
               ? saveCompany(body, snapshot, data, decodeURIComponent(directoryMatch[2]))
               : updateDirectoryEntry(directoryMatch[1], decodeURIComponent(directoryMatch[2]), body, snapshot, data)
             : body.kind === 'companies' ? saveCompany(body, snapshot, data) : addDirectoryEntry(body, snapshot, data);
-          currentSnapshot(base, data);
+          const updated = currentSnapshot(base, data);
+          for (const row of updated.directories?.addresses ?? []) {
+            const previous = snapshot.directories?.addresses.find(value => value.id === row.id && value.companyId === row.companyId);
+            if (row.kind === 'delivery' && !tripRequestExplicitCoordinates(row) && (!previous || (previous.address || previous.name) !== (row.address || row.name))) savedAddresses.push(row.address || row.name);
+          }
           // A successful company POST can restore a historical ID or add a role
           // without creating a new entity. Its changes must still be committed.
           return { result, changed: !!directoryMatch || body.kind === 'companies' || result.created };
         });
+        for (const address of new Set(savedAddresses)) void locations.resolve(address, 'background').catch(() => undefined);
         const safeResult = logistics && 'entry' in result && (pathname === '/api/directories' ? body.kind === 'companies' : directoryMatch?.[1] === 'companies') ? { ...result, entry: logisticsCompany(result.entry as Company) } : result;
         return write(response, result.created ? 201 : 200, JSON.stringify(safeResult));
       }
@@ -806,16 +946,25 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const signingConfig = options.sabyClient?.config ?? sabyConfigFromEnv();
         const saved = request.method === 'DELETE'
           ? await operations.mutate(base.provenance.sourceSha256, data => {if(actor)requireManage(authorized(data));return { result: { value: deleteShipmentTrip(base, data, body, id!), queued: false }, changed: true };})
-          : await operations.mutate(base.provenance.sourceSha256, data => {
+          : await operations.mutate(base.provenance.sourceSha256, async data => {
             const currentActor=actor?authorized(data):null;
             const snapshot = currentSnapshot(base, data);
             if (currentActor && id) requireWholeTrip(currentActor, snapshot, id);
             if (currentActor && Array.isArray(body.customers)) body.customers = body.customers.map(customer => {
               if (!customer || typeof customer !== 'object' || Array.isArray(customer)) return customer;
-              return { ...customer, fields: ownShipmentInput(currentActor, customer.fields, snapshot) };
+              const previous = id && typeof customer.id === 'string' ? snapshot.shipments.find(row => row.id === customer.id && row.fields.trip_id === id) : undefined;
+              const sharedRequest = !previous && typeof customer.sourceRequestId === 'string' ? requireTripRequest(data, snapshot, currentActor, customer.sourceRequestId, false) : undefined;
+              return { ...customer, fields: ownShipmentInput(currentActor, customer.fields, snapshot, previous, !!sharedRequest) };
             });
             const replayed = !id && typeof body.idempotencyKey === 'string' && !!data.tripCreateRequests?.[body.idempotencyKey];
-            const result=saveShipmentTrip(base,data,body,id,currentActor?.id ?? null);
+            const requestLocations: Record<string, TripRequestLocationResult> = {};
+            if (!id && !replayed && Array.isArray(body.customers)) for (const customer of body.customers) {
+              if (customer && typeof customer === 'object' && typeof customer.sourceRequestId === 'string') {
+                const target = tripRequestGeocodeTarget(data, snapshot, currentActor, { requestId: customer.sourceRequestId });
+                requestLocations[customer.sourceRequestId] = target.location ?? await locations.read(target.address);
+              }
+            }
+            const result=saveShipmentTrip(base,data,body,id,currentActor?.id ?? null,{ requireRequests: false, actor: currentActor, requestLocations });
             if (currentActor) requireWholeTrip(currentActor, currentSnapshot(base, data), result.trip.id);
             if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
             // Only creation commits a new immutable exchange intent. Editing an existing
@@ -834,6 +983,11 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
         if (saved.queued && 'trip' in result) {
           const tripId = result.trip.id;
+          if (options.requestSabyWorkflow) {
+            try { options.requestSabyWorkflow(tripId); }
+            catch { /* The already committed queue is continued by the next scheduled scan. */ }
+            return;
+          }
           const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => {
             const currentActor = authorized(data);
             requireTripSection(currentActor, true); requireWholeTrip(currentActor, snapshot, tripId);
@@ -886,27 +1040,38 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
 
 /** The source directory remains outside Vite's web root and is never a static asset. */
 export default function localApi(options: LocalApiOptions = {}): Plugin {
-  const runtimeOptions = { ...options, pushIntervalSeconds: 30, sabyWorkflowMonitoringEnabled: false };
+  const runtimeOptions: LocalApiOptions = { ...options, pushIntervalSeconds: 30, sabyWorkflowMonitoringEnabled: false };
+  runtimeOptions.sabyClient ??= new SabyClient(sabyConfigFromEnv(), options.fetcher);
   const middleware = createSnapshotMiddleware(defaultDataDirectory, runtimeOptions);
-  const sabyDisposers = new Set<() => void>();
-  function startSaby(server: { httpServer: import('node:events').EventEmitter | null }) {
+  const sabyDisposers = new Set<() => Promise<void>>();
+  const sabyStops = new Set<Promise<void>>();
+  async function startSaby(server: { httpServer: import('node:events').EventEmitter | null }) {
     const enabled = options.sabyWorkflowMonitoringEnabled ?? process.env.SABY_WORKFLOW_ENABLED === 'true';
-    const config = options.sabyClient?.config ?? sabyConfigFromEnv();
+    const config = runtimeOptions.sabyClient!.config;
     if (!enabled || sabyCredentialBlockers(config).length || !server.httpServer) return;
     const store = options.operationsStore ?? new OperationsStore(options.operationsDirectory ?? resolve(defaultDataDirectory, '../local-operations'));
-    let running = false, disposed = false;
+    const scheduler = createTripSabyScheduler({ base: await loadSnapshot(), store, config, client: runtimeOptions.sabyClient, enabled: true });
+    runtimeOptions.sabyClient = scheduler.client;
+    let disposed = false;
     const check = async (carrierWaitingOnly = false) => {
-      if (running || disposed) return;
-      running = true;
-      try { await dispatchTripSaby({ base: await loadSnapshot(), store, config, enabled: !disposed, carrierWaitingOnly }); }
+      if (disposed) return;
+      try { await scheduler.tick(carrierWaitingOnly); }
       catch { /* Provider messages and private document data must never enter process logs. */ }
-      finally { running = false; }
     };
     const timer = setInterval(() => { void check(); }, SABY_WORKFLOW_TICK_MS);
     const fastTimer = setInterval(() => { void check(true); }, SABY_CARRIER_WAIT_TICK_MS); fastTimer.unref();
-    const dispose = () => { disposed = true; clearInterval(timer); clearInterval(fastTimer); sabyDisposers.delete(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = sabyDisposers.size > 0; };
+    let stopping: Promise<void> | undefined;
+    const dispose = () => {
+      if (stopping) return stopping;
+      disposed = true; clearInterval(timer); clearInterval(fastTimer); sabyDisposers.delete(dispose);
+      runtimeOptions.sabyWorkflowMonitoringEnabled = sabyDisposers.size > 0;
+      stopping = scheduler.stop().finally(() => { sabyStops.delete(stopping!); });
+      sabyStops.add(stopping);
+      return stopping;
+    };
     timer.unref(); sabyDisposers.add(dispose); runtimeOptions.sabyWorkflowMonitoringEnabled = true;
-    server.httpServer.once('close', dispose); void check();
+    runtimeOptions.requestSabyWorkflow = tripId => scheduler.request(tripId);
+    server.httpServer.once('close', () => { void dispose(); }); void check();
   }
   function startReminders(server: { httpServer: import('node:events').EventEmitter | null }) {
     const config = options.pushConfig ?? pushConfig();
@@ -942,8 +1107,8 @@ export default function localApi(options: LocalApiOptions = {}): Plugin {
   }
   return {
     name: 'artel-local-operations-api',
-    configureServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); startSaby(server); },
-    configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); startSaby(server); },
-    closeBundle() { for (const dispose of [...sabyDisposers]) dispose(); },
+    async configureServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); await startSaby(server); },
+    async configurePreviewServer(server) { server.middlewares.use(middleware); startReminders(server); startBanking(server); await startSaby(server); },
+    async closeBundle() { await Promise.all([...sabyDisposers].map(dispose => dispose())); await Promise.all([...sabyStops]); },
   };
 }

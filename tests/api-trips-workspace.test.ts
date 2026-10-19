@@ -1,3 +1,4 @@
+import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
@@ -34,7 +35,10 @@ async function runtime() {
   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const request = (path: string, method = 'GET', data?: unknown, cookie?: string) => fetch(url + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+  const request = async (path: string, method = 'GET', data?: unknown, cookie?: string) => {
+    if (method === 'POST' && path === '/api/shipment-trips' && cookie) await prepareTripRequestFixture(store, base, data);
+    return fetch(url + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+  };
   const password = randomUUID();
   const setup = await request('/api/auth/setup', 'POST', { name: 'Trip director', login: 'trips-owner', password });
   assert.equal(setup.status, 200);
@@ -45,6 +49,41 @@ async function runtime() {
   return { folder, base, store, request, admin, password, sample, async close() { await new Promise<void>(done => server.close(() => done())); await rm(folder, { recursive: true, force: true }); } };
 }
 const edit = (trip: ShipmentTrip) => ({ fields: { ...trip.fields }, customers: trip.customers.map(({ id, fields }) => ({ id, fields: { ...fields } })), versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) });
+
+test('trip numbers survive legacy backfill, edits, deleted deliveries and concurrent creates without reuse or document changes', async () => {
+  const r = await runtime();
+  try {
+    const create = async () => {
+      const response = await r.request('/api/shipment-trips', 'POST', r.sample(['a','b']), r.admin);
+      assert.equal(response.status, 201);
+      return (await response.json()).trip as ShipmentTrip;
+    };
+    const first = await create(), second = await create();
+    assert.equal(first.number, 1); assert.equal(second.number, 2);
+    // Simulate a pre-numbering store without changing any actual shipment data.
+    await r.store.mutate(r.base.provenance.sourceSha256, data => { delete data.tripNumbers; return { result: null, changed: true }; });
+    const before = await r.store.read(r.base.provenance.sourceSha256);
+    const listed = await (await r.request('/api/shipment-trips', 'GET', undefined, r.admin)).json();
+    const legacy = listed.trips.find((trip: ShipmentTrip) => trip.id === first.id) as ShipmentTrip;
+    const legacySecond = listed.trips.find((trip: ShipmentTrip) => trip.id === second.id) as ShipmentTrip;
+    assert.equal(legacy.number, 1); assert.equal(legacySecond.number, 2);
+    assert.deepEqual(await r.store.read(r.base.provenance.sourceSha256), before);
+    const changed = edit(legacy); changed.fields.date = '2020-01-01'; changed.customers = changed.customers.slice(1);
+    const saved = await r.request(`/api/shipment-trips/${legacy.id}`, 'PATCH', changed, r.admin);
+    assert.equal(saved.status, 200);
+    const edited = (await saved.json()).trip;
+    assert.equal(edited.number, 1);
+    assert.equal((await r.request(`/api/shipment-trips/${first.id}`, 'DELETE', { versions: edit(edited).versions }, r.admin)).status, 200);
+    const created = await Promise.all([create(), create()]);
+    assert.deepEqual(created.map(trip => trip.number).sort(), [3,4]);
+    const final = await r.store.read(r.base.provenance.sourceSha256);
+    assert.equal(final.tripNumbers![first.id], 1);
+    for (const row of Object.values(final.shipments)) assert.equal(row.fields.document_number, null);
+    const currentSecond = await (await r.request(`/api/shipment-trips/${second.id}`, 'GET', undefined, r.admin)).json();
+    assert.equal(currentSecond.trip.number, 2);
+    assert.deepEqual(decodeOperations(encodeOperations(final), r.base.provenance.sourceSha256).tripNumbers, final.tripNumbers);
+  } finally { await r.close(); }
+});
 
 test('trip create retries are durable and concurrent, changed payload and deleted replay cannot duplicate shipments', async () => {
   const r = await runtime();
@@ -151,7 +190,7 @@ test('intermediate stops and repeated recipients remain separate deliveries, ret
     assert.equal(trip.customers[1].fields.intermediate_stops_after, null);
     assert.equal(trip.fields.intermediate_stops_in_order, 'false');
     const stored = await new OperationsStore(r.folder).read(r.base.provenance.sourceSha256);
-    assert.deepEqual(getShipmentTrip(currentSnapshot(r.base, decodeOperations(encodeOperations(stored), r.base.provenance.sourceSha256)), trip.id), trip);
+    assert.deepEqual(getShipmentTrip(currentSnapshot(r.base, decodeOperations(encodeOperations(stored), r.base.provenance.sourceSha256)), trip.id, stored.tripNumbers), trip);
     assert.deepEqual(result.shipments.map((row: { fields: Record<string, string> }) => row.fields.trip_delivery_order), ['1', '2']);
     assert.equal(stored.saby, undefined);
     assert.equal(stored.etrn, undefined);
@@ -186,16 +225,17 @@ test('intermediate route rejects malformed stops atomically and permits an unsen
   const r = await runtime();
   try {
     const sample = r.sample();
+    await prepareTripRequestFixture(r.store, r.base, sample);
     const validStop = { id: 'stop-1', name: 'Synthetic service stop', address: 'Synthetic address' };
     const before = encodeOperations(await r.store.read(r.base.provenance.sourceSha256));
     const invalidStops = ['{', '{}', 'null', JSON.stringify([{ ...validStop, name: '' }]), JSON.stringify([{ ...validStop, address: 'bad\nline' }]), JSON.stringify([validStop, validStop]), JSON.stringify([{ ...validStop, lat: '55' }]), JSON.stringify([{ ...validStop, id: '../bad' }]), JSON.stringify(Array.from({ length: 11 }, (_, index) => ({ ...validStop, id: `stop-${index}` })))];
     for (const intermediate_stops_after of invalidStops) {
-      const request = { ...sample, idempotencyKey: randomUUID(), customers: [{ fields: { ...sample.customers[0].fields, intermediate_stops_after } }] };
+      const request = { ...sample, idempotencyKey: randomUUID(), customers: [{ ...sample.customers[0], fields: { ...sample.customers[0].fields, intermediate_stops_after } }] };
       assert.equal((await r.request('/api/shipment-trips', 'POST', request, r.admin)).status, 400);
     }
     assert.equal((await r.request('/api/shipment-trips', 'POST', { ...sample, fields: { ...sample.fields, intermediate_stops_in_order: 'yes' } }, r.admin)).status, 400);
     assert.equal(encodeOperations(await r.store.read(r.base.provenance.sourceSha256)), before);
-    const valid = { ...sample, customers: [{ fields: { ...sample.customers[0].fields, intermediate_stops_after: JSON.stringify([validStop]) } }] };
+    const valid = { ...sample, customers: [{ ...sample.customers[0], fields: { ...sample.customers[0].fields, intermediate_stops_after: JSON.stringify([validStop]) } }] };
     const response = await r.request('/api/shipment-trips', 'POST', valid, r.admin);
     assert.equal(response.status, 201);
     const created = (await response.json()).trip as ShipmentTrip;
@@ -265,5 +305,35 @@ test('new supplier loading selections are rejected while untouched historical su
     const latest = getShipmentTrip(currentSnapshot(r.base, await r.store.read(r.base.provenance.sourceSha256)), oldTrip.id);
     const changed = edit(latest); changed.fields.loading_address_id = second.entry.id;
     assert.equal((await r.request(`/api/shipment-trips/${oldTrip.id}`, 'PATCH', changed, r.admin)).status, 400);
+  } finally { await r.close(); }
+});
+
+
+test('ETRN exclusion persists independently of invoice flag, preserves omitted flags and rejects invalid or stale edits', async () => {
+  const r = await runtime();
+  try {
+    const payload = r.sample(['a', 'b']);
+    Object.assign(payload.customers[0].fields, { etrn_not_required: 'true', invoice_not_required: 'false' });
+    const response = await r.request('/api/shipment-trips', 'POST', payload, r.admin);
+    assert.equal(response.status, 201);
+    const trip = (await response.json()).trip as ShipmentTrip;
+    assert.equal(trip.customers[0].fields.etrn_not_required, 'true');
+    assert.equal(trip.customers[0].fields.invoice_not_required, 'false');
+    assert.equal(trip.customers[1].fields.etrn_not_required, null);
+    const body = edit(trip); delete body.customers[0].fields.etrn_not_required;
+    const updated = await r.request(`/api/shipment-trips/${trip.id}`, 'PATCH', body, r.admin);
+    assert.equal(updated.status, 200);
+    const saved = (await updated.json()).trip as ShipmentTrip;
+    assert.equal(saved.customers[0].fields.etrn_not_required, 'true');
+    assert.equal((await r.request(`/api/shipment-trips/${trip.id}`, 'PATCH', body, r.admin)).status, 409);
+    const invalid = edit(saved); invalid.customers[0].fields.etrn_not_required = 'yes';
+    assert.equal((await r.request(`/api/shipment-trips/${trip.id}`, 'PATCH', invalid, r.admin)).status, 400);
+    const stored = await r.store.read(r.base.provenance.sourceSha256);
+    assert.equal(decodeOperations(encodeOperations(stored), r.base.provenance.sourceSha256).shipments[saved.customers[0].id].fields.etrn_not_required, 'true');
+    await r.store.mutate(r.base.provenance.sourceSha256, data => { delete data.shipments[saved.customers[1].id].fields.etrn_not_required; return { result: null, changed: true }; });
+    const historical = await r.store.read(r.base.provenance.sourceSha256);
+    getShipmentTrip(currentSnapshot(r.base, historical), saved.id);
+    assert.equal(Object.hasOwn(historical.shipments[saved.customers[1].id].fields, 'etrn_not_required'), false);
+    assert.equal(Object.hasOwn(decodeOperations(encodeOperations(historical), r.base.provenance.sourceSha256).shipments[saved.customers[1].id].fields, 'etrn_not_required'), false);
   } finally { await r.close(); }
 });

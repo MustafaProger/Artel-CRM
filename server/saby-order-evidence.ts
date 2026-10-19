@@ -5,6 +5,7 @@ import { SabyError } from './saby-client';
 export interface XmlNode { name: string; attributes: Record<string, string>; children: Array<XmlNode | string> }
 export interface SabySenderTitleIdentity { fileId: string; date: string; time: string }
 export interface SabyCarrierVehicleIdentity { plate: string; vin: string; stsNumber: string }
+export const SABY_SENDER_COORDINATE_MISMATCH = 'Координаты маршрута в Saby отличаются от сохранённых сведений CRM. Требуется сверка координат перед продолжением; документ не изменён.';
 function failure(): never { throw new SabyError('unknown', 'Текущий титул заявки в Saby не подтверждает сохранённые сведения рейса. Новые ЭТрН не создаются; требуется сверка.', true); }
 const namePattern = /^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё.:-]*$/u;
 function xmlText(value: string): string {
@@ -77,7 +78,89 @@ function legalCompanyName(value: string): string {
   const unquoted = /^(?:"([^"]+)"|«([^»]+)»)$/.exec(name);
   return JSON.stringify(['ООО', unquoted?.[1] ?? unquoted?.[2] ?? name]);
 }
-function permitAddedCoordinates(current: XmlNode, frozen: XmlNode, path = ''): void {
+const namedChildren = (node: XmlNode, name: string) => node.children.filter((value): value is XmlNode => typeof value !== 'string' && value.name === name);
+const noContent = (node: XmlNode) => !node.children.some(value => typeof value !== 'string' || value.trim());
+/** Read a plain, unambiguous information block; unknown structure is never discarded. */
+function plainInformation(node: XmlNode): Map<string, string> | undefined {
+  if (Object.keys(node.attributes).length || node.children.some(value => typeof value === 'string' && value.trim())) return;
+  const result = new Map<string, string>();
+  for (const entry of node.children) {
+    if (typeof entry === 'string') continue;
+    const { Идентиф: key, Значение: value } = entry.attributes;
+    if (entry.name !== 'ТекстИнф' || Object.keys(entry.attributes).length !== 2 || !key || !value || result.has(key) || !noContent(entry)) return;
+    result.set(key, value);
+  }
+  return result;
+}
+/** Saby may omit duplicated cargo information only when all four values remain provable.
+ * Deliberately limited to one cargo/delivery and the serializer's unique route 1 -> 2.
+ * Only comparison copies change; original prepared bytes and signing hashes never do.
+ */
+function permitOmittedSingleDeliveryInformation(current: XmlNode, frozen: XmlNode): void {
+  const actual = child(child(current, 'Документ'), 'СодИнфГО'); const expected = child(child(frozen, 'Документ'), 'СодИнфГО');
+  const cargos = [namedChildren(actual, 'ОпГруз'), namedChildren(expected, 'ОпГруз')];
+  const routes = [namedChildren(actual, 'АдрПункт'), namedChildren(expected, 'АдрПункт')];
+  const infos = [namedChildren(actual, 'ИнфПол'), namedChildren(expected, 'ИнфПол')];
+  if (cargos.some(values => values.length !== 1) || routes.some(values => values.length !== 2) || infos.some(values => values.length !== 1)) return;
+  for (let side = 0; side < 2; side++) {
+    const points = namedChildren(cargos[side][0], 'Пункт');
+    if (points.length !== 1 || !noContent(points[0]) || Object.keys(points[0].attributes).length !== 3 || points[0].attributes.Погр !== '1' || points[0].attributes.Выгр !== '2' || points[0].attributes.КолГрМест !== '1' || routes[side][0].attributes.ПорНомПункт !== '1' || routes[side][0].attributes.Опер !== 'Погрузка' || routes[side][1].attributes.ПорНомПункт !== '2' || routes[side][1].attributes.Опер !== 'Выгрузка') return;
+  }
+  const originalBlocks = namedChildren(cargos[1][0], 'ИнфПол'); const currentBlocks = namedChildren(cargos[0][0], 'ИнфПол');
+  if (originalBlocks.length !== 1 || currentBlocks.length > 1 || currentBlocks.some(block => Object.keys(block.attributes).length || !noContent(block))) return;
+  const cargo = plainInformation(originalBlocks[0]); const actualInfo = plainInformation(infos[0][0]); const frozenInfo = plainInformation(infos[1][0]);
+  const required = ['Доставка CRM', 'Получатель доставки', 'ИНН получателя', 'Адрес доставки'];
+  if (!cargo || cargo.size !== required.length || required.some(key => !cargo.has(key)) || !actualInfo || !frozenInfo || actualInfo.size !== frozenInfo.size || [...frozenInfo].some(([key, value]) => actualInfo.get(key) !== value)) return;
+  if (actualInfo.get('Получатель доставки') !== cargo.get('Получатель доставки') || actualInfo.get('ИНН получателя') !== cargo.get('ИНН получателя') || !/^\d{10}(?:\d{2})?$/.test(cargo.get('ИНН получателя')!)) return;
+  const deliveries = [...actualInfo.keys()].filter(key => /^Доставка \d+$/.test(key));
+  if (deliveries.length !== 1 || deliveries[0] !== 'Доставка 1' || !actualInfo.get('Рейс CRM') || actualInfo.get('Рейс CRM') !== actualInfo.get('Доставка CRM')) return;
+  const prefix = `${cargo.get('Доставка CRM')}: ${cargo.get('Получатель доставки')}; `; const suffix = ` л; ${cargo.get('Адрес доставки')}`;
+  const delivery = actualInfo.get('Доставка 1')!;
+  if (!delivery.startsWith(prefix) || !delivery.endsWith(suffix)) return;
+  const litres = delivery.slice(prefix.length, delivery.length - suffix.length);
+  const decimal = /^\d{1,18}(?:\.\d{1,8})?$/;
+  if (!decimal.test(litres) || !new Decimal(litres).gt(0) || cargos.some(values => !decimal.test(values[0].attributes.Объем ?? '') || !new Decimal(values[0].attributes.Объем).times(1000).eq(litres))) return;
+  for (const route of routes) {
+    const point = namedChildren(route[1], 'АдресПункт'); if (point.length !== 1) return;
+    const address = namedChildren(point[0], 'Адрес'); if (address.length !== 1) return;
+    const text = namedChildren(address[0], 'АдрИнф');
+    if (text.length !== 1 || text[0].attributes.КодСтр !== '643' || text[0].attributes.АдрТекст !== cargo.get('Адрес доставки')) return;
+  }
+  cargos[1][0].children = cargos[1][0].children.filter(node => node !== originalBlocks[0]);
+  if (currentBlocks.length) cargos[0][0].children = cargos[0][0].children.filter(node => node !== currentBlocks[0]);
+}
+/** FNS defines this flag solely as the UTC indicator of ДатВрОпер.
+ * An added 1 conveys no time when that date is absent on both sides.
+ * Restrict to the same unique numbered unloading point; all other fields remain compared.
+ */
+function permitInertUnloadingUtcFlag(current: XmlNode, frozen: XmlNode): void {
+  const actual = namedChildren(child(child(current, 'Документ'), 'СодИнфГО'), 'АдрПункт');
+  const expected = namedChildren(child(child(frozen, 'Документ'), 'СодИнфГО'), 'АдрПункт');
+  if (actual.length !== expected.length) return;
+  actual.forEach((point, index) => {
+    const before = expected[index]; const number = point.attributes.ПорНомПункт;
+    if (!number || !/^[1-9]\d{0,2}$/.test(number) || point.attributes.Опер !== 'Выгрузка' || before.attributes.Опер !== 'Выгрузка' || before.attributes.ПорНомПункт !== number || actual.filter(row => row.attributes.ПорНомПункт === number).length !== 1 || expected.filter(row => row.attributes.ПорНомПункт === number).length !== 1) return;
+    if (['ДатВрОпер', 'ПредВрОпер', 'НалКоорТочПредВрОпер'].every(key => !Object.hasOwn(point.attributes, key) && !Object.hasOwn(before.attributes, key)) && !Object.hasOwn(before.attributes, 'НалКоорТочВрОпер') && point.attributes.НалКоорТочВрОпер === '1') delete point.attributes.НалКоорТочВрОпер;
+  });
+}
+function validCoordinates(point: XmlNode): boolean {
+  const latitude = point.attributes.Широта; const longitude = point.attributes.Долгота;
+  return Object.keys(point.attributes).length === 2 && [latitude, longitude].every(value => typeof value === 'string' && /^[+-]?\d{1,3}(?:\.\d{1,32})?$/.test(value)) &&
+    new Decimal(latitude).abs().lte(90) && new Decimal(longitude).abs().lte(180) && noContent(point);
+}
+/** Preserve every address value verbatim; only attribute order and inter-element whitespace are irrelevant. */
+function exactAddress(node: XmlNode): unknown {
+  return [node.name, Object.entries(node.attributes).sort(([a], [b]) => a.localeCompare(b)), node.children.filter(value => typeof value !== 'string' || value.trim()).map(value => typeof value === 'string' ? value : exactAddress(value))];
+}
+function fullAddress(node: XmlNode): XmlNode | undefined {
+  const addresses = namedChildren(node, 'Адрес');
+  if (addresses.length !== 1) return;
+  const address = addresses[0]; const details = namedChildren(address, 'АдрИнф');
+  // This is the full-address representation emitted by our sender serializer.
+  if (details.length !== 1 || address.children.some(value => typeof value === 'string' ? !!value.trim() : value !== details[0]) || !/^\d{3}$/.test(details[0].attributes.КодСтр ?? '') || !details[0].attributes.АдрТекст?.trim() || !noContent(details[0])) return;
+  return address;
+}
+function permitCoordinatePresenceChanges(current: XmlNode, frozen: XmlNode, path = ''): void {
   if (current.name !== frozen.name) return;
   const here = `${path}/${current.name}`;
   const nodes = (node: XmlNode) => node.children.filter((value): value is XmlNode => typeof value !== 'string' && !(here === '/Файл/Документ' && value.name === 'ПодпИнфГО'));
@@ -87,16 +170,18 @@ function permitAddedCoordinates(current: XmlNode, frozen: XmlNode, path = ''): v
     // User instruction 06.10.2026: accept coordinates added by Saby only while the address stays unchanged.
     // Remove them from the comparison copy only; comparison of every remaining address field still follows.
     if (!existing.length && added.length === 1) {
-      const point = added[0]; const latitude = point.attributes.Широта; const longitude = point.attributes.Долгота;
-      if (Object.keys(point.attributes).length === 2 && [latitude, longitude].every(value => typeof value === 'string' && /^[+-]?\d{1,3}(?:\.\d{1,32})?$/.test(value)) &&
-          new Decimal(latitude).abs().lte(90) && new Decimal(longitude).abs().lte(180) && !point.children.some(value => typeof value !== 'string' || value.trim())) {
-        current.children = current.children.filter(node => node !== point);
-      }
+      if (validCoordinates(added[0])) current.children = current.children.filter(node => node !== added[0]);
+    }
+    // User instruction 14.10.2026: a missing Saby point is acceptable only with the exact full address.
+    // Change the comparison copy, never the frozen CRM point, prepared bytes or signing hashes.
+    if (!added.length && existing.length === 1 && validCoordinates(existing[0])) {
+      const actualAddress = fullAddress(current); const expectedAddress = fullAddress(frozen);
+      if (actualAddress && expectedAddress && JSON.stringify(exactAddress(actualAddress)) === JSON.stringify(exactAddress(expectedAddress))) frozen.children = frozen.children.filter(node => node !== existing[0]);
     }
   }
   const actual = nodes(current); const expected = nodes(frozen);
   if (actual.length !== expected.length) return;
-  actual.forEach((node, index) => permitAddedCoordinates(node, expected[index], here));
+  actual.forEach((node, index) => permitCoordinatePresenceChanges(node, expected[index], here));
 }
 function canonical(node: XmlNode, path = '', diagnosticIgnoreCoordinates = false): unknown {
   const current = `${path}/${node.name}`;
@@ -131,10 +216,12 @@ function canonical(node: XmlNode, path = '', diagnosticIgnoreCoordinates = false
 export function verifySabySenderBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array): SabySenderTitleIdentity {
   const current = parseXml(currentBytes); const frozen = parseXml(frozenBytes);
   const currentIdentity = identity(current); identity(frozen);
-  permitAddedCoordinates(current, frozen);
+  permitOmittedSingleDeliveryInformation(current, frozen);
+  permitInertUnloadingUtcFlag(current, frozen);
+  permitCoordinatePresenceChanges(current, frozen);
   if (JSON.stringify(canonical(current)) !== JSON.stringify(canonical(frozen))) {
     if (JSON.stringify(canonical(current, '', true)) === JSON.stringify(canonical(frozen, '', true))) {
-      throw new SabyError('validation', 'Координаты маршрута в Saby отличаются от сохранённых сведений CRM. Требуется сверка координат перед продолжением; документ не изменён.');
+      throw new SabyError('validation', SABY_SENDER_COORDINATE_MISMATCH);
     }
     failure();
   }

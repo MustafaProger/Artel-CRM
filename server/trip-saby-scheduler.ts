@@ -12,16 +12,20 @@ import { authorizeAutomaticTripSaby, runTripSabyWorkflow, type PrepareTripSaby }
 import { authorizeSigningActor } from './trip-saby-signing';
 import { carrierFastPolling } from './trip-saby-carrier';
 
-export const SABY_WORKFLOW_TICK_MS = 5 * 60_000;
+export const SABY_WORKFLOW_TICK_MS = 60_000;
 export const SABY_CARRIER_WAIT_TICK_MS = 15_000;
 // A created ETRN and even one signature do not prove that all participants finished.
-export const SABY_COMPLETED_REFRESH_MS = 5 * 60_000;
+export const SABY_COMPLETED_REFRESH_MS = 60_000;
 export interface TripSabySchedulerOptions {
   base: Snapshot; store: OperationsStorage; config: SabyConfig; enabled: boolean;
   prepare?: PrepareTripSaby; send?: typeof fetch; now?: number;
+  /** Runtime client owns shared, account-isolated sessions across trip jobs. */
+  client?: SabyClient;
   carrierWaitingOnly?: boolean;
   /** The post-save dispatch processes only the newly enqueued trip. */
   tripId?: string;
+  /** Runtime-wide fair network budget; permission checks run after a slot is granted. */
+  runNetwork?: <T>(action: () => Promise<T>) => Promise<T>;
 }
 export interface TripSabyDispatchResult { continued: number; refreshed: number; denied: number; failed: number }
 
@@ -77,8 +81,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
     const checkAccess = async () => { const data = await store.read(source); authorize(currentSnapshot(base, data), data); };
     // Every fetch, including authentication, organization lookups and attachment GETs,
     // checks current permissions. A revocation stops the next network call immediately.
-    const send: typeof fetch = async (input, init) => { await checkAccess(); return (options.send ?? fetch)(input, init); };
-    const client = new SabyClient(config, send);
+    const client = (options.client ?? new SabyClient(config, options.send ?? fetch, undefined, options.runNetwork)).withRequestGuard(checkAccess);
     const context = { base, store, tripId, authorize, client };
     try {
       await checkAccess();
@@ -101,4 +104,73 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
     }
   }
   return result;
+}
+
+/**
+ * Each trip owns its task. Long provider workflows cannot hold the next scan or
+ * another trip; only their individual network calls share the bounded FIFO queue.
+ * OperationsStore leases still arbitrate with manual actions and other processes.
+ */
+export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 'tripId' | 'carrierWaitingOnly' | 'runNetwork'>, networkConcurrency = 4) {
+  if (!Number.isSafeInteger(networkConcurrency) || networkConcurrency < 1) throw new Error('Invalid Saby network concurrency');
+  const active = new Map<string, { operation: Promise<void>; rerun: boolean }>();
+  const scans = new Set<Promise<void>>();
+  const waiting: (() => void)[] = [];
+  let requests = 0, stopped = false;
+  const runNetwork = async <T>(action: () => Promise<T>): Promise<T> => {
+    if (requests >= networkConcurrency) await new Promise<void>(done => waiting.push(done));
+    else requests++;
+    try { return await action(); }
+    finally {
+      const next = waiting.shift();
+      if (next) next(); else requests--;
+    }
+  };
+  const client = (options.client ?? new SabyClient(options.config, options.send ?? fetch)).withRequestBudget(runNetwork);
+  const launch = (tripId: string, carrierWaitingOnly = false, immediate = false) => {
+    if (stopped || !options.enabled || sabyCredentialBlockers(options.config).length) return;
+    const current = active.get(tripId);
+    if (current) {
+      // Timer ticks do not accumulate work. A newly saved departure needs at most
+      // one fresh pass after a task that may already have read the old facts.
+      if (immediate) current.rerun = true;
+      return;
+    }
+    const task = { operation: Promise.resolve(), rerun: false };
+    task.operation = Promise.resolve().then(async () => {
+      do {
+        task.rerun = false;
+        try { await dispatchTripSaby({ ...options, client, tripId, carrierWaitingOnly }); }
+        catch { /* Durable attempts preserve recovery; private provider data never enters logs. */ }
+        carrierWaitingOnly = false;
+      } while (!stopped && task.rerun);
+    }).finally(() => { active.delete(tripId); if (task.rerun) launch(tripId, false, true); });
+    active.set(tripId, task);
+  };
+  return {
+    /** Manual runtime reads use the same session pool and network budget. */
+    client,
+    /** Resolves when the scan has dispatched work, without awaiting provider calls. */
+    tick(carrierWaitingOnly = false): Promise<void> {
+      if (stopped || !options.enabled || sabyCredentialBlockers(options.config).length) return Promise.resolve();
+      const scan = (async () => {
+        const data = await options.store.read(options.base.provenance.sourceSha256);
+        for (const [tripId, record] of Object.entries(data.tripSaby?.trips ?? {})) {
+          if (carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
+          launch(tripId, carrierWaitingOnly);
+        }
+      })().finally(() => { scans.delete(scan); });
+      scans.add(scan);
+      return scan;
+    },
+    request(tripId: string) { launch(tripId, false, true); },
+    async drain() { while (scans.size || active.size) { await Promise.all([...scans]); await Promise.all([...active.values()].map(task => task.operation)); } },
+    async stop() {
+      stopped = true;
+      // Existing workflows may have persisted a write intent before requesting
+      // capacity. Drain them; cancelling queued calls would fabricate unknown writes.
+      await Promise.allSettled([...scans]);
+      await Promise.all([...active.values()].map(task => task.operation));
+    },
+  };
 }

@@ -1,49 +1,49 @@
+import { pageCatalog, enabledPages, type PageId } from './page-catalog'
+import { hasPageAccess } from './page-access'
+import { lockPageScroll, useDialogMotion } from './useDialogMotion'
 import ScrollableSegments from './ScrollableSegments'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
-import ChinaPage from './ChinaPage'
-import BankingPage from './BankingPage'
-import OverviewPage from './OverviewPage'
-import ShipmentsPage from './ShipmentsPage'
-import TripsPage from './TripsPage'
-import DirectoriesPage from './DirectoriesPage'
-import WorkPage from './WorkPage'
+const ChinaPage = lazy(() => import('./ChinaPage'))
+const BankingPage = lazy(() => import('./BankingPage'))
+const CabinetBalances = lazy(() => import('./CabinetBalances'))
+const OverviewPage = lazy(() => import('./OverviewPage'))
+const ShipmentsPage = lazy(() => import('./ShipmentsPage'))
+const TripsPage = lazy(() => import('./TripsPage'))
+const DirectoriesPage = lazy(() => import('./DirectoriesPage'))
+const WorkPage = lazy(() => import('./WorkPage'))
 import AuthGate from './AuthGate'
-import DriverWorkspace from './DriverWorkspace'
-import { hasSection, isAdministrator, type AccountUser, type SectionId } from './auth-model'
-import AccountManagement from './AccountManagement'
+const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
+import { hasSection, isAdministrator, type AccountUser } from './auth-model'
+const AccountManagement = lazy(() => import('./AccountManagement'))
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
-type Page = SectionId | 'accounts'
-const pages: {id: Page; title: string; icon: LucideIcon; section: number; description: string}[] = [
-  {id:'overview',title:'Обзор',icon:LayoutDashboard,section:0,description:''},
-  {id:'work',title:'Работа',icon:ClipboardList,section:0,description:'Задачи, календарь и работа с компаниями.'},
-  {id:'shipments',title:'Отгрузки',icon:Truck,section:0,description:'Движение топлива — от поставщика до покупателя.'},
-  {id:'trips',title:'Рейсы',icon:Route,section:0,description:'Маршруты, клиентские доставки и отправка в Saby.'},
-  {id:'payments',title:'Платежи',icon:Wallet,section:0,description:'Поступления и списания из банковской выписки.'},
-  {id:'stock',title:'Склад',icon:PackageCheck,section:0,description:''},
-  {id:'china',title:'Китай',icon:Globe,section:0,description:''},
-  {id:'operator',title:'Операторская',icon:Headphones,section:0,description:''},
-  {id:'payroll',title:'ЗП',icon:Banknote,section:1,description:''},
-  {id:'accounts',title:'Сотрудники и доступ',icon:UsersRound,section:1,description:'Учётные записи и права сотрудников.'},
-  {id:'directories',title:'Справочники',icon:BookOpen,section:1,description:'Клиенты, поставщики, нефтебазы, водители и автомобили.'},
-]
-const allowedPage = (user: AccountUser, page: Page) => page === 'accounts' ? isAdministrator(user) : hasSection(user, page)
-const getPage = (): Page => location.hash === '#companies' ? 'shipments' : pages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
+type Page = PageId
+const pageIcons = { LayoutDashboard, ClipboardList, Truck, Route, Wallet, Landmark, PackageCheck, Globe, Headphones, Banknote, UsersRound, BookOpen }
+const pages = pageCatalog.map(page => ({ ...page, icon: pageIcons[page.icon] }))
+const getPage = (): Page => location.hash === '#companies' ? 'shipments' : enabledPages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
-export default function App(){return <AuthGate>{(user,onLogout)=>user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</AuthGate>}
+export default function App(){return <AuthGate>{(user,onLogout)=><PageLoadBoundary><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
+class PageLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  render() {
+    if (this.state.failed) return <div className="panel error-state" role="alert"><h2>Не удалось открыть раздел</h2><p>Проверьте соединение и обновите страницу.</p><button className="button primary" onClick={() => location.reload()}>Обновить страницу</button></div>
+    return this.props.children
+  }
+}
 function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const canManage=isAdministrator(user)
-  const availablePages = pages.filter(item => allowedPage(user, item.id))
+  const availablePages = pages.filter(item => hasPageAccess(user, item.id))
   const [data,setData] = useState<Snapshot | null>(null)
   const [error,setError] = useState('')
   const [page,setPage] = useState<Page>(() => location.hash ? getPage() : availablePages[0]?.id ?? 'overview')
   const [menu,setMenu] = useState(false)
   const [mobile,setMobile] = useState(() => matchMedia('(max-width: 760px)').matches)
   useEffect(() => { const media = matchMedia('(max-width: 760px)'); const change = () => {setMobile(media.matches);setMenu(false)}; media.addEventListener('change', change); return () => media.removeEventListener('change', change) }, [])
-  useEffect(() => { if (!menu) return; const overflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => {document.body.style.overflow = overflow} }, [menu])
+  useEffect(() => { if (menu) return lockPageScroll() }, [menu])
   const [collapsed,setCollapsed] = useState(()=>{try{return localStorage.getItem('artel-sidebar-collapsed')==='true'}catch{return false}})
   const toggleSidebar = ()=>setCollapsed(value=>{const next=!value;try{localStorage.setItem('artel-sidebar-collapsed',String(next))}catch{/* Storage may be disabled. */}return next})
   const [period,setPeriod] = useState('all')
@@ -66,8 +66,8 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     return () => {window.removeEventListener('keydown', trapFocus);if(opener?.isConnected)opener.focus()}
   }, [menu])
   const snapshotRequest = useRef(0)
-  const fetchData = () => { const request=++snapshotRequest.current;setError(''); fetch('/api/snapshot?shipments=omit',{cache:'no-store'}).then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(snapshot=>{if(request===snapshotRequest.current)setData(snapshot)}).catch(e => {if(request===snapshotRequest.current)setError(e.message)}) }
-  useEffect(fetchData, [])
+  const fetchData = () => { const request=++snapshotRequest.current;setError(''); return fetch('/api/snapshot?shipments=omit',{cache:'no-store'}).then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(snapshot=>{if(request===snapshotRequest.current)setData(snapshot)}).catch(e => {if(request===snapshotRequest.current)setError(e.message)}) }
+  useEffect(() => { void fetchData() }, [])
   useEffect(() => {
     const handle = () => {
       const replacement = location.hash === '#companies' ? '#shipments' : location.hash === '#settlements' ? '#overview' : null
@@ -79,7 +79,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     return () => window.removeEventListener('hashchange', handle)
   }, [])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''),3200); return () => clearTimeout(timer) },[toast])
-  useEffect(() => { const key = (event: KeyboardEvent) => {if(event.key === 'Escape') setMenu(false)};window.addEventListener('keydown',key);return () => window.removeEventListener('keydown',key) },[])
+  useEffect(() => { const key = (event: KeyboardEvent) => {if(event.key === 'Escape' && !document.querySelector('dialog[open]')) setMenu(false)};window.addEventListener('keydown',key);return () => window.removeEventListener('keydown',key) },[])
   const navigate = (id: Page) => {location.hash = id;setPage(id);setMenu(false);window.scrollTo({top:0,behavior:'instant'})}
   const active = pages.find(p => p.id === page)!
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
@@ -100,21 +100,22 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       <div className="sidebar-bottom">{page === 'shipments' ? <><div className="sidebar-account"><span>{user.name}</span><button className="button" onClick={onLogout}>Выйти</button></div><button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button></> : <div className="sidebar-profile"><span title={user.name}>{user.name}</span><button className="button" aria-label="Выйти" title="Выйти" onClick={onLogout}><LogOut size={18}/><span>Выйти</span></button></div>}</div>
     </aside>
     <div className="workspace-main" inert={menu}>
-      <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'overview' || !data || error || !allowedPage(user, page)) && <div className="page-heading page-heading-compact"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
-      {page === 'shipments' && (!data || error || !allowedPage(user, page)) && <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>}
-      {!allowedPage(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <div key={page} className="page-content">
+      <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'overview' || !data || error || !hasPageAccess(user, page)) && <div className="page-heading page-heading-compact"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
+      {page === 'shipments' && (!data || error || !hasPageAccess(user, page)) && <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>}
+      {!hasPageAccess(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <PageLoadBoundary key={page}><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем раздел…</p></div>}><div key={page} className="page-content">
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
       {page === 'operator' && <section className="blank-workspace" aria-label="Операторская: рабочее пространство"><p className="soft-notice">Excel-файл с системой учёта не предоставлен. Структура работы и расчёты пока не настроены.</p></section>}
-      {page === 'accounts' && data.directories && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
+      {page === 'accounts' && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'work' && <WorkPage/>}
+      {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
       {page === 'trips' && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
       {page === 'payments' && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
-      </div>}
+      </div></Suspense></PageLoadBoundary>}
       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}
       </main>
     </div>
@@ -138,13 +139,13 @@ function Payments({data,period,onPeriodChange,open,notify}: {data:Snapshot;perio
  if(!data.payments.length)return <section className="payment-archive">{archiveHeading}<div className="panel archive-empty"><span className="archive-empty-icon"><FileText size={28}/></span><h3>В архиве пока нет выписок</h3><p>Здесь будут отображаться платежи из файла.<br/>Выписки подключённых банков доступны во вкладке «Банковские подключения».</p></div></section>
  return <section className="payment-archive">{archiveHeading}<div className="payment-stats"><Stat label="Поступления" value={shortNumber(sum(filtered.map(p=>p.incoming)))} unit="₽" icon={ArrowDownLeft}/><Stat label="Списания" value={shortNumber(sum(filtered.map(p=>p.outgoing)))} unit="₽" icon={ArrowUpRight}/><Stat label="Строки выписки" value={number(filtered.length)} icon={Wallet}/></div><section className="panel archive-ledger"><div className="table-toolbar"><SearchField value={query} onChange={setQuery} placeholder="Контрагент или назначение…"/><div className="toolbar-actions"><select aria-label="Направление платежа" className="filter-select" value={direction} onChange={e=>setDirection(e.target.value)}><option value="all">Все операции</option><option value="incoming">Поступления</option><option value="outgoing">Списания</option><option value="undated">Без даты</option></select><ExportButton disabled={!filtered.length} onClick={()=>{downloadCsv('Артэль-платежи.csv',['Месяц из файла','Дата','Строка источника','Контрагент','Поступление, ₽','Списание, ₽','Назначение','Доп. поле из файла'],filtered.map(p=>[p.fields.month??null,p.date,p.sourceRow,p.counterparty,p.incoming,p.outgoing,p.purpose,p.fields.unlabelled_extra??null]));notify()}}/></div></div><div className="table-scroll">{filtered.length>0&&<table aria-label="Платежи из выписки"><thead><tr><th data-field="month">Месяц из файла</th><th>Дата / строка</th><th>Контрагент</th><th>Назначение платежа</th><th className="align-right">Поступление, ₽</th><th className="align-right">Списание, ₽</th><th data-field="unlabelled_extra">Доп. поле из файла</th><th/></tr></thead><tbody>{filtered.slice((page-1)*12,page*12).map(p=><tr key={p.id} data-source-row={p.sourceRow}><td data-field="month" className="tabular">{p.fields.month??'—'}</td><td><button className="date-link" onClick={()=>open({kind:'payment',item:p})}>{formatDate(p.date)}<small>#{p.sourceRow}</small></button></td><td><button className="company-text-link" onClick={()=>open({kind:'payment',item:p})}>{p.counterparty||'Не указан'}</button></td><td className="purpose-cell" title={p.purpose||''}>{p.purpose||'—'}</td><td className="align-right tabular positive">{money(p.incoming,2)}</td><td className="align-right tabular">{money(p.outgoing,2)}</td><td data-field="unlabelled_extra">{p.fields.unlabelled_extra??'—'}</td><td><button className="icon-button" aria-label={`Открыть платёж ${p.sourceRow}`} onClick={()=>open({kind:'payment',item:p})}><ChevronRight size={15}/></button></td></tr>)}</tbody></table>}{!filtered.length&&<div className="archive-empty archive-no-results"><Search size={28}/><h3>Нет операций по выбранным условиям</h3><p>Попробуйте другой период, направление или имя контрагента.</p><button className="button" onClick={resetFilters}>Сбросить фильтры</button></div>}</div>{filtered.length>0&&<Pagination page={page} setPage={setPage} total={filtered.length}/>}</section></section>
 }
-function DetailDialog({detail,data,onClose,open}: {detail:Detail;data:Snapshot;onClose:()=>void;open:(d:Detail)=>void}) {
+function DetailDialog({detail,data,onClose: onDismiss,open}: {detail:Detail;data:Snapshot;onClose:()=>void;open:(d:Detail)=>void}) {
  const ref=useRef<HTMLDialogElement>(null)
  const [tab,setTab]=useState('info')
- useEffect(()=>{const dialog=ref.current;dialog?.showModal();const old=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{dialog?.close();document.body.style.overflow=old}},[])
+  const { close: onClose } = useDialogMotion(ref, onDismiss)
  useEffect(()=>setTab('info'),[detail])
  const title=detail.kind==='about'?'О приложении Артэль':detail.kind==='company'?detail.item.name:detail.kind==='shipment'?(detail.item.sourceRow ? `Отгрузка · строка ${detail.item.sourceRow}` : `Отгрузка · ${formatDate(detail.item.date)}`):`Платёж · строка ${detail.item.sourceRow}`
- return <dialog ref={ref} className="detail-dialog" onCancel={onClose} onClick={e=>{if(e.target===ref.current)onClose()}} aria-labelledby="dialog-title"><div className="dialog-inner"><div className="dialog-heading"><span className="eyebrow">{detail.kind==='company'?'КАРТОЧКА КОНТРАГЕНТА':detail.kind==='about'?'АРТЕЛЬ CRM / 0.1':detail.kind==='shipment'&&!detail.item.sourceRow?'ОПЕРАЦИЯ CRM':'ЗАПИСЬ ИЗ EXCEL'}</span><button className="icon-button" aria-label="Закрыть карточку" onClick={onClose}><X size={20}/></button></div><h2 id="dialog-title">{title}</h2>
+ return <dialog ref={ref} className="detail-dialog" onCancel={onClose} onClick={e=>{if(e.target===ref.current)onClose()}} aria-labelledby="dialog-title"><div className="dialog-inner"><div className="dialog-heading"><span className="eyebrow">{detail.kind==='company'?'КАРТОЧКА КОНТРАГЕНТА':detail.kind==='about'?'АРТЭЛЬ CRM / 0.1':detail.kind==='shipment'&&!detail.item.sourceRow?'ОПЕРАЦИЯ CRM':'ЗАПИСЬ ИЗ EXCEL'}</span><button className="icon-button" aria-label="Закрыть карточку" onClick={onClose}><X size={20}/></button></div><h2 id="dialog-title">{title}</h2>
  {detail.kind==='about'?<><p className="dialog-lead">Артэль — CRM для учёта отгрузок топлива и расчётов.</p><div className="about-grid"><Info label="Операции" value="Создание, редактирование и экспорт отгрузок"/><Info label="Справочники" value="Компании, менеджеры, товары, водители и автомобили"/></div></>:detail.kind==='company'?<><div className="badge-list dialog-badges">{[...new Set(detail.item.roles.map(roleName))].map(r=><span className="badge green" key={r}>{r}</span>)}<span className="badge">{detail.item.registrySource ? 'Чекко' : 'Справочник'}</span></div><ScrollableSegments className="dialog-tabs" label="Разделы карточки компании" value={tab}><button type="button" aria-pressed={tab==='info'} onClick={()=>setTab('info')} className={tab==='info'?'selected':''}>Информация</button><button type="button" aria-pressed={tab==='shipments'} onClick={()=>setTab('shipments')} className={tab==='shipments'?'selected':''}>Отгрузки <small>{detail.item.shipmentIds.length}</small></button><button type="button" aria-pressed={tab==='payments'} onClick={()=>setTab('payments')} className={tab==='payments'?'selected':''}>Платежи <small>{detail.item.paymentIds.length}</small></button></ScrollableSegments>{tab==='info'?<><div className="about-grid"><Info label="Наименование" value={detail.item.name}/>{detail.item.fullName&&<Info label="Полное наименование" value={detail.item.fullName}/>}<Info label="Менеджер компании" value={data.directories?.managers.find(manager=>manager.id===data.directories?.customerManagers?.find(row=>row.companyId===detail.item.id)?.managerId)?.name||'Не назначен'}/><Info label="Фактические адреса" value={data.directories?.addresses.filter(address=>address.companyId===detail.item.id).map(address=>`${address.kind==='loading'?'Загрузка':'Отгрузка клиента'}: ${address.name}`).join('\n')||'Не указаны'}/><Info label="ИНН" value={detail.item.inn || 'Не указан'}/><Info label="КПП" value={detail.item.kpp || 'Не указан'}/><Info label="ОГРН / ОГРНИП" value={detail.item.ogrn || 'Не указан'}/><Info label="Юридический адрес" value={detail.item.address || 'Не указан'}/><Info label="Статус" value={detail.item.status || 'Не проверен'}/></div><div className="soft-notice">{detail.item.registrySource ? `Реквизиты получены из Чекко${detail.item.registryCheckedAt ? ' · ' + new Date(detail.item.registryCheckedAt).toLocaleDateString('ru-RU') : ''}.` : 'Данные компании можно изменить в справочнике.'}</div></>:tab==='shipments'?<CompanyShipmentRecords company={detail.item} open={open}/>:<div className="dialog-records">{data.payments.filter(p=>detail.item.paymentIds.includes(p.id)).sort(descendingDate).map(p=><button key={p.id} onClick={()=>open({kind:'payment',item:p})}><span><strong>{formatDate(p.date)}</strong><small>Строка {p.sourceRow} · {p.incoming!==null&&p.outgoing!==null?'Поступление / списание':p.incoming!==null?'Поступление':p.outgoing!==null?'Списание':'Без суммы'}</small></span><strong>{p.incoming!==null&&<>Приход: {money(p.incoming,2)}<br/></>}{p.outgoing!==null&&<>Расход: {money(p.outgoing,2)}</>}{p.incoming===null&&p.outgoing===null?'Без суммы':null}</strong><ChevronRight size={16}/></button>)}{!detail.item.paymentIds.length&&<Empty/>}</div>}</>:<><p className="dialog-lead">{detail.item.sourceRow ? `${detail.item.sourceSheet} / строка ${detail.item.sourceRow}` : 'Локальная операция'}</p><div className="about-grid"><Info label="Дата" value={formatDate(detail.item.date)}/>{detail.kind==='shipment'?<><Info label="Покупатель" value={detail.item.customer||'Не указан'}/><Info label="Поставщик" value={detail.item.supplier||'Не указан'}/><Info label="Перевозчик" value={detail.item.carrier||'Не указан'}/><Info label="Топливо" value={detail.item.product||'Не указано'}/><Info label="Объём" value={`${number(detail.item.liters,2)} л`}/><Info label="Сумма отгрузки" value={money(detail.item.revenue,2)}/><Info label="Закупка по источнику" value={money(detail.item.cost,2)}/><Info label="Подпись менеджера" value={detail.item.manager||'Не указана'}/></>:<><Info label="Месяц из файла" value={detail.item.fields.month??'Не указан'}/><Info label="Контрагент" value={detail.item.counterparty||'Не указан'}/><Info label="Поступление" value={money(detail.item.incoming,2)}/><Info label="Списание" value={money(detail.item.outgoing,2)}/><Info label="Доп. поле из файла" value={detail.item.fields.unlabelled_extra??'Не указано'}/></>}</div>{detail.kind==='payment'&&<Info label="Назначение платежа" value={detail.item.purpose||'Не указано'}/>}<div className="soft-notice">{detail.item.flags.length ? <>Замечания источника: {detail.item.flags.map(flag=>flagLabel(flag)).join('; ')}.</> : !detail.item.sourceRow ? 'Операция сохранена в CRM.' : 'Значения сохранены из исходного Excel. Формулы не пересчитывались.'}</div>{(()=>{const id=detail.kind==='shipment'?detail.item.customerId:detail.item.counterpartyId;const company=data.companies.find(c=>c.id===id);return company?<button className="button primary" onClick={()=>open({kind:'company',item:company})}>Открыть контрагента <ArrowRight size={16}/></button>:null})()}</>}
  </div></dialog>
 }

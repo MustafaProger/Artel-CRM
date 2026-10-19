@@ -63,7 +63,7 @@ test('supplier example A keeps fully closed purchase and both payment audit link
   assert.equal(result.receipts[0].bankOperationId, 'payment-300000');
   assert.equal(result.receipts[0].documentNumber, 'doc-payment-300000');
   assert.equal(result.receipts[0].account, store.banking!.operations[0].account);
-  assert.equal(result.receipts[0].company, 'НК АРТЕЛЬ');
+  assert.equal(result.receipts[0].company, 'НК АРТЭЛЬ');
   assert.deepEqual(store, before, 'reading a ledger never writes payment allocations or shipment baselines');
 });
 

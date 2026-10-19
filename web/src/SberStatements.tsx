@@ -1,3 +1,4 @@
+import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, ChevronRight, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
 import { bankConnections, type BankParty } from './banking-model'
@@ -191,16 +192,12 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
 
 const partyFields: [keyof BankParty, string][] = [['name', 'Наименование'], ['inn', 'ИНН'], ['kpp', 'КПП'], ['account', 'Расчётный счёт'], ['bankName', 'Банк'], ['bic', 'БИК / SWIFT'], ['correspondentAccount', 'Корреспондентский счёт']]
 const rawFields = (value: unknown, prefix = ''): [string, string][] => value && typeof value === 'object' ? Object.entries(value).flatMap(([key, item]) => rawFields(item, prefix ? `${prefix}.${key}` : key)) : [[prefix, value == null ? 'Не передано банком' : String(value)]]
-function OperationDetails({ endpoint, initial, available, onUpdate, onClose }: { endpoint: string; initial: SberOperation; available: boolean; onUpdate: (operation: SberOperation) => void; onClose: () => void }) {
+function OperationDetails({ endpoint, initial, available, onUpdate, onClose: onDismiss }: { endpoint: string; initial: SberOperation; available: boolean; onUpdate: (operation: SberOperation) => void; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [row, setRow] = useState(initial), [loading, setLoading] = useState(false), [refreshing, setRefreshing] = useState(false), [error, setError] = useState('')
   const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    const element = dialog.current, focused = document.activeElement as HTMLElement | null, overflow = document.body.style.overflow
-    element?.showModal(); document.body.style.overflow = 'hidden'
-    return () => { mounted.current = false; element?.close(); document.body.style.overflow = overflow; focused?.focus() }
-  }, [])
+  const { close: onClose } = useDialogMotion(dialog, onDismiss)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)

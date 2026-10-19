@@ -1,3 +1,4 @@
+import type { TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { Shipment, ShipmentTrip, ShipmentTripResponse, Snapshot } from '../web/src/model';
@@ -10,9 +11,14 @@ import { currentSnapshot, prepareShipmentFields } from './shipment-operations';
 import { hasSabyDocuments } from './saby-service';
 import { isUnpackagedDiesel, validLoadingDate } from '../web/src/trip-input-rules';
 import { readIntermediateStops } from '../web/src/trip-route';
+import { tripCreatedAt } from '../web/src/trip-order';
+import { readTripNumbers, reserveTripNumber } from './trip-numbering';
+import type { AccountUser } from '../web/src/auth-model';
+import type { TripRequest } from '../web/src/trip-request-model';
+import { requireTripRequest } from './trip-requests';
 
 const sharedFields = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'quantity_gross_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs', 'trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order'] as const;
-const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
+const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
 const sharedSnapshots = ['loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude'] as const;
 const customerSnapshots = ['unloading_address', 'unloading_map_url', 'unloading_latitude', 'unloading_longitude'] as const;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -42,20 +48,20 @@ function inputFields(value: unknown, keys: readonly string[]): Record<string, st
   return fields;
 }
 
-export function getShipmentTrip(snapshot: Snapshot, id: string): ShipmentTrip {
+export function getShipmentTrip(snapshot: Snapshot, id: string, numbers?: Record<string, number>): ShipmentTrip {
   const rows = snapshot.shipments.filter(row => row.fields.trip_id === id).sort((a, b) => Number(a.fields.trip_delivery_order ?? 0) - Number(b.fields.trip_delivery_order ?? 0));
   if (!rows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
   const fields = pick(rows[0].fields, [...sharedFields, ...sharedSnapshots]);
   fields.quantity_tonnes = rows[0].fields.trip_total_tonnes;
   fields.additional_costs = rows[0].fields.trip_additional_costs;
   return {
-    id, fields,
-    customers: rows.map(row => ({ id: row.id, version: row.version ?? 0, paidAmount: row.fields.paid_amount_source, fields: pick(row.fields, [...customerFields, ...customerSnapshots, ...(fields.trip_flow_version === 'driver-v1' ? ['quantity_tonnes', 'quantity_gross_tonnes'] : [])]) })),
+    id, ...(numbers?.[id] ? { number: numbers[id] } : {}), createdAt: tripCreatedAt(rows), fields,
+    customers: rows.map(row => ({ id: row.id, version: row.version ?? 0, paidAmount: row.fields.paid_amount_source, fields: pick(row.fields, [...customerFields, ...customerSnapshots, 'source_request_id', ...(fields.trip_flow_version === 'driver-v1' ? ['quantity_tonnes', 'quantity_gross_tonnes'] : [])]) })),
   };
 }
 
 /** Called inside OperationsStore.mutate; no row is persisted until the complete truck validates. */
-export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, existingId?: string, actorId: string | null = null): ShipmentTripResponse {
+export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, existingId?: string, actorId: string | null = null, options: { requireRequests?: boolean; actor?: AccountUser | null; requestLocations?: Record<string, TripRequestLocationResult> } = {}): ShipmentTripResponse {
   if (Object.keys(body).some(key => !['fields', 'customers', ...(existingId ? ['versions'] : ['idempotencyKey'])].includes(key))) throw new ApiError(400, 'В запросе отгрузки есть неизвестные параметры.');
   // Save only baseline inputs; the response below adds the current bank projection.
   const snapshot = currentSnapshot(base, data, false);
@@ -68,7 +74,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     const current = currentSnapshot(base, data);
     const shipments = current.shipments.filter(row => row.fields.trip_id === replay.tripId);
     if (!shipments.length) throw new ApiError(409, 'Созданный рейс уже удалён. Повторное создание по прежнему запросу запрещено.');
-    return { trip: getShipmentTrip(current, replay.tripId), shipments, shipment: shipments[0] };
+    return { trip: getShipmentTrip(current, replay.tripId, readTripNumbers(current, data)), shipments, shipment: shipments[0] };
   }
   const id = existingId ?? `shipment-trip-${randomUUID()}`;
   const previousRows = existingId ? snapshot.shipments.filter(row => row.fields.trip_id === id) : [];
@@ -146,12 +152,31 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   }
   if (!Array.isArray(body.customers) || !body.customers.length || body.customers.length > 100) throw new ApiError(400, 'Добавьте от 1 до 100 клиентов.');
   const customers = body.customers.map(value => {
-    if (!object(value) || Object.keys(value).some(key => !['id', 'fields'].includes(key))) throw new ApiError(400, 'Некорректные данные клиента отгрузки.');
+    if (!object(value) || Object.keys(value).some(key => !['id', 'fields', 'sourceRequestId', 'sourceRequestVersion'].includes(key))) throw new ApiError(400, 'Некорректные данные клиента отгрузки.');
     if (value.id !== undefined && (typeof value.id !== 'string' || !value.id)) throw new ApiError(400, 'Некорректный идентификатор клиента отгрузки.');
     const previous = value.id ? previousRows.find(row => row.id === value.id) : undefined;
     if (value.id && !previous) throw new ApiError(400, 'Клиент не принадлежит этой отгрузке.');
-    const customer = inputFields(cleanSnapshots(value.fields, customerSnapshots, previous), customerFields);
+    const customer = inputFields(cleanSnapshots(value.fields, [...customerSnapshots, 'source_request_id'], previous), customerFields);
+    let sourceRequest: TripRequest | undefined;
+    if (!previous && (options.requireRequests || value.sourceRequestId !== undefined)) {
+      if (typeof value.sourceRequestId !== 'string' || !Number.isSafeInteger(value.sourceRequestVersion)) throw new ApiError(400, 'Сначала создайте заявку и выберите её для каждой доставки.');
+      sourceRequest = requireTripRequest(data, snapshot, options.actor ?? null, value.sourceRequestId);
+      if (sourceRequest.version !== value.sourceRequestVersion) throw new ApiError(409, 'Заявка уже изменена. Обновите список и повторите создание рейса.');
+      for (const [field, expected] of [['customer_id', sourceRequest.companyId], ['unloading_address_id', sourceRequest.addressId], ['delivery_notes', sourceRequest.comment || null]] as const) {
+        if (Object.hasOwn(customer, field) && customer[field] !== expected) throw new ApiError(400, 'Компания, место выгрузки и комментарий должны совпадать с выбранной заявкой.');
+        customer[field] = expected;
+      }
+      customer.quantity_litres ??= sourceRequest.quantityLitres;
+      if (sourceRequest.salePricePerLitre) customer.sale_price_per_litre ??= sourceRequest.salePricePerLitre;
+      customer.manager_id ??= options.actor?.managerId ?? sourceRequest.managerId;
+    } else if (previous && (value.sourceRequestId !== undefined || value.sourceRequestVersion !== undefined)) {
+      if (value.sourceRequestId !== previous.fields.source_request_id) throw new ApiError(400, 'Источник существующей доставки изменять нельзя.');
+    }
+    if (previous?.fields.source_request_id) for (const key of ['customer_id', 'unloading_address_id', 'delivery_notes']) {
+      if (Object.hasOwn(customer, key) && customer[key] !== previous.fields[key]) throw new ApiError(400, 'Компанию, место выгрузки и комментарий доставки из заявки изменять нельзя.');
+    }
     if (driverFlow && (customer.unloading_planned_at != null || customer.unloading_actual_at != null)) throw new ApiError(400, 'Плановое время выгрузки не задано; фактические события сохраняет водитель.');
+    if (!Object.hasOwn(customer, 'etrn_not_required') && previous) customer.etrn_not_required = previous.fields.etrn_not_required ?? null;
     if (!Object.hasOwn(customer, 'intermediate_stops_after') && previous) customer.intermediate_stops_after = previous.fields.intermediate_stops_after ?? null;
     try { if (customer.intermediate_stops_after) customer.intermediate_stops_after = JSON.stringify(readIntermediateStops(customer.intermediate_stops_after)); }
     catch (error) { throw new ApiError(400, error instanceof Error ? error.message : 'Проверьте промежуточные остановки.'); }
@@ -160,8 +185,10 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
       // Default only a new delivery. Null in an existing record may be an intentional manual clearing.
       if (!driverFlow && !previous && !Object.hasOwn(customer, key)) customer[key] = loadingAt ?? fields.loading_planned_at ?? fields.date ?? null;
     }
-    return { previous, fields: customer };
+    return { previous, fields: customer, sourceRequest };
   });
+  const sources = customers.flatMap(customer => customer.sourceRequest ? [customer.sourceRequest.id] : []);
+  if (new Set(sources).size !== sources.length) throw new ApiError(400, 'Одна заявка выбрана несколько раз.');
   const retainedIds = customers.flatMap(customer => customer.previous ? [customer.previous.id] : []);
   if (new Set(retainedIds).size !== retainedIds.length) throw new ApiError(400, 'Одна строка клиента указана несколько раз.');
   const removed = previousRows.filter(row => !retainedIds.includes(row.id));
@@ -182,6 +209,19 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     delete input.trip_flow_version;
     const result = prepareShipmentFields(input, customer.previous, snapshot, { historicalCarrierId: previousRows[0]?.fields.carrier_id, allowMissingMass: driverFlow });
     if (driverFlow) result.trip_flow_version = 'driver-v1';
+    if (customer.sourceRequest) {
+      result.source_request_id = customer.sourceRequest.id;
+      result.customer_name = customer.sourceRequest.companyName;
+      result.unloading_address = customer.sourceRequest.address;
+      result.unloading_map_url = customer.sourceRequest.mapUrl;
+      result.unloading_latitude = customer.sourceRequest.latitude;
+      result.unloading_longitude = customer.sourceRequest.longitude;
+      const known = options.requestLocations?.[customer.sourceRequest.id];
+      if (!result.unloading_latitude && !result.unloading_longitude && known?.status === 'found') {
+        result.unloading_latitude = String(known.latitude);
+        result.unloading_longitude = String(known.longitude);
+      }
+    } else if (customer.previous?.fields.source_request_id) result.source_request_id = customer.previous.fields.source_request_id;
     if (previousRows.length && previousRows[0].fields.loading_address_id === result.loading_address_id && previousRows[0].fields.oil_depot_id === result.oil_depot_id) {
       for (const key of sharedSnapshots) if (!result.oil_depot_id || previousRows[0].fields[key]) result[key] = previousRows[0].fields[key] ?? null;
     }
@@ -189,15 +229,17 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     result.trip_delivery_order = String(index + 1);
     result.trip_total_tonnes = totalTonnes;
     result.trip_additional_costs = totalCosts;
-    return { previous: customer.previous, fields: result };
+    return { previous: customer.previous, fields: result, sourceRequest: customer.sourceRequest };
   });
   const now = new Date().toISOString();
+  reserveTripNumber(snapshot, data, id);
   const shipmentIds: string[] = [];
   for (const row of prepared) {
     const shipmentId = row.previous?.id ?? `shipment-local-${randomUUID()}`;
     if (!row.previous) row.fields.document_number = allocateShipmentNumber(data, row.fields.date!);
     data.shipments[shipmentId] = { fields: row.fields, version: (row.previous?.version ?? 0) + 1, createdAt: row.previous?.createdAt ?? now, updatedAt: now };
     shipmentIds.push(shipmentId);
+    if (row.sourceRequest) Object.assign(row.sourceRequest, { status: 'consumed', version: row.sourceRequest.version + 1, tripId: id, shipmentId, updatedAt: now });
   }
   for (const row of removed) tombstone(data, row, now);
   if (typeof key === 'string') (data.tripCreateRequests ??= {})[key] = { tripId: id, fingerprint, actorId };
@@ -205,7 +247,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   const rowsById = new Map(updated.shipments.map(row => [row.id, row]));
   const shipments = shipmentIds.map(id => rowsById.get(id) as Shipment);
   queueTripAssignment(data, id, shipments, previousRows);
-  return { trip: getShipmentTrip(updated, id), shipments, shipment: shipments[0] };
+  return { trip: getShipmentTrip(updated, id, data.tripNumbers), shipments, shipment: shipments[0] };
 }
 
 /** Remove the whole truck under the same lock and full customer-version guard as editing. */
@@ -217,6 +259,7 @@ export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: R
   checkTripVersions(body.versions, rows);
   if (rows.some(row => data.paymentAllocations?.some(allocation => allocation.shipmentId === row.id))) throw new ApiError(409, 'Нельзя удалить отгрузку с привязанными банковскими платежами. Сначала отмените привязку платежей у всех клиентов.');
   const now = new Date().toISOString();
+  reserveTripNumber(currentSnapshot(base, data, false), data, id);
   for (const row of rows) tombstone(data, row, now);
   if (data.push?.tripAssignments) delete data.push.tripAssignments[id];
   return { deleted: true, id, deletedCount: rows.length };

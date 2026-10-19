@@ -43,6 +43,7 @@ export function authenticate(data: OperationsData, request: IncomingMessage): Ac
 }
 export function sessionCookie(token: string, secure: boolean, audience?: 'logistics') { return `${audience ? logisticsCookieName : cookieName}=${token}; Path=${audience ? '/api/logistics' : '/'}; HttpOnly; SameSite=Strict; Max-Age=${token?28800:0}${secure?'; Secure':''}`; }
 export function requireUser(data: OperationsData, request: IncomingMessage) { const user=authenticate(data,request); if(!user)throw new ApiError(401,'Войдите в приложение.');return user; }
+export function requireAccounts(user: AccountUser) { if (!hasSection(user, 'accounts')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.'); }
 export function requireManage(user: AccountUser) { if(!canManage(user))throw new ApiError(403,'Действие доступно директору и администратору.'); }
 export function validateAccounts(value: AccountsData) {
   if(!value || !Array.isArray(value.users) || !Array.isArray(value.sessions) || !value.attempts || typeof value.attempts!=='object')throw new Error('Invalid accounts');
@@ -97,7 +98,7 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
 }
 /** Keep the identity for historical authors and assignments; access is revoked atomically. */
 export function deleteUser(data: OperationsData, actor: AccountUser, id: string, input: Record<string, unknown>) {
-  requireManage(actor);
+  requireAccounts(actor);
   if (Object.keys(input).some(key => !['version', 'confirmationName'].includes(key))) throw new ApiError(400, 'Неизвестное поле удаления пользователя.');
   if (!Number.isSafeInteger(input.version) || Number(input.version) < 1) throw new ApiError(400, 'Передайте версию пользователя.');
   const accounts = data.accounts;

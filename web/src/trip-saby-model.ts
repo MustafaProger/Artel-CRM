@@ -1,7 +1,7 @@
 /** Safe trip-level response. Private snapshots and credentials stay server-side. */
 export type TripSabyExchangeStage = 'sender_action_required' | 'signature_pending' | 'sending_to_carrier' | 'carrier_details_required' | 'carrier_action_required' | 'carrier_confirmation_pending' | 'carrier_confirmed' | 'rejected' | 'operator_error' | 'cancelled' | 'unknown';
 export interface TripSabyHistoryEntry { at: string; stage: TripSabyExchangeStage; remoteStateCode: string | null }
-export interface TripSabyMonitoring { enabled: boolean; intervalSeconds: 15 | 300 | null; reason?: string }
+export interface TripSabyMonitoring { enabled: boolean; intervalSeconds: 15 | 60 | null; reason?: string }
 /** Explicit allowlist for the authorized employee's manual carrier handoff. */
 export interface TripSabyCarrierHandoff { driverName: string | null; driverPhone: string | null; vehiclePlate: string | null; vehicleType: string | null }
 export interface TripSabyCarrierFill {
@@ -62,6 +62,7 @@ export interface TripSabySigningStartRequest {
 export interface TripSabyAutomationCapability { enabled: boolean; message?: string }
 export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean }
 export interface TripSabyResponse {
+  notRequired?: boolean;
   status: 'not_sent' | 'sent' | 'error';
   phase: 'preparation' | 'submitting' | 'awaiting_driver' | 'unknown' | 'awaiting_carrier' | 'awaiting_loading' | 'creating_etrn' | 'sending_etrn' | 'completed' | 'error';
   ready: boolean;
@@ -80,6 +81,10 @@ export interface TripSabyResponse {
   carrierFill?: TripSabyCarrierFill;
   signing?: TripSabySigning;
   automation?: TripSabyAutomation;
+  /** Exact saved data and policy preview; absent for existing or ineligible exchanges. */
+  start?: { previewToken: string; mode: 'draft' | 'sign_and_send' };
+  /** Actual driver actions, independent of workflow processing and electronic signatures. */
+  driverConfirmation?: { arrivedAt: string | null; confirmedAt: string | null } | null;
   driverFlow?: { state: 'waiting_driver' | 'mass_pending' | 'ready'; processingAllowanceHours: 10; protocolBlockers?: string[] };
   /** Present only after verified signatures AND client dispatch for every delivery. */
   stage6CompletedAt?: string | null;

@@ -2,12 +2,14 @@ import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
 import { deleteDirectoryEntry } from './directory-deletion';
+import { ApiError } from './api-error';
 
 /** Clear only the active customer/supplier lists without breaking historical references. */
 export function prepareCompanyCleanup(base: Snapshot, original: OperationsData) {
   const data = structuredClone(original);
   const snapshot = currentSnapshot(base, data);
   const targets = snapshot.companies.filter(company => !company.directoryArchived && company.roles.some(role => ['customer', 'supplier'].includes(role)));
+  if (Object.values(data.tripRequests ?? {}).some(request => request.status === 'active' && targets.some(company => company.id === request.companyId))) throw new ApiError(409, 'Нельзя очистить компании: они используются в активных заявках на рейс. Сначала завершите или удалите эти заявки.');
   const counts = { customers: targets.filter(company => company.roles.includes('customer')).length, suppliers: targets.filter(company => company.roles.includes('supplier')).length };
   for (const company of targets) {
     const archived = { ...company, directoryArchived: true, version: (company.version ?? 0) + 1 };

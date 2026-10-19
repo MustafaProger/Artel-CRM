@@ -10,6 +10,7 @@ export function requireTripSection(actor: AccountUser, saby = false) {
   return actor;
 }
 export function apiSection(path: string): SectionId | null {
+  if (/^\/api\/trip-requests(\/|$)/.test(path)) return 'trips';
   if (/^\/api\/settlements(\/|$)/.test(path)) return 'overview';
   if (/^\/api\/shipment-trips(\/|$)/.test(path)) return null;
   if (/^\/api\/shipments(\/|$)/.test(path)) return 'shipments';

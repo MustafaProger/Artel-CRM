@@ -5,7 +5,10 @@ export type DriverDelivery = {
   address: string | null; mapUrl: string | null; actualAt: string | null; notes: string | null; netTonnes: string | null
 }
 export type DriverTrip = {
+  etrnRequired?: boolean
+  number?: number
   id: string; date: string | null; driverName: string; vehiclePlate: string | null; supplier: string | null
+  createdAt?: string | null
   loadingAddress: string | null; loadingMapUrl: string | null; loadingActualAt: string | null; notes: string | null
   deliveries: DriverDelivery[]; flowVersion: 'driver-v1' | null; versions: Record<string, number>
   archived: boolean; arrivedAt: string | null; departedAt: string | null

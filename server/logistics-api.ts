@@ -11,6 +11,10 @@ export function requireLogisticsRoute(path: string, method: string) {
   let methods: string[] | undefined;
   if (path === '/api/auth/session' || path === '/api/context') methods = ['GET'];
   else if (path === '/api/auth/login' || path === '/api/auth/logout') methods = ['POST'];
+  else if (path === '/api/trip-requests') methods = ['GET', 'POST'];
+  else if (path === '/api/trip-requests/map-config') methods = ['GET'];
+  else if (path === '/api/trip-requests/geocode') methods = ['POST'];
+  else if (/^\/api\/trip-requests\/[^/]+$/.test(path)) methods = ['PATCH', 'DELETE'];
   else if (/^\/api\/drivers\/[^/]+\/access$/.test(path)) methods = ['GET', 'POST', 'PATCH'];
   else if (/^\/api\/driver\/trips(?:\/[^/]+)?$/.test(path)) methods = ['GET'];
   else if (path === '/api/shipment-trips' || path === '/api/directories') methods = ['GET', 'POST'];
@@ -18,7 +22,7 @@ export function requireLogisticsRoute(path: string, method: string) {
   else if (/^\/api\/shipment-trips\/[^/]+\/(saby|saby-workflow)$/.test(path)) methods = ['GET', 'POST'];
   else if (/^\/api\/shipment-trips\/[^/]+\/saby-workflow\/signing$/.test(path)) methods = ['GET'];
   else if (/^\/api\/shipment-trips\/[^/]+\/saby-workflow\/signing\/start$/.test(path)) methods = ['POST'];
-  else if (/^\/api\/shipment-trips\/[^/]+\/saby-workflow\/(loading-facts|carrier-details)$/.test(path)) methods = ['POST'];
+  else if (/^\/api\/shipment-trips\/[^/]+\/saby-workflow\/(loading-facts|carrier-details|start)$/.test(path)) methods = ['POST'];
   else if (/^\/api\/shipment-trips\/[^/]+\/etrn$/.test(path)) methods = ['GET', 'PUT'];
   else if (/^\/api\/shipment-trips\/[^/]+\/etrn\/(submit|refresh)$/.test(path)) methods = ['POST'];
   else if (/^\/api\/shipment-trips\/[^/]+\/etrn\/(xml\/[^/]+|files\/[^/]+\/[^/]+)$/.test(path)) methods = ['GET'];

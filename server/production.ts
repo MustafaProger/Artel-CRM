@@ -1,3 +1,4 @@
+import { refreshDueCabinets } from './cabinet-connections';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -11,7 +12,7 @@ import { dispatchBanks } from './banking/scheduler';
 import { BANK_SYNC_TICK_MS } from './banking/schedule';
 import { dispatchReminders, pushReady, type PushConfig } from './push';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
-import { dispatchTripSaby, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
+import { createTripSabyScheduler, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
 
 type Environment = Record<string, string | undefined>;
 const pausedBankMessage = 'Обновление банков на этом сервере пока выключено. Сохранённые данные доступны.';
@@ -139,6 +140,9 @@ export async function createProductionRuntime(env: Environment = process.env) {
   const bankEnvironment = { ...env, ARTEL_BANK_SYNC_ENABLED: configuration.bankRequestsEnabled ? env.ARTEL_BANK_SYNC_ENABLED : 'false' };
   const transports = productionBankTransports(env);
   const saby = sabyConfigFromEnv(env);
+  const sabyClient = new SabyClient(saby);
+  const sabyEnabled = env.SABY_WORKFLOW_ENABLED === 'true' && !sabyCredentialBlockers(saby).length;
+  const sabyScheduler = createTripSabyScheduler({ base, store, config: saby, client: sabyClient, enabled: sabyEnabled });
   const push: PushConfig = {
     publicKey: env.VAPID_PUBLIC_KEY ?? '', privateKey: env.VAPID_PRIVATE_KEY ?? '',
     subject: env.VAPID_SUBJECT ?? '', schedule: env.PUSH_SCHEDULE_ENABLED === 'true',
@@ -147,9 +151,11 @@ export async function createProductionRuntime(env: Environment = process.env) {
     operationsStore: store, secureCookies: true, requireAuthentication: true,
     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
+    cabinetEnvironment: env,
     setupToken: env.ARTEL_SETUP_TOKEN, cronSecret: env.CRON_SECRET, checkoApiKey: env.CHECKO_API_KEY,
-    sabyClient: new SabyClient(saby),
-    sabyWorkflowMonitoringEnabled: env.SABY_WORKFLOW_ENABLED === 'true' && !sabyCredentialBlockers(saby).length,
+    sabyClient: sabyScheduler.client,
+    sabyWorkflowMonitoringEnabled: sabyEnabled,
+    requestSabyWorkflow: sabyEnabled ? tripId => sabyScheduler.request(tripId) : undefined,
   });
   const server = createServer((request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -211,10 +217,11 @@ export async function createProductionRuntime(env: Environment = process.env) {
       if (configuration.bankRequestsEnabled && bankEnvironment.ARTEL_BANK_SYNC_ENABLED === 'true') {
         schedule(BANK_SYNC_TICK_MS, () => dispatchBanks(store, base.provenance.sourceSha256, bankEnvironment, transports.bankRequest, transports.sberRequest), true);
       }
+      if (env.ARTEL_CABINET_ENCRYPTION_KEY && env.ARTEL_CABINET_SYNC_ENABLED !== 'false') schedule(60_000, () => refreshDueCabinets(store, base.provenance.sourceSha256, env));
       if (pushReady(push)) schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
-      if (env.SABY_WORKFLOW_ENABLED === 'true' && !sabyCredentialBlockers(saby).length) {
-        schedule(SABY_WORKFLOW_TICK_MS, () => dispatchTripSaby({ base, store, config: saby, enabled: true }), true);
-        schedule(SABY_CARRIER_WAIT_TICK_MS, () => dispatchTripSaby({ base, store, config: saby, enabled: true, carrierWaitingOnly: true }));
+      if (sabyEnabled) {
+        schedule(SABY_WORKFLOW_TICK_MS, () => sabyScheduler.tick(), true);
+        schedule(SABY_CARRIER_WAIT_TICK_MS, () => sabyScheduler.tick(true));
       }
     },
     stop() {
@@ -226,7 +233,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
           server.close(error => error ? reject(error) : done());
           server.closeIdleConnections();
         });
-        await Promise.all([close, ...pending]);
+        await Promise.all([close, ...pending, sabyScheduler.stop()]);
       })();
     },
   };
@@ -237,7 +244,9 @@ async function main() {
   await runtime.start();
   console.info('Artel CRM production server is ready.');
   const shutdown = () => {
-    const timeout = setTimeout(() => { console.error('Shutdown timed out.'); process.exit(1); }, 45_000);
+    // A workflow can have a persisted write intent queued behind other requests.
+    // Give its guarded calls time to settle instead of manufacturing unknown results.
+    const timeout = setTimeout(() => { console.error('Shutdown timed out.'); process.exit(1); }, 600_000);
     timeout.unref();
     void runtime.stop().then(() => { clearTimeout(timeout); }, () => { console.error('Shutdown failed.'); process.exitCode = 1; });
   };

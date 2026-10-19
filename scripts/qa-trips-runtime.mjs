@@ -21,10 +21,10 @@ export async function writeTripsQaSnapshot(directory) {
   return source;
 }
 
-export async function startTripsQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient, port = 0 }) {
+export async function startTripsQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient, port = 0, tripRequestGeocoder = async () => ({ status: 'unavailable', message: 'Синтетический геокодер отключён.' }) }) {
   const denied = async () => { throw new Error('External provider requests are forbidden in synthetic trips QA'); };
   const middleware = client => createSnapshotMiddleware(snapshotDirectory, {
-    operationsDirectory, sabyClient: client, checkoApiKey: '', setupToken: '',
+    operationsDirectory, sabyClient: client, checkoApiKey: '', setupToken: '', tripRequestGeocoder,
     bankEnvironment: { ARTEL_BANK_SYNC_ENABLED: 'false', ARTEL_BANK_REQUESTS_ENABLED: 'false' },
     bankRequest: denied, sberRequest: denied, fetcher: denied,
     pushConfig: { publicKey: '', privateKey: '', subject: '', schedule: false }, pushSender: denied,

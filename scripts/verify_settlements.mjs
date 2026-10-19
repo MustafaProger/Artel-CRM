@@ -216,11 +216,11 @@ try {
   };
   await page.route('**/api/banking/sber/sber-artel/**', sberUiFixture);
   await page.goto(base + '/#payments');
-  await page.getByRole('button', { name: 'Открыть СберБизнес — АРТЕЛЬ', exact: true }).click();
+  await page.getByRole('button', { name: 'Открыть СберБизнес — АРТЭЛЬ', exact: true }).click();
   await page.getByRole('button', { name: 'Открыть операцию № QA-700', exact: true }).click();
   const bankDialog = page.getByRole('dialog');
-  await expect(bankDialog.locator('.bank-panel-header')).toContainText('АРТЕЛЬ');
-  await expect(bankDialog.locator('.bank-panel-header')).not.toContainText('НК АРТЕЛЬ');
+  await expect(bankDialog.locator('.bank-panel-header')).toContainText('АРТЭЛЬ');
+  await expect(bankDialog.locator('.bank-panel-header')).not.toContainText('НК АРТЭЛЬ');
   const bankTrace = bankDialog.getByRole('region', { name: 'Распределение оплаты поставщику', exact: true });
   await expect(bankTrace).toContainText('700 000,00');
   await expect(bankTrace).toContainText('450 000,00');

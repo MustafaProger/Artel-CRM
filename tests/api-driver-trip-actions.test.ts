@@ -1,3 +1,6 @@
+import { dispatchTripSaby } from '../server/trip-saby-scheduler';
+import { runTripSabyWorkflow } from '../server/trip-saby-workflow';
+import { exchangePreparedEtrn } from '../server/etrn-service';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -11,18 +14,18 @@ import { readDriverTrips, recordDriverTripAction } from '../server/driver-trips'
 import { integrationRuntime, integrationApi, integrationSettings } from './helpers/trip-saby-integration';
 import type { AccountUser } from '../web/src/auth-model';
 
-async function fixture(automatic = false) {
+async function fixture(automatic = false, requestSabyWorkflow?: (tripId: string) => void, exclusions: boolean[] = []) {
   const rt = await integrationRuntime(), provider = integrationApi();
   const created = await rt.store.mutate(rt.source, data => {
     data.directories!.addresses.push({ ...data.directories!.addresses.find(row => row.id === 'delivery')!, id: 'delivery-two', name: 'Вторая точка', address: 'Синтетическая вторая точка' });
     const fields = Object.fromEntries(['organization_id', 'supplier_id', 'carrier_id', 'oil_depot_id', 'product_id', 'purchase_price_unspecified_unit', 'driver_id', 'vehicle_id', 'additional_costs'].map(key => [key, rt.trip.fields[key]]));
     Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2027-02-03T09:15', additional_costs: '100' });
-    const customers = rt.trip.customers.map((row, index) => ({ fields: { ...Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount'].map(key => [key, row.fields[key]])), unloading_address_id: index ? 'delivery-two' : 'delivery' } }));
+    const customers = rt.trip.customers.map((row, index) => ({ fields: { ...Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount'].map(key => [key, row.fields[key]])), unloading_address_id: index ? 'delivery-two' : 'delivery', ...(exclusions[index] ? { etrn_not_required: 'true' } : {}) } }));
     return { result: saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }), changed: true };
   });
   const client = provider.client();
   if (automatic) client.config.automaticSigning = { id: 'synthetic-actions-policy', enabled: true, mode: 'deferred', approvedAt: '2026-01-01T00:00:00.000Z', sender: { ...client.config.customer, thumbprint: 'ab'.repeat(20) }, carrier: { ...client.config.carrier, thumbprint: 'cd'.repeat(20) } };
-  const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, sabyClient: client, sabyWorkflowMonitoringEnabled: false });
+  const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, sabyClient: client, sabyWorkflowMonitoringEnabled: !!requestSabyWorkflow, requestSabyWorkflow });
   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -63,6 +66,36 @@ test('driver-v1 creates immediate accounting without mass, future plan only and 
     assert.notEqual(result.body.trip.deliveries[0].address, result.body.trip.deliveries[1].address);
     assert.equal((await f.request(`${f.path}/arrive`, 'POST', { versions: result.body.trip.versions }, f.adminCookie)).status, 403);
     assert.equal(f.provider.calls.length, 0);
+  } finally { await f.close(); }
+});
+
+test('workflow exposes actual driver confirmation and requests continuation once, only after committed departure', async () => {
+  const requested: string[] = [];
+  const f = await fixture(false, tripId => requested.push(tripId));
+  const workflow = () => f.request(`/api/shipment-trips/${f.created.trip.id}/saby-workflow`, 'GET', undefined, f.adminCookie);
+  try {
+    assert.deepEqual((await workflow()).body.driverConfirmation, { arrivedAt: null, confirmedAt: null });
+    const legacy = await f.request(`/api/shipment-trips/${f.tripId}/saby-workflow`, 'GET', undefined, f.adminCookie);
+    assert.equal(legacy.body.driverConfirmation, null);
+    const trip = (await f.read()).body.trip;
+    const masses = trip.deliveries.map((row: { id: string }) => ({ deliveryId: row.id, netTonnes: '5' }));
+    assert.equal((await f.action('depart', { versions: trip.versions, masses })).status, 409);
+    const arrival = await f.action('arrive', { versions: trip.versions });
+    assert.deepEqual(requested, []);
+    assert.deepEqual((await workflow()).body.driverConfirmation, { arrivedAt: arrival.body.trip.arrivedAt, confirmedAt: null });
+    const departures = await Promise.all([f.action('depart', { versions: trip.versions, masses }), f.action('depart', { versions: trip.versions, masses })]);
+    assert.ok(departures.every(row => row.status === 200));
+    assert.deepEqual(requested, [f.created.trip.id]);
+    const stored = await f.store.read(f.source);
+    assert.ok(stored.etrn?.trips[f.created.trip.id].loadingFacts);
+    assert.deepEqual((await workflow()).body.driverConfirmation, { arrivedAt: arrival.body.trip.arrivedAt, confirmedAt: stored.driverTripProgress![f.created.trip.id].departedAt });
+    assert.equal(f.provider.calls.length, 0, 'the driver route does not gain permission to call Saby itself');
+    await f.store.mutate(f.source, data => {
+      data.directories!.drivers.push({ ...data.directories!.drivers[0], id: 'driver-other' });
+      for (const row of trip.deliveries) data.shipments[row.id].fields.driver_id = 'driver-other';
+      return { result: null, changed: true };
+    });
+    assert.deepEqual((await workflow()).body.driverConfirmation, { arrivedAt: null, confirmedAt: null }, 'historical confirmation cannot be attributed to a new driver');
   } finally { await f.close(); }
 });
 
@@ -234,5 +267,65 @@ test('archive requires terminal evidence for every current delivery, never a sta
     assert.equal(projected(), false);
     data.etrn!.trips[f.created.trip.id].deliveries[second.shipmentId].document!.dispatch!.completedAt = now;
     second.id = 'different-synthetic-document'; assert.equal(projected(), false);
+  } finally { await f.close(); }
+});
+
+
+test('all-excluded trip keeps every driver delivery and mass, completes locally, and no route contacts Saby', async () => {
+  const f = await fixture(true, undefined, [true, true]);
+  try {
+    const path = `/api/shipment-trips/${f.created.trip.id}`;
+    const read = await f.request(`${path}/saby-workflow`, 'GET', undefined, f.adminCookie);
+    assert.equal(read.status, 200, read.text); assert.equal(read.body.notRequired, true);
+    assert.equal(read.body.start, undefined); assert.deepEqual(read.body.deliveries, []);
+    assert.equal((await f.request(`${path}/etrn`, 'GET', undefined, f.adminCookie)).body.deliveries.length, 0);
+    for (const [suffix, method, payload] of [
+      ['/saby-workflow', 'POST', {}], ['/saby-workflow/carrier-details', 'POST', {}],
+      ['/saby-workflow/signing', 'GET', undefined], ['/saby-workflow/start', 'POST', { mode: 'draft', previewToken: 'a'.repeat(64) }],
+      ['/saby', 'POST', {}], ['/etrn', 'PUT', { shipmentId: f.created.trip.customers[0].id, profile: {} }],
+      ['/etrn/submit', 'POST', { shipmentId: f.created.trip.customers[0].id }],
+    ] as const) {
+      const result = await f.request(path + suffix, method, payload, f.adminCookie);
+      assert.ok(result.status >= 400, `${suffix}: ${result.text}`);
+    }
+    const trip = (await f.read()).body.trip;
+    assert.equal(trip.deliveries.length, 2); assert.equal(trip.etrnRequired, false); assert.equal(trip.archived, false);
+    const arrived = await f.action('arrive', { versions: trip.versions });
+    assert.equal(arrived.status, 200, arrived.text); assert.equal(arrived.body.trip.archived, false);
+    const masses = trip.deliveries.map((row: { id: string }, index: number) => ({ deliveryId: row.id, netTonnes: index ? '2.5' : '1.5' }));
+    const departed = await f.action('depart', { versions: trip.versions, masses });
+    assert.equal(departed.status, 200, departed.text); assert.equal(departed.body.trip.archived, true);
+    assert.equal(departed.body.trip.deliveries.length, 2);
+    const saved = await f.store.read(f.source);
+    assert.equal(saved.tripSaby?.trips[f.created.trip.id], undefined); assert.equal(saved.saby?.trips[f.created.trip.id], undefined);
+    assert.equal(Object.keys(saved.etrn!.trips[f.created.trip.id].loadingFacts!.deliveries).length, 2);
+    assert.equal(Object.keys(saved.etrn!.trips[f.created.trip.id].deliveries).length, 0);
+    assert.equal(saved.shipments[trip.deliveries[0].id].fields.trip_total_tonnes, '4');
+    assert.equal((await f.action('depart', { versions: trip.versions, masses })).status, 200);
+    await dispatchTripSaby({ base: f.base, store: f.store, config: f.client.config, client: f.client, enabled: true });
+    assert.equal(f.provider.calls.length, 0);
+  } finally { await f.close(); }
+});
+
+test('mixed driver draft only contains eligible delivery and sums its measured mass after full local departure', async () => {
+  const f = await fixture(false, undefined, [true, false]);
+  try {
+    const tripId = f.created.trip.id;
+    const context = { base: f.base, store: f.store, tripId, authorize: () => undefined, client: f.client, prepare: (snapshot: Parameters<typeof prepareTripSaby>[0], data: Parameters<typeof prepareTripSaby>[1], trip: Parameters<typeof prepareTripSaby>[2], config: Parameters<typeof prepareTripSaby>[3]) => prepareTripSaby(snapshot, data, trip, config, integrationSettings) };
+    const run = () => runTripSabyWorkflow({ ...context, createDelivery: input => exchangePreparedEtrn(context, input) });
+    const started = await run(); assert.equal(started.phase, 'awaiting_driver', started.lastError ?? started.blockers.join(' '));
+    assert.deepEqual(started.deliveries.map(row => row.shipmentId), [f.created.trip.customers[1].id]);
+    const trip = (await f.read()).body.trip;
+    assert.equal(trip.deliveries.length, 2);
+    assert.equal((await f.action('arrive', { versions: trip.versions })).status, 200);
+    assert.equal((await f.action('depart', { versions: trip.versions, masses: trip.deliveries.map((row: { id: string }, index: number) => ({ deliveryId: row.id, netTonnes: index ? '3.2' : '9.1' })) })).status, 200);
+    const resumed = await run(); assert.equal(resumed.phase, 'awaiting_carrier', resumed.lastError ?? resumed.blockers.join(' '));
+    const saved = await f.store.read(f.source), record = saved.tripSaby!.trips[tripId];
+    assert.equal(record.snapshot.fields.quantity_litres, '6000');
+    assert.equal(record.snapshot.fields.quantity_tonnes, '3.2');
+    assert.equal(record.deliveries[0].snapshot.profile.deliveryMassTonnes, '3.2');
+    assert.equal(record.deliveries[0].snapshot.tripTotalMassTonnes, '3.2');
+    assert.equal(saved.shipments[trip.deliveries[0].id].fields.trip_total_tonnes, '12.3');
+    assert.equal((await f.read()).body.trip.archived, false);
   } finally { await f.close(); }
 });

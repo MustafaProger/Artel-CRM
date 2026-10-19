@@ -32,15 +32,25 @@ function invalidateSessions(data: OperationsData, user: StoredUser) {
 /** Used inside the same OperationsStore transaction as the version/identity check. */
 export async function mutateDriverAccess(data: OperationsData, snapshot: Snapshot, driverId: string, method: string, input: Record<string, unknown>) {
   const driver = activeDriver(snapshot, driverId);
-  const fields = method === 'POST' ? ['version', 'action', 'password'] : ['version', 'active'];
+  const fields = method === 'POST' ? ['version', 'action', 'password'] : ['version', 'active', 'login'];
   if (Object.keys(input).some(key => !fields.includes(key)) || !Number.isSafeInteger(input.version) || Number(input.version) < 0) throw new ApiError(400, 'Передайте текущую версию доступа водителя.');
-  if (method === 'POST' && !['issue', 'reset'].includes(String(input.action)) || method === 'PATCH' && input.active !== false) throw new ApiError(400, 'Выберите выдачу, смену пароля или отключение доступа.');
+  const changingLogin = method === 'PATCH' && Object.hasOwn(input, 'login');
+  if (method === 'POST' && !['issue', 'reset'].includes(String(input.action)) || method === 'PATCH' && (changingLogin ? Object.hasOwn(input, 'active') : input.active !== false)) throw new ApiError(400, 'Выберите изменение логина, выдачу, смену пароля или отключение доступа.');
   const accounts = data.accounts;
   if (!accounts?.users.some(user => user.active && !user.deletedAt && user.role === 'director')) throw new ApiError(409, 'Сначала настройте учётную запись директора.');
   const previous = linkedUser(data, driverId);
   if (input.version !== (previous?.version ?? 0)) throw new ApiError(409, 'Доступ уже изменён. Обновите сведения о доступе.');
   // Tombstoned accounts are never restored or replaced by another account.
   if (previous?.deletedAt) throw new ApiError(409, 'Учётная запись удалена; автоматическое восстановление запрещено.');
+  if (changingLogin) {
+    if (!previous) throw new ApiError(409, 'Сначала выдайте доступ водителю.');
+    const login = typeof input.login === 'string' ? input.login.trim().toLowerCase() : '';
+    if (!/^[a-z0-9._-]{3,64}$/.test(login)) throw new ApiError(400, 'Логин: 3–64 латинских буквы, цифры, точка, дефис или подчёркивание.');
+    if (accounts.users.some(user => user.id !== previous.id && user.login === login)) throw new ApiError(409, 'Этот логин уже используется.');
+    if (login === previous.login) return { access: readDriverAccess(data, snapshot, driverId), changed: false };
+    previous.login = login; previous.version++; invalidateSessions(data, previous);
+    return { access: readDriverAccess(data, snapshot, driverId), changed: true };
+  }
   if (method === 'PATCH') {
     if (!previous || !previous.active) return { access: readDriverAccess(data, snapshot, driverId), changed: false };
     previous.active = false; previous.version++; invalidateSessions(data, previous);

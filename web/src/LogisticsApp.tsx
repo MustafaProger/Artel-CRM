@@ -44,7 +44,7 @@ function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: (
     controller.current = pending
     setLoading(true)
     setError('')
-    void apiFetch('/api/context', { cache: 'no-store', signal: pending.signal })
+    return apiFetch('/api/context', { cache: 'no-store', signal: pending.signal })
       .then(async response => {
         const result = await response.json()
         if (!response.ok) throw new Error(result.error || 'Не удалось загрузить справочники рейсов.')

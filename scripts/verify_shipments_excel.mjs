@@ -91,7 +91,7 @@ try{
   await go();await page.getByRole('button',{name:'Добавить отгрузку',exact:true}).click();
   let editor=page.getByRole('dialog',{name:'Добавить отгрузку',exact:true});
   await expect(editor.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('');
-  await choose(editor,'Наша организация','НК АРТЕЛЬ');
+  await choose(editor,'Наша организация','НК АРТЭЛЬ');
   const cards=()=>editor.getByTestId('trip-customer');
   const fillCustomer=async(index,company,litres,price,transport,payment='б/нал')=>{const card=cards().nth(index);await choose(card,'Клиент',company.name);if(company.id===customer.id||company.id===other.id)await expect(card.getByRole('combobox',{name:/^Менеджер/})).toHaveValue(data.directories.managers[company.id===customer.id?1:0].name);else await choose(card,'Менеджер',data.directories.managers[0].name);await choose(card,'Форма оплаты',payment);await card.getByLabel('Количество литров, л',{exact:false}).fill(litres);await card.getByLabel('Цена за литр, ₽',{exact:false}).fill(price);await card.getByLabel('Сумма перевозки, ₽',{exact:false}).fill(transport)};
   await expect(editor.getByLabel('Срок оплаты',{exact:true})).toHaveCount(0);

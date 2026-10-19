@@ -136,6 +136,35 @@ test('Saby double-click obtains a single persisted lease and no duplicate write'
   } finally { release(); await rt.close(); }
 });
 
+test('Saby queued manual write rechecks revoked access, expired and replaced leases before dispatch', async t => {
+  for (const invalidation of ['access', 'expired', 'replaced'] as const) await t.test(invalidation, async () => {
+    const rt = await runtime(); const api = fakeApi(); let allowed = true; let requests = 0;
+    let release!: () => void; let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }); const barrier = new Promise<void>(resolve => { release = resolve; });
+    const client = new SabyClient(config(), api.send).withRequestBudget(async action => {
+      if (++requests === 3) { entered(); await barrier; }
+      return action();
+    });
+    try {
+      const sending = submitSabyTrip({ ...rt, client, authorize: () => { if (!allowed) throw new ApiError(403, 'Синтетическое право отозвано'); } });
+      await started;
+      if (invalidation === 'access') allowed = false;
+      else await rt.store.mutate(source, data => {
+        const record = data.saby!.trips[rt.tripId];
+        if (invalidation === 'expired') record.leaseUntil = '2020-01-01T00:00:00.000Z';
+        else record.leaseId = 'replacement-lease';
+        return { result: undefined, changed: true };
+      });
+      release();
+      await assert.rejects(sending, error => error instanceof ApiError && error.status === (invalidation === 'access' ? 403 : 409));
+      assert.equal(api.count('СБИС.СписокНашихОрганизаций'), 2);
+      assert.equal(api.count('СБИС.ЗаписатьДокумент'), 0);
+      assert.equal(api.count('СБИС.ПрочитатьДокумент'), 0);
+      if (invalidation === 'replaced') assert.equal((await rt.store.read(source)).saby!.trips[rt.tripId].leaseId, 'replacement-lease');
+    } finally { release(); await rt.close(); }
+  });
+});
+
 test('Saby lost write response reconciles existing document before any repeat and never treats no-match as safe recreation', async () => {
   const rt = await runtime(); const api = fakeApi(); let loseFirst = true;
   const send: typeof fetch = async (url, init) => { const req = JSON.parse(String(init!.body)); const result = await api.send(url, init); if (req.method === 'СБИС.ЗаписатьДокумент' && loseFirst) { loseFirst = false; throw new Error('lost-response-secret'); } return result; };
@@ -300,10 +329,15 @@ test('Saby expired persisted lease recovers pending as unknown and config profil
 });
 
 test('Saby revocation during submission prevents the next customer write and never exposes another customer snapshot', async () => {
-  const rt = await runtime(); const api = fakeApi(); let reads = 0;
-  const authorize = () => { if (++reads > 2) throw new ApiError(403, 'Доступ отозван'); };
+  const rt = await runtime(); const api = fakeApi(); let revoked = false;
+  const authorize = () => { if (revoked) throw new ApiError(403, 'Доступ отозван'); };
+  const send: typeof fetch = async (url, init) => {
+    const result = await api.send(url, init);
+    if (JSON.parse(String(init?.body)).method === 'СБИС.ПрочитатьДокумент') revoked = true;
+    return result;
+  };
   try {
-    await assert.rejects(submitSabyTrip({ ...rt, authorize, client: new SabyClient(config(), api.send) }), /Доступ отозван/);
+    await assert.rejects(submitSabyTrip({ ...rt, authorize, client: new SabyClient(config(), send) }), /Доступ отозван/);
     assert.equal(api.count('СБИС.ЗаписатьДокумент'), 1);
     const state = await rt.store.read(source); assert.equal(state.saby!.trips[rt.tripId].documents[1].status, 'error');
   } finally { await rt.close(); }

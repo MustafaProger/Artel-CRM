@@ -226,7 +226,7 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
       try {
         const trip = item.event === 'trip-assignment';
         const body = trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.' : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
-        await sender(device, JSON.stringify({ title: trip ? 'Новый рейс · Артэль' : 'Артель CRM', body, tag: item.key, url: trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
+        await sender(device, JSON.stringify({ title: trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });
       } catch (error) {
         const status = (error as { statusCode?: number }).statusCode;

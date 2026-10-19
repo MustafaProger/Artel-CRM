@@ -1,3 +1,5 @@
+import { requireEtrnDelivery } from './trip-etrn-scope';
+import { getShipmentTrip } from './shipment-trips';
 import { createHash, randomUUID } from 'node:crypto';
 import { ApiError } from './api-error';
 import type { EtrnDocument, EtrnOptions } from './etrn-service';
@@ -89,6 +91,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
   const leaseId = randomUUID();
   const authority = (data: import('./operations-store').OperationsData) => {
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+    requireEtrnDelivery(getShipmentTrip(snapshot, tripId), shipmentId);
     const workflow = data.tripSaby?.trips[tripId];
     if (!workflow?.driverFlow || workflow.driverFlow.state !== 'ready' || !workflow.autoAuthorization || !workflow.carrierEvidence || workflow.signing?.sender.state !== 'confirmed' || workflow.signing.carrier.state !== 'confirmed' || !data.driverTripProgress?.[tripId]?.departedAt) throw new ApiError(403, 'Не подтверждено основание автоматической отправки ЭТрН.');
     authorizeAutomaticTripSaby(snapshot, data, tripId, workflow, client.config);

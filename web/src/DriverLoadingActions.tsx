@@ -22,7 +22,7 @@ export default function DriverLoadingActions({ trip, onUpdated }: { trip: Driver
     return result.trip as DriverTrip
   }
   const accepted = (current: DriverTrip, action: 'arrive' | 'depart') => action === 'arrive' ? !!current.arrivedAt : !!current.departedAt
-  const success = (action: 'arrive' | 'depart') => action === 'arrive' ? 'Прибытие сохранено.' : 'Убытие и все массы сохранены. Дальнейшую отправку документов выполняет CRM.'
+  const success = (action: 'arrive' | 'depart') => action === 'arrive' ? 'Прибытие сохранено.' : trip.etrnRequired === false ? 'Убытие и все массы сохранены в CRM. ЭТрН для этого рейса не нужна.' : 'Убытие и все массы сохранены. Дальнейшую отправку документов выполняет CRM.'
   const perform = async (action: 'arrive' | 'depart') => {
     if (inFlight.current || uncertain || trip.archived || (action === 'arrive' ? !!trip.arrivedAt : !trip.arrivedAt || !!trip.departedAt || stale || !complete)) return
     inFlight.current = true; setBusy(true); setMessage(''); setNotice('')
@@ -70,6 +70,6 @@ export default function DriverLoadingActions({ trip, onUpdated }: { trip: Driver
       <button type="submit" className="button primary driver-event-button" disabled={busy || uncertain || stale || !complete}>{busy && <LoaderCircle size={17} className="spin"/>}Убыл</button>
       <p className="driver-action-help">Кнопка сохранит все массы и время убытия. После отправки они доступны только для просмотра.</p>
     </form>}
-    {trip.departedAt && <p className="driver-action-help">{trip.archived ? 'Отправка документов по всем доставкам подтверждена.' : 'Массы и убытие сохранены. CRM продолжает обработку документов. Рейс появится в архиве после завершения всех этапов.'}</p>}
+    {trip.departedAt && <p className="driver-action-help">{trip.etrnRequired === false ? 'Убытие и массы сохранены в CRM. ЭТрН для этого рейса не нужна.' : trip.archived ? 'Отправка документов по всем доставкам подтверждена.' : 'Массы и убытие сохранены. CRM продолжает обработку документов. Рейс появится в архиве после завершения всех этапов.'}</p>}
   </section>
 }

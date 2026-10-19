@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useDialogMotion } from './useDialogMotion'
+import { useMemo, useRef, useState } from 'react'
 import { LoaderCircle, Save, X } from 'lucide-react'
 import type { Company, Directories, Shipment, ShipmentType } from './model'
 import DirectorySelect from './DirectorySelect'
@@ -18,7 +19,7 @@ export default function ShipmentEditor(props: ShipmentEditorProps) {
 }
 
 const manualKeys = ['organization_id','date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_tonnes','quantity_litres','sale_price_per_litre','purchase_price_unspecified_unit','purchase_unit','loading_address_id','unloading_address_id','driver_id','vehicle_id','transport_amount','additional_costs']
-function LegacyShipmentEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose, onSaved }: ShipmentEditorProps) {
+function LegacyShipmentEditor({ shipment, companies, directories, defaultPaymentForm = 'б/нал', onClose: onDismiss, onSaved }: ShipmentEditorProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const initial = useMemo(() => {
     const values = Object.fromEntries(manualKeys.map(k => [k,shipment?.fields[k] ?? '']))
@@ -33,11 +34,7 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
   }, [shipment,directories,defaultPaymentForm])
   const [fields,setFields] = useState(initial), [saving,setSaving] = useState(false), [error,setError] = useState(''), [confirmClose,setConfirmClose] = useState(false)
   const dirty = manualKeys.some(k => fields[k] !== initial[k])
-  useEffect(() => {
-    const element = dialog.current, focused = document.activeElement as HTMLElement | null, old = document.body.style.overflow
-    element?.showModal();document.body.style.overflow='hidden'
-    return () => {element?.close();document.body.style.overflow=old;focused?.focus()}
-  },[])
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   const update = (key: string,value: string) => {setFields(previous => ({...previous,[key]:value,...(key==='customer_id'?{unloading_address_id:'',manager_id:customerManagerId(directories,value)}:key==='supplier_id'?{loading_address_id:''}:key==='driver_id'?{vehicle_id:directories.drivers.find(d=>d.id===value)?.vehicleId || ''}:{})}));setConfirmClose(false)}
   const close = () => {if(saving)return;if(dirty)setConfirmClose(true);else onClose()}
   const customer = companies.find(c=>c.id===fields.customer_id), supplier=companies.find(c=>c.id===fields.supplier_id)
@@ -52,7 +49,7 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
     const changed = Object.fromEntries(manualKeys.filter(key=>shipment ? fields[key]!==initial[key] : fields[key] !== '').map(key=>[key,fields[key].trim() || null]))
     try {
       const response = await fetch(shipment?`/api/shipments/${encodeURIComponent(shipment.id)}`:'/api/shipments',{method:shipment?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields:changed,...(shipment?{version:shipment.version??0}:{})})})
-      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить отгрузку');onSaved(result.shipment)
+      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить отгрузку');await complete(() => onSaved(result.shipment))
     } catch(e) {setError(e instanceof Error?e.message:'Нет связи с сервером')} finally {setSaving(false)}
   }
   const select = (label: string,key: string,entries: {id:string;name:string;detail?:string}[],options: {disabled?:boolean;required?:boolean;legacy?:string|null}={}) => <DirectorySelect key={key} label={label} entries={entries} value={fields[key]} onChange={id=>update(key,id)} disabled={saving||options.disabled} required={!shipment&&options.required} legacy={options.legacy}/>

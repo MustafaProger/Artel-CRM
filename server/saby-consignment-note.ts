@@ -1,3 +1,4 @@
+import { etrnTrip, requireEtrnDelivery } from './trip-etrn-scope';
 import Decimal from 'decimal.js';
 import type { ShipmentTrip, Snapshot } from '../web/src/model';
 import type { EtrnDocumentBasis, EtrnLoadingParty, EtrnName, EtrnParty, SabyConsignmentProfile } from '../web/src/etrn-model';
@@ -70,6 +71,8 @@ export function readSabyConsignmentProfile(raw: unknown): SabyConsignmentProfile
 const copyFields = ['organization_id', 'date', 'supplier_id', 'product_id', 'driver_id', 'vehicle_id', 'customer_id', 'quantity_litres', 'loading_address', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'unloading_address', 'unloading_latitude', 'unloading_longitude', 'unloading_planned_at', 'unloading_actual_at'] as const;
 /** Capture actual trip/delivery and only the directory details needed by the sender title. */
 export function buildSabyConsignmentSnapshot(source: Snapshot, trip: ShipmentTrip, shipmentId: string, customerOrganization: SabyOrganization, carrierOrganization: SabyOrganization, input: unknown): SabyConsignmentSnapshot {
+  requireEtrnDelivery(trip, shipmentId);
+  trip = etrnTrip(source, trip);
   const delivery = trip.customers.find(row => row.id === shipmentId);
   if (!delivery) throw new SabyError('validation', 'Выбранная доставка не принадлежит рейсу.');
   const row = source.shipments.find(item => item.id === shipmentId);

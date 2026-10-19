@@ -1,3 +1,4 @@
+import { requiresEtrn, requireEtrnDelivery } from './trip-etrn-scope';
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { Snapshot } from '../web/src/model';
@@ -11,6 +12,8 @@ import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sa
 import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, sabyConsignmentBlockers, buildSabyConsignmentDocument, serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
 import type { CreateTripSabyDelivery } from './trip-saby-workflow';
 import { validateEtrnDispatch, type EtrnDispatch } from './etrn-dispatch';
+import { reconcileLinkedConsignmentDraft, validateLinkedDraftState, type LinkedDraftState } from './etrn-linked-draft';
+import { verifyConsignmentSenderBusiness } from './saby-consignment-evidence';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -22,6 +25,10 @@ const LEASE_MS = 300_000;
 interface EtrnArtifact { key: string; attachmentId: string; revision: string | null; name: string; extension: string; sha256?: string; size?: number; content?: string }
 export interface EtrnDocument extends Omit<EtrnDocumentSummary, 'files'> {
   dispatch?: EtrnDispatch;
+  /** Original native draft and exact requested fill; never replaces the frozen delivery. */
+  linkedDraft?: LinkedDraftState;
+  /** New driver attempts opt in; historical uncertain attempts require explicit scoped recovery. */
+  nativeDraftEnabled?: boolean;
   number?: string; reservationAttempted?: boolean; uploadAttempted?: boolean;
   unexpectedDocumentIds?: string[];
   marker: string; attemptId: string; createdAt: string; payloadHash: string;
@@ -57,6 +64,8 @@ export function validateEtrnData(value: unknown): asserts value is EtrnData | un
       const doc = delivery.document;
       if (doc === null) continue;
       if (sabyObject(doc)) validateEtrnDispatch(doc.dispatch, typeof doc.id === 'string' ? doc.id : null);
+      if (sabyObject(doc)) validateLinkedDraftState(doc.linkedDraft, typeof doc.id === 'string' ? doc.id : null);
+      if (sabyObject(doc) && (doc.nativeDraftEnabled !== undefined && typeof doc.nativeDraftEnabled !== 'boolean' || doc.linkedDraft !== undefined && doc.nativeDraftEnabled !== true)) throw new Error('Invalid native ETRN recovery policy');
       if (sabyObject(doc) && doc.unexpectedDocumentIds !== undefined && (!Array.isArray(doc.unexpectedDocumentIds) || doc.unexpectedDocumentIds.length > 10 || !doc.unexpectedDocumentIds.every(id => typeof id === 'string' && id.trim() && id.length <= 256))) throw new Error('Invalid unexpected ETRN identifiers');
       if (sabyObject(doc) && (doc.number !== undefined && (typeof doc.number !== 'string' || !doc.number.trim()) || doc.reservationAttempted !== undefined && typeof doc.reservationAttempted !== 'boolean' || doc.uploadAttempted !== undefined && typeof doc.uploadAttempted !== 'boolean')) throw new Error('Invalid ETRN numbering');
       if (!sabyObject(doc) || !['pending', 'unknown', 'draft', 'error'].includes(String(doc.status)) || !nullable(doc.id) || !nullable(doc.revision) || !nullable(doc.url) || !nullable(doc.remoteStatus) || !nullable(doc.lastError) || !nullable(doc.gisStatus) || !['not_signed','reported_by_saby','unknown'].includes(String(doc.signatureStatus)) || !Array.isArray(doc.availableActions) || !doc.availableActions.every(v => typeof v === 'string') || !isDate(doc.updatedAt) || !isDate(doc.createdAt) || typeof doc.marker !== 'string' || !doc.marker.startsWith('ARTEL-CRM:ETRN:') || typeof doc.attemptId !== 'string' || !doc.attemptId || !sabyObject(doc.snapshot) || doc.snapshot.tripId !== tripId || doc.snapshot.shipmentId !== shipmentId || doc.payloadHash !== hash(doc.snapshot) || !nullable(doc.leaseId) || !(doc.leaseUntil === null || isDate(doc.leaseUntil)) || !Array.isArray(doc.artifacts) || doc.artifacts.length > 500 || doc.status === 'draft' && !doc.id) throw new Error('Invalid ETRN document');
@@ -100,7 +109,7 @@ export function getEtrnTrip(base: Snapshot, data: OperationsData, tripId: string
   const displayOrganization = (org: SabyConfig['customer']) => ({ name: org.name, inn: org.inn, kpp: org.kpp, address: org.address, phone: org.phone ?? '' });
   return { configured: !configurationBlockers.length, configurationBlockers, updatedAt: saved?.updatedAt ?? null,
     organizations: { consignor: displayOrganization(config.customer), carrier: displayOrganization(config.carrier) },
-    deliveries: trip.customers.map(row => {
+    deliveries: trip.customers.filter(requiresEtrn).map(row => {
       const preparation = saved?.deliveries[row.id];
       const doc = preparation?.document;
       const snapshot = doc && doc.status !== 'error' ? doc.snapshot : preparation?.sourceOrderId ? preparation.snapshot : makeSnapshot(base, data, tripId, row.id, preparation?.profile ?? null, config);
@@ -138,8 +147,10 @@ function partyMatches(raw: unknown, expected: { inn: string; kpp: string }) {
   const party = sabyObject(raw) && sabyObject(raw.СвЮЛ) ? raw.СвЮЛ : null;
   return !!party && party.ИНН === expected.inn && party.КПП === expected.kpp;
 }
-function confirmed(remote: SabyObject, doc: EtrnDocument): Partial<EtrnDocument> {
-  if (remote.Тип !== 'ConsignmentNote' || remote.Идентификатор !== doc.id || remote.Номер !== (doc.number ?? `CRM-${doc.attemptId}`) || remote.Примечание !== doc.marker || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да') throw new SabyError('unknown', 'Прочитанная ЭТрН не совпадает с отправленным документом. Повторное создание запрещено.', true);
+function confirmed(remote: SabyObject, doc: EtrnDocument, verifiedLinkedDraft = false): Partial<EtrnDocument> {
+  // A linked native draft has no CRM marker. Only the reciprocal-link and full-title
+  // verification immediately preceding this call may establish its identity.
+  if (remote.Тип !== 'ConsignmentNote' || remote.Идентификатор !== doc.id || remote.Номер !== (doc.number ?? `CRM-${doc.attemptId}`) || !verifiedLinkedDraft && remote.Примечание !== doc.marker || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да') throw new SabyError('unknown', 'Прочитанная ЭТрН не совпадает с отправленным документом. Повторное создание запрещено.', true);
   const parties = sabyObject(remote.Стороны) ? remote.Стороны : {};
   const sender = parties.Отправитель ?? remote.Грузоотправитель ?? remote.НашаОрганизация;
   const carrier = parties.Перевозчик ?? remote.Перевозчик ?? remote.ТранспортнаяКомпания;
@@ -165,7 +176,7 @@ function confirmed(remote: SabyObject, doc: EtrnDocument): Partial<EtrnDocument>
 /** Persist the intent before network; reconcile unknown results without any second write. */
 export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, refresh = false): Promise<EtrnTripResponse> {
   const { base, store, tripId, authorize } = options;
-  const client = options.client ?? new SabyClient(sabyConfigFromEnv());
+  let client = options.client ?? new SabyClient(sabyConfigFromEnv());
   const source = base.provenance.sourceSha256;
   const leaseId = randomUUID();
   const claimed = await store.mutate(source, data => {
@@ -196,6 +207,12 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
     return { result: structuredClone(doc), changed: true };
   });
   if (claimed) {
+    const checkAccess = async () => {
+      const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+      const document = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+      if (!document || document.leaseId !== leaseId || !document.leaseUntil || Date.parse(document.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс обмена ЭТрН истёк или изменился. Выполните сверку.');
+    };
+    client = client.withRequestGuard(checkAccess);
     let beganWrite = false;
     let id = claimed.id;
     const update = async (patch: Partial<EtrnDocument>) => store.mutate(source, data => {
@@ -219,8 +236,14 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
         if (!id) throw new SabyError('unknown', 'Saby не вернул идентификатор ЭТрН. Требуется сверка.', true);
       }
       await update({ id, status: 'unknown', updatedAt: stamp() });
-      const remote = await client.readConsignmentNote(id!);
-      await update(confirmed(remote, { ...claimed, id }));
+      const linked = claimed.linkedDraft ? await reconcileLinkedConsignmentDraft({
+        client, order: { id: claimed.linkedDraft.sourceOrderId, number: claimed.linkedDraft.sourceOrderNumber, date: claimed.linkedDraft.sourceOrderDate },
+        deliveryCount: latest.tripSaby?.trips[tripId]?.deliveries.length ?? 0,
+        current: () => ({ ...claimed, id }), update, readOnly: true,
+        checkAccess,
+      }) : null;
+      const remote = linked ?? await client.readConsignmentNote(id!);
+      await update(confirmed(remote, { ...claimed, id }, !!linked));
     } catch (error) {
       const uncertain = !!id || claimed.status === 'unknown' || beganWrite && (!(error instanceof SabyError) || error.uncertain);
       await update({ id, status: uncertain ? 'unknown' : 'error', lastError: error instanceof SabyError || error instanceof ApiError ? error.message : 'Обмен ЭТрН не подтверждён. Выполните сверку состояния.', updatedAt: stamp() });
@@ -268,12 +291,14 @@ function snapshotWithLoading(snapshot: SabyConsignmentSnapshot, facts: TripLoadi
   return result;
 }
 
-/** Two durable writes target one Saby ID: reserve its registry number, then attach the title. */
+/** Recover a linked native draft for a single driver delivery; preserve the existing legacy path. */
 export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTripSabyDelivery): Promise<{ status: 'pending' | 'unknown' | 'draft' | 'error'; id: string | null; lastError: string | null; waitingForLoading?: boolean }> {
   const { base, store, tripId, authorize } = options;
-  const client = options.client ?? new SabyClient(sabyConfigFromEnv()), source = base.provenance.sourceSha256, shipmentId = input.shipmentId;
+  let client = options.client ?? new SabyClient(sabyConfigFromEnv());
+  const source = base.provenance.sourceSha256, shipmentId = input.shipmentId;
   const leaseId = randomUUID();
   const initial = await store.read(source); authorize(currentSnapshot(base, initial), initial);
+  requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, initial), tripId), shipmentId);
   const facts = initial.etrn?.trips[tripId]?.loadingFacts;
   if (!facts) return { status: 'error', id: null, lastError: 'Заявка подтверждена. Заполните фактические сведения погрузки всего рейса.', waitingForLoading: true };
   // Validate ALL deliveries before the first consignment reservation, including saved actual facts.
@@ -281,7 +306,9 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
   if (allErrors.length) return { status: 'error', id: null, lastError: [...new Set(allErrors)].join(' ') };
   const claimed = await store.mutate(source, data => {
     authorize(currentSnapshot(base, data), data);
+    requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
     const workflow = data.tripSaby?.trips[tripId];
+    if (!workflow?.deliveries.some(row => row.shipmentId === shipmentId)) throw new ApiError(409, 'Доставка не входит в согласованный состав ЭТрН.');
     if (!workflow?.carrierEvidence || workflow.order.id !== input.order.id || workflow.carrierEvidence.evidenceHash !== input.carrierEvidence.evidenceHash) throw new ApiError(409, 'Подтверждение общей заявки изменилось. Выполните сверку.');
     const existing = data.etrn?.trips[tripId]?.deliveries[shipmentId];
     if (existing?.document?.leaseUntil && Date.parse(existing.document.leaseUntil) > Date.now()) throw new ApiError(409, 'ЭТрН уже обрабатывается.');
@@ -289,7 +316,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
     const snapshot = existing?.document?.snapshot ?? snapshotWithLoading(input.snapshot, facts, input.order);
     const errors = sabyConsignmentBlockers(snapshot); if (errors.length) throw new ApiError(422, errors.join(' '));
     const time = stamp();
-    const doc: EtrnDocument = existing?.document ?? { id: null, revision: null, status: 'pending', url: null, remoteStatus: null, lastError: null, updatedAt: time, createdAt: time, marker: `ARTEL-CRM:ETRN:${randomUUID()}`, attemptId: randomUUID(), payloadHash: hash(snapshot), snapshot, artifacts: [], signatureStatus: 'unknown', gisStatus: null, availableActions: [], leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false };
+    const doc: EtrnDocument = existing?.document ?? { id: null, revision: null, status: 'pending', url: null, remoteStatus: null, lastError: null, updatedAt: time, createdAt: time, marker: `ARTEL-CRM:ETRN:${randomUUID()}`, attemptId: randomUUID(), payloadHash: hash(snapshot), snapshot, artifacts: [], signatureStatus: 'unknown', gisStatus: null, availableActions: [], leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, ...(workflow.driverFlow && workflow.deliveries.length === 1 ? { nativeDraftEnabled: true } : {}) };
     doc.leaseId = leaseId; doc.leaseUntil = new Date(Date.now() + LEASE_MS).toISOString();
     data.etrn ??= { trips: {} };
     const trip = data.etrn.trips[tripId] ??= { deliveries: {}, updatedAt: time };
@@ -302,11 +329,21 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
     doc = await store.mutate(source, data => {
       const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
       if (!current || current.leaseId !== leaseId) throw new ApiError(409, 'Сеанс ЭТрН изменился. Выполните сверку.');
+      const releasing = Object.keys(patch).every(key => ['leaseId', 'leaseUntil'].includes(key)) && patch.leaseId === null && patch.leaseUntil === null;
+      if (!releasing) {
+        authorize(currentSnapshot(base, data), data);
+        if (!current.leaseUntil || Date.parse(current.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс ЭТрН истёк. Выполните сверку.');
+      }
       Object.assign(current, patch, { updatedAt: stamp() });
       return { result: structuredClone(current), changed: true };
     });
   };
-  const checkAccess = async () => { const data = await store.read(source); authorize(currentSnapshot(base, data), data); };
+  const checkAccess = async () => {
+    const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+    const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+    if (!current || current.leaseId !== leaseId || !current.leaseUntil || Date.parse(current.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс ЭТрН истёк. Выполните сверку.');
+  };
+  client = client.withRequestGuard(checkAccess);
   const validateReservation = (remote: SabyObject) => {
     if (remote.Идентификатор !== doc.id || remote.Тип !== 'ConsignmentNote' || remote.Примечание !== doc.marker || remote.Дата !== doc.snapshot.fields.date?.split('-').reverse().join('.') || !sabyText(remote.Номер) || doc.number && remote.Номер !== doc.number || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' || !partyMatches(remote.НашаОрганизация, doc.snapshot.customerOrganization)) throw new SabyError('unknown', 'Saby не подтвердил зарезервированный номер ЭТрН. Новое создание запрещено.', true);
   };
@@ -314,12 +351,23 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
   let armedAction: 'reservation' | 'upload' | null = null;
   try {
     await client.verifyOrganizations(doc.snapshot.customerOrganization, doc.snapshot.carrierOrganization); await checkAccess();
+    const linked = doc.nativeDraftEnabled ? await reconcileLinkedConsignmentDraft({
+      client, order: input.order, deliveryCount: initial.tripSaby!.trips[tripId].deliveries.length,
+      current: () => doc, update, checkAccess,
+    }) : null;
+    if (linked) {
+      await update(confirmed(linked, doc, true));
+      return { status: doc.status, id: doc.id, lastError: doc.lastError };
+    }
     if (!doc.id && doc.reservationAttempted) {
       const found = await client.findDocuments(doc.marker, doc.snapshot.fields.date!.split('-').reverse().join('.'), doc.snapshot.customerOrganization, doc.number, 'ConsignmentNote');
       if (found.length !== 1 || !sabyText(found[0].Идентификатор)) throw new SabyError('unknown', 'Результат создания ЭТрН пока не установлен. Повторное создание запрещено.', true);
       await update({ id: sabyText(found[0].Идентификатор), status: 'unknown' }); await checkAccess();
     }
     if (!doc.id) {
+      // Saby creates a native consignment from the accepted driver-flow order.
+      // Wait for that exact relationship instead of reserving a duplicate shell.
+      if (doc.nativeDraftEnabled) throw new SabyError('unknown', 'Saby ещё не подтвердил связанную ЭТрН принятой заявки. CRM ожидает документ; повторное создание не выполняется.', true);
       const full = buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, '1');
       const { Номер: _number, Вложение: _attachments, ...metadata } = full; void _number; void _attachments;
       armedAction = 'reservation';
@@ -347,6 +395,12 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
       }
       writing = null; await checkAccess(); remote = await client.readConsignmentNote(doc.id!);
     }
+    const titles = Array.isArray(remote.Вложение) ? remote.Вложение.filter(row => sabyObject(row) && row.Подтип === '1110339' && row.Удален !== 'Да') : [];
+    const revision = sabyDocumentWorkflow(remote).revision;
+    if (titles.length !== 1 || !sabyObject(titles[0]) || !sabyText(titles[0].Идентификатор) || !revision) throw new SabyError('unknown', 'Не подтверждён единственный титул ЭТрН для сверки содержимого.', true);
+    const uploadedTitle = await client.downloadAttachment(doc.id!, String(titles[0].Идентификатор), revision);
+    verifyConsignmentSenderBusiness(uploadedTitle.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number).xml);
+    await checkAccess();
     await update(confirmed(remote, doc));
   } catch (error) {
     const localDenied = armedAction && error instanceof ApiError && [401, 403].includes(error.status);
@@ -355,13 +409,19 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
     await update({ ...(denied && deniedAction === 'reservation' ? { reservationAttempted: false } : {}), ...(denied && deniedAction === 'upload' ? { uploadAttempted: false } : {}), status: denied ? 'error' : doc.reservationAttempted || doc.id ? 'unknown' : 'error', lastError: error instanceof SabyError || error instanceof ApiError ? error.message : 'Результат обмена ЭТрН неизвестен. Выполните сверку.' });
     if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
   } finally { await update({ leaseId: null, leaseUntil: null }); }
-  await checkAccess();
+  const latest = await store.read(source); authorize(currentSnapshot(base, latest), latest);
   return { status: doc.status, id: doc.id, lastError: doc.lastError };
 }
 
 export function preparedEtrnXml(base: Snapshot, data: OperationsData, tripId: string, shipmentId: string, config = sabyConfigFromEnv()) {
+  requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
   const row = data.etrn?.trips[tripId]?.deliveries[shipmentId];
   if (!row) throw new ApiError(422, 'Сначала сохраните подготовку ЭТрН.');
+  if (row.document?.linkedDraft) {
+    const saved = row.document.linkedDraft;
+    validateLinkedDraftState(saved, row.document.id);
+    return { xml: Buffer.from(saved.filledBase64, 'base64'), name: saved.attachmentName, number: saved.documentNumber, uid: row.document.attemptId };
+  }
   const snapshot = row.document?.snapshot ?? makeSnapshot(base, data, tripId, shipmentId, row.profile, config);
   const errors = sabyConsignmentBlockers(snapshot);
   if (errors.length) throw new ApiError(422, errors.join(' '));
@@ -373,13 +433,18 @@ export async function downloadEtrnFile(options: EtrnOptions, shipmentId: string,
   const { base, store, tripId, authorize } = options;
   const source = base.provenance.sourceSha256;
   const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+  requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
   const doc = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
   const file = doc?.artifacts.find(file => file.key === key);
   if (!doc?.id || !file) throw new ApiError(404, 'Файл ЭТрН не найден.');
   if (file.content) return { bytes: Buffer.from(file.content, 'base64'), name: file.name, extension: file.extension };
   // A revision can change in Saby; uncached historical bytes must not be replaced by newer ones.
   if (file.revision !== doc.revision) throw new ApiError(409, 'Этот файл относится к предыдущей редакции. Откройте архив редакций в Saby.');
-  const client = options.client ?? new SabyClient(sabyConfigFromEnv());
+  const client = (options.client ?? new SabyClient(sabyConfigFromEnv())).withRequestGuard(async () => {
+    const latest = await store.read(source); authorize(currentSnapshot(base, latest), latest);
+    const current = latest.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+    if (current?.id !== doc.id || current?.revision !== file.revision || !current.artifacts.some(item => item.key === key && item.attachmentId === file.attachmentId)) throw new ApiError(409, 'Редакция ЭТрН изменилась. Обновите список файлов.');
+  });
   const read = await client.readConsignmentNote(doc.id);
   const workflow = sabyDocumentWorkflow(read);
   if (workflow.revision !== file.revision || !workflow.attachments.some(item => item.id === file.attachmentId)) throw new ApiError(409, 'Редакция документа в Saby изменилась. Обновите состояние ЭТрН.');

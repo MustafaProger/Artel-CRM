@@ -122,3 +122,126 @@ test('sender comparison accepts added Saby coordinates only at unchanged address
   assert.doesNotThrow(() => verifySabySenderBusiness(bytes(withStops), bytes(stops)));
   assert.throws(() => verifySabySenderBusiness(bytes(withStops.replace('Второй синтетический адрес', 'Другой адрес')), bytes(stops)));
 });
+
+const deliveryInformation = '<ИнфПол><ТекстИнф Идентиф="Доставка CRM" Значение="delivery-a"/><ТекстИнф Идентиф="Получатель доставки" Значение="Получатель Тест"/><ТекстИнф Идентиф="ИНН получателя" Значение="010000000102"/><ТекстИнф Идентиф="Адрес доставки" Значение="Адрес доставки Тест"/></ИнфПол>';
+const singleDeliveryCargo = `<ОпГруз Объем="1"><МасГруз МасБрутЗнач="835" МасНетЗнач="835"/><Пункт Погр="1" Выгр="2" КолГрМест="1"/>${deliveryInformation}</ОпГруз>`;
+const unloadingPoint = '<АдрПункт Опер="Выгрузка" ПорНомПункт="2">';
+const singleDeliverySender = sender.replace('<ОпГруз><МасГруз МасБрутЗнач="14740" МасНетЗнач="14740"/></ОпГруз>',
+  `<АдрПункт Опер="Погрузка" ПорНомПункт="1"><АдресПункт><Адрес><АдрИнф КодСтр="643" АдрТекст="Адрес погрузки Тест"/></Адрес></АдресПункт></АдрПункт>${unloadingPoint}<АдресПункт><Адрес><АдрИнф КодСтр="643" АдрТекст="Адрес доставки Тест"/></Адрес></АдресПункт></АдрПункт>${singleDeliveryCargo}<ИнфПол><ТекстИнф Идентиф="Рейс CRM" Значение="trip-a"/><ТекстИнф Идентиф="Доставка CRM" Значение="trip-a"/><ТекстИнф Идентиф="Получатель доставки" Значение="Получатель Тест"/><ТекстИнф Идентиф="ИНН получателя" Значение="010000000102"/><ТекстИнф Идентиф="Доставка 1" Значение="delivery-a: Получатель Тест; 1000 л; Адрес доставки Тест"/></ИнфПол>`);
+const omitDeliveryInformation = (xml: string) => xml.replace(deliveryInformation, '');
+
+const routeCoordinates = '<Коорд Широта="55.643825" Долгота="37.85126"/>';
+const fullAddressSender = singleDeliverySender.replace('<АдрРФ>Синтетический адрес</АдрРФ>', '<АдрИнф КодСтр="643" АдрТекст="Адрес подачи Тест"/>');
+const withRouteCoordinates = fullAddressSender.replaceAll('<Адрес>', `${routeCoordinates}<Адрес>`);
+const omitRouteCoordinates = (xml: string) => xml.replaceAll(routeCoordinates, '');
+
+test('sender accepts omitted coordinates only at the exact full pickup and route addresses without changing input bytes', () => {
+  const frozen = bytes(withRouteCoordinates); const frozenBefore = Buffer.from(frozen);
+  const current = bytes(fullAddressSender); const currentBefore = Buffer.from(current);
+  assert.doesNotThrow(() => verifySabySenderBusiness(current, frozen));
+  assert.deepEqual(current, currentBefore); assert.deepEqual(frozen, frozenBefore);
+  // A single missing unloading point is independent of the unchanged pickup/loading points.
+  const unloadingCoordinates = `${unloadingPoint}<АдресПункт>${routeCoordinates}`;
+  const oneMissing = withRouteCoordinates.replace(unloadingCoordinates, `${unloadingPoint}<АдресПункт>`);
+  assert.notEqual(oneMissing, withRouteCoordinates);
+  assert.doesNotThrow(() => verifySabySenderBusiness(bytes(oneMissing), frozen));
+  assert.doesNotThrow(() => verifySabySenderBusiness(bytes(fullAddressSender.replace('КодСтр="643" АдрТекст="Адрес доставки Тест"', 'АдрТекст="Адрес доставки Тест" КодСтр="643"')), frozen));
+});
+
+test('omitted coordinates cannot hide changed addresses, routes, cargo or organization identities', () => {
+  const routes = fullAddressSender.match(/<АдрПункт [\s\S]*?<\/АдрПункт>/g)!;
+  for (const changed of [
+    fullAddressSender.replace('АдрТекст="Адрес доставки Тест"', 'АдрТекст="Другой адрес"'),
+    fullAddressSender.replace('АдрТекст="Адрес доставки Тест"', 'АдрТекст="Адрес  доставки Тест"'),
+    fullAddressSender.replace('КодСтр="643"', 'КодСтр="398"'),
+    fullAddressSender.replace('<Адрес><АдрИнф КодСтр="643" АдрТекст="Адрес подачи Тест"/></Адрес>', ''),
+    fullAddressSender.replace('ПорНомПункт="2"', 'ПорНомПункт="3"'),
+    fullAddressSender.replace(routes.join(''), [...routes].reverse().join('')),
+    fullAddressSender.replace('МасНетЗнач="835"', 'МасНетЗнач="836"'),
+    fullAddressSender.replace('0148372956', '0199999999'),
+    fullAddressSender.replace('<АдрПунктПод>', '<АдрПунктПод><ГЛН>1234567890123</ГЛН>'),
+    withRouteCoordinates.replace('Широта="55.643825"', 'Широта="55.643826"'),
+  ]) assert.throws(() => verifySabySenderBusiness(bytes(changed), bytes(withRouteCoordinates)));
+});
+
+test('coordinate omission requires one valid frozen pair and one nonempty unambiguous full address', () => {
+  for (const invalid of [
+    routeCoordinates.replace('55.643825', '95.643825'), routeCoordinates.replace('37.85126', '180.000000000000001'),
+    routeCoordinates.replace('55.643825', 'NaN'), routeCoordinates.replace(' Долгота="37.85126"', ''),
+    routeCoordinates.replace('/>', ' Другое="1"/>'), routeCoordinates.replace('/>', '>не координаты</Коорд>'),
+    routeCoordinates + routeCoordinates,
+  ]) {
+    const frozen = withRouteCoordinates.replace(routeCoordinates, invalid);
+    assert.throws(() => verifySabySenderBusiness(bytes(fullAddressSender), bytes(frozen)));
+  }
+  const address = '<Адрес><АдрИнф КодСтр="643" АдрТекст="Адрес подачи Тест"/></Адрес>';
+  for (const missingOrAmbiguous of ['', '<Адрес/>', '<Адрес><АдрИнф КодСтр="643" АдрТекст=""/></Адрес>', address + address]) {
+    const frozen = withRouteCoordinates.replace(address, missingOrAmbiguous);
+    assert.throws(() => verifySabySenderBusiness(bytes(omitRouteCoordinates(frozen)), bytes(frozen)));
+  }
+  const unrelated = fullAddressSender.replace('<СвГО>', `<СвГО>${routeCoordinates}`);
+  assert.throws(() => verifySabySenderBusiness(bytes(fullAddressSender), bytes(unrelated)));
+});
+
+test('single delivery cargo information may disappear only with exact retained recipient, delivery, volume and route evidence', () => {
+  for (const replacement of ['', '<ИнфПол/>', '<ИнфПол> \n </ИнфПол>']) {
+    const actual = singleDeliverySender.replace(deliveryInformation, replacement);
+    assert.doesNotThrow(() => verifySabySenderBusiness(bytes(actual), bytes(singleDeliverySender)));
+    assert.doesNotThrow(() => verifySabySenderBusiness(bytes(actual.replace(unloadingPoint, unloadingPoint.replace('>', ' НалКоорТочВрОпер="1">'))), bytes(singleDeliverySender)));
+  }
+  const actual = omitDeliveryInformation(singleDeliverySender);
+  for (const changed of [
+    actual.replace('МасНетЗнач="835"', 'МасНетЗнач="836"'), actual.replace('Объем="1"', 'Объем="2"'),
+    actual.replace('Получатель Тест', 'Другой получатель'), actual.replace('010000000102', '010000000103'),
+    actual.replace('delivery-a:', 'delivery-b:'), actual.replace('1000 л;', '1001 л;'),
+    actual.replace('АдрТекст="Адрес доставки Тест"', 'АдрТекст="Другой адрес"'), actual.replace('л; Адрес доставки Тест', 'л; Другой адрес'),
+    actual.replace('Выгр="2"', 'Выгр="1"'), actual.replace('Погр="1"', 'Погр="2"'), actual.replace('КолГрМест="1"', 'КолГрМест="2"'),
+    actual.replace(unloadingPoint, unloadingPoint.replace('>', ' ДатВрОпер="01.04.2025T14:00:00+03:00">')),
+    actual.replace('</ОпГруз>', '<ИнфПол ИдФайлИнфПол="synthetic-external-file"/></ОпГруз>'),
+    actual.replace('</ОпГруз>', '<ИнфПол><ТекстИнф Идентиф="Доставка CRM" Значение="delivery-a"/></ИнфПол></ОпГруз>'),
+    actual.replace('</ОпГруз>', '<ИнфПол><ТекстИнф Идентиф="Другое" Значение="Не терять"/></ИнфПол></ОпГруз>'),
+    actual.replace('</ОпГруз>', '<ИнфПол/><ИнфПол/></ОпГруз>'),
+    actual.replace('ПорНомПункт="2"', 'ПорНомПункт="3"'), actual.replace('ПорНомПункт="2"', 'ПорНомПункт="1"'),
+  ]) assert.throws(() => verifySabySenderBusiness(bytes(changed), bytes(singleDeliverySender)));
+});
+
+test('missing cargo metadata cannot hide extra fields, ambiguous duplicate keys or multiple deliveries in the frozen title', () => {
+  const broken = [
+    singleDeliverySender.replace(deliveryInformation, deliveryInformation.replace('</ИнфПол>', '<ТекстИнф Идентиф="Условие" Значение="Нельзя терять"/></ИнфПол>')),
+    singleDeliverySender.replace(deliveryInformation, deliveryInformation.replace('</ИнфПол>', '<ТекстИнф Идентиф="Доставка CRM" Значение="delivery-a"/></ИнфПол>')),
+    singleDeliverySender.replace(deliveryInformation, deliveryInformation.replace('<ИнфПол>', '<ИнфПол ИдФайлИнфПол="synthetic-linked-file">')),
+    singleDeliverySender.replace('Значение="delivery-a"', 'Значение="unlinked-delivery"'),
+    singleDeliverySender.replace('Объем="1"', 'Объем="2"'),
+    singleDeliverySender.replace('Значение="010000000102"', 'Значение="010000000103"'),
+    singleDeliverySender.replace('</СодИнфГО>', `${singleDeliveryCargo}</СодИнфГО>`),
+    singleDeliverySender.replace('Идентиф="Доставка 1"', 'Идентиф="Доставка 2"'),
+    singleDeliverySender.replace('Идентиф="Рейс CRM"', 'Идентиф="Неизвестный рейс"'),
+    singleDeliverySender.replace('Идентиф="Доставка 1"', 'Идентиф="ИНН получателя"'),
+  ];
+  for (const frozen of broken) {
+    const actual = frozen.replace(/(<ОпГруз[^>]*>.*?)<ИнфПол[\s\S]*?<\/ИнфПол>(<\/ОпГруз>)/g, '$1$2');
+    assert.notEqual(actual, frozen);
+    assert.throws(() => verifySabySenderBusiness(bytes(actual), bytes(frozen)));
+  }
+});
+
+test('only an added UTC indicator 1 on an unchanged numbered unloading point with no times is inert', () => {
+  const flag = (value: string) => unloadingPoint.replace('>', ` НалКоорТочВрОпер="${value}">`);
+  assert.doesNotThrow(() => verifySabySenderBusiness(bytes(singleDeliverySender.replace(unloadingPoint, flag('1'))), bytes(singleDeliverySender)));
+  for (const value of ['0', '2', '', 'true']) assert.throws(() => verifySabySenderBusiness(bytes(singleDeliverySender.replace(unloadingPoint, flag(value))), bytes(singleDeliverySender)));
+  for (const value of ['0', '1']) {
+    const frozen = singleDeliverySender.replace(unloadingPoint, flag(value));
+    assert.throws(() => verifySabySenderBusiness(bytes(singleDeliverySender), bytes(frozen)));
+    assert.throws(() => verifySabySenderBusiness(bytes(singleDeliverySender.replace(unloadingPoint, flag(value === '1' ? '0' : '1'))), bytes(frozen)));
+  }
+  for (const temporal of ['ДатВрОпер="01.04.2025T14:00:00+03:00"', 'ПредВрОпер="19:00:00+03:00"', 'НалКоорТочПредВрОпер="1"', 'ДатВрОпер=""']) {
+    const frozen = singleDeliverySender.replace(unloadingPoint, unloadingPoint.replace('>', ` ${temporal}>`));
+    assert.throws(() => verifySabySenderBusiness(bytes(frozen.replace(` ${temporal}>`, ` ${temporal} НалКоорТочВрОпер="1">`)), bytes(frozen)));
+  }
+  for (const bad of [
+    singleDeliverySender.replace('Опер="Погрузка"', 'Опер="Погрузка" НалКоорТочВрОпер="1"'),
+    singleDeliverySender.replace('<ОпГруз ', '<ОпГруз НалКоорТочВрОпер="1" '),
+    singleDeliverySender.replace(unloadingPoint, flag('1')).replace('ПорНомПункт="2"', 'ПорНомПункт="3"'),
+    singleDeliverySender.replace(unloadingPoint, flag('1')).replace('ПорНомПункт="2"', 'ПорНомПункт="1"'),
+  ]) assert.throws(() => verifySabySenderBusiness(bytes(bad), bytes(singleDeliverySender)));
+});

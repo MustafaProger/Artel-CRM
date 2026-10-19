@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { dispatchTripSaby, SABY_COMPLETED_REFRESH_MS, SABY_WORKFLOW_TICK_MS } from '../server/trip-saby-scheduler';
+import { createTripSabyScheduler, dispatchTripSaby, SABY_COMPLETED_REFRESH_MS, SABY_WORKFLOW_TICK_MS } from '../server/trip-saby-scheduler';
 import { getTripSabyWorkflow, runTripSabyWorkflow } from '../server/trip-saby-workflow';
 import { exchangePreparedEtrn, saveTripLoadingFacts } from '../server/etrn-service';
 import { integrationApi, integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
+import { saveShipmentTrip } from '../server/shipment-trips';
+
+const gate = () => { let release!: () => void; const promise = new Promise<void>(done => { release = done; }); return { promise, release }; };
+async function until(check: () => boolean) { const end = Date.now() + 3_000; while (!check()) { if (Date.now() > end) throw new Error('Synthetic scheduler did not make progress'); await new Promise(done => setTimeout(done, 5)); } }
 
 async function fixture() {
   const runtime = await integrationRuntime(); const api = integrationApi();
@@ -17,6 +21,107 @@ async function fixture() {
   const tick = (extra: Partial<Parameters<typeof dispatchTripSaby>[0]> = {}) => dispatchTripSaby({ ...runtime, config: integrationConfig(), enabled: true, send: api.send, ...extra });
   return { ...runtime, api, context, start, tick };
 }
+
+async function addStartedTrip(f: Awaited<ReturnType<typeof fixture>>) {
+  const created = await f.store.mutate(f.source, data => ({ result: saveShipmentTrip(f.base, data, {
+    fields: { organization_id: 'artel', date: '2025-04-01', supplier_id: 'supplier', carrier_id: 'carrier', oil_depot_id: 'depot', product_id: 'product', purchase_price_unspecified_unit: '50000', quantity_tonnes: '12', quantity_gross_tonnes: '12', driver_id: 'driver', vehicle_id: 'vehicle', loading_planned_at: '2025-04-01T09:00', additional_costs: '0' },
+    customers: [{ fields: { customer_id: 'customer', manager_id: 'manager', payment_form_id: 'payment', quantity_litres: '8000', sale_price_per_litre: '60', transport_amount: '1000', unloading_address_id: 'delivery' } }],
+  }), changed: true }));
+  const context = { ...f.context, tripId: created.trip.id };
+  await runTripSabyWorkflow({ ...context, initiatorId: 'initiator', createDelivery: input => exchangePreparedEtrn(context, input) });
+  return created.trip.id;
+}
+
+test('independent trip passes and subsequent scans reuse only the two account sessions', async () => {
+  const f = await fixture(); const auth = new Map<string, number>();
+  let scheduler: ReturnType<typeof createTripSabyScheduler> | undefined;
+  try {
+    await f.start(); for (let i = 0; i < 3; i++) await addStartedTrip(f);
+    const config = { ...integrationConfig(), sessionId: undefined, login: 'synthetic-user', password: 'synthetic-password', accountNumber: 'sender-account', carrierAccountNumber: 'carrier-account' };
+    const send: typeof fetch = async (input, init) => {
+      const request = JSON.parse(String(init?.body));
+      if (request.method === 'СБИС.Аутентифицировать') {
+        const account = request.params.Параметр.НомерАккаунта; auth.set(account, (auth.get(account) ?? 0) + 1);
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: `${account}-session` }));
+      }
+      return f.api.send(input, init);
+    };
+    scheduler = createTripSabyScheduler({ ...f, config, enabled: true, send });
+    await scheduler.tick(); await scheduler.drain(); await scheduler.tick(); await scheduler.drain();
+    await scheduler.client.withRequestGuard(async () => undefined).readTransportOrder((await f.store.read(f.source)).tripSaby!.trips[f.tripId].order.id!);
+    assert.deepEqual([...auth.entries()].sort(), [['carrier-account', 1], ['sender-account', 1]]);
+    assert.equal(f.api.reserves('TransportOrder').length, 4);
+  } finally { await scheduler?.stop(); await f.close(); }
+});
+
+test('independent scans continue existing and newly added trips while an earlier provider workflow is blocked', async () => {
+  const f = await fixture(), blocked = gate();
+  let scheduler: ReturnType<typeof createTripSabyScheduler> | undefined;
+  try {
+    await f.start(); const second = await addStartedTrip(f);
+    const orderId = (await f.store.read(f.source)).tripSaby!.trips[f.tripId].order.id;
+    let held = false; const observed = new Set<string>();
+    const send: typeof fetch = async (input, init) => {
+      const request = JSON.parse(String(init?.body));
+      const id = request.params?.Документ?.Идентификатор;
+      if (request.method === 'СБИС.ПрочитатьДокумент') {
+        observed.add(id);
+        if (id === orderId && !held) { held = true; await blocked.promise; }
+      }
+      return f.api.send(input, init);
+    };
+    scheduler = createTripSabyScheduler({ ...f, config: integrationConfig(), enabled: true, send }, 2);
+    await scheduler.tick();
+    const secondId = (await f.store.read(f.source)).tripSaby!.trips[second].order.id!;
+    await until(() => held && observed.has(secondId));
+    const third = await addStartedTrip(f);
+    const thirdId = (await f.store.read(f.source)).tripSaby!.trips[third].order.id!;
+    await scheduler.tick(); await until(() => observed.has(thirdId));
+    assert.equal(held, true, 'new work progressed before the old response was released');
+    blocked.release(); await scheduler.drain();
+    assert.equal(f.api.reserves('TransportOrder').length, 3);
+  } finally { blocked.release(); await scheduler?.stop(); await f.close(); }
+});
+
+test('timer ticks are coalesced; repeated immediate signals cause one fresh pass without duplicate documents', async () => {
+  const f = await fixture(), blocked = gate();
+  let scheduler: ReturnType<typeof createTripSabyScheduler> | undefined;
+  try {
+    await f.start(); let held = false, reads = 0;
+    const send: typeof fetch = async (input, init) => {
+      if (JSON.parse(String(init?.body)).method === 'СБИС.ПрочитатьДокумент') { reads++; if (!held) { held = true; await blocked.promise; } }
+      return f.api.send(input, init);
+    };
+    scheduler = createTripSabyScheduler({ ...f, config: integrationConfig(), enabled: true, send });
+    await scheduler.tick(); await until(() => held);
+    for (let i = 0; i < 8; i++) await scheduler.tick();
+    for (let i = 0; i < 8; i++) scheduler.request(f.tripId);
+    blocked.release(); await scheduler.drain();
+    assert.equal(reads, 2);
+    assert.equal(f.api.reserves('TransportOrder').length, 1);
+  } finally { blocked.release(); await scheduler?.stop(); await f.close(); }
+});
+
+test('queued network slots recheck revoked access and shutdown drains active work without starting new passes', async () => {
+  for (const stop of [false, true]) {
+    const f = await fixture(), blocked = gate();
+    let scheduler: ReturnType<typeof createTripSabyScheduler> | undefined;
+    try {
+      await f.start(); await addStartedTrip(f); let calls = 0;
+      const send: typeof fetch = async (input, init) => { calls++; await blocked.promise; return f.api.send(input, init); };
+      scheduler = createTripSabyScheduler({ ...f, config: integrationConfig(), enabled: true, send }, 1);
+      await scheduler.tick(); await until(() => calls === 1);
+      let stopping: Promise<void> | undefined;
+      if (stop) stopping = scheduler.stop();
+      else await f.store.mutate(f.source, data => { data.accounts!.users[1].active = false; return { result: null, changed: true }; });
+      blocked.release(); await (stopping ?? scheduler.drain());
+      if (stop) {
+        assert.ok(calls > 1, 'already-started workflow requests must settle during graceful shutdown');
+        const completedCalls = calls; await scheduler.tick(); scheduler.request(f.tripId); await scheduler.drain(); assert.equal(calls, completedCalls);
+      } else assert.equal(calls, 1, 'authority is rechecked after acquiring capacity');
+    } finally { blocked.release(); await scheduler?.stop(); await f.close(); }
+  }
+});
 
 test('scheduler never initiates a trip and disabled or missing-credential ticks perform no network', async () => {
   const f = await fixture();
@@ -45,8 +150,8 @@ test('background waits for carrier then facts and creates each delivery once wit
     const calls = f.api.calls.length; await f.tick(); assert.equal(f.api.calls.length, calls);
     const result = await f.tick({ now: Date.now() + SABY_COMPLETED_REFRESH_MS + 1_000 });
     assert.equal(result.refreshed, 2); assert.equal(f.api.reserves('ConsignmentNote').length, 2);
-    assert.equal(SABY_WORKFLOW_TICK_MS, 300_000);
-    assert.equal(SABY_COMPLETED_REFRESH_MS, 300_000);
+    assert.equal(SABY_WORKFLOW_TICK_MS, 60_000);
+    assert.equal(SABY_COMPLETED_REFRESH_MS, 60_000);
     assert.ok((await f.store.read(f.source)).tripSaby!.trips[f.tripId].lastCheckedAt);
   } finally { await f.close(); }
 });
@@ -101,7 +206,7 @@ test('monitoring status reflects runtime switch and revoked rights; terminal fai
     assert.equal((await response(true)).monitoring.enabled, false);
     await f.start();
     assert.equal((await response(false)).monitoring.enabled, false);
-    assert.deepEqual((await response(true)).monitoring, { enabled: true, intervalSeconds: 300 });
+    assert.deepEqual((await response(true)).monitoring, { enabled: true, intervalSeconds: 60 });
     const doc = [...f.api.docs.values()].find(row => row.Тип === 'TransportOrder')!;
     delete doc.Код; doc.Состояние = { Код: '22', Название: 'Аннулировано' };
     await f.tick(); const stopped = await response(true);

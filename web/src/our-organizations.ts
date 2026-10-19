@@ -2,8 +2,8 @@ import type { Shipment } from './model'
 
 /** Stable legal-entity identities shared by shipments and saved bank connections. */
 export const ourOrganizations = [
-  { id: 'nk-artel', name: 'НК АРТЕЛЬ', connectionIds: ['sber-nk-artel', 'tbank-nk-artel'] },
-  { id: 'artel', name: 'АРТЕЛЬ', connectionIds: ['sber-artel'] },
+  { id: 'nk-artel', name: 'НК АРТЭЛЬ', connectionIds: ['sber-nk-artel', 'tbank-nk-artel'] },
+  { id: 'artel', name: 'АРТЭЛЬ', connectionIds: ['sber-artel'] },
 ] as const
 
 export type OurOrganizationId = typeof ourOrganizations[number]['id']
@@ -19,4 +19,12 @@ export function organizationForConnection(connectionId: string): OurOrganization
 }
 export function organizationName(id: string | null | undefined): string | null {
   return ourOrganizations.find(organization => organization.id === id)?.name ?? null
+}
+
+/** Presentation only, for an already identified own organization; never use for saved legal data. */
+export function ourOrganizationDisplayName(name: string): string {
+  return name.replace(/(^|[^а-яё])артель(?=$|[^а-яё])/giu, (_match, prefix: string, offset: number, source: string) => {
+    const word = source.slice(offset + prefix.length, offset + prefix.length + 6)
+    return prefix + (word === word.toUpperCase() ? 'АРТЭЛЬ' : word === word.toLowerCase() ? 'артэль' : 'Артэль')
+  })
 }

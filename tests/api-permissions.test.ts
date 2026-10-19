@@ -1,3 +1,6 @@
+import { enabledPages } from '../web/src/page-catalog';
+import { availablePagesFor, hasPageAccess } from '../web/src/page-access';
+import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
@@ -37,7 +40,7 @@ async function fixture() {
   const users: AccountUser[] = [];
   for (const [name, login, api] of [['Айдар QA', 'aidar-qa', aidar], ['Зуфар QA', 'zufar-qa', zufar]] as const) {
     const employee = await director('/api/directories', 'POST', { kind: 'managers', name });
-    const created = await director('/api/auth/users', 'POST', { name, login, password, role: 'manager', managerId: employee.body.entry.id, sections: sections.map(s => s.id) });
+    const created = await director('/api/auth/users', 'POST', { name, login, password, role: 'manager', managerId: employee.body.entry.id, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) });
     assert.equal(created.status, 201, JSON.stringify(created.body)); users.push(created.body.user);
     assert.equal((await api('/api/auth/login', 'POST', { login, password })).status, 200);
   }
@@ -166,7 +169,9 @@ test('mixed-owner trips hide shared totals and reject all partial truck changes 
     const c = f.snapshot.directories!;
     const fields = { date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: c.products[0].id, purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: c.drivers[0].id, additional_costs: '1600' };
     const customer = (index: number) => ({ fields: { customer_id: f.snapshot.companies[0].id, manager_id: f.users[index].managerId, payment_form_id: c.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '1000' } });
-    const mixed = await f.director('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(1)] }); assert.equal(mixed.status, 201, JSON.stringify(mixed.body));
+    const mixedBody = { fields, customers: [customer(0), customer(1)] };
+    await prepareTripRequestFixture(f.store, base, mixedBody);
+    const mixed = await f.director('/api/shipment-trips', 'POST', mixedBody); assert.equal(mixed.status, 201, JSON.stringify(mixed.body));
     const trip = mixed.body.trip as ShipmentTrip;
     const own = (await f.aidar('/api/shipments')).body.items[0];
     assert.equal(own.tripReadOnly, true); assert.equal(own.fields.trip_total_tonnes, null); assert.equal(own.fields.trip_additional_costs, null);
@@ -176,7 +181,9 @@ test('mixed-owner trips hide shared totals and reject all partial truck changes 
     assert.equal((await f.aidar('/api/shipments/' + trip.customers[1].id, 'PATCH', { version: 1, fields: {} })).status, 404);
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(1)] })).status, 403);
     assert.equal(await readFile(f.store.path, 'utf8'), before);
-    const created = await f.aidar('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(0)] }); assert.equal(created.status, 201);
+    const ownBody = { fields, customers: [customer(0), customer(0)] };
+    await prepareTripRequestFixture(f.store, base, ownBody);
+    const created = await f.aidar('/api/shipment-trips', 'POST', ownBody); assert.equal(created.status, 201, JSON.stringify(created.body));
     const ownTrip = created.body.trip as ShipmentTrip;
     assert.equal((await f.zufar('/api/shipment-trips/' + ownTrip.id)).status, 404);
     assert.equal((await f.aidar('/api/shipment-trips/' + ownTrip.id)).status, 200);
@@ -278,5 +285,86 @@ test('manager directory projection never exposes unrelated payment/summary custo
     assert.deepEqual(scoped.directories!.addresses, []); assert.equal(scoped.directories!.deletedEntries, undefined);
     assert.equal(scoped.overview.companyCount, 0);
     for (const text of [hidden.name, payment.name, 'hidden-address', 'deleted-private-company', 'hidden-shipment']) assert.ok(!JSON.stringify(scoped).includes(text), text);
+  } finally { await f.close(); }
+});
+
+
+test('enabled pages respect explicit grants without adding new rights to old managers', () => {
+  const user: AccountUser = { id: 'qa', name: 'QA', login: 'qa', role: 'manager', managerId: 'qa', active: true, version: 1, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) };
+  assert.equal(enabledPages.length, 9);
+  for (const id of ['stock', 'operator', 'payroll'] as const) {
+    assert.ok(effectiveSections(user).includes(id));
+    assert.equal(hasPageAccess(user, id), false);
+  }
+  for (const id of ['cabinet-balances', 'accounts'] as const) {
+    assert.equal(hasPageAccess(user, id), false);
+    assert.equal(hasPageAccess({ ...user, sections: [...user.sections!, id] }, id), true);
+    assert.equal(hasPageAccess({ ...user, role: 'director' }, id), true);
+    assert.equal(hasPageAccess({ ...user, role: 'admin' }, id), true);
+    assert.equal(hasPageAccess({ ...user, role: 'admin', active: false }, id), false);
+  }
+  assert.equal(availablePagesFor(user).length, 7);
+  assert.equal(availablePagesFor({ ...user, role: 'director' }).length, enabledPages.length);
+});
+
+test('editing visible permissions preserves hidden grants and cabinet access stays forbidden', async () => {
+  const f = await fixture(); try {
+    const before = f.users[0];
+    const permissions = effectiveSections(before).filter(id => id !== 'work');
+    const saved = await f.director('/api/auth/users/' + before.id, 'PATCH', update(before, { sections: permissions }));
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.body.user.sections, permissions);
+    for (const id of ['stock', 'operator', 'payroll']) assert.ok(saved.body.user.sections.includes(id));
+    await f.aidar('/api/auth/login', 'POST', { login: before.login, password: f.password });
+    assert.equal((await f.aidar('/api/cabinets')).status, 403);
+    const invalid = await f.director('/api/auth/users/' + before.id, 'PATCH', update(saved.body.user, { sections: [...permissions, 'unknown-section'] }));
+    assert.equal(invalid.status, 400);
+    assert.deepEqual((await f.director('/api/auth/users')).body.users.find((user: AccountUser) => user.id === before.id).sections, permissions);
+  } finally { await f.close(); }
+});
+
+
+test('cabinet balances can be granted and revoked independently of role and account management', async () => {
+  const f = await fixture(); try {
+    const user = f.users[0];
+    assert.equal((await f.aidar('/api/cabinets')).status, 403);
+    const granted = await f.director('/api/auth/users/' + user.id, 'PATCH', update(user, { sections: ['cabinet-balances'] }));
+    assert.equal(granted.status, 200);
+    assert.deepEqual(granted.body.user.sections, ['cabinet-balances']);
+    await f.aidar('/api/auth/login', 'POST', { login: user.login, password: f.password });
+    assert.equal((await f.aidar('/api/cabinets')).status, 200);
+    assert.equal((await f.aidar('/api/auth/users')).status, 403);
+    assert.equal((await f.aidar('/api/auth/employees', 'POST', { name: 'No grant' })).status, 403);
+    const revoked = await f.director('/api/auth/users/' + user.id, 'PATCH', update(granted.body.user, { sections: [] }));
+    assert.equal(revoked.status, 200);
+    assert.equal((await f.aidar('/api/cabinets')).status, 401);
+    await f.aidar('/api/auth/login', 'POST', { login: user.login, password: f.password });
+    assert.equal((await f.aidar('/api/cabinets')).status, 403);
+  } finally { await f.close(); }
+});
+
+test('explicit account access supports staff selection, creation, account editing and revocation without other data access', async () => {
+  const f = await fixture(); try {
+    const user = f.users[0];
+    const granted = await f.director('/api/auth/users/' + user.id, 'PATCH', update(user, { sections: ['accounts'] }));
+    assert.equal(granted.status, 200);
+    await f.aidar('/api/auth/login', 'POST', { login: user.login, password: f.password });
+    const list = await f.aidar('/api/auth/users');
+    assert.equal(list.status, 200);
+    assert.ok(list.body.staff.managers.some((row: { id: string }) => row.id === f.users[1].managerId));
+    assert.ok(!JSON.stringify(list.body).includes('passwordHash'));
+    assert.equal((await f.aidar('/api/cabinets')).status, 403);
+    assert.equal((await f.aidar('/api/directories')).status, 403);
+    const staff = await f.aidar('/api/auth/employees', 'POST', { name: 'Delegated account QA' });
+    assert.equal(staff.status, 201);
+    assert.equal((await f.aidar('/api/auth/employees', 'POST', { kind: 'companies', name: 'Wrong kind' })).status, 400);
+    const created = await f.aidar('/api/auth/users', 'POST', { name: 'Delegated account QA', login: 'delegated-qa', role: 'employee', managerId: staff.body.entry.id, password: f.password, sections: ['cabinet-balances'] });
+    assert.equal(created.status, 201);
+    const saved = await f.aidar('/api/auth/users/' + created.body.user.id, 'PATCH', update(created.body.user, { sections: [] }));
+    assert.equal(saved.status, 200);
+    assert.equal((await f.aidar('/api/auth/users/' + saved.body.user.id, 'DELETE', { version: saved.body.user.version, confirmationName: saved.body.user.name })).status, 200);
+    await f.director('/api/auth/users/' + user.id, 'PATCH', update(granted.body.user, { sections: [] }));
+    await f.aidar('/api/auth/login', 'POST', { login: user.login, password: f.password });
+    assert.equal((await f.aidar('/api/auth/users')).status, 403);
   } finally { await f.close(); }
 });

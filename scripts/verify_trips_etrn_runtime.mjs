@@ -64,7 +64,7 @@ try{
   const panel=page.getByRole('region',{name:'Документы рейса в Saby',exact:true}),send=panel.getByRole('button',{name:'Создать заявку в Saby',exact:true});
   await expect(send).toBeEnabled();await expect(send).toHaveCount(1);assert.equal(transport.calls.length,0);
   await send.evaluate(button=>{button.click();button.click();});await reservationStarted;await expect(send).toBeDisabled();releaseReservation();
-  await expect(panel).toContainText('АРТЕЛЬ · подпись и отправка');await expect(panel.getByRole('heading',{name:'№ 41',exact:true})).toBeVisible();
+  await expect(panel).toContainText('АРТЭЛЬ · подпись и отправка');await expect(panel.getByRole('heading',{name:'№ 41',exact:true})).toBeVisible();
   assert.equal(transport.reserves('TransportOrder').length,1);assert.equal(transport.writes('TransportOrder').length,2);assert.equal(transport.writes('ConsignmentNote').length,0);
   assert.match(decode(uploads('TransportOrder')[0]),/КНД="1110361"/);assert.match(decode(uploads('TransportOrder')[0]),/Точка только общей заявки/);
   assert.equal((await api(workflowPath)).phase,'awaiting_carrier');await expect(panel.getByRole('heading',{name:'Фактическая погрузка'})).toHaveCount(0);

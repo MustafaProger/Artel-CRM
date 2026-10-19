@@ -15,7 +15,7 @@ import { SberHttpError } from '../server/banking/sber-client.ts';
 import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
 
 const artel = process.argv.includes('--artel');
-const connectionId = artel ? 'sber-artel' : 'sber-nk-artel', company = artel ? 'АРТЕЛЬ' : 'НК АРТЕЛЬ';
+const connectionId = artel ? 'sber-artel' : 'sber-nk-artel', company = artel ? 'АРТЭЛЬ' : 'НК АРТЭЛЬ';
 const endpoint = `/api/banking/sber/${connectionId}`;
 const root = resolve(import.meta.dirname, '..'), output = resolve(root, artel ? 'qa/sber-artel/fixtures' : 'qa/sber');
 const temporary = await mkdtemp(resolve(tmpdir(), 'artel-sber-browser-'));

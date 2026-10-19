@@ -1,0 +1,14 @@
+/* Explicit lifecycle works in iOS Safari without discrete display transitions. */
+dialog[data-modal-motion]{--modal-x:0px;--modal-y:14px;--modal-scale:.985;transform-origin:center;overscroll-behavior:contain}
+dialog.bank-payment-panel[data-modal-motion]{--modal-x:28px;--modal-y:0px;--modal-scale:1}
+dialog[data-modal-motion="opening"]{animation:modal-enter 220ms cubic-bezier(.2,.75,.25,1) both}
+dialog[data-modal-motion="open"],dialog[data-modal-motion="open"]::backdrop{animation:none}
+dialog[data-modal-motion="closing"]{animation:modal-exit 170ms ease-in both;pointer-events:none}
+dialog[data-modal-motion="opening"]::backdrop{animation:modal-backdrop-enter 220ms ease-out both}
+dialog[data-modal-motion="closing"]::backdrop{animation:modal-backdrop-exit 170ms ease-in both}
+@keyframes modal-enter{from{opacity:var(--modal-enter-opacity,0);transform:var(--modal-enter-transform,translate3d(var(--modal-x),var(--modal-y),0) scale(var(--modal-scale)))}to{opacity:1;transform:translate3d(0,0,0) scale(1)}}
+@keyframes modal-exit{from{opacity:var(--modal-exit-opacity,1);transform:var(--modal-exit-transform,translate3d(0,0,0) scale(1))}to{opacity:0;transform:translate3d(var(--modal-x),var(--modal-y),0) scale(var(--modal-scale))}}
+@keyframes modal-backdrop-enter{from{opacity:var(--modal-backdrop-enter-opacity,0)}to{opacity:1}}
+@keyframes modal-backdrop-exit{from{opacity:var(--modal-backdrop-exit-opacity,1)}to{opacity:0}}
+@media(max-width:650px){dialog.driver-notifications-dialog[data-modal-motion]{--modal-y:22px;--modal-scale:1}}
+@media(prefers-reduced-motion:reduce){dialog[data-modal-motion],dialog[data-modal-motion]::backdrop{animation:none!important}}
