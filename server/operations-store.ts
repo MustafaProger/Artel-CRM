@@ -1,3 +1,5 @@
+import { validateOperator } from './operator';
+import type { OperatorData } from '../web/src/operator-model';
 import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
 import { validateCabinets } from './cabinet-connections';
 import { validateTripRequests } from './trip-requests';
@@ -56,6 +58,7 @@ export interface OperationsData {
   sourceOperationsCleared?: boolean;
   work?: WorkData;
   china?: ChinaData;
+  operator?: OperatorData;
   accounts?: AccountsData;
   push?: PushData;
   banking?: BankingData;
@@ -87,6 +90,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   try { validateEtrnData(data.etrn); } catch { throw new StoreError('Invalid ETRN storage'); }
   try { validateTripSabyData(data.tripSaby); } catch { throw new StoreError('Invalid trip Saby storage'); }
   validateChina(data.china);
+  try { validateOperator(data.operator); } catch { throw new StoreError('Invalid operator storage'); }
   try { validateBanking(data.banking as BankingData | undefined); } catch { throw new StoreError('Invalid banking storage'); }
   try { validateCabinets(data.cabinets); } catch { throw new StoreError('Invalid cabinet storage'); }
   try { validateSber(data.sber as SberData | undefined); validateSber(data.sberArtel as SberData | undefined, sberConnections['sber-artel']); } catch { throw new StoreError('Invalid Sber storage'); }

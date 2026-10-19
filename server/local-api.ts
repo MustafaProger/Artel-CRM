@@ -1,3 +1,4 @@
+import { readOperator, mutateOperator } from './operator';
 import { readTripNumbers } from './trip-numbering';
 import { cabinetRoutes } from './cabinet-connections';
 import { createHash, randomUUID } from 'node:crypto';
@@ -558,6 +559,19 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return user;
       };
       const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
+      if (pathname === '/api/operator' || pathname.startsWith('/api/operator/')) {
+        // This workspace always requires a real active account, including local mode.
+        const match = pathname.match(/^\/api\/operator(?:\/(recipients|refuellings)(?:\/([a-f0-9-]{36})(?:\/(payment|archive))?)?)?$/);
+        if (!match) throw new ApiError(404, 'Маршрут не найден.');
+        if (request.method === 'GET' && !match[1]) {
+          const stored = await operations.read(base.provenance.sourceSha256);
+          return write(response, 200, JSON.stringify(readOperator(stored, authorized(stored))));
+        }
+        if (!match[1] || request.method !== (match[2] ? 'PATCH' : 'POST')) throw new ApiError(405, 'Метод не поддерживается.');
+        const body = await jsonBody(request, false, 16384);
+        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings', body, match[2], match[3] as 'payment' | 'archive' | undefined));
+        return write(response, match[2] || saved.replayed ? 200 : 201, JSON.stringify(saved));
+      }
       const tripRequestMatch = pathname.match(/^\/api\/trip-requests(?:\/([^/]+))?$/);
       if (tripRequestMatch) {
         const id = tripRequestMatch[1] ? decodeURIComponent(tripRequestMatch[1]) : undefined;

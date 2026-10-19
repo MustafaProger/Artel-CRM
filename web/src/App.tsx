@@ -5,6 +5,7 @@ import ScrollableSegments from './ScrollableSegments'
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
+const OperatorPage = lazy(() => import('./OperatorPage'))
 const ChinaPage = lazy(() => import('./ChinaPage'))
 const BankingPage = lazy(() => import('./BankingPage'))
 const CabinetBalances = lazy(() => import('./CabinetBalances'))
@@ -106,7 +107,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
-      {page === 'operator' && <section className="blank-workspace" aria-label="Операторская: рабочее пространство"><p className="soft-notice">Excel-файл с системой учёта не предоставлен. Структура работы и расчёты пока не настроены.</p></section>}
+      {page === 'operator' && <OperatorPage/>}
       {page === 'accounts' && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'work' && <WorkPage/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
