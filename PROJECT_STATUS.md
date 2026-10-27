@@ -1,3 +1,11 @@
+<!-- trips-ui-release-20261027:start -->
+**Рейсы опубликованы — 27.10.2026, проверено 14:04 МСК:** после явного разрешения пользователя commit/push `def326d`, затем `artel-crm:20261027-trips-ui-a0965e60` поверх yandex-balance-06bd4b3a, healthy/0restart. Согласованные компактные рейсы/фильтры/анимации и таймер; только назначенный водитель отмечает «Прибыл на место доставки» одним кликом, последняя отметка автоматически завершает рейс. Логист наблюдает (POST403), complete410; историческое авторство сохранено. Яндекс/его timer/browser/host-runner сохранены. **Прежнее ожидание разрешения на публикацию ниже закрыто этим выпуском.**
+
+723API/3bank/28target/5control/lint/TS/build, source+built Chromium/WebKit320–1440 (32группы/8axe), Яндекс built16/4axe, оба образа7групп, копияstore exact/public38/9 PASS. Switch exit0, independenttrue; final rawfalse5/classified2, все14факт-коллекций/1459банковских операций/225дней/209защищённых записей Saby точны. Два document/status не полностью атрибутированы; taskPassed=true/globalReviewed=false, общей побайтной неизменности не заявляем. Worker/соседи/ключи точны, bridge только nonce. Chrome требует входа: авторизованная production UI-приёмка не выполнена. Новых деловых записей/подписей агент не создавал.
+
+Следующая база `/opt/artel-crm/releases/20261027-trips-ui-a0965e60`, backend96778fab…; свежий drift обязателен, старый backend/store не возвращать. Source `.local/trips-ui-release-20261027/source`, Git-патч `docs/patches/trips-ui-local-20261027.patch`, основной app-checkout сохранён. [Отчёт](docs/trips-ui-release-2026-10-27.md).
+<!-- trips-ui-release-20261027:end -->
+
 <!-- yandex-balance-20261027:start -->
 **Яндекс — 27.10.2026, проверено 13:57 МСК:** опубликован `artel-crm:20261027-yandex-balance-06bd4b3a` поверх trip-process-1ca0220d, healthy/0restart. Серверный браузер прочитал ООО НК АРТЭЛЬ, договор заправок43207794/25: 216381,37 ₽ собственных средств; отсрочка такси2000 ₽ исключена. Вход пережил restart, туннель Mac закрыт; systemd-таймер самостоятельно обновил снимок13:54:58, Chrome/Egor увидел новое время. Управляемое подключение через отдельный `yandex-balance.json`, без записи в operations; ошибка/повторный вход сохраняют последний снимок, >10мин stale. Профиль приватный на сервере, cookies/OTP не копировать. Timer/browser/host-runner сохранить при выпусках.
 
