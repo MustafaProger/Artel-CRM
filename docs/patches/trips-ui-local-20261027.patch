@@ -1,0 +1,656 @@
+--- /dev/null
++++ b/scripts/preview_trip_process.mjs
+@@ -0,0 +1,55 @@
++// Local review only: synthetic store, no provider access. Never loaded by the production bundle.
++import { resolve } from 'node:path';
++import { randomUUID } from 'node:crypto';
++import { integrationRuntime, integrationConfig } from '../tests/helpers/trip-saby-integration.ts';
++import { startTripsQaServer } from './qa-trips-runtime.mjs';
++import { bootstrapQaAuth } from './qa-auth.mjs';
++import { SabyClient } from '../server/saby-client.ts';
++const root=resolve(import.meta.dirname,'..'), rt=await integrationRuntime();
++const client=new SabyClient(integrationConfig(),async()=>{throw new Error('External provider disabled for local preview');});
++const runtime=await startTripsQaServer({root,snapshotDirectory:rt.snapshotDirectory,operationsDirectory:resolve(rt.directory,'store'),sabyClient:client,port:5187});
++const {cookie}=await bootstrapQaAuth(runtime.base);
++const call=async(path,method='GET',body,cookieValue=cookie)=>{
++ const res=await fetch(runtime.base+path,{method,headers:{cookie:cookieValue,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const value=await res.json();if(!res.ok)throw new Error(`${path}: ${value.error}`);return value;
++};
++await rt.store.mutate(rt.source,data=>{
++ data.shipments={};
++ const customer=data.companies.find(c=>c.id==='customer'); customer.name='Стройснаб · демо';
++ data.companies.push({...structuredClone(customer),id:'customer-two',name:'Бетонный завод · демо',inn:undefined});
++ data.directories.vehicles[0].plate='М442НО797';data.directories.drivers[0].name='Пётр · демо';data.directories.drivers[0].fullName='Пётр · демо';
++ data.directories.vehicles.push({...data.directories.vehicles[0],id:'vehicle-two',plate:'А477АА777'});
++ data.directories.drivers.push({...data.directories.drivers[0],id:'driver-two',name:'Геннадий · демо',fullName:'Геннадий · демо',vehicleId:'vehicle-two'});
++ data.directories.oilDepots[0].address='Московская область, село Константиново, 105Б';
++ data.directories.addresses.find(a=>a.id==='delivery').address='Котельники, Промзона Силикат, с9';
++ data.directories.addresses.push({...data.directories.addresses.find(a=>a.id==='delivery'),id:'delivery-two',companyId:'customer-two',address:'Москва, район Коммунарка, улица Александры Монаховой, 10'});
++ return {changed:true,result:null};
++});
++const driverCookies={};
++for(const id of ['driver','driver-two']){
++ const access=await call(`/api/drivers/${id}/access`,'POST',{action:'issue',version:0});
++ const response=await fetch(runtime.base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login:access.access.login,password:access.temporaryPassword})});
++ if(!response.ok)throw new Error('Preview driver login failed');driverCookies[id]=response.headers.get('set-cookie').split(';')[0];
++}
++let previewDriverTrip;
++for(let i=0;i<7;i++){
++ const driverId=i>=4?'driver-two':'driver';
++ const fields=Object.fromEntries(['organization_id','supplier_id','carrier_id','oil_depot_id','product_id','purchase_price_unspecified_unit','additional_costs'].map(k=>[k,rt.trip.fields[k]]));
++ Object.assign(fields,{driver_id:driverId,vehicle_id:i>=4?'vehicle-two':'vehicle',trip_flow_version:'driver-v1',loading_at:`2026-10-${27-Math.floor(i/3)}T09:00`,trip_notes:'Локальный демонстрационный рейс. Все события условные, внешние системы отключены.'});
++ const customers=rt.trip.customers.map((row,j)=>({fields:{...Object.fromEntries(['manager_id','payment_form_id','sale_price_per_litre','transport_amount'].map(k=>[k,row.fields[k]])),customer_id:j?'customer-two':'customer',unloading_address_id:j?'delivery-two':'delivery',quantity_litres:j?'5118':'8000',etrn_not_required:'true',invoice_not_required:'true'}}));
++ const created=await call('/api/shipment-trips','POST',{fields,customers,idempotencyKey:randomUUID()});
++ const path=`/api/driver/trips/${created.trip.id}`, dc=driverCookies[driverId];let trip=(await call(path,'GET',null,dc)).trip;
++ const stage=['delivering','enroute','loading','completed','planned','enroute','completed'][i];
++ if(stage!=='planned')trip=(await call(path+'/arrive','POST',{versions:trip.versions},dc)).trip;
++ if(!['planned','loading'].includes(stage))trip=(await call(path+'/depart','POST',{versions:trip.versions,masses:trip.deliveries.map(d=>({deliveryId:d.id,netTonnes:'4.274'}))},dc)).trip;
++ if(['delivering','completed'].includes(stage))trip=(await call(path+'/deliver','POST',{versions:trip.versions,executionVersion:trip.execution.version,deliveryId:trip.deliveries[0].id},dc)).trip;
++ if(stage==='completed')trip=(await call(path+'/deliver','POST',{versions:trip.versions,executionVersion:trip.execution.version,deliveryId:trip.deliveries[1].id},dc)).trip;
++ if(i===0)previewDriverTrip=trip.id;
++}
++runtime.server.middlewares.stack.unshift({route:'',handle(req,res,next){
++ const path=new URL(req.url,runtime.base).pathname;
++ if(path!=='/__preview' && path!=='/__driver')return next();
++ const driver=path==='/__driver';res.setHeader('Set-Cookie',`${driver?driverCookies.driver:cookie}; Path=/; HttpOnly; SameSite=Strict`);res.writeHead(302,{Location:driver?`/#driver-trip/${previewDriverTrip}`:'/#trips'});res.end();
++}});
++console.log(`LOCAL_PREVIEW ${runtime.base}/__preview`);
++console.log(`LOCAL_DRIVER ${runtime.base}/__driver`);
++for(const signal of ['SIGINT','SIGTERM'])process.on(signal,async()=>{await runtime.server.close();await rt.close();process.exit(0)});
+--- /dev/null
++++ b/scripts/verify_trip_process_preview.mjs
+@@ -0,0 +1,25 @@
++import { chromium, webkit } from '@playwright/test';
++import assert from 'node:assert/strict';
++import { mkdir, writeFile } from 'node:fs/promises';
++import AxeBuilder from '@axe-core/playwright';
++const base='http://127.0.0.1:5187', dir='.local/trips-review';await mkdir(dir,{recursive:true});
++const report={checks:[],violations:[],browserErrors:[]};
++for(const [name,launcher] of [['chromium',chromium],['webkit',webkit]]){
++ const browser=await launcher.launch();const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block'});const page=await context.newPage();page.on('pageerror',e=>report.browserErrors.push(e.message));
++ // Establish the synthetic session before navigation, as in the isolated process suite.
++ const login=await context.request.get(base+'/__preview');assert.ok(login.ok());
++ await page.goto(base+'/#trips');await page.getByRole('button',{name:'В процессе',exact:true}).click();
++ const panel=page.getByRole('region',{name:'Процесс рейсов'});await panel.getByTestId('execution-trip').first().waitFor();
++ assert.equal(await panel.getByTestId('execution-trip').count(),5);
++ await panel.getByLabel('Этап рейса',{exact:true}).selectOption('enroute');assert.equal(await panel.getByTestId('execution-trip').count(),2);
++ await panel.getByLabel('Машина',{exact:true}).selectOption('vehicle');assert.equal(await panel.getByTestId('execution-trip').count(),1);
++ await panel.getByLabel('Поиск машины или рейса').fill('невозможный поиск');await panel.getByRole('button',{name:'Сбросить фильтры'}).click();assert.equal(await panel.getByTestId('execution-trip').count(),7);
++ await panel.getByRole('button',{name:/^В работе/}).click();assert.equal(await panel.getByTestId('execution-trip').count(),5);
++ const first=panel.getByTestId('execution-trip').first();await first.locator('summary').first().focus();await page.keyboard.press('Enter');assert.equal(await first.getAttribute('open'),'');
++ await panel.getByText('Как работают статусы?',{exact:true}).click();assert.equal(await panel.getByRole('definition').count(),5);
++ await panel.getByText('Как работают статусы?',{exact:true}).click();
++ for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:`${dir}/${name}-${width}.png`,fullPage:true});}
++ const axe=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();report.violations.push(...axe.violations);assert.deepEqual(axe.violations,[]);
++ report.checks.push(`${name}: real API fixture, search, vehicle and stage filters, reset, keyboard disclosure, help, four widths, axe`);await browser.close();
++}
++assert.deepEqual(report.browserErrors,[]);report.passed=true;await writeFile(`${dir}/report.json`,JSON.stringify(report,null,2));console.log(JSON.stringify(report));
+--- a/scripts/verify_trip_process_ui.mjs
++++ b/scripts/verify_trip_process_ui.mjs
+@@ -41,14 +41,58 @@
+     await page.goto(runtime.base + '/#trips'); await page.getByRole('button', { name: 'В процессе', exact: true }).click();
+     const panel = page.getByRole('region', { name: 'Процесс рейсов' });
+     const card = panel.getByTestId('execution-trip').filter({ hasText: `Рейс №${created.trip.number}` });
+-    await expect(card).toContainText('Ожидает погрузки'); await expect(panel).toContainText('СВОБОДНАЯ777');
+-    await expect(card.getByRole('button', { name: 'Рейс выполнен', exact: true })).toBeDisabled();
++    await expect(card).toContainText('Ждёт погрузки'); await expect(panel).not.toContainText('СВОБОДНАЯ777');
++    await card.locator('summary').first().click();
++    await expect(card.getByRole('button', { name: 'Рейс выполнен', exact: true })).toHaveCount(0);
+     check(`${engine}: fourth tab, grouping, idle vehicle, planned trip and completion gate`);
++    await expect(panel.getByRole('button', { name: 'Прибыл на место доставки', exact: true })).toHaveCount(0);
++    await expect(card).toContainText('Ожидаем отметку водителя');
++    const controlStyles = await page.evaluate(() => {
++      const style = selector => { const el = document.querySelector(selector), s = getComputedStyle(el); return { radius:s.borderRadius, background:s.backgroundColor, font:s.fontSize, height:el.getBoundingClientRect().height }; };
++      return { top:style('.trips-section-tabs'), filter:style('.execution-filters'), topButton:style('.trips-section-tabs button'), filterButton:style('.execution-filters button') };
++    });
++    assert.deepEqual(controlStyles.filter, controlStyles.top);
++    assert.deepEqual(controlStyles.filterButton, controlStyles.topButton);
++    await card.locator('summary').first().click();
++    assert.equal(await card.getAttribute('open'), null, 'reduced motion closes immediately');
++    assert.equal(await card.evaluate(el => el.getAnimations().length), 0);
++    await page.emulateMedia({ reducedMotion:'no-preference' });
++    await card.locator('summary').first().click();
++    const opening = await card.evaluate(el => {
++      const a=el.getAnimations().find(a => a.effect.getKeyframes().some(k => k.height));
++      if(!a) return null;
++      a.pause(); a.currentTime=55; const early=el.getBoundingClientRect().height;
++      a.currentTime=220; const late=el.getBoundingClientRect().height;
++      a.play(); return {early,late};
++    });
++    assert.ok(opening && opening.late>opening.early+5, 'height grows through intermediate frames');
++    await expect.poll(() => card.evaluate(el => el.getAnimations().length)).toBe(0);
++    await card.locator('summary').first().click();
++    const closing = await card.evaluate(el => {
++      const a=el.getAnimations().find(a => a.effect.getKeyframes().some(k => k.height));
++      if(!a) return null;
++      a.pause(); a.currentTime=55; const early=el.getBoundingClientRect().height;
++      a.currentTime=220; const late=el.getBoundingClientRect().height;
++      const open=el.open, inert=el.querySelector('.animated-details-content').inert;
++      a.play(); return {early,late,open,inert};
++    });
++    assert.ok(closing && closing.early>closing.late+5 && closing.open && closing.inert, 'closing animates and removes hidden controls from focus');
++    await expect(card).not.toHaveAttribute('open');
++    // Rapid reversal starts from the currently rendered height, without a jump or stuck open state.
++    await card.locator('summary').first().click();
++    await card.locator('summary').first().click({ force:true });
++    await expect(card).not.toHaveAttribute('open');
++    await card.locator('summary').first().focus(); await page.keyboard.press('Space');
++    await expect(card.locator('summary').first()).toHaveAttribute('aria-expanded','true');
++    await expect.poll(() => card.evaluate(el => el.getAnimations().length)).toBe(0);
++    await page.emulateMedia({ reducedMotion:'reduce' });
++    check(`${engine}: shared filter geometry, driver-only UI, opening/closing frames, rapid reversal, keyboard and reduced motion`);
++
+     const driver = await browser.newContext({ viewport: { width: 390, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'America/Los_Angeles' });
+     const login = await driver.request.post(runtime.base + '/api/auth/login', { data: { login: credentials.access.login, password: credentials.temporaryPassword } }); assert.equal(login.status(),200);
+     const dp = await driver.newPage(); dp.on('pageerror', e => report.browserErrors.push(e.message)); await dp.goto(runtime.base + `/#driver-trip/${id}`);
+     const loading = dp.getByRole('region', { name: 'Действия на погрузке', exact: true });
+-    await expect(dp.getByRole('button', { name: 'Доставлено', exact: true }).first()).toBeDisabled();
++    await expect(dp.getByRole('button', { name: 'Прибыл на место доставки', exact: true }).first()).toBeDisabled();
+     await loading.getByRole('button', { name: 'Прибыл', exact: true }).click();
+     await expect(loading).toContainText('Прибытие сохранено');
+     await panel.getByRole('button', { name: 'Обновить', exact: true }).click(); await expect(card).toContainText('На погрузке');
+@@ -57,13 +101,13 @@
+     await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card.locator('.execution-stage')).toHaveText('В пути');
+     const before = await rt.store.read(rt.source);
+     const first = dp.locator('.driver-stop').nth(2);
+-    await first.getByRole('button', { name:'Доставлено',exact:true }).click(); await first.getByRole('button',{name:'Отмена',exact:true}).click();
++    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click(); await first.getByRole('button',{name:'Отмена',exact:true}).click();
+     assert.deepEqual((await rt.store.read(rt.source)).tripExecutions,before.tripExecutions);
+-    await first.getByRole('button', { name:'Доставлено',exact:true }).click(); await first.getByRole('button',{name:'Подтвердить',exact:true}).click();
++    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click(); await first.getByRole('button',{name:'Подтвердить',exact:true}).click();
+     await expect(dp.locator('.execution-record')).toHaveCount(1);
+     await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card).toContainText('Доставлено 1 из 2');
+-    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toBeDisabled();
+-    await expect(card.locator('.execution-stage')).toHaveText('Доставляет клиентам');
++    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toHaveCount(0);
++    await expect(card.locator('.execution-stage')).toHaveText('Доставляет');
+     check(`${engine}: real UI arrival/departure, cancellation, driver first delivery and independent remaining customer`);
+     for (const width of [320,390,768,1440]) {
+       for (const [target,label] of [[page,'logistics'],[dp,'driver']]) {
+@@ -77,18 +121,19 @@
+       const results = await new AxeBuilder({page:target}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
+       report.axe.push({engine,label,violations:results.violations}); assert.deepEqual(results.violations,[],`${engine} ${label} axe`);
+     }
+-    const second = card.getByRole('button',{name:'Доставлено',exact:true}); await second.click();
+-    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1));
+-    await card.getByRole('button',{name:'Подтвердить',exact:true}).click(); await expect(card.locator('.execution-stage')).toHaveText('Все доставки отмечены');
+-    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toBeEnabled();
+-    await card.getByRole('button',{name:'Рейс выполнен',exact:true}).click(); await card.getByRole('button',{name:'Подтвердить',exact:true}).click();
++    // The driver closes the last stop; neither UI sends a separate complete call.
++    const second = dp.getByRole('button',{name:'Прибыл на место доставки',exact:true}); await second.click();
++    await dp.getByRole('button',{name:'Подтвердить',exact:true}).click();
++    await expect(dp.locator('.driver-execution-footer')).toContainText('Рейс завершён');
++    await panel.getByRole('button',{name:'Обновить',exact:true}).click();
+     await expect(card).toHaveCount(0);
+-    await panel.getByRole('button',{name:'Выполненные',exact:true}).click(); await expect(card).toContainText('Рейс выполнен');
+-    await page.reload(); await page.getByRole('button',{name:'В процессе',exact:true}).click(); await panel.getByRole('button',{name:'Выполненные',exact:true}).click(); await expect(card).toContainText('Логист: QA Директор');
++    await panel.getByRole('button',{name:/^Завершённые/}).click(); await expect(card).toContainText('Завершён');
++    await page.reload(); await page.getByRole('button',{name:'В процессе',exact:true}).click(); await panel.getByRole('button',{name:/^Завершённые/}).click();
++    await card.locator('summary').first().click(); await expect(card).not.toContainText('Водитель:'); await expect(card).toContainText('С отметки прибытия:');
+     await dp.goto(runtime.base+'/#driver-trips'); await dp.getByRole('button',{name:'Обновить мои рейсы',exact:true}).click(); await dp.getByRole('button',{name:'Архивные',exact:true}).click(); await expect(dp.locator(`a[href="#driver-trip/${id}"]`)).toBeVisible();
+     const after = await rt.store.read(rt.source); const {revision:_a,tripExecutions:_b,accounts:_c,...stableAfter}=after; const {revision:_d,tripExecutions:_e,accounts:_f,...stableBefore}=before; assert.deepEqual(stableAfter,stableBefore);
+-    assert.equal(after.tripExecutions[id].version,3);
+-    check(`${engine}: logistics second delivery, explicit closure, archive, reload, durable facts and all unrelated data exact`);
++    assert.equal(after.tripExecutions[id].version,2);
++    check(`${engine}: driver final delivery, automatic closure, archive, reload, durable facts and all unrelated data exact`);
+     await browser.close(); browser=null;
+   }
+   assert.equal(report.providerCalls,0); assert.deepEqual(report.browserErrors,[]); report.passed=true;
+--- a/server/trip-execution.ts
++++ b/server/trip-execution.ts
+@@ -24,30 +24,36 @@
+   const saved = data.tripExecutions?.[tripId];
+   const facts = driverTripConfirmation(snapshot, data, tripId);
+   const conflict = !!saved && saved.composition !== fingerprint(rows);
+-  const deliveries = conflict ? {} : saved?.deliveries ?? {}, completed = conflict ? null : saved?.completed ?? null;
++  const deliveries = conflict ? {} : saved?.deliveries ?? {};
+   const count = rows.filter(row => deliveries[row.id]).length;
++  // Legacy fully delivered records derive completion from their last real delivery, without rewriting history.
++  const lastDelivery = rows.length > 0 && count === rows.length && facts?.confirmedAt
++    ? rows.map(row => deliveries[row.id]).sort((a, b) => a.at.localeCompare(b.at)).at(-1) ?? null : null;
++  const completed = conflict ? null : saved?.completed ?? lastDelivery;
+   return { version: saved?.version ?? 0, arrivedAt: facts?.arrivedAt ?? null, departedAt: facts?.confirmedAt ?? null, deliveries, completed,
+     stage: conflict ? 'conflict' : completed ? 'completed' : rows.length && count === rows.length ? 'delivered' : count ? 'delivering' : facts?.confirmedAt ? 'enroute' : facts?.arrivedAt ? 'loading' : 'planned' };
+ }
+ /** Caller authenticates and checks the entire trip inside the same store transaction. No provider calls. */
+ export function recordTripExecution(snapshot: Snapshot, data: OperationsData, actor: AccountUser, tripId: string, action: 'deliver' | 'complete', body: Record<string, unknown>) {
++  if (actor.role !== 'driver') throw new ApiError(403, 'Доставку подтверждает только назначенный водитель в своём кабинете.');
+   if (Object.keys(body).some(key => !['versions','executionVersion', ...(action === 'deliver' ? ['deliveryId'] : [])].includes(key))) throw new ApiError(400, 'В запросе есть неизвестные поля.');
+   const rows = snapshot.shipments.filter(row => row.fields.trip_id === tripId);
+   if (!rows.length || actor.role === 'driver' && (!actor.driverId || rows.some(row => row.fields.driver_id !== actor.driverId))) throw new ApiError(404, 'Рейс не найден.');
+   checkTripVersions(body.versions, rows);
+   const current = readTripExecution(snapshot, data, tripId);
+   if (current.stage === 'conflict') throw new ApiError(409, 'Состав рейса изменился. Требуется сверка с логистом.');
++  if (action === 'complete') throw new ApiError(410, 'Рейс завершается автоматически после последней доставки. Обновите страницу.');
+   if (!current.departedAt) throw new ApiError(409, 'Сначала водитель должен отметить погрузку и убытие.');
+   const deliveryId = body.deliveryId;
+   if (action === 'deliver' && (typeof deliveryId !== 'string' || !rows.some(row => row.id === deliveryId))) throw new ApiError(400, 'Доставка не принадлежит этому рейсу.');
+-  if (action === 'deliver' && current.deliveries[deliveryId as string] || action === 'complete' && current.completed) return { changed: false, result: current };
++  if (current.deliveries[deliveryId as string]) return { changed: false, result: current };
+   if (!Number.isSafeInteger(body.executionVersion) || body.executionVersion !== current.version) throw new ApiError(409, 'Статус уже изменён. Обновите рейс перед подтверждением.');
+   if (current.completed) throw new ApiError(409, 'Рейс уже закрыт.');
+-  if (action === 'complete' && rows.some(row => !current.deliveries[row.id])) throw new ApiError(409, 'Сначала отметьте доставку каждому клиенту.');
+-  const event: TripExecutionEvent = { at: new Date().toISOString(), by: actor.id, name: actor.name, role: actor.role === 'driver' ? 'driver' : 'logistics' };
++  const event: TripExecutionEvent = { at: new Date().toISOString(), by: actor.id, name: actor.name, role: 'driver', kind: 'arrival' };
+   const record = (data.tripExecutions ??= {})[tripId] ?? { composition: fingerprint(rows), version: 0, deliveries: {}, completed: null };
+-  if (action === 'deliver') record.deliveries[deliveryId as string] = event;
+-  else record.completed = event;
++  if (Object.values(record.deliveries).some(previous => previous.at > event.at)) throw new ApiError(409, 'Серверное время раньше предыдущей доставки. Повторите позже.');
++  record.deliveries[deliveryId as string] = event;
++  if (rows.every(row => record.deliveries[row.id])) record.completed = event;
+   record.version++;
+   data.tripExecutions[tripId] = record;
+   return { changed: true, result: readTripExecution(snapshot, data, tripId) };
+--- a/tests/api-driver-trip-actions.test.ts
++++ b/tests/api-driver-trip-actions.test.ts
+@@ -340,7 +340,7 @@
+     const departed = await f.action('depart', { versions: trip.versions, masses: trip.deliveries.map((row: { id: string }) => ({ deliveryId: row.id, netTonnes: '1' })) });
+     assert.equal(departed.status, 200, departed.text); trip = departed.body.trip;
+     const before = await f.store.read(f.source);
+-    assert.equal((await f.action('complete', body())).status, 409);
++    assert.equal((await f.action('complete', body())).status, 410);
+     assert.equal((await f.action('deliver', { ...body(), deliveryId: 'foreign' })).status, 400);
+     assert.equal((await f.action('deliver', { ...body(trip.deliveries[0].id), at: '2000-01-01' })).status, 400);
+     assert.equal((await f.action('deliver', { ...body(trip.deliveries[0].id), versions: {} })).status, 409);
+@@ -352,30 +352,35 @@
+     assert.deepEqual(repeated.body.trip.execution, trip.execution);
+     const savedFirst = trip.execution.deliveries[trip.deliveries[0].id];
+     assert.equal(savedFirst.by, f.actor.id); assert.equal(savedFirst.role, 'driver');
+-    assert.equal((await f.action('complete', body())).status, 409);
++    assert.equal((await f.action('complete', body())).status, 410);
+     assert.equal((await f.action('deliver', { ...body(trip.deliveries[1].id), executionVersion: 0 })).status, 409);
+     const logistics = `/api/shipment-trips/${f.created.trip.id}/execution`;
+     assert.equal((await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.cookie)).status, 403);
+     assert.equal((await f.request(`${f.path}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie)).status, 403);
+-    const second = await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie);
+-    assert.equal(second.status, 200, second.text); assert.equal(second.body.execution.stage, 'delivered');
+-    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].role, 'logistics');
++    const beforeDenied = await f.store.read(f.source);
++    const denied = await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie);
++    assert.equal(denied.status, 403, denied.text);
++    assert.match(denied.body.error, /только назначенный водитель/);
++    assert.deepEqual(await f.store.read(f.source), beforeDenied, 'logistics cannot record a delivery or change any data');
++    const second = await f.action('deliver', body(trip.deliveries[1].id));
++    assert.equal(second.status, 200, second.text); assert.equal(second.body.trip.execution.stage, 'completed');
++    assert.equal(second.body.trip.execution.deliveries[trip.deliveries[1].id].role, 'driver');
+     trip = (await f.read()).body.trip;
+-    assert.equal(trip.archived, false);
+-    const completeBody = body();
+-    const completed = await f.action('complete', completeBody); assert.equal(completed.status, 200, completed.text);
+-    assert.equal(completed.body.trip.archived, true); assert.equal(completed.body.trip.execution.stage, 'completed');
+-    const replay = await f.action('complete', completeBody); assert.equal(replay.status, 200);
+-    assert.deepEqual(replay.body.trip.execution, completed.body.trip.execution);
+-    assert.deepEqual((await f.read()).body.trip.execution, completed.body.trip.execution);
+-    assert.deepEqual((await f.request(logistics, 'GET', undefined, f.adminCookie)).body.execution, completed.body.trip.execution);
++    assert.equal(trip.archived, true);
++    assert.deepEqual(trip.execution.completed, trip.execution.deliveries[trip.deliveries[1].id]);
++    assert.equal((await f.action('complete', body())).status, 410);
++    const replay = await f.action('deliver', { ...body(trip.deliveries[1].id), executionVersion: 1 });
++    assert.equal(replay.status, 200);
++    assert.deepEqual(replay.body.trip.execution, trip.execution);
++    assert.deepEqual((await f.read()).body.trip.execution, trip.execution);
++    assert.deepEqual((await f.request(logistics, 'GET', undefined, f.adminCookie)).body.execution, trip.execution);
+     const list = await f.request('/api/shipment-trips', 'GET', undefined, f.adminCookie);
+-    assert.deepEqual(list.body.trips.find((t: { id: string }) => t.id === trip.id).execution, completed.body.trip.execution);
++    assert.deepEqual(list.body.trips.find((t: { id: string }) => t.id === trip.id).execution, trip.execution);
+     assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions: trip.versions }, f.adminCookie)).status, 409);
+     const after = await f.store.read(f.source);
+     const { revision: _a, tripExecutions: execution, ...actual } = after;
+     const { revision: _b, ...expected } = before;
+-    assert.deepEqual(actual, expected); assert.equal(execution![trip.id].version, 3);
++    assert.deepEqual(actual, expected); assert.equal(execution![trip.id].version, 2);
+     assert.deepEqual(execution![trip.id].deliveries[trip.deliveries[0].id], savedFirst);
+     assert.equal(f.provider.calls.length, 0);
+   } finally { await f.close(); }
+@@ -414,3 +419,31 @@
+     for (const patch of [{version:-1},{composition:'bad'},{deliveries:{fake:{at:'bad'}}},{completed:{at:'bad'}}]) assert.throws(() => validateTripExecutions({[trip.id]:{...data.tripExecutions![trip.id],...patch}}));
+   } finally { await f.close(); }
+ });
++
++
++test('driver final delivery atomically completes, concurrent retry is unchanged, and legacy complete deliveries project without mutation', async () => {
++  const f = await fixture(false, undefined, [true,true]);
++  try {
++    let trip = (await f.read()).body.trip;
++    await f.action('arrive', { versions: trip.versions });
++    trip = (await f.action('depart', { versions:trip.versions, masses:trip.deliveries.map((r: { id: string }) => ({ deliveryId:r.id, netTonnes:'1' })) })).body.trip;
++    trip = (await f.action('deliver', { versions:trip.versions, executionVersion:0, deliveryId:trip.deliveries[0].id })).body.trip;
++    const body = { versions:trip.versions, executionVersion:1, deliveryId:trip.deliveries[1].id };
++    const replies = await Promise.all([f.action('deliver',body), f.action('deliver',body)]);
++    assert.ok(replies.every(r => r.status === 200));
++    assert.deepEqual(replies[0].body.trip.execution,replies[1].body.trip.execution);
++    trip = replies[0].body.trip;
++    assert.equal(trip.archived,true); assert.equal(trip.execution.version,2);
++    assert.equal(trip.execution.completed.role,'driver');
++    assert.equal(trip.execution.completed.by,f.actor.id);
++    assert.deepEqual(trip.execution.completed,trip.execution.deliveries[body.deliveryId]);
++    const {readTripExecution} = await import('../server/trip-execution');
++    const data = await f.store.read(f.source);
++    data.tripExecutions![trip.id].completed = null;
++    const before = structuredClone(data);
++    const execution = readTripExecution(currentSnapshot(f.base,data,false), data, trip.id);
++    assert.equal(execution.stage,'completed'); assert.deepEqual(execution.completed,trip.execution.completed);
++    assert.deepEqual(data,before);
++    assert.equal(f.provider.calls.length,0);
++  } finally { await f.close(); }
++});
+--- /dev/null
++++ b/web/src/AnimatedDetails.tsx
+@@ -0,0 +1,46 @@
++import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
++
++/** Retain native summary keyboard behavior; keep content mounted until closing finishes. */
++export default function AnimatedDetails({ summary, children, className, testId }: {
++  summary: ReactNode; children: ReactNode; className: string; testId?: string
++}) {
++  const ref = useRef<HTMLDetailsElement>(null)
++  const animation = useRef<Animation | null>(null)
++  const targetOpen = useRef(false)
++  const [expanded, setExpanded] = useState(false)
++  const contentId = useId()
++  useEffect(() => () => { animation.current?.cancel() }, [])
++
++  const toggle = () => {
++    const element = ref.current!
++    const heading = element.querySelector('summary')!
++    const start = element.getBoundingClientRect().height
++    if (animation.current) {
++      animation.current.onfinish = null
++      animation.current.cancel()
++    }
++    const next = !targetOpen.current
++    targetOpen.current = next
++    setExpanded(next)
++    // Native details must stay open while its height shrinks.
++    element.open = true
++    const end = next ? element.getBoundingClientRect().height : heading.getBoundingClientRect().height
++    const finish = () => {
++      element.open = next
++      element.style.removeProperty('overflow')
++      animation.current = null
++    }
++    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { finish(); return }
++    element.style.overflow = 'hidden'
++    const active = element.animate([{ height: `${start}px` }, { height: `${end}px` }], {
++      duration: 280, easing: 'cubic-bezier(.2, .8, .2, 1)',
++    })
++    animation.current = active
++    active.onfinish = finish
++  }
++
++  return <details ref={ref} className={className} data-testid={testId} data-expanded={expanded}>
++    <summary aria-expanded={expanded} aria-controls={contentId} onClick={event => { event.preventDefault(); toggle() }}>{summary}</summary>
++    <div id={contentId} className="animated-details-content" inert={!expanded}>{children}</div>
++  </details>
++}
+--- a/web/src/DriverWorkspace.tsx
++++ b/web/src/DriverWorkspace.tsx
+@@ -1,4 +1,4 @@
+-import TripExecutionAction from './TripExecutionAction'
++import TripExecutionAction, { ExecutionEvent } from './TripExecutionAction'
+ import { executionStageLabel } from './trip-execution-model'
+ import { tripLabel } from './trip-identity'
+ import { mapLink } from './map-link'
+@@ -138,8 +138,8 @@
+     <section className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker"><Truck size={18}/></span><h3>Место погрузки</h3></div>{trip.supplier && <p className="driver-stop-party">{trip.supplier}</p>}<Address address={trip.loadingAddress} mapUrl={trip.loadingMapUrl}/><Timing actual={trip.flowVersion === 'driver-v1' ? null : trip.loadingActualAt}/>{trip.notes && <p className="driver-note">{trip.notes}</p>}</section>
+     {trip.flowVersion === 'driver-v1' && <DriverLoadingActions trip={trip} onUpdated={onUpdated}/>}
+     <div className="driver-deliveries-heading"><h3>Доставки</h3><span>{trip.deliveries.length}</span></div>
+-    {trip.deliveries.map((delivery, index) => <section key={delivery.id} className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker">{index + 1}</span><h3>{delivery.customer || `Доставка ${index + 1}`}</h3>{delivery.number && <small>№ {delivery.number}</small>}</div><Address address={delivery.address} mapUrl={delivery.mapUrl}/><dl className="driver-cargo">{delivery.product && <div><dt>Груз</dt><dd>{delivery.product}</dd></div>}{delivery.liters !== null && <div><dt>Объём</dt><dd>{delivery.liters} л</dd></div>}{delivery.netTonnes && <div><dt>Масса нетто</dt><dd>{delivery.netTonnes.replace('.', ',')} т</dd></div>}</dl><Timing actual={delivery.actualAt}/>{delivery.notes && <p className="driver-note">{delivery.notes}</p>}{trip.execution && <TripExecutionAction key={`${delivery.id}-${trip.execution.version}`} tripId={trip.id} versions={trip.versions} execution={trip.execution} deliveryId={delivery.id} customer={delivery.customer || undefined} driver onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/>}</section>)}
+-    {trip.execution && <div className="driver-execution-footer"><TripExecutionAction key={trip.execution.version} tripId={trip.id} versions={trip.versions} execution={trip.execution} driver onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/></div>}
++    {trip.deliveries.map((delivery, index) => <section key={delivery.id} className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker">{index + 1}</span><h3>{delivery.customer || `Доставка ${index + 1}`}</h3>{delivery.number && <small>№ {delivery.number}</small>}</div><Address address={delivery.address} mapUrl={delivery.mapUrl}/><dl className="driver-cargo">{delivery.product && <div><dt>Груз</dt><dd>{delivery.product}</dd></div>}{delivery.liters !== null && <div><dt>Объём</dt><dd>{delivery.liters} л</dd></div>}{delivery.netTonnes && <div><dt>Масса нетто</dt><dd>{delivery.netTonnes.replace('.', ',')} т</dd></div>}</dl><Timing actual={delivery.actualAt}/>{delivery.notes && <p className="driver-note">{delivery.notes}</p>}{trip.execution && <TripExecutionAction key={`${delivery.id}-${trip.execution.version}`} tripId={trip.id} versions={trip.versions} execution={trip.execution} deliveryId={delivery.id} customer={delivery.customer || undefined} onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/>}</section>)}
++    {trip.execution && <div className="driver-execution-footer">{trip.execution.completed ? <div className="execution-record"><strong>Рейс завершён · все доставки выполнены</strong><ExecutionEvent event={trip.execution.completed}/></div> : <p className="execution-hint">Подтвердите доставку на каждой точке. После последней доставки рейс автоматически перейдёт в архив.</p>}</div>}
+   </article>
+ }
+ 
+--- a/web/src/TripExecutionAction.tsx
++++ b/web/src/TripExecutionAction.tsx
+@@ -1,4 +1,4 @@
+-import { useRef, useState } from 'react'
++import { useEffect, useRef, useState } from 'react'
+ import { Check, LoaderCircle } from 'lucide-react'
+ import { apiFetch } from './workspace-api'
+ import type { TripExecution, TripExecutionEvent } from './trip-execution-model'
+@@ -6,24 +6,32 @@
+ import { driverDateTimeLabel } from './driver-trip-model'
+ import './trip-execution.css'
+ 
+-export function ExecutionEvent({ event }: { event: TripExecutionEvent }) {
+-  return <span className="execution-event"><Check size={15}/><span>{driverDateTimeLabel(event.at)}<small>{event.role === 'driver' ? 'Водитель' : 'Логист'}: {event.name}</small></span></span>
++export function ExecutionEvent({ event, elapsed = false }: { event: TripExecutionEvent; elapsed?: boolean }) {
++  const [now, setNow] = useState(Date.now)
++  useEffect(() => {
++    if (!elapsed) return
++    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
++    return () => window.clearInterval(timer)
++  }, [elapsed])
++  const minutes = Math.max(0, Math.floor((now - Date.parse(event.at)) / 60_000))
++  const duration = minutes < 1 ? 'меньше минуты' : `${Math.floor(minutes / 60) ? `${Math.floor(minutes / 60)} ч ` : ''}${minutes % 60} мин`
++  return <span className="execution-event"><Check size={15}/><span>{driverDateTimeLabel(event.at)}{elapsed && <small>{event.kind === 'arrival' ? 'С отметки прибытия' : 'С отметки доставки'}: {duration}</small>}</span></span>
+ }
+-export default function TripExecutionAction({ tripId, versions, execution, deliveryId, customer, driver = false, onSaved, onReload }: {
+-  tripId: string; versions: Record<string, number>; execution: TripExecution; deliveryId?: string; customer?: string; driver?: boolean
++export default function TripExecutionAction({ tripId, versions, execution, deliveryId, customer, onSaved, onReload }: {
++  tripId: string; versions: Record<string, number>; execution: TripExecution; deliveryId: string; customer?: string
+   onSaved: (result: { execution?: TripExecution; trip?: DriverTrip }) => void; onReload: () => void
+ }) {
+   const [confirm, setConfirm] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('')
+   const flight = useRef(false)
+-  const event = deliveryId ? execution.deliveries[deliveryId] : execution.completed
+-  if (event) return <div className="execution-record"><strong>{deliveryId ? 'Доставлено' : 'Рейс выполнен'}</strong><ExecutionEvent event={event}/></div>
+-  const ready = execution.stage !== 'conflict' && !!execution.departedAt && !execution.completed && (!!deliveryId || execution.stage === 'delivered')
++  const event = execution.deliveries[deliveryId]
++  if (event) return <div className="execution-record"><strong>Доставлено</strong><ExecutionEvent event={event} elapsed/></div>
++  const ready = execution.stage !== 'conflict' && !!execution.departedAt && !execution.completed
+   const save = async () => {
+     if (flight.current) return
+     flight.current = true; setBusy(true); setError('')
+     try {
+-      const path = driver ? `/api/driver/trips/${encodeURIComponent(tripId)}` : `/api/shipment-trips/${encodeURIComponent(tripId)}/execution`
+-      const response = await apiFetch(`${path}/${deliveryId ? 'deliver' : 'complete'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versions, executionVersion: execution.version, ...(deliveryId ? { deliveryId } : {}) }) })
++      const path = `/api/driver/trips/${encodeURIComponent(tripId)}`
++      const response = await apiFetch(`${path}/deliver`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versions, executionVersion: execution.version, deliveryId }) })
+       const result = await response.json()
+       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить отметку.')
+       setConfirm(false); onSaved(result)
+@@ -31,8 +39,8 @@
+     finally { flight.current = false; setBusy(false) }
+   }
+   return <div className="execution-action">
+-    {confirm ? <div className="execution-confirm"><p>{deliveryId ? `Подтвердить, что топливо доставлено: ${customer || 'этой организации'}?` : 'Все доставки выполнены. Закрыть рейс?'}</p><div><button className="button" disabled={busy} onClick={() => setConfirm(false)}>Отмена</button><button className="button primary" disabled={busy || !ready || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}Подтвердить</button></div></div> : <button className={`button ${deliveryId ? '' : 'primary'}`} disabled={!ready || busy} onClick={() => setConfirm(true)}><Check size={16}/>{deliveryId ? 'Доставлено' : 'Рейс выполнен'}</button>}
+-    {!ready && !deliveryId && <small>{execution.stage === 'conflict' ? 'Состав рейса изменён. Обратитесь к логисту.' : 'Закрытие доступно после отметки всех доставок.'}</small>}
++    {confirm ? <div className="execution-confirm"><p>{`Подтвердить прибытие на место доставки: ${customer || 'этой организации'}?`}</p><div><button className="button" disabled={busy} onClick={() => setConfirm(false)}>Отмена</button><button className="button primary" disabled={busy || !ready || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}Подтвердить</button></div></div> : <button className="button" disabled={!ready || busy} onClick={() => setConfirm(true)}><Check size={16}/>Прибыл на место доставки</button>}
++    {!ready && <small>{execution.stage === 'conflict' ? 'Состав рейса изменён. Обратитесь к логисту.' : 'Доступно после убытия с погрузки.'}</small>}
+     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={busy} onClick={() => { setError(''); setConfirm(false); onReload() }}>Обновить рейс</button></div>}
+   </div>
+ }
+--- a/web/src/TripProcessPanel.tsx
++++ b/web/src/TripProcessPanel.tsx
+@@ -1,52 +1,59 @@
+ import { useState } from 'react'
+-import { CheckCircle2, RefreshCw, Search, Truck } from 'lucide-react'
++import { Check, ChevronDown, MapPin, RefreshCw, Search, Truck } from 'lucide-react'
+ import type { DirectoryData, ShipmentTrip } from './model'
+ import { tripLabel } from './trip-identity'
+ import { compareTripsNewestFirst } from './trip-order'
+ import { formatDate, number } from './utils'
+-import { executionStageLabel, type TripExecution } from './trip-execution-model'
+-import TripExecutionAction from './TripExecutionAction'
++import { executionStageHint, executionStageLabel } from './trip-execution-model'
++import { ExecutionEvent } from './TripExecutionAction'
++import ScrollableSegments from './ScrollableSegments'
++import AnimatedDetails from './AnimatedDetails'
+ import './trip-execution.css'
+ 
+-export default function TripProcessPanel({ trips, data, loading, error, onReload, onUpdate }: {
+-  trips: ShipmentTrip[]; data: DirectoryData; loading: boolean; error: string; onReload: () => void; onUpdate: (id: string, execution: TripExecution) => void
++export default function TripProcessPanel({ trips, data, loading, error, onReload }: {
++  trips: ShipmentTrip[]; data: DirectoryData; loading: boolean; error: string; onReload: () => void
+ }) {
+   const [query, setQuery] = useState(''), [filter, setFilter] = useState<'active' | 'completed' | 'all'>('active')
++  const [vehicleId, setVehicleId] = useState(''), [stage, setStage] = useState('')
+   const name = (id: string | null) => data.companies.find(row => row.id === id)?.name || 'Клиент не указан'
+   const driver = (id: string | null) => data.directories?.drivers.find(row => row.id === id)?.name || 'Водитель не указан'
+   const active = trips.filter(t => !t.execution?.completed)
+-  const vehicles = [...new Set([...(data.directories?.vehicles.map(v => v.id) ?? []), ...trips.map(t => t.fields.vehicle_id || '')])]
++  const vehicles = [...new Set(trips.map(t => t.fields.vehicle_id || ''))].map(id => ({ id, plate: data.directories?.vehicles.find(v => v.id === id)?.plate || 'Машина не указана' })).sort((a,b) => a.plate.localeCompare(b.plate, 'ru'))
+   const needle = query.trim().toLocaleLowerCase('ru')
+-  const groups = vehicles.map(id => {
+-    const vehicle = data.directories?.vehicles.find(v => v.id === id), assigned = trips.filter(t => (t.fields.vehicle_id || '') === id)
+-    const plate = vehicle?.plate || 'Машина не указана'
+-    const visible = assigned.filter(t => filter === 'all' || (filter === 'completed' ? !!t.execution?.completed : !t.execution?.completed))
+-      .filter(t => [plate, tripLabel(t), driver(t.fields.driver_id), ...t.customers.map(c => name(c.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(needle)).sort(compareTripsNewestFirst)
+-    return { id, plate, assigned, visible }
+-  }).filter(g => g.visible.length || filter !== 'completed' && !g.assigned.some(t => !t.execution?.completed) && g.plate.toLocaleLowerCase('ru').includes(needle))
+-    .sort((a,b) => Number(b.visible.some(t => !t.execution?.completed)) - Number(a.visible.some(t => !t.execution?.completed)) || a.plate.localeCompare(b.plate, 'ru'))
+-  return <section className="trip-process" aria-label="Процесс рейсов">
+-    <div className="execution-summary"><div><span>Машин с рейсами</span><strong>{new Set(active.map(t => t.fields.vehicle_id || '')).size}</strong></div><div><span>Активных рейсов</span><strong>{active.length}</strong></div><div><span>Ожидают доставки</span><strong>{active.reduce((n,t) => n + t.customers.filter(c => !t.execution?.deliveries[c.id]).length, 0)}</strong></div><div><span>Закрытых рейсов</span><strong>{trips.length - active.length}</strong></div></div>
+-    <div className="execution-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск машины или рейса" placeholder="Машина, водитель, рейс или клиент" value={query} onChange={e => setQuery(e.target.value)}/></label><button className="button" onClick={onReload} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/>Обновить</button></div>
+-    <div className="execution-filters" role="group" aria-label="Статус рейсов">{([{ id: 'active', label: 'Активные' }, { id: 'completed', label: 'Выполненные' }, { id: 'all', label: 'Все' }] as const).map(f => <button key={f.id} className={`button ${filter === f.id ? 'primary' : ''}`} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</button>)}</div>
+-    <p className="execution-hint">Статусы по отметкам водителя и логиста. Обновление каждые 30 секунд. Отметка доставки не является подписью клиента в ЭТрН.</p>
++  const groups = vehicles.filter(v => !vehicleId || v.id === vehicleId).map(vehicle => ({ ...vehicle,
++    visible: trips.filter(t => (t.fields.vehicle_id || '') === vehicle.id)
++      .filter(t => filter === 'all' || (filter === 'completed' ? !!t.execution?.completed : !t.execution?.completed))
++      .filter(t => !stage || t.execution?.stage === stage)
++      .filter(t => [vehicle.plate, tripLabel(t), driver(t.fields.driver_id), ...t.customers.map(c => `${name(c.fields.customer_id)} ${c.fields.unloading_address || ''}`)].join(' ').toLocaleLowerCase('ru').includes(needle)).sort(compareTripsNewestFirst),
++  })).filter(g => g.visible.length)
++  const visibleCount = groups.reduce((n,g) => n + g.visible.length, 0)
++  const changeFilter = (next: typeof filter) => { setFilter(next); setStage('') }
++  return <section className="trip-process" aria-label="Процесс рейсов" aria-busy={loading}>
++    <div className="execution-overview"><div><h2>Выполнение рейсов</h2><p>От погрузки до последнего клиента</p></div><div className="execution-totals"><span><strong>{active.length}</strong> в работе</span><span><strong>{active.reduce((n,t) => n + t.customers.filter(c => !t.execution?.deliveries[c.id]).length, 0)}</strong> доставок осталось</span></div></div>
++    <div className="execution-controls">
++      <div className="execution-search-row"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск машины или рейса" placeholder="Рейс, водитель, клиент или адрес" value={query} onChange={e => setQuery(e.target.value)}/></label><button className="button execution-refresh" aria-label="Обновить" title="Обновить" onClick={onReload} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button><select aria-label="Машина" value={vehicleId} onChange={e => setVehicleId(e.target.value)}><option value="">Все машины</option>{vehicles.filter(v => v.id).map(v => <option key={v.id} value={v.id}>{v.plate}</option>)}</select><select aria-label="Этап рейса" value={stage} onChange={e => setStage(e.target.value)}><option value="">Все этапы</option>{Object.entries(executionStageLabel).filter(([key]) => key !== 'delivered' && (filter !== 'active' || key !== 'completed') && (filter !== 'completed' || key === 'completed')).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></div>
++      <div className="execution-toolbar"><ScrollableSegments className="execution-filters" label="Статус рейсов" value={filter}>{([{ id: 'active', label: 'В работе', count: active.length }, { id: 'completed', label: 'Завершённые', count: trips.length-active.length }, { id: 'all', label: 'Все', count: trips.length }] as const).map(f => <button type="button" className="button" key={f.id} aria-pressed={filter === f.id} onClick={() => changeFilter(f.id)}>{f.label}<small>{f.count}</small></button>)}</ScrollableSegments></div>
++    </div>
++    <div className="execution-context"><span>Показано рейсов: {visibleCount}{loading ? ' · Обновляем…' : ' · Автообновление 30 с'}</span><AnimatedDetails className="execution-help" summary="Как работают статусы?"><div className="execution-help-body"><p>Доставку подтверждает водитель в своём кабинете. Здесь отображаются его отметки и ход рейса.</p><dl>{(['planned','loading','enroute','delivering','completed'] as const).map(s => <div key={s}><dt>{executionStageLabel[s]}</dt><dd>{executionStageHint[s]}</dd></div>)}</dl><p>Последняя доставка автоматически завершает рейс. Документы СБИС и приёмка клиента в ЭТрН учитываются отдельно.</p><p>Если отметки нет, это не доказывает, что старый рейс фактически не выполнен.</p></div></AnimatedDetails></div>
+     {error && <p className="shipment-error" role="alert">{error}</p>}
+     {loading && !trips.length && <p role="status">Загружаем рейсы…</p>}
+-    <div className="execution-fleet">{groups.map(group => <article className="panel execution-vehicle" key={group.id}>
+-      <header><div><Truck size={22}/><h2>{group.plate}</h2></div><span>{group.assigned.filter(t => !t.execution?.completed).length} активных · {group.assigned.length} всего</span></header>
+-      {!group.visible.length && <p className="execution-hint">Нет активных рейсов</p>}
+-      {group.visible.map(trip => {
+-        const execution = trip.execution, versions = Object.fromEntries(trip.customers.map(c => [c.id, c.version]))
+-        return <section key={trip.id} className="execution-trip" data-testid="execution-trip">
+-          <div className="execution-trip-heading"><div><h3>{tripLabel(trip)}</h3><p>{formatDate(trip.fields.date)} · {driver(trip.fields.driver_id)}</p></div><span className={`execution-stage ${execution?.completed ? 'is-complete' : ''}`}>{execution ? executionStageLabel[execution.stage] : 'Статус уточняется'}</span></div>
+-          {trip.fields.trip_notes && <p className="execution-hint">{trip.fields.trip_notes}</p>}
+-          <ol className="execution-steps" aria-label="Этапы рейса">{['Погрузка', 'В пути', 'Доставки', 'Выполнен'].map((label,i) => <li key={label} className={(i === 0 ? execution?.arrivedAt : i === 1 ? execution?.departedAt : i === 2 ? execution && Object.keys(execution.deliveries).length === trip.customers.length : execution?.completed) ? 'is-done' : ''}><CheckCircle2 size={15}/>{label}</li>)}</ol>
+-          <p className="execution-hint">Погрузка: {trip.fields.loading_address || 'Адрес не указан'}</p>
+-          <ul className="execution-deliveries">{trip.customers.map(c => <li key={c.id}><div><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л · {execution?.deliveries[c.id] ? 'Доставлено' : 'Не доставлено'}</span></div>{execution && <TripExecutionAction key={`${c.id}-${execution.version}`} tripId={trip.id} versions={versions} execution={execution} deliveryId={c.id} customer={name(c.fields.customer_id)} onSaved={r => { if (r.execution) onUpdate(trip.id, r.execution) }} onReload={onReload}/>}</li>)}</ul>
+-          {execution && <footer><span>Доставлено {trip.customers.filter(c => execution.deliveries[c.id]).length} из {trip.customers.length}</span><TripExecutionAction key={execution.version} tripId={trip.id} versions={versions} execution={execution} onSaved={r => { if (r.execution) onUpdate(trip.id, r.execution) }} onReload={onReload}/></footer>}
+-        </section>
+-      })}
++    <div className="execution-fleet">{groups.map(group => <article className="execution-vehicle" key={group.id}>
++      <header><div><Truck size={19}/><h3>{group.plate}</h3></div><span>Рейсов: {group.visible.length}</span></header>
++      <div className="execution-trip-list panel">{group.visible.map(trip => {
++        const execution = trip.execution
++        const done = trip.customers.filter(c => execution?.deliveries[c.id]).length, total = trip.customers.length
++        const labels = [...new Set(trip.customers.map(c => name(c.fields.customer_id)))].join(' · ')
++        return <AnimatedDetails key={trip.id} className="execution-trip" testId="execution-trip" summary={<><div className="execution-trip-identity"><strong>{tripLabel(trip)}</strong><span>{formatDate(trip.fields.date)} · {driver(trip.fields.driver_id)}</span></div><div className="execution-trip-route"><span>{labels}</span><small>{number(trip.customers.reduce((n,c) => n + Number(c.fields.quantity_litres || 0), 0))} л</small></div><div className="execution-trip-status"><span className={`execution-stage stage-${execution?.stage || 'unknown'}`}>{execution ? executionStageLabel[execution.stage] : 'Статус уточняется'}</span><span className="execution-progress-label">Доставлено {done} из {total}</span><progress max={Math.max(total,1)} value={done} aria-label={`Доставлено ${done} из ${total}`}/></div><ChevronDown className="execution-chevron" size={18}/></>}>
++          <div className="execution-trip-body">
++            <p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
++            <div className="execution-loading"><MapPin size={16}/><div><span>Погрузка</span><p>{trip.fields.loading_address || 'Адрес не указан'}</p></div></div>
++            <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><strong>Доставлено</strong><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <span className="execution-awaiting">Ожидаем отметку водителя</span>}</li>)}</ol>
++            {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после подтверждения последней доставки водителем.</p>}
++            {trip.fields.trip_notes && <AnimatedDetails className="execution-notes" summary="Примечание к рейсу"><p>{trip.fields.trip_notes}</p></AnimatedDetails>}
++          </div>
++        </AnimatedDetails>
++      })}</div>
+     </article>)}</div>
+-    {!loading && !error && !groups.length && <div className="panel trips-empty"><Truck size={30}/><h2>Рейсы не найдены</h2><p>Измените поиск или выберите другой статус.</p></div>}
++    {!loading && !error && !groups.length && <div className="panel trips-empty"><Truck size={30}/><h2>Рейсы не найдены</h2><p>Измените поиск или фильтры.</p><button className="button" onClick={() => { setQuery(''); setVehicleId(''); changeFilter('all') }}>Сбросить фильтры</button></div>}
+   </section>
+ }
+--- a/web/src/TripsPage.tsx
++++ b/web/src/TripsPage.tsx
+@@ -66,7 +66,7 @@
+   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
+   return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
+     <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: Map }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { setView(item.id); setNotice(''); setRefresh(value => value + 1) }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
+-    {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} error={error} onReload={() => setRefresh(value => value + 1)} onUpdate={(id, execution) => setTrips(previous => previous.map(t => t.id === id ? { ...t, execution } : t))}/>}
++    {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} error={error} onReload={() => setRefresh(value => value + 1)}/>}
+     {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={() => setRefresh(value => value + 1)} onChanged={() => { setRefresh(value => value + 1); onChanged() }}/>}
+     {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}{requestsLoading && !requests.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/>}</section>}
+     {view === 'trips' && <><div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Номер рейса, клиент, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
+--- a/web/src/trip-execution-model.ts
++++ b/web/src/trip-execution-model.ts
+@@ -1,4 +1,4 @@
+-export type TripExecutionEvent = { at: string; by: string; name: string; role: 'driver' | 'logistics' }
++export type TripExecutionEvent = { at: string; by: string; name: string; role: 'driver' | 'logistics'; kind?: 'arrival' }
+ export type TripExecution = {
+   version: number
+   stage: 'planned' | 'loading' | 'enroute' | 'delivering' | 'delivered' | 'completed' | 'conflict'
+@@ -7,6 +7,16 @@
+   completed: TripExecutionEvent | null
+ }
+ export const executionStageLabel: Record<TripExecution['stage'], string> = {
+-  planned: 'Ожидает погрузки', loading: 'На погрузке', enroute: 'В пути',
+-  delivering: 'Доставляет клиентам', delivered: 'Все доставки отмечены', completed: 'Рейс выполнен', conflict: 'Требуется сверка состава',
++  planned: 'Ждёт погрузки', loading: 'На погрузке', enroute: 'В пути',
++  delivering: 'Доставляет', delivered: 'Все доставки отмечены', completed: 'Завершён', conflict: 'Требуется сверка состава',
+ }
++
++export const executionStageHint: Record<TripExecution['stage'], string> = {
++  planned: 'Водитель ещё не отметил прибытие на погрузку.',
++  loading: 'Водитель прибыл. Ждём массу груза и отметку об убытии.',
++  enroute: 'Водитель убыл с погрузки. Ни одна доставка пока не подтверждена.',
++  delivering: 'Водитель подтвердил часть доставок. Ждём остальные точки маршрута.',
++  delivered: 'Все доставки отмечены. Обновите данные для проверки завершения.',
++  completed: 'Все доставки подтверждены. Рейс завершён и находится в архиве водителя.',
++  conflict: 'Состав рейса изменился после отметок. Логисту нужно сверить доставки.',
++}
+--- a/web/src/trip-execution.css
++++ b/web/src/trip-execution.css
+@@ -1,19 +1,36 @@
+-.trip-process { display:grid; gap:18px; min-width:0 }
+-.execution-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px }
+-.execution-summary>div { display:grid; gap:8px; padding:18px; border:1px solid var(--border,#e3e5e8); border-radius:18px; background:var(--surface,#fff) }
+-.execution-summary span,.execution-hint { color:var(--muted,#727781); font-size:13px; line-height:1.5 }
+-.execution-summary strong { font-size:28px; line-height:1.1 }
+-.execution-toolbar { display:flex; gap:12px; min-width:0 }.execution-toolbar .shipment-search { flex:1; min-width:0 }.execution-toolbar input { min-width:0; width:100% }
+-.execution-filters { display:flex; flex-wrap:wrap; gap:8px }.execution-hint { margin:0 }
+-.execution-fleet { display:grid; gap:20px }.execution-vehicle { padding:22px; min-width:0; overflow-wrap:anywhere }
+-.execution-vehicle>header,.execution-trip-heading,.execution-trip>footer { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap }
+-.execution-vehicle>header>div { display:flex; align-items:center; gap:10px }.execution-vehicle h2 { font-size:21px; margin:0 }.execution-vehicle>header>span { font-size:13px; color:var(--muted,#727781) }
+-.execution-trip { margin-top:20px; border-top:1px solid var(--border,#e3e5e8); padding-top:20px; min-width:0 }.execution-trip h3 { margin:0; font-size:18px }.execution-trip-heading p { margin:6px 0 0; color:var(--muted,#727781); font-size:13px }
+-.execution-stage { padding:7px 11px; background:#edf1fa; color:#385778; border-radius:10px; font-size:13px }.execution-stage.is-complete { color:#176449; background:#e4f1e9 }
+-.execution-steps { display:flex; flex-wrap:wrap; list-style:none; gap:8px 18px; padding:0; margin:18px 0 12px; font-size:12px; color:#656b73 }.execution-steps li { display:flex; align-items:center; gap:5px }.execution-steps .is-done { color:#176449 }
+-.execution-deliveries { margin:16px 0; padding:0; list-style:none; display:grid; gap:10px }.execution-deliveries>li { background:var(--bg,#f6f7f9); border:1px solid var(--border,#e3e5e8); border-radius:14px; padding:16px; display:flex; justify-content:space-between; align-items:center; gap:18px; min-width:0 }.execution-deliveries>li>div { min-width:0 }.execution-deliveries p { margin:5px 0; font-size:13px; color:var(--muted,#727781) }.execution-deliveries span { font-size:13px }
+-.execution-action { display:grid; gap:8px; justify-items:start; min-width:0 }.execution-action>small { color:var(--muted,#727781); font-size:12px; max-width:280px }.execution-action .button { white-space:normal; min-height:42px; max-width:100% }
+-.execution-confirm { padding:12px; border:1px solid #b9cebf; border-radius:12px; max-width:360px; background:var(--surface,#fff) }.execution-confirm p { font-size:14px; margin:0 0 10px }.execution-confirm>div { display:flex; gap:8px; flex-wrap:wrap }
+-.execution-record { display:grid; gap:5px; color:#176449; font-size:14px }.execution-event { display:flex; align-items:flex-start; gap:5px; font-size:12px }.execution-event svg { flex-shrink:0 }.execution-event small { display:block; color:var(--muted,#727781); margin-top:3px }.execution-trip>footer { font-size:13px }.driver-stop .execution-action,.driver-stop .execution-record { margin-top:14px }.driver-execution-footer { margin-top:20px }
+-@media(max-width:700px) { .execution-summary { grid-template-columns:repeat(2,minmax(0,1fr)) }.execution-vehicle { padding:16px }.execution-deliveries>li { align-items:stretch; flex-direction:column }.execution-toolbar { flex-wrap:wrap }.execution-toolbar .shipment-search { flex-basis:100% }.execution-summary>div { padding:14px }.execution-trip>footer { align-items:flex-start; flex-direction:column }.execution-summary strong { font-size:24px } }
+-@media(prefers-reduced-motion:reduce) { .trip-process * { scroll-behavior:auto } }
++.trip-process { display:grid; gap:18px; min-width:0; color:var(--ink,#1d1d1f) }
++.execution-overview { display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap }
++.execution-overview h2 { margin:0; font-size:23px; letter-spacing:-.5px }.execution-overview p { margin:6px 0 0; color:var(--muted); font-size:14px }
++.execution-totals { display:flex; gap:24px; font-size:13px; color:var(--muted) }.execution-totals strong { font-size:22px; color:var(--ink,#1d1d1f); margin-right:5px; font-variant-numeric:tabular-nums }
++.execution-controls { display:grid; gap:14px; padding:0; background:transparent; border:0; box-shadow:none }
++.execution-toolbar { display:flex; justify-content:space-between; gap:12px; align-items:center; min-width:0 }
++.execution-search-row { display:grid; grid-template-columns:minmax(160px,1fr) minmax(140px,200px) minmax(140px,200px) auto; gap:10px; min-width:0 }
++.execution-refresh { grid-column:4; grid-row:1; white-space:nowrap }.execution-search-row select { grid-row:1 }.execution-search-row .shipment-search { min-width:0; width:100%; margin:0 }.execution-search-row input { width:100%; min-width:0 }.execution-search-row select { min-width:0; width:100%; border:1px solid var(--border,#e3e5e8); border-radius:var(--ui-field-radius); padding:10px 12px; color:inherit; background:var(--surface,#fff); font:inherit }
++.execution-context { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); align-items:start }
++.execution-help { max-width:640px }.execution-help>summary { cursor:pointer; color:var(--accent); font-size:13px; padding:4px 0 }.execution-help-body { padding:16px 20px; margin-top:10px; background:#fff; border:1px solid var(--border,#e3e5e8); border-radius:12px; line-height:1.6 }.execution-help p { margin:0 0 10px }.execution-help p:last-child { margin:10px 0 0 }.execution-help dl { display:grid; gap:8px; margin:12px 0 }.execution-help dl>div { display:grid; grid-template-columns:150px 1fr; gap:12px }.execution-help dt { color:var(--ink,#1d1d1f); font-weight:600 }.execution-help dd { margin:0 }
++.execution-fleet { display:grid; gap:22px; min-width:0 }.execution-vehicle { min-width:0; overflow-wrap:anywhere }.execution-vehicle>header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:0 3px 10px }.execution-vehicle>header>div { display:flex; align-items:center; gap:8px }.execution-vehicle h3 { font-size:15px; margin:0; letter-spacing:.3px }.execution-vehicle>header>span { font-size:12px; color:var(--muted) }.execution-vehicle>header svg { color:var(--muted) }
++.execution-trip-list { border:1px solid var(--border,#e3e5e8); border-radius:var(--ui-card-radius); box-shadow:var(--ui-card-shadow); background:var(--surface,#fff); overflow:hidden }.execution-trip { min-width:0 }.execution-trip+.execution-trip { border-top:1px solid var(--border,#e3e5e8) }.execution-trip>summary { display:grid; grid-template-columns:minmax(150px,1fr) minmax(160px,1.4fr) minmax(145px,180px) 18px; gap:22px; align-items:center; padding:18px 20px; transition:background-color var(--motion-feedback) ease; cursor:pointer; list-style:none }.execution-trip>summary::-webkit-details-marker { display:none }.execution-trip>summary:hover { background:var(--surface-soft,#f5f5f7) }.execution-trip>summary:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; border-radius:10px }.execution-trip[data-expanded=true]>summary { background:var(--surface-soft,#f5f5f7); border-bottom:1px solid var(--border,#e3e5e8) }.execution-chevron { color:var(--muted); transition:transform 280ms var(--motion-ease) }.execution-trip[data-expanded=true]>summary>.execution-chevron { transform:rotate(180deg) }
++.execution-trip-identity,.execution-trip-route,.execution-trip-status { display:grid; gap:6px; min-width:0 }.execution-trip-identity strong { font-size:15px }.execution-trip-identity>span { font-size:12px; color:var(--muted) }.execution-trip-route>span { font-size:13px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden }.execution-trip-route small { font-size:12px; color:var(--muted) }.execution-trip-status { justify-items:start; gap:5px }.execution-stage { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; background:#f0f2f4; color:#515b64; border-radius:6px; font-size:12px; line-height:1.4; font-weight:500 }.execution-stage::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0 }.stage-loading { background:#fff3dc; color:#795013 }.stage-enroute,.stage-delivering { background:#edf3fb; color:#315c88 }.stage-completed { background:var(--accent-soft,#e6f3ec); color:var(--accent) }.stage-conflict { background:#fff0ed; color:#a03625 }.execution-progress-label { font-size:11px; color:var(--muted) }.execution-trip-status progress { appearance:none; height:3px; width:120px; max-width:100%; border:0; border-radius:3px; overflow:hidden; background:#e9edeb; color:#44866a }.execution-trip-status progress::-webkit-progress-bar { background:#e9edeb }.execution-trip-status progress::-webkit-progress-value { background:#44866a }.execution-trip-status progress::-moz-progress-bar { background:#44866a }
++.execution-trip-body { padding:18px 20px; min-width:0 }.execution-next { margin:0 0 18px; color:var(--muted); font-size:13px; line-height:1.5 }.execution-loading { display:flex; align-items:flex-start; gap:9px; color:var(--muted); font-size:12px; margin-bottom:14px }.execution-loading svg { flex-shrink:0; margin-top:2px }.execution-loading p { margin:3px 0 0; color:var(--ink,#1d1d1f); line-height:1.5 }
++.execution-deliveries { margin:0; padding:0; list-style:none; display:grid }.execution-deliveries>li { border-top:1px solid var(--border,#e3e5e8); padding:16px 0; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:start; gap:12px; min-width:0 }.execution-stop-number { display:grid; place-items:center; width:26px; height:26px; border-radius:50%; background:#f0f2f4; color:var(--muted); font-size:12px }.is-delivered .execution-stop-number { background:var(--accent-soft,#e6f3ec); color:var(--accent) }.execution-customer strong { font-size:14px; font-weight:600 }.execution-customer p { margin:5px 0 7px; font-size:13px; color:var(--muted); line-height:1.5 }.execution-customer>span { font-size:12px; font-weight:500 }.execution-customer small { font-size:12px; color:var(--muted); margin-left:12px }
++.execution-action { display:grid; gap:8px; justify-items:start; min-width:0 }.execution-action>small { color:var(--muted); font-size:12px; max-width:230px }.execution-action .button { white-space:normal; max-width:100% }
++.execution-confirm { padding:12px; border:1px solid #b9cebf; border-radius:var(--ui-card-radius); max-width:300px; background:var(--surface,#fff) }.execution-confirm p { font-size:13px; line-height:1.5; margin:0 0 10px }.execution-confirm>div { display:flex; gap:8px; flex-wrap:wrap }.execution-record { display:grid; gap:5px; color:var(--accent); font-size:13px }.execution-event { display:flex; align-items:flex-start; gap:5px; font-size:12px }.execution-event svg { flex-shrink:0 }.execution-event small { display:block; color:var(--muted); margin-top:3px }.execution-completion { border-top:1px solid var(--border,#e3e5e8); padding-top:12px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:13px; color:var(--accent) }.execution-auto-note,.execution-hint { color:var(--muted); font-size:12px; line-height:1.6; margin:0 }.execution-notes { margin-top:14px; color:var(--muted); font-size:12px; line-height:1.5 }.execution-notes summary { cursor:pointer }.execution-notes p { margin-bottom:0 }.execution-success { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:12px 16px; background:var(--accent-soft,#e6f3ec); border-radius:12px; color:var(--accent); font-size:13px }.execution-success .button { margin-left:auto; font-size:12px }
++.driver-stop .execution-action,.driver-stop .execution-record { margin-top:14px }.driver-execution-footer { margin-top:20px; padding:16px; background:#f2f6f3; border-radius:12px }
++@media(max-width:1000px) { .execution-trip>summary { grid-template-columns:minmax(120px,1fr) minmax(130px,1fr) 18px; gap:12px }.execution-trip-route { grid-column:1; grid-row:2 }.execution-trip-status { grid-column:2; grid-row:1 / span 2 }.execution-chevron { grid-column:3; grid-row:1 / span 2 } }
++@media(max-width:700px) { .execution-overview h2 { font-size:21px }.execution-totals { gap:18px }.execution-totals strong { font-size:19px }.execution-search-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto }.execution-search-row .shipment-search { grid-column:1/3 }.execution-search-row select { grid-row:2 }.execution-search-row select:last-child { grid-column:2/4 }.execution-refresh { grid-column:3; grid-row:1; min-width:44px; padding:10px }.execution-refresh span { display:none }.execution-toolbar { flex-wrap:wrap }.execution-toolbar .execution-filters { max-width:100% }.execution-refresh { margin-left:auto }.execution-trip>summary { padding:14px; grid-template-columns:minmax(0,1fr) minmax(108px,auto) 16px; gap:10px }.execution-trip-body { padding:14px }.execution-trip-identity>span { line-height:1.5 }.execution-deliveries>li { grid-template-columns:26px minmax(0,1fr); gap:10px }.execution-deliveries .execution-action,.execution-deliveries .execution-record,.execution-deliveries .execution-awaiting { grid-column:2; width:100% }.execution-confirm { max-width:none; width:100% }.execution-customer small { display:block; margin:5px 0 0 }.execution-help dl>div { grid-template-columns:1fr; gap:2px }.execution-help-body { padding:12px }.execution-success .button { margin-left:0 }.execution-trip-route>span { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }.execution-trip-status progress { width:100% } }
++
++.execution-awaiting { color:var(--muted); font-size:12px; line-height:1.6; padding-top:2px }
++.animated-details-content { display:flow-root; min-width:0; opacity:0; transition:opacity 180ms var(--motion-ease) }
++[data-expanded=true]>.animated-details-content { opacity:1 }
++.execution-notes>summary,.execution-help>summary { min-height:var(--ui-control-size); display:flex; align-items:center; gap:8px; list-style:none }
++.execution-notes>summary::-webkit-details-marker,.execution-help>summary::-webkit-details-marker { display:none }
++.execution-notes>summary::before,.execution-help>summary::before { content:''; width:6px; height:6px; border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:rotate(-45deg); transition:transform 280ms var(--motion-ease) }
++.execution-notes[data-expanded=true]>summary::before,.execution-help[data-expanded=true]>summary::before { transform:rotate(45deg) }
++@media(prefers-reduced-motion:reduce) { .animated-details-content,.execution-chevron,.execution-notes>summary::before,.execution-help>summary::before { transition:none } }
++@media (min-width:701px) and (max-width:1100px) {
++  .execution-search-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto }
++  .execution-search-row .shipment-search { grid-column:1/3 }
++  .execution-search-row select { grid-row:2 }
++  .execution-search-row select:last-child { grid-column:2/4 }
++  .execution-refresh { grid-column:3; grid-row:1 }
++}
