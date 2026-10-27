@@ -141,14 +141,15 @@
 +
      const driver = await browser.newContext({ viewport: { width: 390, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'America/Los_Angeles' });
      const login = await driver.request.post(runtime.base + '/api/auth/login', { data: { login: credentials.access.login, password: credentials.temporaryPassword } }); assert.equal(login.status(),200);
-     const dp = await driver.newPage(); dp.on('pageerror', e => report.browserErrors.push(e.message)); await dp.goto(runtime.base + `/#driver-trip/${id}`);
+-    const dp = await driver.newPage(); dp.on('pageerror', e => report.browserErrors.push(e.message)); await dp.goto(runtime.base + `/#driver-trip/${id}`);
++    const dp = await driver.newPage(); await dp.clock.install(); dp.on('pageerror', e => report.browserErrors.push(e.message)); await dp.goto(runtime.base + `/#driver-trip/${id}`);
      const loading = dp.getByRole('region', { name: 'Действия на погрузке', exact: true });
 -    await expect(dp.getByRole('button', { name: 'Доставлено', exact: true }).first()).toBeDisabled();
 +    await expect(dp.getByRole('button', { name: 'Прибыл на место доставки', exact: true }).first()).toBeDisabled();
      await loading.getByRole('button', { name: 'Прибыл', exact: true }).click();
      await expect(loading).toContainText('Прибытие сохранено');
      await panel.getByRole('button', { name: 'Обновить', exact: true }).click(); await expect(card).toContainText('На погрузке');
-@@ -57,13 +101,13 @@
+@@ -57,13 +101,15 @@
      await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card.locator('.execution-stage')).toHaveText('В пути');
      const before = await rt.store.read(rt.source);
      const first = dp.locator('.driver-stop').nth(2);
@@ -158,6 +159,8 @@
 -    await first.getByRole('button', { name:'Доставлено',exact:true }).click(); await first.getByRole('button',{name:'Подтвердить',exact:true}).click();
 +    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click(); await first.getByRole('button',{name:'Подтвердить',exact:true}).click();
      await expect(dp.locator('.execution-record')).toHaveCount(1);
++    await dp.clock.fastForward(120_000); await expect(dp.locator('.execution-record')).toContainText('2 мин');
++    await expect(dp.locator('.execution-record')).not.toContainText('Водитель:');
      await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card).toContainText('Доставлено 1 из 2');
 -    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toBeDisabled();
 -    await expect(card.locator('.execution-stage')).toHaveText('Доставляет клиентам');
@@ -166,7 +169,7 @@
      check(`${engine}: real UI arrival/departure, cancellation, driver first delivery and independent remaining customer`);
      for (const width of [320,390,768,1440]) {
        for (const [target,label] of [[page,'logistics'],[dp,'driver']]) {
-@@ -77,18 +121,19 @@
+@@ -77,18 +123,19 @@
        const results = await new AxeBuilder({page:target}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
        report.axe.push({engine,label,violations:results.violations}); assert.deepEqual(results.violations,[],`${engine} ${label} axe`);
      }
@@ -397,7 +400,7 @@
 -    {trip.deliveries.map((delivery, index) => <section key={delivery.id} className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker">{index + 1}</span><h3>{delivery.customer || `Доставка ${index + 1}`}</h3>{delivery.number && <small>№ {delivery.number}</small>}</div><Address address={delivery.address} mapUrl={delivery.mapUrl}/><dl className="driver-cargo">{delivery.product && <div><dt>Груз</dt><dd>{delivery.product}</dd></div>}{delivery.liters !== null && <div><dt>Объём</dt><dd>{delivery.liters} л</dd></div>}{delivery.netTonnes && <div><dt>Масса нетто</dt><dd>{delivery.netTonnes.replace('.', ',')} т</dd></div>}</dl><Timing actual={delivery.actualAt}/>{delivery.notes && <p className="driver-note">{delivery.notes}</p>}{trip.execution && <TripExecutionAction key={`${delivery.id}-${trip.execution.version}`} tripId={trip.id} versions={trip.versions} execution={trip.execution} deliveryId={delivery.id} customer={delivery.customer || undefined} driver onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/>}</section>)}
 -    {trip.execution && <div className="driver-execution-footer"><TripExecutionAction key={trip.execution.version} tripId={trip.id} versions={trip.versions} execution={trip.execution} driver onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/></div>}
 +    {trip.deliveries.map((delivery, index) => <section key={delivery.id} className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker">{index + 1}</span><h3>{delivery.customer || `Доставка ${index + 1}`}</h3>{delivery.number && <small>№ {delivery.number}</small>}</div><Address address={delivery.address} mapUrl={delivery.mapUrl}/><dl className="driver-cargo">{delivery.product && <div><dt>Груз</dt><dd>{delivery.product}</dd></div>}{delivery.liters !== null && <div><dt>Объём</dt><dd>{delivery.liters} л</dd></div>}{delivery.netTonnes && <div><dt>Масса нетто</dt><dd>{delivery.netTonnes.replace('.', ',')} т</dd></div>}</dl><Timing actual={delivery.actualAt}/>{delivery.notes && <p className="driver-note">{delivery.notes}</p>}{trip.execution && <TripExecutionAction key={`${delivery.id}-${trip.execution.version}`} tripId={trip.id} versions={trip.versions} execution={trip.execution} deliveryId={delivery.id} customer={delivery.customer || undefined} onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/>}</section>)}
-+    {trip.execution && <div className="driver-execution-footer">{trip.execution.completed ? <div className="execution-record"><strong>Рейс завершён · все доставки выполнены</strong><ExecutionEvent event={trip.execution.completed}/></div> : <p className="execution-hint">Подтвердите доставку на каждой точке. После последней доставки рейс автоматически перейдёт в архив.</p>}</div>}
++    {trip.execution && <div className="driver-execution-footer">{trip.execution.completed ? <div className="execution-record"><strong>Рейс завершён · все доставки выполнены</strong><ExecutionEvent event={trip.execution.completed}/></div> : <p className="execution-hint">Отмечайте прибытие на каждой точке доставки. После последней отметки рейс автоматически перейдёт в архив.</p>}</div>}
    </article>
  }
  
@@ -520,7 +523,7 @@
 +      <div className="execution-search-row"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск машины или рейса" placeholder="Рейс, водитель, клиент или адрес" value={query} onChange={e => setQuery(e.target.value)}/></label><button className="button execution-refresh" aria-label="Обновить" title="Обновить" onClick={onReload} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button><select aria-label="Машина" value={vehicleId} onChange={e => setVehicleId(e.target.value)}><option value="">Все машины</option>{vehicles.filter(v => v.id).map(v => <option key={v.id} value={v.id}>{v.plate}</option>)}</select><select aria-label="Этап рейса" value={stage} onChange={e => setStage(e.target.value)}><option value="">Все этапы</option>{Object.entries(executionStageLabel).filter(([key]) => key !== 'delivered' && (filter !== 'active' || key !== 'completed') && (filter !== 'completed' || key === 'completed')).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></div>
 +      <div className="execution-toolbar"><ScrollableSegments className="execution-filters" label="Статус рейсов" value={filter}>{([{ id: 'active', label: 'В работе', count: active.length }, { id: 'completed', label: 'Завершённые', count: trips.length-active.length }, { id: 'all', label: 'Все', count: trips.length }] as const).map(f => <button type="button" className="button" key={f.id} aria-pressed={filter === f.id} onClick={() => changeFilter(f.id)}>{f.label}<small>{f.count}</small></button>)}</ScrollableSegments></div>
 +    </div>
-+    <div className="execution-context"><span>Показано рейсов: {visibleCount}{loading ? ' · Обновляем…' : ' · Автообновление 30 с'}</span><AnimatedDetails className="execution-help" summary="Как работают статусы?"><div className="execution-help-body"><p>Доставку подтверждает водитель в своём кабинете. Здесь отображаются его отметки и ход рейса.</p><dl>{(['planned','loading','enroute','delivering','completed'] as const).map(s => <div key={s}><dt>{executionStageLabel[s]}</dt><dd>{executionStageHint[s]}</dd></div>)}</dl><p>Последняя доставка автоматически завершает рейс. Документы СБИС и приёмка клиента в ЭТрН учитываются отдельно.</p><p>Если отметки нет, это не доказывает, что старый рейс фактически не выполнен.</p></div></AnimatedDetails></div>
++    <div className="execution-context"><span>Показано рейсов: {visibleCount}{loading ? ' · Обновляем…' : ' · Автообновление 30 с'}</span><AnimatedDetails className="execution-help" summary="Как работают статусы?"><div className="execution-help-body"><p>Водитель нажимает «Прибыл на место доставки» у нужного клиента. Здесь отображаются время прибытия и время с этой отметки.</p><dl>{(['planned','loading','enroute','delivering','completed'] as const).map(s => <div key={s}><dt>{executionStageLabel[s]}</dt><dd>{executionStageHint[s]}</dd></div>)}</dl><p>Прибытие на последнюю точку автоматически завершает рейс. Документы СБИС и приёмка клиента в ЭТрН учитываются отдельно.</p><p>Если отметки нет, это не доказывает, что старый рейс фактически не выполнен.</p></div></AnimatedDetails></div>
      {error && <p className="shipment-error" role="alert">{error}</p>}
      {loading && !trips.length && <p role="status">Загружаем рейсы…</p>}
 -    <div className="execution-fleet">{groups.map(group => <article className="panel execution-vehicle" key={group.id}>
@@ -548,7 +551,7 @@
 +            <p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
 +            <div className="execution-loading"><MapPin size={16}/><div><span>Погрузка</span><p>{trip.fields.loading_address || 'Адрес не указан'}</p></div></div>
 +            <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><strong>Доставлено</strong><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <span className="execution-awaiting">Ожидаем отметку водителя</span>}</li>)}</ol>
-+            {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после подтверждения последней доставки водителем.</p>}
++            {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после отметки прибытия на последнюю точку.</p>}
 +            {trip.fields.trip_notes && <AnimatedDetails className="execution-notes" summary="Примечание к рейсу"><p>{trip.fields.trip_notes}</p></AnimatedDetails>}
 +          </div>
 +        </AnimatedDetails>
@@ -598,7 +601,7 @@
 +}
 --- a/web/src/trip-execution.css
 +++ b/web/src/trip-execution.css
-@@ -1,19 +1,36 @@
+@@ -1,19 +1,41 @@
 -.trip-process { display:grid; gap:18px; min-width:0 }
 -.execution-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px }
 -.execution-summary>div { display:grid; gap:8px; padding:18px; border:1px solid var(--border,#e3e5e8); border-radius:18px; background:var(--surface,#fff) }
@@ -653,4 +656,9 @@
 +  .execution-search-row select { grid-row:2 }
 +  .execution-search-row select:last-child { grid-column:2/4 }
 +  .execution-refresh { grid-column:3; grid-row:1 }
++}
++@media (min-width:1101px) {
++  .execution-search-row .shipment-search { grid-column:1; grid-row:1 }
++  .execution-search-row select { grid-column:2 }
++  .execution-search-row select:last-child { grid-column:3 }
 +}
