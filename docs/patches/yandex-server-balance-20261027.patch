@@ -1,0 +1,442 @@
+--- /dev/null
++++ b/ops/yandex-browser/artel-yandex-balance.service
+@@ -0,0 +1,15 @@
++[Unit]
++Description=Read Yandex fuel balance from the server browser
++After=docker.service
++Requires=docker.service
++
++[Service]
++Type=oneshot
++ExecStart=/usr/bin/python3 /opt/artel-crm/private/yandex-browser-20261027/publish-snapshot.py
++TimeoutStartSec=115
++UMask=0077
++NoNewPrivileges=true
++PrivateTmp=true
++ProtectHome=true
++ProtectSystem=strict
++ReadWritePaths=/opt/artel-crm/data/operations
+--- /dev/null
++++ b/ops/yandex-browser/artel-yandex-balance.timer
+@@ -0,0 +1,11 @@
++[Unit]
++Description=Refresh Yandex fuel balance every five minutes
++
++[Timer]
++OnBootSec=45
++OnUnitInactiveSec=300
++AccuracySec=10
++Unit=artel-yandex-balance.service
++
++[Install]
++WantedBy=timers.target
+--- /dev/null
++++ b/ops/yandex-browser/balance.mjs
+@@ -0,0 +1,26 @@
++// Only the explicitly connected fuel contract; never the combined services total.
++export const scope = Object.freeze({ companyId: '7d90c6ecc6804d738c19d1c1c0ab0aaa', contractId: '49844602', contractNumber: '43207794/25' });
++export function money(value) {
++  if (typeof value !== 'string' || !/^-?\d{1,13}(\.\d{1,2})?$/.test(value)) throw Error('schema');
++  const [whole, fraction = ''] = value.replace('-', '').split('.');
++  const minor = (BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'))) * (value.startsWith('-') ? -1n : 1n);
++  const result = Number(minor);
++  if (!Number.isSafeInteger(result)) throw Error('schema');
++  return result;
++}
++export function fuelBalance(data, companyId) {
++  if (companyId !== scope.companyId) throw Error('scope');
++  if (!Array.isArray(data?.contracts)) throw Error('schema');
++  const matches = data.contracts.filter(c => c.contract_id === scope.contractId && c.external_id === scope.contractNumber);
++  if (matches.length !== 1) throw Error('scope');
++  const c = matches[0];
++  if (c.currency !== 'RUB' || c.payment_type !== 'prepaid' || !Array.isArray(c.lst_groups) || c.lst_groups.length !== 1) throw Error('schema');
++  const g = c.lst_groups[0];
++  if (g.parent_contract_id !== scope.contractId || g.lst_group_code !== 'main' || JSON.stringify(g.services) !== '["tanker"]') throw Error('scope');
++  const b = g.balances;
++  const result = { amountMinor: money(b?.balance), availableMinor: money(b?.available_funds), currency: 'RUB' };
++  if (money(c.balances?.total_lst_balances) !== result.amountMinor || money(c.balances?.available_funds) !== result.availableMinor) throw Error('schema');
++  if (b.overdraft_limit !== undefined) result.overdraftLimitMinor = money(b.overdraft_limit);
++  if (b.overdraft_balance !== undefined) result.overdraftAvailableMinor = money(b.overdraft_balance);
++  return result;
++}
+--- /dev/null
++++ b/ops/yandex-browser/balance.test.mjs
+@@ -0,0 +1,21 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { money, scope, fuelBalance } from './balance.mjs';
++const fuel = () => ({ contract_id: scope.contractId, external_id: scope.contractNumber, currency: 'RUB', payment_type: 'prepaid', balances: { total_lst_balances: '123.45', available_funds: '123.45' }, lst_groups: [{ parent_contract_id: scope.contractId, lst_group_code: 'main', services: ['tanker'], balances: { balance: '123.45', available_funds: '123.45' } }] });
++test('Decimal money conversion exact, no rounding or floating point multiplication', () => {
++  for (const [input, output] of [['123.45',12345],['0',0],['-0.01',-1],['99.9',9990]]) assert.equal(money(input),output);
++  for (const input of [12, null, '1.234', '1e5', '', 'NaN',' 1','99999999999999.99']) assert.throws(()=>money(input));
++});
++test('Fuel scope excludes taxi total and unrelated credit, accepts zero and negative balances', () => {
++  const data={ balances:{available_funds:'2123.45'}, contracts:[{contract_id:'taxi', external_id:'taxi', balances:{available_funds:'2000.00'}},fuel()] };
++  assert.deepEqual(fuelBalance(data,scope.companyId),{amountMinor:12345,availableMinor:12345,currency:'RUB'});
++  for(const value of ['0.00','-2.34']){const c=fuel();c.balances.total_lst_balances=c.balances.available_funds=c.lst_groups[0].balances.balance=c.lst_groups[0].balances.available_funds=value;assert.equal(fuelBalance({contracts:[c]},scope.companyId).amountMinor,money(value));}
++});
++for (const kind of ['company','missing','duplicate','currency','number','service','group','mixed','mismatch','postpaid']) test(`Fuel parser rejects ${kind}`,()=>{
++ const c=fuel(),data={contracts:[c]};let company=scope.companyId;
++ if(kind==='company')company='wrong';if(kind==='missing')data.contracts=[];if(kind==='duplicate')data.contracts.push(c);
++ if(kind==='currency')c.currency='USD';if(kind==='number')c.external_id='wrong';if(kind==='service')c.lst_groups[0].services=['taxi'];
++ if(kind==='group')c.lst_groups[0].parent_contract_id='wrong';if(kind==='mixed')c.lst_groups.push(c.lst_groups[0]);
++ if(kind==='mismatch')c.balances.available_funds='0';if(kind==='postpaid')c.payment_type='postpaid';
++ assert.throws(()=>fuelBalance(data,company));
++});
+--- /dev/null
++++ b/ops/yandex-browser/collect.mjs
+@@ -0,0 +1,42 @@
++import { chromium } from 'playwright-core';
++import { readFile, writeFile, rename } from 'node:fs/promises';
++import { fuelBalance, scope } from './balance.mjs';
++const statePath = '/state/worker/last-snapshot.json';
++let previous;
++try { previous = JSON.parse(await readFile(statePath, 'utf8')); } catch { /* First collection. */ }
++const at = new Date().toISOString();
++const result = { version: 1, ...scope, createdAt: previous?.createdAt ?? at, lastAttemptAt: at, state: 'error' };
++if (previous?.lastSuccessAt && previous?.balance) Object.assign(result, { lastSuccessAt: previous.lastSuccessAt, balance: previous.balance });
++let browser, page;
++try {
++  browser = await chromium.connectOverCDP('http://127.0.0.1:9222', { timeout: 15000 });
++  const context = browser.contexts()[0];
++  page = context.pages().find(p => { try { return new URL(p.url()).hostname === 'business.taxi.yandex.ru'; } catch { return false; } });
++  if (!page) throw Error('auth');
++  const cdp = await context.newCDPSession(page);
++  await cdp.send('Network.enable');
++  await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
++  // Observe the cabinet's own read request. No exported cookies, copied tokens or provider writes.
++  const pending = page.waitForResponse(r => {
++    const u = new URL(r.url());
++    return u.origin === 'https://b2b-api-lk.go.yandex.ru' && u.pathname === '/corp-cabinet/3.0/contracts/list' && r.request().method() === 'GET';
++  }, { timeout: 45000 });
++  pending.catch(() => {});
++  await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 });
++  if (new URL(page.url()).hostname !== 'business.taxi.yandex.ru') throw Error('auth');
++  const response = await pending;
++  if ([401, 403].includes(response.status())) throw Error('auth');
++  if (response.status() !== 200 || response.fromServiceWorker()) throw Error('provider');
++  const company = await response.request().headerValue('x-yataxi-selected-corp-client-id');
++  const data = await response.json();
++  const balance = fuelBalance(data, company);
++  Object.assign(result, { state: 'connected', lastSuccessAt: new Date().toISOString(), balance });
++  result.lastAttemptAt = result.lastSuccessAt;
++} catch (e) {
++  const loginPage = page && /^https:\/\/passport\.yandex\./.test(page.url());
++  result.state = e?.message === 'auth' || loginPage ? 'auth_required' : 'error';
++  result.errorCode = ['auth', 'schema', 'scope'].includes(e?.message) ? e.message : 'unavailable';
++} finally { if (browser) await browser.close(); }
++await writeFile(statePath + '.tmp', JSON.stringify(result), { mode: 0o600 });
++await rename(statePath + '.tmp', statePath);
++process.stdout.write(JSON.stringify(result) + '\n');
+--- /dev/null
++++ b/ops/yandex-browser/publish-snapshot.py
+@@ -0,0 +1,34 @@
++#!/usr/bin/env python3
++"""Run the browser collector; publish only its money/status envelope, never browser storage."""
++import json, os, subprocess, tempfile
++from datetime import datetime, timezone
++from pathlib import Path
++TARGET = Path('/opt/artel-crm/data/operations/yandex-balance.json')
++SCOPE = {'version': 1, 'companyId': '7d90c6ecc6804d738c19d1c1c0ab0aaa', 'contractId': '49844602', 'contractNumber': '43207794/25'}
++now = lambda: datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z')
++try:
++    run = subprocess.run(['docker','exec','artel-yandex-browser','node','/state/worker/collect.mjs'], capture_output=True, timeout=100, check=True)
++    assert len(run.stdout) <= 16384
++    raw = json.loads(run.stdout)
++    assert all(raw.get(k) == v for k,v in SCOPE.items())
++    assert raw['state'] in ['connected','error','auth_required']
++    result = {k: raw[k] for k in [*SCOPE, 'state', 'createdAt', 'lastAttemptAt']}
++    for k in ['lastSuccessAt','balance']:
++        if k in raw: result[k] = raw[k]
++    if 'balance' in result:
++        b=result['balance']; assert b.get('currency')=='RUB'
++        assert all(type(b.get(k)) is int and abs(b[k]) <= 9007199254740991 for k in ['amountMinor','availableMinor'])
++        assert all(type(b[k]) is int and abs(b[k]) <= 9007199254740991 for k in ['overdraftLimitMinor','overdraftAvailableMinor'] if k in b)
++        result['balance']={k:b[k] for k in ['currency','amountMinor','availableMinor','overdraftLimitMinor','overdraftAvailableMinor'] if k in b}
++except Exception:
++    try: result = json.loads(TARGET.read_text())
++    except Exception: result = {**SCOPE, 'createdAt':now()}
++    result.update(state='error', lastAttemptAt=now())
++fd, name = tempfile.mkstemp(prefix='.yandex-balance-', dir=TARGET.parent)
++try:
++    with os.fdopen(fd, 'w') as f:
++        json.dump(result,f,ensure_ascii=False);f.write('\n');f.flush();os.fsync(f.fileno())
++    os.chown(name,0,1000);os.chmod(name,0o640);os.replace(name,TARGET)
++finally:
++    if os.path.exists(name):os.unlink(name)
++print(json.dumps({'state':result['state'],'lastAttemptAt':result['lastAttemptAt'],'lastSuccessAt':result.get('lastSuccessAt')}))
+--- /dev/null
++++ b/scripts/verify_yandex_balance_ui.mjs
+@@ -0,0 +1,40 @@
++import assert from 'node:assert/strict';
++import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { chromium, webkit, expect } from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import { writeTripsQaSnapshot, startTripsQaServer } from './qa-trips-runtime.mjs';
++import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
++const root=resolve(import.meta.dirname,'..'),built=process.argv.includes('--built');
++const out=resolve(root,'.local/yandex-ui',built?'built':'source');await mkdir(out,{recursive:true});
++const dir=await mkdtemp(resolve(tmpdir(),'yandex-ui-'));
++const snapshotDirectory=resolve(dir,'snapshot');await writeTripsQaSnapshot(snapshotDirectory);
++const report={syntheticOnly:true,workingStoreAccessed:false,providerCalls:0,checks:[],browserErrors:[],axe:[]};
++let runtime,browser;
++const check=s=>{report.checks.push(s);console.log('PASS',s);};
++try {
++ runtime=await startTripsQaServer({root,snapshotDirectory,operationsDirectory:resolve(dir,'store')});
++ if(built)runtime.server.middlewares.stack.unshift({route:'',handle(req,res,next){const path=new URL(req.url,runtime.base).pathname;if(path.startsWith('/api/'))return next();const relative=path==='/'?'index.html':path.slice(1);if(relative.includes('..'))return next();readFile(resolve(root,'app-dist',relative)).then(body=>{res.setHeader('Content-Type',relative.endsWith('.js')?'text/javascript':relative.endsWith('.css')?'text/css':'text/html');res.end(body);}).catch(()=>next());}});
++ const {cookie}=await bootstrapQaAuth(runtime.base);
++ for(const [engine,launcher] of [['chromium',chromium],['webkit',webkit]]){
++  browser=await launcher.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block'});await authenticateContext(context,runtime.base,cookie);
++  const now=new Date().toISOString();let row={id:'yandex-server-fuel',provider:'yandex',label:'НК АРТЭЛЬ · Заправки',createdAt:now,lastAttemptAt:now,lastSuccessAt:now,state:'connected',refreshMode:'server_browser',accounts:[{id:'yandex:49844602',supplier:'Яндекс Заправки',organization:'ООО НК АРТЭЛЬ',contract:'43207794/25',amountMinor:12345,currency:'RUB',balanceLabel:'Собственные средства',details:[{label:'Лимит отсрочки',amountMinor:200000}]}]};
++  await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.origin!==runtime.base){report.providerCalls++;return route.abort();}if(u.pathname==='/api/cabinets')return route.fulfill({json:{connections:[row],credentialStorageReady:true}});return route.continue();});
++  const page=await context.newPage();page.on('pageerror',e=>report.browserErrors.push(e.message));await page.goto(runtime.base+'/#cabinet-balances');
++  const card=page.getByRole('article',{name:'Яндекс Go',exact:true});await expect(card).toBeVisible();
++  for(const width of [320,390,768,1440]){
++   await page.setViewportSize({width,height:1000});await expect(card).toContainText('Договор 43207794/25');await expect(card).toContainText('Собственные средства');await expect(card).toContainText('123,45');await expect(card).toContainText('Автоматически каждые 5 минут');await expect(card).toContainText('Прочитано в кабинете');await expect(card.getByRole('button',{name:'Обновить',exact:true})).toHaveCount(0);
++   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
++   await page.screenshot({path:resolve(out,`${engine}-${width}.png`),fullPage:true});
++   if([320,1440].includes(width)){const result=await new AxeBuilder({page}).include('.cabinet-page').withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();report.axe.push({engine,width,violations:result.violations});assert.equal(result.violations.length,0);}
++   check(`${engine} ${width}: money, contract, time, server cadence, no overflow`);
++  }
++  await page.locator('.cabinet-intro').getByRole('button',{name:'Добавить кабинет',exact:true}).click();await expect(page.getByRole('dialog').getByText('Яндекс Go',{exact:true})).toHaveCount(0);await page.getByRole('button',{name:'Закрыть',exact:true}).click();check(`${engine}: connected managed provider not duplicated in credentials form`);
++  row={...row,state:'auth_required',error:'Требуется повторный вход в Яндекс на сервере. Показан последний полученный остаток.'};await page.reload();await expect(card).toContainText('Требуется вход');await expect(card).toContainText('123,45');check(`${engine}: expired login keeps amount and warning`);
++  row={...row,state:'connected',error:undefined,lastSuccessAt:new Date(Date.now()-660000).toISOString()};await page.reload();await expect(card).toContainText('Данные требуют обновления');check(`${engine}: stale timestamp cannot look current`);
++  row={...row,state:'error',accounts:undefined,lastSuccessAt:undefined,error:'Не удалось проверить данные Яндекса.'};await page.reload();await expect(card).toContainText('Не удалось проверить');await expect(card).not.toContainText('123,45');check(`${engine}: failed first collection has no invented balance`);
++  await context.close();await browser.close();browser=undefined;
++ }
++ assert.equal(report.providerCalls,0);assert.deepEqual(report.browserErrors,[]);report.passed=true;
++}finally{await browser?.close();await runtime?.server.close();await rm(dir,{recursive:true,force:true});await writeFile(resolve(out,'report.json'),JSON.stringify(report,null,2));}
+--- a/server/cabinet-connections.ts
++++ b/server/cabinet-connections.ts
+@@ -3,6 +3,7 @@
+ import { cabinetProviders, type CabinetAccount, type CabinetConnection, type CabinetProvider, type CabinetResponse } from '../web/src/cabinet-model';
+ import { GloProClient, GloProError } from './glopro-client';
+ import { FuelCabinetClient, FuelCabinetError, normalizeCabinetOrganization } from './fuel-cabinet-client';
++import { readYandexBrowserBalance } from './yandex-browser-balance';
+ import { ApiError } from './api-error';
+ import { requireUser } from './auth';
+ import { requireSection } from './permissions';
+@@ -129,6 +130,8 @@
+     try { encryptionKey(env); ready = true; } catch { /* Read-only page remains available before setup. */ }
+     const data = initial;
+     const result: CabinetResponse = { connections: Object.values(data.cabinets?.connections ?? {}).map(publicConnection), credentialStorageReady: ready };
++    const yandex = await readYandexBrowserBalance(env.ARTEL_YANDEX_BALANCE_FILE);
++    if (yandex) result.connections.push(yandex);
+     return send(200, result);
+   }
+   if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+--- a/server/production.ts
++++ b/server/production.ts
+@@ -153,7 +153,7 @@
+     operationsStore: store, secureCookies: true, requireAuthentication: true,
+     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
+     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
+-    cabinetEnvironment: env,
++    cabinetEnvironment: { ...env, ARTEL_YANDEX_BALANCE_FILE: resolve(storeDirectory, 'yandex-balance.json') },
+     accountPasswordKey: env.ARTEL_ACCOUNT_PASSWORD_KEY,
+     invoiceBridge,
+     setupToken: env.ARTEL_SETUP_TOKEN, cronSecret: env.CRON_SECRET, checkoApiKey: env.CHECKO_API_KEY,
+--- /dev/null
++++ b/server/yandex-browser-balance.ts
+@@ -0,0 +1,47 @@
++import { constants } from 'node:fs';
++import { open } from 'node:fs/promises';
++import type { CabinetConnection } from '../web/src/cabinet-model';
++const companyId = '7d90c6ecc6804d738c19d1c1c0ab0aaa', contractId = '49844602', contractNumber = '43207794/25';
++const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
++const time = (v: unknown, now: number): v is string => typeof v === 'string' && /^\d{4}-\d\d-\d\dT/.test(v) && Number.isFinite(Date.parse(v)) && Date.parse(v) <= now + 60_000;
++const base = (): CabinetConnection => ({ id: 'yandex-server-fuel', provider: 'yandex', label: 'НК АРТЭЛЬ · Заправки', createdAt: '2026-10-27T00:00:00.000Z', state: 'error', refreshMode: 'server_browser' });
++export function yandexBrowserConnection(value: unknown, now = Date.now()): CabinetConnection {
++  const invalid = () => ({ ...base(), error: 'Не удалось проверить данные Яндекса. Требуется проверка серверного подключения.' });
++  if (!object(value) || value.version !== 1 || value.companyId !== companyId || value.contractId !== contractId || value.contractNumber !== contractNumber
++    || !['connected', 'error', 'auth_required'].includes(String(value.state)) || !time(value.createdAt, now) || !time(value.lastAttemptAt, now)
++    || Date.parse(value.createdAt) > Date.parse(value.lastAttemptAt)) return invalid();
++  const connection: CabinetConnection = { ...base(), createdAt: value.createdAt, lastAttemptAt: value.lastAttemptAt, state: value.state as CabinetConnection['state'] };
++  if (value.balance !== undefined || value.lastSuccessAt !== undefined) {
++    const b = value.balance;
++    if (!object(b) || !time(value.lastSuccessAt, now) || Date.parse(value.lastSuccessAt) > Date.parse(value.lastAttemptAt) || Date.parse(value.lastSuccessAt) < Date.parse(value.createdAt)
++      || b.currency !== 'RUB' || !Number.isSafeInteger(b.amountMinor) || !Number.isSafeInteger(b.availableMinor)
++      || ['overdraftLimitMinor', 'overdraftAvailableMinor'].some(k => b[k] !== undefined && !Number.isSafeInteger(b[k]))) return invalid();
++    connection.lastSuccessAt = value.lastSuccessAt;
++    const details: { label: string; amountMinor: number }[] = [];
++    if (b.availableMinor !== b.amountMinor) details.push({ label: 'Доступно по договору', amountMinor: b.availableMinor as number });
++    if (b.overdraftLimitMinor !== undefined) details.push({ label: 'Лимит отсрочки', amountMinor: b.overdraftLimitMinor as number });
++    if (b.overdraftAvailableMinor !== undefined) details.push({ label: 'Доступная отсрочка', amountMinor: b.overdraftAvailableMinor as number });
++    connection.accounts = [{ id: 'yandex:' + contractId, supplier: 'Яндекс Заправки', organization: 'ООО НК АРТЭЛЬ', contract: contractNumber,
++      amountMinor: b.amountMinor as number, currency: 'RUB', balanceLabel: 'Собственные средства', ...(details.length ? { details } : {}) }];
++  }
++  if (connection.state === 'connected' && !connection.accounts) return invalid();
++  if (connection.state === 'auth_required') connection.error = 'Требуется повторный вход в Яндекс на сервере. Попросите администратора подтвердить вход. Показан последний полученный остаток.';
++  else if (connection.state === 'error') connection.error = 'Не удалось обновить остаток Яндекса. Сервер повторит попытку автоматически. Показан последний полученный остаток.';
++  else if (!connection.lastSuccessAt || now - Date.parse(connection.lastSuccessAt) > 600_000) {
++    connection.state = 'error'; connection.error = 'Обновление Яндекса задерживается. Показан последний полученный остаток; требуется проверка серверного подключения.';
++  }
++  return connection;
++}
++export async function readYandexBrowserBalance(path?: string): Promise<CabinetConnection | null> {
++  if (!path) return null;
++  try {
++    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
++    try {
++      const info = await file.stat();
++      if (!info.isFile() || info.size > 16_384) return yandexBrowserConnection(null);
++      return yandexBrowserConnection(JSON.parse(await file.readFile('utf8')));
++    } finally { await file.close(); }
++  } catch (error) {
++    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : yandexBrowserConnection(null);
++  }
++}
+--- a/tests/api-cabinets.test.ts
++++ b/tests/api-cabinets.test.ts
+@@ -2,7 +2,7 @@
+ import { test } from 'node:test';
+ import { createServer } from 'node:http';
+ import type { AddressInfo } from 'node:net';
+-import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+ import { tmpdir } from 'node:os';
+ import { resolve } from 'node:path';
+ import { randomBytes, randomUUID } from 'node:crypto';
+@@ -138,3 +138,23 @@
+     assert.equal(same.status, 200); assert.equal((await f.store.read(f.source)).revision, after.revision);
+   } finally { await f.close(); }
+ });
++
++
++test('server browser Yandex is read-only, section protected, performs no business writes', async () => {
++  const dir = await mkdtemp(resolve(tmpdir(), 'yandex-api-'));
++  const file = resolve(dir, 'snapshot.json');
++  const at = new Date().toISOString();
++  await writeFile(file, JSON.stringify({ version: 1, companyId: '7d90c6ecc6804d738c19d1c1c0ab0aaa', contractId: '49844602', contractNumber: '43207794/25', state: 'connected', createdAt: at, lastAttemptAt: at, lastSuccessAt: at, balance: { currency: 'RUB', amountMinor: 12345, availableMinor: 12345 }, cookie: 'synthetic-secret' }));
++  const f = await fixture({ ...env, ARTEL_YANDEX_BALANCE_FILE: file });
++  try {
++    const before = await readFile(f.store.path, 'utf8');
++    const answer = await f.director('/api/cabinets');
++    assert.equal(answer.status, 200); assert.equal(answer.body.connections.length, 1);
++    assert.equal(answer.body.connections[0].accounts[0].amountMinor, 12345);
++    assert.equal(answer.body.connections[0].refreshMode, 'server_browser');
++    assert.ok(!JSON.stringify(answer.body).includes('synthetic-secret'));
++    assert.equal((await f.client()('/api/cabinets')).status, 401);
++    assert.equal((await f.director('/api/cabinets/yandex-server-fuel/sync', 'POST', {})).status, 404);
++    assert.equal(await readFile(f.store.path, 'utf8'), before);
++  } finally { await f.close(); await rm(dir, { recursive: true, force: true }); }
++});
+--- /dev/null
++++ b/tests/yandex-browser-balance.test.ts
+@@ -0,0 +1,46 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { yandexBrowserConnection, readYandexBrowserBalance } from '../server/yandex-browser-balance';
++import { cabinetConnectionStale } from '../web/src/cabinet-model';
++const now = Date.parse('2026-10-27T12:00:00Z');
++const input = () => ({ version: 1, companyId: '7d90c6ecc6804d738c19d1c1c0ab0aaa', contractId: '49844602', contractNumber: '43207794/25', createdAt: '2026-10-27T10:00:00Z', lastAttemptAt: new Date(now).toISOString(), lastSuccessAt: new Date(now).toISOString(), state: 'connected', balance: { amountMinor: 12345, availableMinor: 23456, currency: 'RUB' } });
++test('Yandex money is own fuel funds, available funds and credit stay separate; untrusted fields never reach API', () => {
++  const row = yandexBrowserConnection({ ...input(), secret: 'not-for-api', error: 'not-for-api', balance: { ...input().balance, overdraftLimitMinor: 200000, overdraftAvailableMinor: 11111 } }, now);
++  assert.equal(row.state, 'connected'); assert.equal(row.accounts?.[0].amountMinor, 12345);
++  assert.equal(row.accounts?.[0].contract, '43207794/25');
++  assert.deepEqual(row.accounts?.[0].details?.map(d => d.amountMinor), [23456, 200000, 11111]);
++  assert.equal(row.accounts?.[0].sourceUpdatedAt, undefined); assert.ok(!JSON.stringify(row).includes('not-for-api'));
++  assert.equal(cabinetConnectionStale(row, now), false);
++});
++for (const [name, patch] of Object.entries({ company: { companyId: 'other' }, contract: { contractId: 'other' }, number: { contractNumber: 'other' }, currency: { balance: { ...input().balance, currency: 'USD' } }, decimals: { balance: { ...input().balance, amountMinor: 12.3 } }, overflow: { balance: { ...input().balance, amountMinor: Number.MAX_SAFE_INTEGER + 1 } }, future: { lastSuccessAt: '2030-01-01T00:00:00Z' }, missingBalance: { balance: undefined }, wrongTime: { lastAttemptAt: 'bad' }, outOfOrder: { createdAt: '2026-10-27T12:00:01Z' } })) {
++  test(`Yandex rejects ${name} without publishing money`, () => {
++    const row = yandexBrowserConnection({ ...input(), ...patch }, now);
++    assert.equal(row.state, 'error'); assert.equal(row.accounts, undefined);
++  });
++}
++test('Yandex reauth and provider error preserve last successful timestamp and amount', () => {
++  for (const state of ['error', 'auth_required']) {
++    const row = yandexBrowserConnection({ ...input(), state, lastAttemptAt: new Date(now + 1000).toISOString() }, now + 1000);
++    assert.equal(row.state, state); assert.equal(row.lastSuccessAt, input().lastSuccessAt);
++    assert.equal(row.accounts?.[0].amountMinor, 12345); assert.equal(cabinetConnectionStale(row, now), true);
++  }
++});
++test('Yandex stopped worker becomes stale without new success timestamp', () => {
++  const row = yandexBrowserConnection(input(), now + 600001);
++  assert.equal(row.state, 'error'); assert.equal(row.lastSuccessAt, input().lastSuccessAt); assert.equal(row.accounts?.[0].amountMinor, 12345);
++});
++test('Yandex snapshot file bounded, atomic reader rejects malformed and symlink; missing is optional', async () => {
++  const dir = await mkdtemp(join(tmpdir(), 'yandex-balance-'));
++  try {
++    const file = join(dir, 'snapshot.json');
++    assert.equal(await readYandexBrowserBalance(file), null); assert.equal(await readYandexBrowserBalance(), null);
++    const fresh = { ...input(), createdAt: new Date(Date.now()-1000).toISOString(), lastAttemptAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString() };
++    await writeFile(file, JSON.stringify(fresh)); assert.equal((await readYandexBrowserBalance(file))?.accounts?.[0].amountMinor, 12345);
++    await writeFile(file, '{broken'); assert.equal((await readYandexBrowserBalance(file))?.state, 'error');
++    await writeFile(file, ' '.repeat(16385)); assert.equal((await readYandexBrowserBalance(file))?.accounts, undefined);
++    await symlink(file, join(dir, 'link')); assert.equal((await readYandexBrowserBalance(join(dir, 'link')))?.state, 'error');
++  } finally { await rm(dir, { recursive: true, force: true }); }
++});
+--- a/web/src/CabinetBalances.tsx
++++ b/web/src/CabinetBalances.tsx
+@@ -49,28 +49,30 @@
+           <header className="cabinet-provider-header"><div className="cabinet-provider-title"><ProviderMark provider={provider.id}/><h3>{provider.name}</h3></div><a className="cabinet-external" href={provider.url} target="_blank" rel="noopener noreferrer">Открыть сайт<ExternalLink size={15}/></a></header>
+           {data.connections.filter(connection => connection.provider === provider.id).map(connection => {
+             const stale = cabinetConnectionStale(connection);
++            const managed = connection.refreshMode === 'server_browser';
+             const hasAccounts = !!connection.accounts?.length;
+             return <section className="cabinet-connection" key={connection.id} aria-label={connection.label}>
+-              <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
++              <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
+               {hasAccounts ? <div className="cabinet-accounts">{connection.accounts!.map(account => <div className="cabinet-account" key={account.id}>
+-                <div className="cabinet-account-info"><strong>{account.organization || account.supplier}</strong>{account.organization && account.supplier !== account.organization && <span>{account.supplier}</span>}</div>
+-                <div className="cabinet-account-balance"><strong className={`cabinet-account-amount${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
++                <div className="cabinet-account-info"><strong>{account.organization || account.supplier}</strong>{account.organization && account.supplier !== account.organization && <span>{account.supplier}</span>}{managed && account.contract && <span>Договор {account.contract}</span>}</div>
++                <div className="cabinet-account-balance"><strong className={`cabinet-account-amount${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
+ 
+-              </div>)}</div> : <p className="cabinet-pending">{automatic(provider.id) ? 'Остатки ещё не получены. Первое обновление — в течение минуты после добавления.' : 'Автоматическое получение остатков пока недоступно. Доступ сохранён для настройки подключения.'}</p>}
++              </div>)}</div> : <p className="cabinet-pending">{managed ? 'Серверное подключение ожидает первого успешного чтения.' : automatic(provider.id) ? 'Остатки ещё не получены. Первое обновление — в течение минуты после добавления.' : 'Автоматическое получение остатков пока недоступно. Доступ сохранён для настройки подключения.'}</p>}
+               {connection.error && <p className="cabinet-sync-error" role="status">{connection.error}</p>}
+-              <footer className="cabinet-connection-footer"><span>{connection.lastSuccessAt ? `${stale ? 'Последнее обновление' : 'Обновлено'} ${date(connection.lastSuccessAt)} МСК` : 'Успешных обновлений пока нет'}</span><div>
++              <footer className="cabinet-connection-footer"><span>{connection.lastSuccessAt ? `${managed ? 'Прочитано в кабинете' : stale ? 'Последнее обновление' : 'Обновлено'} ${date(connection.lastSuccessAt)} МСК` : 'Успешных обновлений пока нет'}</span><div>
+                 {provider.id === 'natcar' && <button className="button cabinet-organizations-button" disabled={syncing.includes(connection.id)} onClick={() => setOrganizationEditor(connection)}><Building2 size={16}/>Организации</button>}
++                {managed && <span>Автоматически каждые 5 минут</span>}
+                 {automatic(provider.id) && <button className="button cabinet-refresh" aria-label={syncing.includes(connection.id) ? 'Обновление…' : 'Обновить'} title="Обновить остатки" aria-busy={syncing.includes(connection.id)} disabled={syncing.includes(connection.id)} onClick={() => void synchronize(connection.id)}><RefreshCw size={15} aria-hidden="true"/><span>{syncing.includes(connection.id) ? 'Обновление…' : 'Обновить'}</span></button>}
+               </div></footer>
+             </section>;
+           })}
+         </article>)}
+       </div><aside className="cabinet-sidebar" aria-label="Добавление кабинетов">
+-        <div className="panel cabinet-help"><span className="cabinet-eyebrow">ПОДКЛЮЧЕНИЕ</span><h3>Как добавить кабинет</h3><ol><li>Выберите сервис.</li><li>Введите название, логин и пароль.</li><li>После подключения здесь появятся остатки.</li></ol><p>У GloPro, Роснефти и natcar остатки загружаются автоматически. Для Яндекс Go и ЛУКОЙЛ пока можно только сохранить доступ.</p><p className="cabinet-security"><LockKeyhole size={16}/>Данные для входа хранятся в зашифрованном виде.</p></div>
++        <div className="panel cabinet-help"><span className="cabinet-eyebrow">ПОДКЛЮЧЕНИЕ</span><h3>Как добавить кабинет</h3><ol><li>Выберите сервис.</li><li>Введите название, логин и пароль.</li><li>После подключения здесь появятся остатки.</li></ol><p>У GloPro, Роснефти и natcar остатки загружаются автоматически. Яндекс Go обновляется через браузер на сервере. Иногда администратору нужно подтвердить вход. Для ЛУКОЙЛ пока можно только сохранить доступ.</p><p className="cabinet-security"><LockKeyhole size={16}/>Данные для входа хранятся в зашифрованном виде.</p></div>
+         {!!available.length && <div className="panel cabinet-available"><h3>Другие сервисы</h3>{available.map(provider => <div className="cabinet-available-item" key={provider.id}><div className="cabinet-provider-title"><ProviderMark provider={provider.id}/><strong>{provider.name}</strong></div><p>{automatic(provider.id) ? 'Автоматическое обновление остатков' : 'Получение остатков пока недоступно'}</p><button className="button" disabled={!data.credentialStorageReady} onClick={() => setEditor(provider.id)}><Plus size={16}/>{automatic(provider.id) ? 'Добавить кабинет' : 'Сохранить доступ'}</button></div>)}</div>}
+       </aside></div>
+     </>}
+-    {editor && <ConnectionEditor initialProvider={editor === 'choose' ? null : editor} onClose={() => setEditor(null)} onSaved={provider => { setEditor(null); setNotice(automatic(provider) ? 'Кабинет добавлен. Первое обновление остатков начнётся в течение минуты.' : 'Доступ сохранён. Получение остатков этого сервиса ещё не подключено.'); void refresh(); }}/>}
++    {editor && <ConnectionEditor yandexConnected={data?.connections.some(c => c.refreshMode === 'server_browser') ?? false} initialProvider={editor === 'choose' ? null : editor} onClose={() => setEditor(null)} onSaved={provider => { setEditor(null); setNotice(automatic(provider) ? 'Кабинет добавлен. Первое обновление остатков начнётся в течение минуты.' : 'Доступ сохранён. Получение остатков этого сервиса ещё не подключено.'); void refresh(); }}/>}
+     {organizationEditor && <OrganizationEditor connection={organizationEditor} onClose={() => setOrganizationEditor(null)} onSaved={() => { setOrganizationEditor(null); setNotice('Состав организаций сохранён. Обновите остатки или дождитесь автоматического обновления.'); void refresh(); }}/>}
+   </section>;
+ }
+@@ -109,7 +111,7 @@
+   </form></dialog>;
+ }
+ 
+-function ConnectionEditor({ initialProvider, onClose, onSaved }: { initialProvider: CabinetProvider | null; onClose: () => void; onSaved: (provider: CabinetProvider) => void }) {
++function ConnectionEditor({ initialProvider, onClose, onSaved, yandexConnected }: { yandexConnected: boolean; initialProvider: CabinetProvider | null; onClose: () => void; onSaved: (provider: CabinetProvider) => void }) {
+   const [provider, setProvider] = useState<CabinetProvider | null>(initialProvider);
+   const entry = cabinetProviders.find(item => item.id === provider);
+   const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);
+@@ -129,7 +131,7 @@
+   return <dialog ref={dialog} className="cabinet-dialog" aria-labelledby="cabinet-editor-title" onCancel={event => { event.preventDefault(); close(); }}>
+     <form onSubmit={submit}>
+       <header><h2 id="cabinet-editor-title">{entry ? `Добавить кабинет ${entry.name}` : 'Добавить кабинет'}</h2><button type="button" className="icon-button" aria-label="Закрыть" onClick={close} disabled={saving}><X size={20}/></button></header>
+-      {!entry || !provider ? <><p className="cabinet-dialog-description">Шаг 1 из 2 · Выберите сервис</p><div className="cabinet-provider-options">{cabinetProviders.map(item => <button type="button" className="cabinet-provider-option" key={item.id} onClick={() => setProvider(item.id)}><ProviderMark provider={item.id}/><span><strong>{item.name}</strong><small>{automatic(item.id) ? 'Автоматическая загрузка остатков' : 'Сохранение доступа · остатки пока недоступны'}</small></span><ArrowRight size={18}/></button>)}</div></> : <>
++      {!entry || !provider ? <><p className="cabinet-dialog-description">Шаг 1 из 2 · Выберите сервис</p><div className="cabinet-provider-options">{cabinetProviders.filter(item => item.id !== 'yandex' || !yandexConnected).map(item => <button type="button" className="cabinet-provider-option" key={item.id} onClick={() => setProvider(item.id)}><ProviderMark provider={item.id}/><span><strong>{item.name}</strong><small>{automatic(item.id) ? 'Автоматическая загрузка остатков' : 'Сохранение доступа · остатки пока недоступны'}</small></span><ArrowRight size={18}/></button>)}</div></> : <>
+       <button type="button" className="cabinet-back" disabled={saving} onClick={() => { setProvider(null); setLogin(''); setPassword(''); setError(''); }}><ArrowLeft size={15}/>Выбрать другой сервис</button>
+       <p className="cabinet-dialog-description">Шаг 2 из 2 · Данные для входа в {entry.name}</p>
+       {!automatic(provider) && <p className="cabinet-pending">Получение остатков пока недоступно. Сейчас можно сохранить доступ для дальнейшей настройки.</p>}
+--- a/web/src/cabinet-model.ts
++++ b/web/src/cabinet-model.ts
+@@ -18,6 +18,7 @@
+   error?: string;
+   accounts?: CabinetAccount[];
+   organizationNames?: string[];
++  refreshMode?: 'server_browser';
+ }
+ export interface CabinetResponse { connections: CabinetConnection[]; credentialStorageReady: boolean }
+ 

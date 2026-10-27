@@ -149,27 +149,29 @@
      await loading.getByRole('button', { name: 'Прибыл', exact: true }).click();
      await expect(loading).toContainText('Прибытие сохранено');
      await panel.getByRole('button', { name: 'Обновить', exact: true }).click(); await expect(card).toContainText('На погрузке');
-@@ -57,13 +101,15 @@
+@@ -57,14 +101,15 @@
      await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card.locator('.execution-stage')).toHaveText('В пути');
      const before = await rt.store.read(rt.source);
      const first = dp.locator('.driver-stop').nth(2);
 -    await first.getByRole('button', { name:'Доставлено',exact:true }).click(); await first.getByRole('button',{name:'Отмена',exact:true}).click();
-+    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click(); await first.getByRole('button',{name:'Отмена',exact:true}).click();
-     assert.deepEqual((await rt.store.read(rt.source)).tripExecutions,before.tripExecutions);
+-    assert.deepEqual((await rt.store.read(rt.source)).tripExecutions,before.tripExecutions);
 -    await first.getByRole('button', { name:'Доставлено',exact:true }).click(); await first.getByRole('button',{name:'Подтвердить',exact:true}).click();
-+    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click(); await first.getByRole('button',{name:'Подтвердить',exact:true}).click();
++    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click();
++    await expect(first.getByRole('button',{name:'Подтвердить',exact:true})).toHaveCount(0);
      await expect(dp.locator('.execution-record')).toHaveCount(1);
-+    await dp.clock.fastForward(120_000); await expect(dp.locator('.execution-record')).toContainText('2 мин');
++    await dp.clock.fastForward(120_000); await expect(dp.locator('.execution-record')).toContainText('Прибыл 2 минуты назад');
 +    await expect(dp.locator('.execution-record')).not.toContainText('Водитель:');
      await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card).toContainText('Доставлено 1 из 2');
 -    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toBeDisabled();
 -    await expect(card.locator('.execution-stage')).toHaveText('Доставляет клиентам');
+-    check(`${engine}: real UI arrival/departure, cancellation, driver first delivery and independent remaining customer`);
 +    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toHaveCount(0);
 +    await expect(card.locator('.execution-stage')).toHaveText('Доставляет');
-     check(`${engine}: real UI arrival/departure, cancellation, driver first delivery and independent remaining customer`);
++    check(`${engine}: real UI arrival/departure, single-click driver first delivery and independent remaining customer`);
      for (const width of [320,390,768,1440]) {
        for (const [target,label] of [[page,'logistics'],[dp,'driver']]) {
-@@ -77,18 +123,19 @@
+         await target.setViewportSize({width,height:1000});
+@@ -77,18 +122,18 @@
        const results = await new AxeBuilder({page:target}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
        report.axe.push({engine,label,violations:results.violations}); assert.deepEqual(results.violations,[],`${engine} ${label} axe`);
      }
@@ -180,7 +182,6 @@
 -    await card.getByRole('button',{name:'Рейс выполнен',exact:true}).click(); await card.getByRole('button',{name:'Подтвердить',exact:true}).click();
 +    // The driver closes the last stop; neither UI sends a separate complete call.
 +    const second = dp.getByRole('button',{name:'Прибыл на место доставки',exact:true}); await second.click();
-+    await dp.getByRole('button',{name:'Подтвердить',exact:true}).click();
 +    await expect(dp.locator('.driver-execution-footer')).toContainText('Рейс завершён');
 +    await panel.getByRole('button',{name:'Обновить',exact:true}).click();
      await expect(card).toHaveCount(0);
@@ -188,7 +189,7 @@
 -    await page.reload(); await page.getByRole('button',{name:'В процессе',exact:true}).click(); await panel.getByRole('button',{name:'Выполненные',exact:true}).click(); await expect(card).toContainText('Логист: QA Директор');
 +    await panel.getByRole('button',{name:/^Завершённые/}).click(); await expect(card).toContainText('Завершён');
 +    await page.reload(); await page.getByRole('button',{name:'В процессе',exact:true}).click(); await panel.getByRole('button',{name:/^Завершённые/}).click();
-+    await card.locator('summary').first().click(); await expect(card).not.toContainText('Водитель:'); await expect(card).toContainText('С отметки прибытия:');
++    await card.locator('summary').first().click(); await expect(card).not.toContainText('Водитель:'); await expect(card).toContainText('Прибыл');
      await dp.goto(runtime.base+'/#driver-trips'); await dp.getByRole('button',{name:'Обновить мои рейсы',exact:true}).click(); await dp.getByRole('button',{name:'Архивные',exact:true}).click(); await expect(dp.locator(`a[href="#driver-trip/${id}"]`)).toBeVisible();
      const after = await rt.store.read(rt.source); const {revision:_a,tripExecutions:_b,accounts:_c,...stableAfter}=after; const {revision:_d,tripExecutions:_e,accounts:_f,...stableBefore}=before; assert.deepEqual(stableAfter,stableBefore);
 -    assert.equal(after.tripExecutions[id].version,3);
@@ -412,7 +413,7 @@
  import { Check, LoaderCircle } from 'lucide-react'
  import { apiFetch } from './workspace-api'
  import type { TripExecution, TripExecutionEvent } from './trip-execution-model'
-@@ -6,24 +6,32 @@
+@@ -6,33 +6,44 @@
  import { driverDateTimeLabel } from './driver-trip-model'
  import './trip-execution.css'
  
@@ -426,25 +427,30 @@
 +    return () => window.clearInterval(timer)
 +  }, [elapsed])
 +  const minutes = Math.max(0, Math.floor((now - Date.parse(event.at)) / 60_000))
-+  const duration = minutes < 1 ? 'меньше минуты' : `${Math.floor(minutes / 60) ? `${Math.floor(minutes / 60)} ч ` : ''}${minutes % 60} мин`
-+  return <span className="execution-event"><Check size={15}/><span>{driverDateTimeLabel(event.at)}{elapsed && <small>{event.kind === 'arrival' ? 'С отметки прибытия' : 'С отметки доставки'}: {duration}</small>}</span></span>
++  const relative = new Intl.RelativeTimeFormat('ru', { numeric: 'always' })
++  const [value, unit]: [number, Intl.RelativeTimeFormatUnit] = minutes < 60 ? [minutes, 'minute'] : minutes < 1440 ? [Math.floor(minutes / 60), 'hour'] : minutes < 43200 ? [Math.floor(minutes / 1440), 'day'] : minutes < 525600 ? [Math.floor(minutes / 43200), 'month'] : [Math.floor(minutes / 525600), 'year']
++  const duration = minutes < 1 ? 'только что' : relative.format(-value, unit)
++  if (elapsed) return <span className="execution-event"><Check size={15}/><span><strong>{event.kind === 'arrival' ? 'Прибыл' : 'Доставка отмечена'} {duration}</strong><small>{driverDateTimeLabel(event.at)}</small></span></span>
++  return <span className="execution-event"><Check size={15}/><span>{driverDateTimeLabel(event.at)}</span></span>
  }
 -export default function TripExecutionAction({ tripId, versions, execution, deliveryId, customer, driver = false, onSaved, onReload }: {
 -  tripId: string; versions: Record<string, number>; execution: TripExecution; deliveryId?: string; customer?: string; driver?: boolean
-+export default function TripExecutionAction({ tripId, versions, execution, deliveryId, customer, onSaved, onReload }: {
++export default function TripExecutionAction({ tripId, versions, execution, deliveryId, onSaved, onReload }: {
 +  tripId: string; versions: Record<string, number>; execution: TripExecution; deliveryId: string; customer?: string
    onSaved: (result: { execution?: TripExecution; trip?: DriverTrip }) => void; onReload: () => void
  }) {
-   const [confirm, setConfirm] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('')
+-  const [confirm, setConfirm] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('')
++  const [busy, setBusy] = useState(false), [error, setError] = useState('')
    const flight = useRef(false)
 -  const event = deliveryId ? execution.deliveries[deliveryId] : execution.completed
 -  if (event) return <div className="execution-record"><strong>{deliveryId ? 'Доставлено' : 'Рейс выполнен'}</strong><ExecutionEvent event={event}/></div>
 -  const ready = execution.stage !== 'conflict' && !!execution.departedAt && !execution.completed && (!!deliveryId || execution.stage === 'delivered')
 +  const event = execution.deliveries[deliveryId]
-+  if (event) return <div className="execution-record"><strong>Доставлено</strong><ExecutionEvent event={event} elapsed/></div>
++  if (event) return <div className="execution-record"><ExecutionEvent event={event} elapsed/></div>
 +  const ready = execution.stage !== 'conflict' && !!execution.departedAt && !execution.completed
    const save = async () => {
-     if (flight.current) return
+-    if (flight.current) return
++    if (flight.current || !ready || error) return
      flight.current = true; setBusy(true); setError('')
      try {
 -      const path = driver ? `/api/driver/trips/${encodeURIComponent(tripId)}` : `/api/shipment-trips/${encodeURIComponent(tripId)}/execution`
@@ -453,16 +459,18 @@
 +      const response = await apiFetch(`${path}/deliver`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versions, executionVersion: execution.version, deliveryId }) })
        const result = await response.json()
        if (!response.ok) throw new Error(result.error || 'Не удалось сохранить отметку.')
-       setConfirm(false); onSaved(result)
-@@ -31,8 +39,8 @@
+-      setConfirm(false); onSaved(result)
++      onSaved(result)
+     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи. Обновите рейс, чтобы проверить сохранение.') }
      finally { flight.current = false; setBusy(false) }
    }
    return <div className="execution-action">
 -    {confirm ? <div className="execution-confirm"><p>{deliveryId ? `Подтвердить, что топливо доставлено: ${customer || 'этой организации'}?` : 'Все доставки выполнены. Закрыть рейс?'}</p><div><button className="button" disabled={busy} onClick={() => setConfirm(false)}>Отмена</button><button className="button primary" disabled={busy || !ready || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}Подтвердить</button></div></div> : <button className={`button ${deliveryId ? '' : 'primary'}`} disabled={!ready || busy} onClick={() => setConfirm(true)}><Check size={16}/>{deliveryId ? 'Доставлено' : 'Рейс выполнен'}</button>}
 -    {!ready && !deliveryId && <small>{execution.stage === 'conflict' ? 'Состав рейса изменён. Обратитесь к логисту.' : 'Закрытие доступно после отметки всех доставок.'}</small>}
-+    {confirm ? <div className="execution-confirm"><p>{`Подтвердить прибытие на место доставки: ${customer || 'этой организации'}?`}</p><div><button className="button" disabled={busy} onClick={() => setConfirm(false)}>Отмена</button><button className="button primary" disabled={busy || !ready || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}Подтвердить</button></div></div> : <button className="button" disabled={!ready || busy} onClick={() => setConfirm(true)}><Check size={16}/>Прибыл на место доставки</button>}
+-    {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={busy} onClick={() => { setError(''); setConfirm(false); onReload() }}>Обновить рейс</button></div>}
++    <button className="button primary" disabled={!ready || busy || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}Прибыл на место доставки</button>
 +    {!ready && <small>{execution.stage === 'conflict' ? 'Состав рейса изменён. Обратитесь к логисту.' : 'Доступно после убытия с погрузки.'}</small>}
-     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={busy} onClick={() => { setError(''); setConfirm(false); onReload() }}>Обновить рейс</button></div>}
++    {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={busy} onClick={() => { setError(''); onReload() }}>Обновить рейс</button></div>}
    </div>
  }
 --- a/web/src/TripProcessPanel.tsx
@@ -550,7 +558,7 @@
 +          <div className="execution-trip-body">
 +            <p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
 +            <div className="execution-loading"><MapPin size={16}/><div><span>Погрузка</span><p>{trip.fields.loading_address || 'Адрес не указан'}</p></div></div>
-+            <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><strong>Доставлено</strong><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <span className="execution-awaiting">Ожидаем отметку водителя</span>}</li>)}</ol>
++            <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <span className="execution-awaiting">Ожидаем отметку водителя</span>}</li>)}</ol>
 +            {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после отметки прибытия на последнюю точку.</p>}
 +            {trip.fields.trip_notes && <AnimatedDetails className="execution-notes" summary="Примечание к рейсу"><p>{trip.fields.trip_notes}</p></AnimatedDetails>}
 +          </div>
