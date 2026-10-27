@@ -1,0 +1,20 @@
+{
+  "cwd": "/var/folders/1b/w5cbgmqx2q37n6c87lcdxj380000gn/T/artel-saby-installed-audit-wg89oxl6",
+  "argv": [
+    "node",
+    "--import",
+    "./deny-fetch.mjs",
+    "--import",
+    "tsx",
+    "--test",
+    "--test-name-pattern=repeated polls preserve a pre-Prepare refusal",
+    "tests/saby-consignment-dispatch.test.ts"
+  ],
+  "exitCode": 1,
+  "installedModuleSha256": "98266eb9156bfaa2035d43893f6413b826e06184053e7ed685a4f3e4921363f8",
+  "currentTestSha256": "dd7e6d0aaf2323e90abfba48d4397c5c5f6c1768ce8ea948d40eb73aa4fd3691",
+  "workspaceChanged": false,
+  "productionChanged": false,
+  "unmockedFetchBlocked": true,
+  "artifactDirectory": "/tmp/artel-saby-installed-audit-wg89oxl6"
+}

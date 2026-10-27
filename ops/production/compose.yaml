@@ -18,8 +18,11 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
-    mem_limit: 512m
-    cpus: 1.0
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 2.0
+    environment:
+      NODE_OPTIONS: --max-old-space-size=640
     stop_grace_period: 45s
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get({host:'127.0.0.1',port:8080,path:'/healthz',headers:{host:new URL(process.env.ARTEL_PUBLIC_ORIGIN).host}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]

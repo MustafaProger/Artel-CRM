@@ -7,8 +7,10 @@ import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 
+import { encryptAccountPassword, validPasswordCiphertext } from './account-passwords';
+
 const scrypt = promisify(derive);
-export interface StoredUser extends AccountUser { passwordHash: string; salt: string; deletedBy?: string }
+export interface StoredUser extends AccountUser { passwordHash: string; salt: string; passwordCiphertext?: string; deletedBy?: string }
 export interface AccountsData {
   users: StoredUser[];
   sessions: { hash: string; userId: string; expiresAt: number; audience?: 'logistics' }[];
@@ -49,6 +51,7 @@ export function validateAccounts(value: AccountsData) {
   if(!value || !Array.isArray(value.users) || !Array.isArray(value.sessions) || !value.attempts || typeof value.attempts!=='object')throw new Error('Invalid accounts');
   const ids=new Set<string>(), logins=new Set<string>(), driverIds=new Set<string>();
   for(const u of value.users){
+    if (u.passwordCiphertext !== undefined && !validPasswordCiphertext(u.passwordCiphertext)) throw new Error('Invalid password ciphertext');
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
     if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
     if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','employee','manager','logistician','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
@@ -63,11 +66,13 @@ export function validateAccounts(value: AccountsData) {
   for(const [key,row] of Object.entries(value.attempts))if(!/^[a-f0-9]{64}$/.test(key) || !row || !Number.isSafeInteger(row.count) || row.count<0 || !Number.isSafeInteger(row.until))throw new Error('Invalid login attempt');
 }
 function text(input: Record<string,unknown>, key:string, max=120) { const v=input[key];if(typeof v!=='string' || !v.trim() || v.trim().length>max)throw new ApiError(400,`Проверьте поле «${key}».`);return v.trim(); }
-export async function passwordFields(input: unknown) {
+export async function passwordFields(input: unknown, passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
   if(typeof input!=='string' || input.length<12 || input.length>256)throw new ApiError(400,'Пароль должен содержать от 12 до 256 символов.');
-  const salt=randomBytes(16).toString('hex');return {salt,passwordHash:(await scrypt(input,salt,64) as Buffer).toString('hex')};
+  const salt=randomBytes(16).toString('hex');
+  const fields = { salt, passwordHash: (await scrypt(input,salt,64) as Buffer).toString('hex') };
+  return { ...fields, passwordCiphertext: passwordKey === undefined ? undefined : encryptAccountPassword(input, fields, passwordKey) };
 }
-export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false) {
+export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false,passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
   if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
   const accounts=data.accounts ??= {users:[],sessions:[],attempts:{}};
   const previous=id?accounts.users.find(u=>u.id===id):undefined;
@@ -89,7 +94,8 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
   const permissions = input.sections === undefined ? previous && isScopedEmployee(previous) ? effectiveSections(previous) : undefined
     : [...new Set((input.sections as SectionId[]).map(id => id === 'settlements' ? 'overview' : id))];
-  const user:StoredUser={...(previous??await passwordFields(input.password)),...(previous && input.password?await passwordFields(input.password):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
+  if (previous?.passwordCiphertext && input.password && !passwordKey) throw new ApiError(503, 'Хранилище паролей недоступно.');
+  const user:StoredUser={...(previous??await passwordFields(input.password, passwordKey)),...(previous && input.password?await passwordFields(input.password, passwordKey):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
   user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);

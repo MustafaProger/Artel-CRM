@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "candidateSha256": "33385927afac49ceb311f1b374783bf74d4fb6ab387811008fbd2c977241ec5b",
+  "plans": 7,
+  "operations": 16,
+  "returns": 6,
+  "deferred": 5,
+  "overdue": 2,
+  "recipients": 12,
+  "banks": 5,
+  "split": [
+    "10000.00",
+    "26000.00"
+  ],
+  "exceeded": "6000.00",
+  "allAllocationsSumToOperation": true
+}

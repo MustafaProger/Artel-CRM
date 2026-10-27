@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "synthetic": true,
+  "plans": 200,
+  "operations": 10002,
+  "allocations": 20000,
+  "managers": true,
+  "legacy": true,
+  "editedDeletedExcluded": true,
+  "runs": [
+    {
+      "optimizedMs": 7.676291999999997,
+      "referenceMs": 47.604125
+    },
+    {
+      "optimizedMs": 5.28733299999999,
+      "referenceMs": 44.527041
+    },
+    {
+      "optimizedMs": 4.678875000000005,
+      "referenceMs": 42.72008300000002
+    },
+    {
+      "optimizedMs": 4.658792000000005,
+      "referenceMs": 41.414041
+    },
+    {
+      "optimizedMs": 4.532500000000027,
+      "referenceMs": 42.18433300000001
+    }
+  ],
+  "scope": "only plan usage calculation; not production CRM performance"
+}

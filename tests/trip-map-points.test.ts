@@ -6,7 +6,7 @@ import type { TripRequest } from '../web/src/trip-request-model'
 test('map volume bands assign every boundary to the next band', () => {
   for (const [litres, band] of [
     ['0', 'blue'], ['1999.999999', 'blue'], ['2000', 'green'], ['5999.999999', 'green'],
-    ['6000', 'yellow'], ['9499.999999', 'yellow'], ['9500', 'red'], ['13999.999999', 'red'],
+    ['6000', 'yellow'], ['9499.999999', 'yellow'], ['9500', 'yellow'], ['10999.999999', 'yellow'], ['11000', 'red'], ['13999.999999', 'red'],
     ['14000', 'burgundy'], ['17000', 'burgundy'],
   ]) assert.equal(requestVolumeBand(litres).id, band, litres)
 })

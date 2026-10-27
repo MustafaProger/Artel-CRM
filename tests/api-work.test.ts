@@ -196,3 +196,47 @@ test('employee deletion requires handover of open work, keeps authored history a
     assert.equal((await f.director(`/api/work/tasks/${task.id}`, 'PATCH', { version: 3, status: 'doing', assigneeId: f.users[2].id })).status, 200);
   } finally { await f.close(); }
 });
+
+test('Work selects only active clients/suppliers, preserves old references and does not broaden employee access', async () => {
+  const f = await setup();
+  try {
+    const cases = [
+      ['client', ['customer'], false], ['supplier', ['supplier'], false],
+      ['both', ['customer', 'supplier'], false], ['bank', ['payment_counterparty'], false],
+      ['carrier', ['carrier'], false], ['other', ['other'], false],
+      ['archived', ['customer'], true], ['empty', [], false],
+    ] as const;
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      for (const [key, roles, directoryArchived] of cases) data.companies.push({ id: `scope-${key}`, name: `Scope ${key}`, roles: [...roles], directoryArchived, managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] });
+      return { changed: true, result: null };
+    });
+    const visible = (await f.director('/api/work')).body as WorkResponse;
+    assert.deepEqual(visible.companies.filter(c => c.id.startsWith('scope-')).map(c => c.id).sort(), ['scope-both', 'scope-client', 'scope-supplier']);
+    assert.equal(visible.companies.filter(c => c.id === 'scope-both').length, 1);
+    assert.equal((await f.bob('/api/work')).body.companies.some((c: {id: string}) => c.id === 'scope-client'), false);
+    for (const kind of ['tasks', 'companies']) {
+      const content = kind === 'tasks' ? { title: 'Scope check' } : { question: 'Scope check' };
+      for (const [key] of cases) {
+        const allowed = ['client', 'supplier', 'both'].includes(key);
+        const before = await readFile(f.store.path, 'utf8');
+        const result = await f.director(`/api/work/${kind}`, 'POST', { ...content, companyId: `scope-${key}` });
+        assert.equal(result.status, allowed ? 201 : 400, `${kind}/${key}`);
+        if (!allowed) assert.equal(await readFile(f.store.path, 'utf8'), before);
+      }
+    }
+    const legacy = (await f.director('/api/work/tasks', 'POST', { title: 'Legacy scope', companyId: 'scope-client', assigneeId: f.users[1].id })).body.entry as WorkTask;
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      data.companies.find(c => c.id === 'scope-client')!.roles = ['payment_counterparty'];
+      return { changed: true, result: null };
+    });
+    const oldWork = (await f.alice('/api/work')).body as WorkResponse;
+    assert.equal(oldWork.companies.find(c => c.id === 'scope-client')?.name, 'Scope client');
+    assert.equal((await f.alice('/api/work/tasks', 'POST', { title: 'Cannot reuse old reference', companyId: 'scope-client' })).status, 400);
+    assert.equal((await f.alice(`/api/work/tasks/${legacy.id}`, 'PATCH', { version: 1, comment: 'Keep history', companyId: 'scope-client', assigneeId: f.users[2].id })).status, 200);
+    assert.equal((await f.alice('/api/work')).body.companies.some((c: {id: string}) => c.id === 'scope-client'), false);
+    assert.equal((await f.bob(`/api/work/tasks/${legacy.id}`, 'PATCH', { version: 2, title: 'History editable' })).status, 200);
+    assert.equal((await f.bob(`/api/work/tasks/${legacy.id}`, 'PATCH', { version: 3, companyId: 'scope-bank' })).status, 400);
+    assert.equal((await f.bob(`/api/work/tasks/${legacy.id}`, 'PATCH', { version: 3, companyId: 'scope-supplier' })).status, 200);
+    assert.equal((await f.bob('/api/work')).body.companies.some((c: {id: string}) => c.id === 'scope-client'), false);
+  } finally { await f.close(); }
+});

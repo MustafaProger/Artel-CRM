@@ -109,7 +109,7 @@ div.scrollable-segments[class] > button {
   box-shadow: none;
 }
 :is(.directory-toolbar, .trips-toolbar, .overview-search, .team-search, .bank-search, .table-search) input:not(:where(.shipment-grid *, table *)) { font-size: var(--ui-field-font); }
-/* The wrapper owns the focus ring, including keyboard focus. */
+/* The wrapper's existing border indicates focus, including keyboard focus. */
 .app-shell :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search):not(:where(table *)) > input:focus-visible { outline: 0; box-shadow: none; }
 
 /* Multiline text keeps usable corners; single-line fields share the search capsule.

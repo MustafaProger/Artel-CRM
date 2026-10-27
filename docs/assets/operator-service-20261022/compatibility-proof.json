@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "currentStoreLoaded": true,
+  "fullDataExact": true,
+  "externalRequests": 0,
+  "sourceStoreSha256": "d6d6e23edd755ff706a4117186104c3734ff285f622da9debac69b446777b236",
+  "operations": 16,
+  "cases": 13,
+  "configSha256": "460b3f4e19f7e9106bb049c869d036ed6afa08e41eea74c474f23dbb91f4cb51"
+}

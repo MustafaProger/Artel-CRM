@@ -1,0 +1,213 @@
+{
+  "checks": [
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Операции"
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Задания",
+      "status": "Активные"
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Задания",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Возвраты",
+      "status": "Открытые"
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Возвраты",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Ожидают заправки",
+      "status": "Открытые"
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "tab": "Ожидают заправки",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Операции"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Задания",
+      "status": "Активные"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Задания",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Возвраты",
+      "status": "Открытые"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Возвраты",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Ожидают заправки",
+      "status": "Открытые"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "tab": "Ожидают заправки",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Операции"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Задания",
+      "status": "Активные"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Задания",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Возвраты",
+      "status": "Открытые"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Возвраты",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Ожидают заправки",
+      "status": "Открытые"
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "tab": "Ожидают заправки",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Операции"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Задания",
+      "status": "Активные"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Задания",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Возвраты",
+      "status": "Открытые"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Возвраты",
+      "status": "Выполненные"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Ожидают заправки",
+      "status": "Открытые"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "tab": "Ожидают заправки",
+      "status": "Выполненные"
+    }
+  ],
+  "errors": [],
+  "artifacts": {
+    "serverBundleSha256": "299afb29caf091c7c618987d323456789d7007d13af3ceed984a606ccc3ea7fa",
+    "frontend": {
+      "app-dist/apple-touch-icon.png": "cc2f8f324a3b8a882cca72490a7ee38f94e4d7cdabd66b207c9e9ad1464c6a46",
+      "app-dist/assets/AccountManagement-kPBTE5Ql.js": "1af84e6a3e37ed4fe2623afd82601aacb05fa3335f16e23a81d761c08cc70d7d",
+      "app-dist/assets/BankingPage-C5Khi6BV.js": "ea798d7ea833d24ac24bcdbe0031c0bb3562580f19c09621f6cc69cb28bcd5d5",
+      "app-dist/assets/CabinetBalances-CZdzfGZE.js": "92d2de1d9f1e500cd4904106d83203fda32a0ddbe3f4831f6e7c3f84124ea1df",
+      "app-dist/assets/ChinaPage-DTHY84zM.js": "cfd4d39f7fe06f0706c826418a6c47234806a3f21572caad10464293b8ed3c36",
+      "app-dist/assets/DeliveryPointPicker-VOBR9eud.js": "4da0f2a478022847eb4d1646ad88f785a75532b532f47d19a755783cc7d0e6bc",
+      "app-dist/assets/DirectoriesPage-Brd4TwAr.js": "c7c4f160f8e536d219bb807059c8388a98f8d8138087a996e8e7b89992c660c8",
+      "app-dist/assets/DirectorySelect-BSU_sfil.js": "8e80727472512595078a2cb7ce531c5881094096124b9c01915253f4b91be2c3",
+      "app-dist/assets/DriverWorkspace-CgCwKOPB.js": "f25b99bd8517ade37450433abc7e72a528a2e51d8a57331678db6c14007bcdaf",
+      "app-dist/assets/InvoicePage-BPWxtXHo.js": "435e6a5322f350c72bdc113d25db296a6f2259293e49cd02be208095c174998d",
+      "app-dist/assets/OperatorPage-D1B2cKoq.js": "b8b69cf329668453e56f3536ad53e7a26b99f0d3e4129b6e5b8e0ad37b5b11e8",
+      "app-dist/assets/OverviewPage-B4njwu13.js": "5328a981225c708cd01097bf09400d6244527050e1675769fa5391faa0d2ef24",
+      "app-dist/assets/RoleFilter-BpDcbPlI.js": "18285798422e873aa8cfc9f9b689d789fd9be4f66afac64cbf6cc420bba3f03d",
+      "app-dist/assets/ShipmentTripEditor-Bkh6lesp.js": "33ce6fc276962d821caf5b2967d00a7d1f5095582e2279720cc23896f0f75264",
+      "app-dist/assets/ShipmentsPage-CWy4BySE.js": "c8294d4ac73e4fac4776154c5a82242a6986d3a98b785bf19aa1c784ef2220a6",
+      "app-dist/assets/TripsPage-DHv9BWEG.js": "008d621141cb87380e8dbc430e9e1202ca5723d417eb525dba751b0fa203350b",
+      "app-dist/assets/WorkPage-CA8F4OJ_.js": "3e7eb013da692facfbec5b00128232bb6b33d63fd83ee3db4c7014184a37eef2",
+      "app-dist/assets/crm-CkgSL2i-.js": "f3dad082b0b53b1a2e93aec94481592a6c0e08e4917ed02c7ad108a2068250ba",
+      "app-dist/assets/crm-shared-OhX99nUm.js": "907e8adee1444f3a7193f2755eee4a7d303423745139480c0057a3a3d6af2ccf",
+      "app-dist/assets/map-link-C7xs8Hf-.js": "2915a458ae278902c37618555f395227aac9635bc8897b8fb96c3da15267ac9c",
+      "app-dist/assets/operator-catalog-CsrhwJtV.js": "916ca02c1ede27136113595ab49bdf6cd779f313368baf27dad8382ece1e13f6",
+      "app-dist/assets/overview-model-w8zBn-JH.js": "20f5bf619287cbc96da6d9c0a2565e443ebc249e7e2f89aa674f42e100e34e49",
+      "app-dist/assets/shipment-calculations-Dszf6w9W.js": "a00f498070c2dc51bb18a7ad3096ac32b5d0ab707daa13819a58abe719610dc5",
+      "app-dist/assets/style-CuegNK3o.css": "646d600eadec0189f39fae75865835f471b771347bfad5b2f320ee87fbf310b7",
+      "app-dist/assets/trip-order-Dw3D4rEg.js": "8d774049c7b72b9dd60decdfe13eb5d98b803bd0592bef7c164b92792e385d30",
+      "app-dist/assets/trip-request-map-coordinates-DCZn5Mmt.js": "16befada1374174af146adf19b54c28c60d8b4e8554d338dbf318cd19416329f",
+      "app-dist/assets/vendor-DDZNJ3Hy.js": "60c42ef3e848cdc452275611d935df5341d8b3139e11d5612744223fe753a45f",
+      "app-dist/favicon.svg": "cc8f489314e35fec89095c6cf334f57aa826e3245a312b6c87452c70d2137f7f",
+      "app-dist/icons/apple-touch-icon.png": "cc2f8f324a3b8a882cca72490a7ee38f94e4d7cdabd66b207c9e9ad1464c6a46",
+      "app-dist/icons/favicon-32.png": "40e581abcd4e64591b16121d109014a6e4e2c02bd3a4673623e7a6731c326f95",
+      "app-dist/icons/favicon-64.png": "a6112ea14dc4e33551e1fefed18d6d585b6f46ab90796a39fabe5dec70e866ea",
+      "app-dist/icons/icon-1024.png": "917b406e95b45ba3304f5e56b6c3734a0f01b896329550909727934ff38b2167",
+      "app-dist/icons/icon-192.png": "18510242d2962b3033888472f001f787b7c815e0d1f24f00b38de47769809227",
+      "app-dist/icons/icon-512.png": "a8c7881205cea2f767fe04efe23f53882c8a573aa29e4974ad950e9fff310636",
+      "app-dist/icons/icon-maskable-512.png": "a8c7881205cea2f767fe04efe23f53882c8a573aa29e4974ad950e9fff310636",
+      "app-dist/index.html": "734ff5c06d76252085c76d41d445a9b2e384710e33e25b62fa82126a951f910a",
+      "app-dist/manifest.webmanifest": "10deb61c9c59760afe794fd1c8de7c88470f7ffb5bd75572ed918be080090d2c",
+      "app-dist/sw.js": "da7fb11ad8c1f853ce08905a7ee7d2cb13ea222ed1cdbb3de3bbe2d834ec70cc"
+    }
+  },
+  "passed": true
+}

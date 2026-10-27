@@ -148,6 +148,10 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         }
         if (step.executeAttempted) { await update(row => { row.dispatch![side].state = 'waiting'; row.dispatch!.lastError = evidence.reason; }); break; }
       }
+      // Every Prepare/Write records its intent first, including carrier draft preparation
+      // without a signing binding. Preserve a pre-action refusal without retrying it.
+      if (step.state === 'blocked' && !step.binding && !step.prepared && step.verified !== true &&
+          step.executeAttempted !== true && step.dispatchState === undefined && !doc.dispatch!.carrierDraft && !doc.dispatch!.carrierFill) break;
       if (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent')) {
         await update(row => { row.dispatch![side].state = 'unknown'; row.dispatch!.lastError = 'Результат подготовки ЭТрН неизвестен. Повторное действие не выполняется.'; }); break;
       }

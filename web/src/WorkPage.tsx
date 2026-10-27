@@ -4,7 +4,7 @@ import { Bell, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, Refres
 import { isScopedEmployee, type AccountUser } from './auth-model';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
-import { workStatuses, workFileLimit, workFilesTotalLimit, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from './work-model';
+import { isWorkDirectoryCompany, workStatuses, workFileLimit, workFilesTotalLimit, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from './work-model';
 import './work.css';
 import { NotificationMenu } from './DriverNotifications';
 import ScrollableSegments from './ScrollableSegments';
@@ -163,7 +163,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose:
       {editor.kind !== 'companies' && input('Название', 'title', { required: true })}
       {editor.kind === 'tasks' && input('Описание', 'description', { multiline: true })}
       {editor.kind === 'notes' && input('Текст заметки', 'content', { multiline: true })}
-      {editor.kind !== 'notes' && <DirectorySelect label="Компания" entries={companies.filter(company => !company.directoryArchived || company.id === fields.companyId).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={fields.companyId} onChange={id => update('companyId', id)} disabled={saving} required={editor.kind === 'companies'} legacy={fields.companyId && !companies.some(company => company.id === fields.companyId) ? 'Компания недоступна' : undefined}/>}
+      {editor.kind !== 'notes' && <DirectorySelect label="Компания" entries={companies.filter(company => isWorkDirectoryCompany(company) || company.id === task?.companyId).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={fields.companyId} onChange={id => update('companyId', id)} disabled={saving} required={editor.kind === 'companies'} legacy={fields.companyId && !companies.some(company => company.id === fields.companyId) ? 'Компания недоступна' : undefined}/>}
 
       {editor.kind === 'companies' && input('Текущий вопрос', 'question', { required: true, multiline: true })}
       <div className="work-field-grid"><label className="work-field"><span>Исполнитель *</span><select aria-label="Исполнитель" value={fields.assigneeId} required disabled={saving || !entry && isScopedEmployee(actor)} onChange={event => update('assigneeId', event.target.value)}>{!users.some(user => user.id === fields.assigneeId) && <option value={fields.assigneeId} disabled>{userName(fields.assigneeId)} · доступ отключён</option>}{users.map(user => <option value={user.id} key={user.id}>{user.name}{user.id === actor.id ? ' (я)' : ''}</option>)}</select></label>{editor.kind === 'tasks' && <label className="work-field"><span>Состояние</span><select aria-label="Состояние задачи" value={fields.status} disabled={saving} onChange={event => update('status', event.target.value)}>{workStatuses.map(status => <option key={status.id} value={status.id}>{status.name}</option>)}</select></label>}

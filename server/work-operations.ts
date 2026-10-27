@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
-import { emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+import { isWorkDirectoryCompany, emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
 import { queueTaskAssignment } from './push';
@@ -71,6 +71,8 @@ export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSe
   const work = data.work ?? emptyWork();
   const visible = (entry: AnyWorkEntry) => canAccess(actor, entry) && (!assigneeId || entry.assigneeId === assigneeId);
   const visibleWork = { tasks: work.tasks.filter(visible).map(publicWorkEntry), companyRecords: work.companyRecords.filter(visible).map(publicWorkEntry), notes: work.notes.filter(visible) };
+  // Old links keep their labels without making unrelated companies selectable.
+  const referencedCompanies = new Set([...visibleWork.tasks, ...visibleWork.companyRecords].flatMap(row => row.companyId ? [row.companyId] : []));
   const referenced = new Set<string>();
   for (const row of [...visibleWork.tasks, ...visibleWork.companyRecords, ...visibleWork.notes]) {
     for (const id of [row.assigneeId, row.createdBy, row.updatedBy]) referenced.add(id);
@@ -80,7 +82,7 @@ export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSe
   return {
     work: visibleWork,
     historicalUsers: (data.accounts?.users ?? []).filter(user => referenced.has(user.id) && !users.some(active => active.id === user.id)).map(({ id, name }) => ({ id, name })),
-    users: isSupervisor(actor) ? users : users.map(user => ({ ...user, login: '' })), companies: snapshot.companies, currentUser: actor, revision: data.revision,
+    users: isSupervisor(actor) ? users : users.map(user => ({ ...user, login: '' })), companies: snapshot.companies.filter(company => isWorkDirectoryCompany(company) || referencedCompanies.has(company.id)), currentUser: actor, revision: data.revision,
   };
 }
 
@@ -95,7 +97,7 @@ const optionalDate = (value: unknown, label: string, timestamp = false) => {
 };
 export function publicWorkEntry<T extends AnyWorkEntry>(entry: T): T {
   if (!('attachments' in entry)) return entry;
-  return { ...entry, attachments: entry.attachments?.map(({ data: _data, ...file }) => { void _data; return file; }) };
+  return { ...entry, attachments: entry.attachments?.map(({ data: _data, ...file }) => { return file; }) };
 }
 export function workFile(data: OperationsData, kind: string, id: string, fileId: string, actor: AccountUser) {
   const entry = (kind === 'tasks' ? data.work?.tasks : data.work?.companyRecords)?.find(row => row.id === id);
@@ -137,7 +139,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   // Managers may create for themselves and then explicitly hand their task over; they cannot write into another employee's list directly.
   if (!previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
   const companyId = kind === 'notes' ? null : get('companyId', null);
-  if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId && (!company.directoryArchived || previous && 'companyId' in previous && previous.companyId === companyId)))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
+  if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId && (isWorkDirectoryCompany(company) || previous && 'companyId' in previous && previous.companyId === companyId)))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
   const now = new Date().toISOString();
   const common = { id: id ?? `work-${kind}-${body.requestId ?? randomUUID()}`, version: (previous?.version ?? 0) + 1, assigneeId, createdAt: previous?.createdAt ?? now, updatedAt: now, createdBy: previous?.createdBy ?? actor.id, updatedBy: actor.id };
   let entry: AnyWorkEntry;

@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { currentSnapshot } from '../server/shipment-operations';
 import { serializeSabyTransportOrder } from '../server/saby-transport-order';
+import { serializeSabyConsignmentNote } from '../server/saby-consignment-note';
+import type { TripSabyRecord } from '../server/trip-saby-workflow';
 import { integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
 
-test('oil depot roles are independent and never fall back to supplier addresses or private address mappings', async () => {
+test('new order trips use the sender as loader and keep the independent infrastructure owner', async () => {
   const runtime = await integrationRuntime();
   try {
     const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
@@ -12,7 +14,8 @@ test('oil depot roles are independent and never fall back to supplier addresses 
     site.loadingActorCompanyId = 'customer'; site.infrastructureOwnerCompanyId = 'carrier';
     const vehicle = source.directories!.vehicles.find(row => row.id === 'vehicle')!; vehicle.cargoDistributable = '0';
     const prepared = runtime.prepare(source, data, runtime.trip, integrationConfig());
-    assert.equal(prepared.deliveries[0].snapshot.profile.loadingActor.party.inn, source.companies.find(row => row.id === 'customer')!.inn);
+    assert.equal(prepared.deliveries[0].snapshot.profile.loadingActor.sameAsConsignor, true);
+    assert.equal(prepared.deliveries[0].snapshot.profile.loadingActor.party.inn, integrationConfig().customer.inn);
     assert.equal(prepared.deliveries[0].snapshot.profile.infrastructureOwner.party.inn, source.companies.find(row => row.id === 'carrier')!.inn);
     assert.equal(prepared.order.fields.loading_address, site.address);
     assert.equal(prepared.order.fields.loading_site_owner_address, source.companies.find(row => row.id === 'supplier')!.address);
@@ -20,11 +23,38 @@ test('oil depot roles are independent and never fall back to supplier addresses 
     assert.equal(prepared.order.fields.organization_id, runtime.trip.fields.organization_id);
     delete site.loadingActorCompanyId; delete site.infrastructureOwnerCompanyId;
     const missing = runtime.prepare(source, data, runtime.trip, integrationConfig());
-    assert.equal(missing.deliveries[0].snapshot.profile.loadingActor.party.inn, '');
+    assert.deepEqual(missing.deliveries[0].snapshot.profile.loadingActor, prepared.deliveries[0].snapshot.profile.loadingActor);
     assert.equal(missing.deliveries[0].snapshot.profile.infrastructureOwner.party.inn, '');
-    assert.ok(missing.blockers.some(message => /осуществляющее погрузку/.test(message)));
+    assert.ok(!missing.blockers.some(message => /осуществляющее погрузку/.test(message)));
     assert.ok(missing.blockers.some(message => /инфраструктуры/.test(message)));
     assert.equal(missing.order.fields.loading_site_owner_address, prepared.order.fields.loading_site_owner_address);
+  } finally { await runtime.close(); }
+});
+
+test('new loader XML contains sender identity and preserves the separate owner; saved loader snapshots remain exact', async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source);
+    const source = currentSnapshot(runtime.base, data);
+    const prepared = runtime.prepare(source, data, runtime.trip, integrationConfig());
+    const snapshot = prepared.deliveries[0].snapshot;
+    snapshot.profile.order = { number: '1', date: '2025-04-01' };
+    snapshot.profile.loading = { ...snapshot.profile.loading, arrivedAt: '2025-04-01T09:00:00', departedAt: '2025-04-01T10:00:00', grossMassTonnes: snapshot.profile.deliveryMassTonnes, massMethod: '03' };
+    const xml = new TextDecoder('windows-1251').decode(serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000000', '2025-04-01T10:00:00Z', '1').xml);
+    assert.match(xml, /<СвЛицПогрГр СовпГОП="1">/);
+    assert.doesNotMatch(xml, /<РекЛицПогрГр>/);
+    assert.match(xml, /<ВладИнфр СовпГОВ="2">/);
+    const historical = structuredClone(snapshot);
+    historical.profile.loadingActor = { sameAsConsignor: false, party: { ...snapshot.profile.infrastructureOwner.party } };
+    // This pure preflight reads only saved delivery snapshots, not workflow state.
+    data.tripSaby = { trips: { [runtime.trip.id]: { deliveries: [{ shipmentId: historical.shipmentId, snapshot: historical }] } as TripSabyRecord } };
+    source.directories!.oilDepots![0].loadingActorCompanyId = 'customer';
+    const before = structuredClone(data);
+    const again = runtime.prepare(source, data, runtime.trip, integrationConfig());
+    assert.deepEqual(again.deliveries[0].snapshot.profile.loadingActor, historical.profile.loadingActor);
+    assert.deepEqual(data, before);
+    again.deliveries[0].snapshot.profile.loadingActor.party.name = 'changed outside saved data';
+    assert.deepEqual(data, before);
   } finally { await runtime.close(); }
 });
 

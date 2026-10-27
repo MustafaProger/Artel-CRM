@@ -1,0 +1,19 @@
+{
+  "phase": "after-ui",
+  "source": "captured_cached_external_balance",
+  "provider": "rosneft",
+  "beforeSuccessAt": "2026-10-22T08:24:24.741Z",
+  "afterSuccessAt": "2026-10-22T08:29:41.483Z",
+  "amountDeltaMinor": -2018778,
+  "ownFundsDeltaMinor": -2797778,
+  "blockedDeltaMinor": -779000,
+  "arithmeticConsistent": true,
+  "underlyingProviderTransactionAndRefreshInitiatorProven": false,
+  "ledgerAndOtherImmutableFactsExact": true,
+  "rawAuditPreserved": true,
+  "exactReviewedPaths": [
+    "cabinets/connections/#ccfed265c71b/accounts/0/amountMinor",
+    "cabinets/connections/#ccfed265c71b/accounts/0/details/0/amountMinor",
+    "cabinets/connections/#ccfed265c71b/accounts/0/details/1/amountMinor"
+  ]
+}

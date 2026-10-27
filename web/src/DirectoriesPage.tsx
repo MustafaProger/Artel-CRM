@@ -17,8 +17,8 @@ import './directories.css'
 import './form-refinements.css'
 
 const tabs = [{id:'customers',name:'Клиенты'}, {id:'suppliers',name:'Поставщики'}, {id:'oilDepots',name:'Нефтебазы'}, {id:'managers',name:'Сотрудники'}, {id:'products',name:'Товары'}, {id:'paymentForms',name:'Формы оплаты'}, {id:'vehicles',name:'Автомобили'}, {id:'drivers',name:'Водители'}, {id:'addresses',name:'Места погрузки и доставки'}, {id:'customerManagers',name:'Клиенты и менеджеры'}] as const
- export type DirectoryTab = (typeof tabs)[number]['id']
- type Tab = DirectoryTab
+export type DirectoryTab = (typeof tabs)[number]['id']
+type Tab = DirectoryTab
 const titles: Record<EditorTab, string> = { customers: 'клиента', suppliers: 'поставщика', loadingParty: 'участника погрузки', oilDepots: 'нефтебазы', managers: 'сотрудника', products: 'товара', paymentForms: 'формы оплаты', vehicles: 'автомобиля', drivers: 'водителя', addresses: 'адреса', customerManagers: 'назначения менеджера' }
 const roleLabels = { customer: 'Клиент', supplier: 'Поставщик' }
 const normalizedPlaceAddress = (value:string) => value.trim().replace(/\s+/g,' ')

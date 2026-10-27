@@ -88,7 +88,8 @@ function inputText(value: unknown, name: string, max: number, trim = true) {
   return text;
 }
 export async function cabinetRoutes(store: OperationsStorage, source: string, env: Environment, request: IncomingMessage, response: ServerResponse, readBody: () => Promise<Record<string, unknown>>) {
-  requireSection(requireUser(await store.read(source), request), 'cabinet-balances');
+  const initial = await store.read(source);
+  requireSection(requireUser(initial, request), 'cabinet-balances');
   const send = (status: number, value: unknown) => { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
   const path = request.url?.split('?')[0];
   const organizationsId = path?.match(/^\/api\/cabinets\/(cabinet-[a-f0-9-]{36})\/organizations$/)?.[1];
@@ -117,16 +118,16 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
     const body = await readBody(); if (Object.keys(body).length) throw new ApiError(400, 'Обновление не принимает дополнительные поля.');
     await syncCabinetConnection(store, source, env, syncId, request);
-    const connection = (await store.read(source)).cabinets?.connections[syncId];
-    requireSection(requireUser(await store.read(source), request), 'cabinet-balances');
+    const fresh = await store.read(source);
+    const connection = fresh.cabinets?.connections[syncId];
+    requireSection(requireUser(fresh, request), 'cabinet-balances');
     return send(200, { connection: connection ? publicConnection(connection) : null });
   }
   if (path !== '/api/cabinets') throw new ApiError(404, 'Маршрут кабинетов не найден.');
   if (request.method === 'GET') {
     let ready = false;
     try { encryptionKey(env); ready = true; } catch { /* Read-only page remains available before setup. */ }
-    const data = await store.read(source);
-    requireSection(requireUser(data, request), 'cabinet-balances');
+    const data = initial;
     const result: CabinetResponse = { connections: Object.values(data.cabinets?.connections ?? {}).map(publicConnection), credentialStorageReady: ready };
     return send(200, result);
   }

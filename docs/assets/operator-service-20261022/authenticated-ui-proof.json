@@ -1,0 +1,41 @@
+{
+  "verified": true,
+  "readOnly": true,
+  "businessWrites": 0,
+  "user": "Egor",
+  "viewportRestored": true,
+  "at": "2026-10-21T21:15:49.026Z",
+  "journal": {
+    "badges": [
+      "ГПН10%",
+      "РН10%",
+      "ЛК10%",
+      "ЛК10%",
+      "ННК10%",
+      "ГПН10%"
+    ],
+    "operations": 16,
+    "recipients": [
+      {
+        "border": "1px",
+        "scroll": 475,
+        "width": 500
+      },
+      {
+        "border": "1px",
+        "scroll": 475,
+        "width": 500
+      },
+      {
+        "border": "1px",
+        "scroll": 475,
+        "width": 500
+      }
+    ]
+  },
+  "colorPaletteVisible": true,
+  "customColorControlVisible": true,
+  "termsVisible": true,
+  "editorClosedWithoutSave": true,
+  "sessionRecoveredAfterChromeRestart": true
+}

@@ -1,0 +1,53 @@
+{
+  "synthetic": true,
+  "passed": true,
+  "errors": [],
+  "checks": [
+    {
+      "engine": "chromium",
+      "view": "Заявки",
+      "focusDoesNotReload": true,
+      "viewPreserved": true
+    },
+    {
+      "engine": "chromium",
+      "view": "Рейсы",
+      "focusDoesNotReload": true,
+      "viewPreserved": true
+    },
+    {
+      "engine": "chromium",
+      "view": "Карта",
+      "focusDoesNotReload": true,
+      "viewPreserved": true
+    },
+    {
+      "engine": "chromium",
+      "explicitNavigationRefresh": true,
+      "openFormPreserved": true
+    },
+    {
+      "engine": "webkit",
+      "view": "Заявки",
+      "focusDoesNotReload": true,
+      "viewPreserved": true
+    },
+    {
+      "engine": "webkit",
+      "view": "Рейсы",
+      "focusDoesNotReload": true,
+      "viewPreserved": true
+    },
+    {
+      "engine": "webkit",
+      "view": "Карта",
+      "focusDoesNotReload": true,
+      "viewPreserved": true
+    },
+    {
+      "engine": "webkit",
+      "explicitNavigationRefresh": true,
+      "openFormPreserved": true
+    }
+  ]
+}

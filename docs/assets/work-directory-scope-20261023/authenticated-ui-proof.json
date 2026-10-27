@@ -1,0 +1,21 @@
+{
+  "verified": true,
+  "readOnly": true,
+  "businessWrites": 0,
+  "browser": "Chrome",
+  "account": "Egor",
+  "image": "artel-crm:20261023-work-directory-e7510689",
+  "beforeCount": 741,
+  "afterCount": 337,
+  "activeCustomers": 277,
+  "activeSuppliers": 64,
+  "checks": {
+    "directoryRolesOnly": true,
+    "oldPaymentCounterpartyExcluded": true,
+    "currentImportedClientStillVisible": true,
+    "existingTaskCompanyPreserved": true,
+    "noFormsSaved": true
+  },
+  "clarification": "A distinct client card named Бигуняк Любовь Николаевна exists in Clients after the 2026-10-23 1C import. It remains eligible; the all-uppercase payment-only card from the user screenshot is excluded.",
+  "at": "2026-10-23T11:16:10.959880+00:00"
+}

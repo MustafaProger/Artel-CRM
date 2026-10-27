@@ -7,9 +7,14 @@
 .driver-heading p{margin:0 0 7px;color:#68776e;font-size:14px}
 .driver-heading h1{margin:0;font-size:30px;letter-spacing:-.04em;line-height:1.2}
 .driver-intro{font-size:14px;color:#68776e;margin:14px 0 25px;line-height:1.5}
-.driver-search{display:flex;align-items:center;gap:10px;padding:11px 14px;border:1px solid #dbe4dd;background:#fff;border-radius:12px;color:#728078}
-.driver-search input{width:100%;min-width:0;border:0;background:none;outline:none;font:inherit;color:inherit;font-size:14px}
-.driver-search:focus-within{outline:2px solid #3c7b57;outline-offset:2px}
+/* The search surface owns the border and focus, including without the shared theme. */
+.driver-shell .driver-search{display:flex;align-items:center;gap:10px;min-height:48px;padding:0 14px;border:1px solid #dbe4dd;background:#fff;border-radius:999px;color:#728078}
+.driver-shell .driver-search>input{appearance:none;flex:1;width:100%;min-width:0;height:46px;min-height:0;padding:0;border:0;border-radius:0;background:transparent;outline:none;box-shadow:none;font:inherit;color:inherit;font-size:16px}
+.driver-shell .driver-search>input:focus-visible{outline:none;box-shadow:none}
+.driver-shell .driver-search>svg{flex-shrink:0}
+.driver-shell .driver-search>.icon-button{flex:0 0 44px;width:44px;height:44px;margin-right:-10px}
+.driver-shell .driver-search input::-webkit-search-cancel-button{appearance:none}
+.driver-shell .driver-search:focus-within{border-color:var(--accent,#3c7b57);outline:2px solid var(--accent,#3c7b57);outline-offset:2px}
 .driver-count{font-size:12px;color:#718077;margin:18px 0 10px}
 .driver-trip-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .driver-trip-card{display:block;min-width:0;border:1px solid #dce5de;border-radius:16px;padding:20px;background:#fff;text-decoration:none;color:inherit;transition:border-color .15s,box-shadow .15s}

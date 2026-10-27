@@ -30,7 +30,7 @@ function invalidateSessions(data: OperationsData, user: StoredUser) {
   if (data.push) data.push.devices = data.push.devices.filter(device => device.userId !== user.id);
 }
 /** Used inside the same OperationsStore transaction as the version/identity check. */
-export async function mutateDriverAccess(data: OperationsData, snapshot: Snapshot, driverId: string, method: string, input: Record<string, unknown>) {
+export async function mutateDriverAccess(data: OperationsData, snapshot: Snapshot, driverId: string, method: string, input: Record<string, unknown>, passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
   const driver = activeDriver(snapshot, driverId);
   const fields = method === 'POST' ? ['version', 'action', 'password'] : ['version', 'active', 'login'];
   if (Object.keys(input).some(key => !fields.includes(key)) || !Number.isSafeInteger(input.version) || Number(input.version) < 0) throw new ApiError(400, 'Передайте текущую версию доступа водителя.');
@@ -60,7 +60,8 @@ export async function mutateDriverAccess(data: OperationsData, snapshot: Snapsho
   // Omission requests generation; an explicitly supplied value must pass the
   // same password policy as employee accounts (including empty/invalid input).
   const candidate = Object.hasOwn(input, 'password') ? input.password : randomBytes(24).toString('base64url');
-  const credentials = await passwordFields(candidate);
+  if (previous?.passwordCiphertext && !passwordKey) throw new ApiError(503, 'Хранилище паролей недоступно.');
+  const credentials = await passwordFields(candidate, passwordKey);
   const temporaryPassword = candidate as string; // Validated by passwordFields.
   if (previous) {
     Object.assign(previous, credentials, { active: true, version: previous.version + 1 });

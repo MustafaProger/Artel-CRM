@@ -240,6 +240,28 @@ test('changed consignment business snapshot is rejected before Prepare or Execut
   } finally { await f.close(); }
 });
 
+test('repeated polls preserve a pre-Prepare refusal and its exact reason without provider actions', async () => {
+  const f = await fixture();
+  try {
+    f.changeSender();
+    const first = await f.run();
+    const reason = 'Текущий титул ЭТрН не подтверждает сохранённые сведения доставки. Подписание остановлено; требуется сверка.';
+    assert.equal(first.lastError, reason);
+    assert.deepEqual(f.saved().dispatch?.sender, { state: 'blocked' });
+    assert.equal(f.saved().dispatch?.carrierDraft, undefined);
+    assert.equal(f.saved().dispatch?.carrierFill, undefined);
+    const requests = f.requests.length;
+    for (let poll = 0; poll < 2; poll++) {
+      assert.deepEqual(await f.run(), { completedAt: null, lastError: reason });
+      assert.deepEqual(f.saved().dispatch?.sender, { state: 'blocked' });
+      assert.equal(f.requests.length, requests);
+      assert.equal(f.writes().filter(row => row.req.method === 'СБИС.ПодготовитьДействие').length, 0);
+      assert.equal(f.writes().filter(row => row.req.method === 'СБИС.ВыполнитьДействие').length, 0);
+      assert.equal(f.writes().length, 0);
+    }
+  } finally { await f.close(); }
+});
+
 test('revoked initiator stops before any consignment network request', async () => {
   const f = await fixture();
   try {

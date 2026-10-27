@@ -1,0 +1,110 @@
+{
+  "synthetic": true,
+  "mode": "source",
+  "checks": [
+    {
+      "engine": "chromium",
+      "width": 1100,
+      "heights": [
+        35.5,
+        35,
+        34.5
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "heights": [
+        35.5,
+        35,
+        34.5
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "chromium",
+      "width": 1920,
+      "heights": [
+        35.5,
+        35,
+        34.5
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "chromium",
+      "directoryEditFromOtherTab": true,
+      "newOperationFresh": true,
+      "draftRefreshPreservesInput": true,
+      "persistedNewTerms": true,
+      "oldOperationExact": true,
+      "groupsRemoved": true,
+      "refreshErrorDoesNotUseStaleCatalog": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1100,
+      "heights": [
+        35,
+        35,
+        36
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "heights": [
+        35,
+        35,
+        36
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "webkit",
+      "width": 1920,
+      "heights": [
+        35,
+        35,
+        36
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "webkit",
+      "directoryEditFromOtherTab": true,
+      "newOperationFresh": true,
+      "draftRefreshPreservesInput": true,
+      "persistedNewTerms": true,
+      "oldOperationExact": true,
+      "groupsRemoved": true,
+      "refreshErrorDoesNotUseStaleCatalog": true
+    }
+  ],
+  "axe": [
+    {
+      "engine": "chromium",
+      "width": 390,
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "violations": []
+    }
+  ],
+  "errors": [],
+  "passed": true
+}

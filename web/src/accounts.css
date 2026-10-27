@@ -118,3 +118,8 @@
 .account-editor { scroll-margin-top: 24px; margin-bottom: 28px; }
 
 .account-password-field{display:grid;gap:10px;min-width:0}.account-password-input{display:flex;align-items:center;gap:8px;min-width:0}.account-password-input input{min-width:0;flex:1;width:100%}.account-password-input .icon-button{flex:none}.account-password-actions{display:flex;flex-wrap:wrap;gap:8px;min-width:0}.account-password-actions .button{max-width:100%;white-space:normal}.account-password-field .work-hint{margin:0;min-width:0}
+
+.account-saved-password { display: grid; gap: 8px; min-width: 0; max-width: 100%; }
+.account-saved-password-value { display: grid; gap: 6px; max-width: 240px; min-width: 0; }
+.account-saved-password-value code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; font-size: 14px; }
+.account-password-unavailable { max-width: 240px; color: var(--muted, #64748b); }

@@ -1,3 +1,5 @@
+import { ourOrganizationDisplayName } from './our-organizations';
+
 export const cabinetProviders = [
   { id: 'glopro', name: 'GloPro', url: 'https://lk.glopro.ru/', confirmation: false },
   { id: 'yandex', name: 'Яндекс Go', url: 'https://business.taxi.yandex.ru/', confirmation: true },
@@ -31,4 +33,17 @@ export interface CabinetAccount {
   amountMinor: number;
   currency: 'RUB';
   sourceUpdatedAt?: string;
+}
+
+/** Cabinet owner label only; provider account and contract data remain unchanged. */
+export function cabinetConnectionDisplayName(connection: Pick<CabinetConnection, 'provider' | 'label'>): string {
+  return connection.provider === 'glopro' ? 'НК АРТЭЛЬ' : ourOrganizationDisplayName(connection.label);
+}
+
+/** A successful fetch does not make an old provider snapshot current. */
+export function cabinetConnectionStale(connection: CabinetConnection, now = Date.now()): boolean {
+  return connection.state !== 'connected' || !connection.lastSuccessAt
+    || now - Date.parse(connection.lastSuccessAt) > 600_000
+    || !!connection.accounts?.some(account => account.sourceUpdatedAt
+      && now - Date.parse(account.sourceUpdatedAt) > 600_000);
 }

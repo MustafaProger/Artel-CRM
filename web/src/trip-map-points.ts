@@ -9,8 +9,8 @@ const MapDecimal = Decimal.clone({ precision: 100 })
 export const requestVolumeBands = [
   { id: 'blue', label: 'Менее 2 000 л', upper: 2000 },
   { id: 'green', label: '2 000 – 6 000 л', upper: 6000 },
-  { id: 'yellow', label: '6 000 – 9 500 л', upper: 9500 },
-  { id: 'red', label: '9 500 – 14 000 л', upper: 14000 },
+  { id: 'yellow', label: '6 000 – 11 000 л', upper: 11000 },
+  { id: 'red', label: '11 000 – 14 000 л', upper: 14000 },
   { id: 'burgundy', label: 'От 14 000 л', upper: null },
 ] as const
 

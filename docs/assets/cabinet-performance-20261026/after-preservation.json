@@ -1,0 +1,436 @@
+{
+  "checksumVerified": true,
+  "strictDataEqual": false,
+  "checks": {
+    "facts": {
+      "shipments": true,
+      "companies": true,
+      "directories": true,
+      "paymentAllocations": true,
+      "accounts": true,
+      "china": true,
+      "work": true,
+      "operator": true,
+      "tripNumbers": true,
+      "tripCreateRequests": true,
+      "tripRequests": true,
+      "tripRequestCreates": true,
+      "driverTripProgress": true
+    },
+    "workflowDocumentsAndAuthorizationUnchanged": true,
+    "bankDataExceptPollingUnchanged": true,
+    "revisionNotRewound": true,
+    "trip27PresentInBaseline": true,
+    "trip27EtrnExact": false,
+    "trip27SabyExact": true
+  },
+  "differences": [
+    {
+      "path": "revision",
+      "beforeHash": "e30dd2f9d15e059a22887155592410431498bf4562a9aef5efface56124da1cd",
+      "afterHash": "481a35e0c59603dcd936d2efbef08baba878f7a6df3136c9ce163e173c1c791f",
+      "classification": "revision"
+    },
+    {
+      "path": "banking/connections/#c87afc121c09/requestNotBefore",
+      "beforeHash": "d2219f79c4c33c6aa0d7ecde7b99521685f8de2394b249c7b09f965751d4e12b",
+      "afterHash": "9d80727fa6dfaa09030c7d9c757d4bbbceca7a86227b33483f9a805550464b22",
+      "classification": "bank_poll"
+    },
+    {
+      "path": "banking/connections/#c87afc121c09/lastAttemptAt",
+      "beforeHash": "a9cec8273f43acb9f3d93cc53993531eb35db25a84c5bcafeb94fc753f213417",
+      "afterHash": "25843d5cbc46bdb0a30c53fe263bdf10a6fa028a1e02d402e23adb17dc5c1376",
+      "classification": "bank_poll"
+    },
+    {
+      "path": "banking/connections/#c87afc121c09/settlementVerifiedDays/53/syncedAt",
+      "beforeHash": "eba9e17cf913717c9e3ef45dfc210ed5412e4cf688f835fd61d9968f46595b89",
+      "afterHash": "25843d5cbc46bdb0a30c53fe263bdf10a6fa028a1e02d402e23adb17dc5c1376",
+      "classification": "bank_poll"
+    },
+    {
+      "path": "banking/connections/#c87afc121c09/job/day",
+      "beforeHash": "6484fdf06f96fdc8798ea7ad65d1bf470ca8dadbbe42e38c894d63839c90f6be",
+      "afterHash": "4f07f33d9abd04addfc2bdacd69810735efb48835d2b4c2b3c38fef983829dae",
+      "classification": "requires_review"
+    },
+    {
+      "path": "banking/connections/#c87afc121c09/job/pages",
+      "beforeHash": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "afterHash": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+      "classification": "requires_review"
+    },
+    {
+      "path": "banking/connections/#c87afc121c09/lease",
+      "beforeHash": null,
+      "afterHash": "bf588c8f04c3a206f3ac62e77b699d68ca7e4bd459e44a205260608622750517",
+      "classification": "requires_review"
+    },
+    {
+      "path": "sberArtel/requestNotBefore",
+      "beforeHash": "9ac2346fb30e4c3e3b68e1c122daf9823994014d95dd84a5b8b44d61e94d5f20",
+      "afterHash": "93884f1e9b18dc128500000e118644a257048a86f9513b1b12ecb26e982f98ce",
+      "classification": "bank_poll"
+    },
+    {
+      "path": "sberArtel/lease",
+      "beforeHash": null,
+      "afterHash": "200fbad7355e1314b0315436f30297e43af17b93c65cbad121929bb3603d4b12",
+      "classification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#8cf942a0026a/updatedAt",
+      "beforeHash": "68724cff09ebbea494145153e37dc3c8a50c49fee3329889cc4aa1cfe60f6e37",
+      "afterHash": "a58cad824a1b0d9d4546a2538074e44e23b19533e4b7bd05857a95ee74ba62e4",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#8cf942a0026a/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "801504e9401d747880d53460b1c6ab8c663f2262b280df0f5a790896185e478d",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#8cf942a0026a/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "4ecac70edfb34a36ba91d445e97e9e2364549517d24ebe2bed7f4dd624db5a2d",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#69704349d42b/updatedAt",
+      "beforeHash": "6865970b5e90e8cb34e0bca6ba7b6b8f996e181ff608a84f7febe256c32354e5",
+      "afterHash": "02aa32d3cc772c195658e73b6186c9ba9fcdd5963b757bf1853f4e1fbfd06410",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#69704349d42b/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "80bf88ddcd935c9bb6a3c7bcc3dd1685bfb0ffb67921ba79dad802ecdf44eff4",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#69704349d42b/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "6dd8a0e1ec568978d0bb12096521e4bf0bc17e6df069b141ada406e0a03bb776",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#788419d07c11/updatedAt",
+      "beforeHash": "101a6f293c35a4f866423148e0a54947e781e402be466f2c42b80dc8e99ec979",
+      "afterHash": "e4b6be62b806c55b6887342467e84ae00cc300a5e88c2a26ab15752c39d6396a",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#788419d07c11/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "abd39e098c71ff2aae450e67befa4f6b92b6091e72c02d13e442d95a6277ef7a",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#788419d07c11/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "1ddd6bb15252c6a2bfa2d62f6185015188ea61cfa5b4664ea10640ab6f936bb7",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/updatedAt",
+      "beforeHash": "5d18e6a97794243ac3f96b8b1b163ae4f3913c48c0297c037bc6abfef0df9b73",
+      "afterHash": "c12dec1fbe7ab4f5c9e81672f2e0f2c4eb78bbaa6a2a4033f669c9df483b1dd7",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "8c53393d942155dd4850d343a4c9627459e5eeaa5543e641bc6ce6c4d04f3aba",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "9d70d7b28be79e5077a8f72fef8435fae25adb93fb1b455fe440644af60e697d",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#27d88246613d/updatedAt",
+      "beforeHash": "0950cb870a49b4be2c302706176d925d19ab9b94b09efc2c04d9ac81bc9912a8",
+      "afterHash": "b274c6ed41c5fd4fcfcb8cae321ab5b858dbf4345c5016ea3aa7b7c64faa8e2f",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#27d88246613d/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "1ee689486ed4ea7fea87578c001ad1d892beb61ddd7319f64207a7acdc54264f",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#27d88246613d/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "a5478e3b05c347ddbe6b7adf219c5c08fd6507035ce2fb3c1243617f328b7dd7",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#381c4af8d542/updatedAt",
+      "beforeHash": "de21814b678d87059059441f85adb1132dcb248806fb57c3569b5b3949b5a8b9",
+      "afterHash": "c2faa24b154b2de43ad2e00ea830dbddbd8b22459ea6cfcd3edbeff94af3cedf",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#381c4af8d542/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "a8648199d8203984aa1a9be647a968823367072f307bda4944201d8bfd8bdbe2",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#381c4af8d542/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "e73e4aa90d0bb4843c85bfa3b42b49b8ed8bcd00957643dd8c0d9057f3d6d376",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#ac7ecfbdb013/updatedAt",
+      "beforeHash": "7f86f9f428c0164d249bced749ecf10422984fbdd1393fde11a67b64fca19436",
+      "afterHash": "493e732c5589c5ce5365cf4ea1364b93bb24bbfcfe0b22ce81368cf2404078a8",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#ac7ecfbdb013/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "f5ffb53b4258875e3dc550104d3765509112814377739ada5d90ced8f2c90a5f",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#ac7ecfbdb013/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "ab0c82ff220a4aef115e0706ecb51f1cffcecd89f64084147641a7bf699f7cc4",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#e68103d51e6d/updatedAt",
+      "beforeHash": "7f17cf2a948534c900c634998820c75ad6211ea7c8e68c781eb956c6db378e21",
+      "afterHash": "fdfdc1a8315c8b535b798d60b5343336f22206446cec044bde41b52d2b7db13c",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#e68103d51e6d/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "9bd14e02766d76703a9dd7a54f38fa6fafa1faa01933fa3d4d636ad2e5843811",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "tripSaby/trips/#e68103d51e6d/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "d0f36f0a4ce6dec45dc2a830d582d4e3c5619c89d3171e079f205c3d71805a17",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#62d7ccb3b545/deliveries/#3bc3290bbc9b/document/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "f74323056cbd3b5c0a22fefe262216f3f7e97bbde023deef6c976b0050e3d7a3",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#62d7ccb3b545/deliveries/#3bc3290bbc9b/document/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "bd166e166e7b6605eed430ae6f6505d03d3e0088740853008ece1f90e7edf062",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#62d7ccb3b545/deliveries/#3bc3290bbc9b/updatedAt",
+      "beforeHash": "cd0f44aef95212ccde7e25fa969dfca877a18acaaf2a4a2976aab22727ce1e8f",
+      "afterHash": "3a1ea63279df9391e28ff75a83e0d67b758354fdf0c62719dc64ad87fa1bddd1",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#62d7ccb3b545/direct/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "f6e9818f5de87441527abcad101697dc92d2caf636302dd1c22132753a5e9087",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#62d7ccb3b545/direct/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "6ddcbd293e3aab4808e381a86b254044f557861cf678cb61c702b5c9e539e2e8",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#62d7ccb3b545/direct/lastCheckAttemptAt",
+      "beforeHash": "a8d067bee20c116b803ed4c4d99d0eedb3063063f13253edc204d2e3c2658265",
+      "afterHash": "420cc590e71d91d14c9e6e60988bf8b65be0f4a1d97cc1a06c0a13bba224aca7",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/deliveries/#cac3e58ea41f/document/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "0f7ab2e0aba89bab1d7e4740396d23f5a26084c77d9de718d9bd7da80df423ea",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/deliveries/#cac3e58ea41f/document/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "34af21cfa8f9431c2b53fa57d3a4217371e7b265caa868ae6f5cb00492e03eb0",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/deliveries/#cac3e58ea41f/updatedAt",
+      "beforeHash": "bc0d568d8ac7b5b8d94c6e6d6501dcf7fd5d57b1437bef385514e03965031d78",
+      "afterHash": "cd9284265bd15e4823a3b7920e1f2f6747f2eca92f6e7fcd47c53d0e85e29e50",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/direct/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "062b3c3cf04e5314144c2b2c1c66cb1086fbf1112ffb8914548f8445d60ca353",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/direct/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "62bb48940442193d87cbb64a5ed6798491535af3883a7f85d40b6b83f66871be",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/direct/lastCheckAttemptAt",
+      "beforeHash": "b394bfdc8b620bbf1ca3660148abfbf2cb7779233138e7db296aa6b8aa522142",
+      "afterHash": "af9e94143859011a8b587460fbb7921fa1cef3f16d81f0ff603c2d339e0581a0",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#926dbac6500a/direct/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "87b5f0b1af72eab44c2e7963d062c7da7d7ad963e2d697ba1c41d49975cd9517",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#926dbac6500a/direct/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "0bddc142b99d8c34b609f0d2343f914a20ebcdb82a52409c9f059263631895f2",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#926dbac6500a/direct/lastCheckAttemptAt",
+      "beforeHash": "b0a59bf38090e9327d0e43ecd7d4fac5b1a4cc78e09be523dce9447d913dd552",
+      "afterHash": "7c1e4a46e60069396f3f026b23dadf22fde1ec7de7d5518c81a9e1b8bc67c8ba",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3e114129e20b/deliveries/#2d6e880ba23e/document/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "b6cab853f0c1c0d592c27864bd7c026c101da61f9d9a6305ae97bdd44fa01d49",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3e114129e20b/deliveries/#2d6e880ba23e/document/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "0a12cc02c799a0ea930809e98e6ae4c2603b4e89b9dd002c72432b9add23cf4e",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3e114129e20b/deliveries/#2d6e880ba23e/updatedAt",
+      "beforeHash": "a94078c35d40cae782475c5d0d2bb57d7d8edccfe3707b88267075bc737c1b5b",
+      "afterHash": "0ea084deb1dfa3438df405ecf5f79f8aeb06f3cb5f79d70c7059a0f175e7948d",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3e114129e20b/direct/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "e1deac2e6eef864354fc499cc3bf2fd3c8b1c5ba898a1b5509bd3e4d23f6c74b",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3e114129e20b/direct/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "872dd6e34321535a4adc9e1689a6f862f1c5988d1f4f821c4812c66939b8829b",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#3e114129e20b/direct/lastCheckAttemptAt",
+      "beforeHash": "76e49c17bd8e3711bea5842ebbe4549031d6981b26c2c6231bbcd678076920f6",
+      "afterHash": "d9e86156b026e99e74ca5b7913072741f32d108124bb83e1f57e5c9e431d21bc",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#86b2efd74440/deliveries/#518368526bdf/document/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "dc2a62960382058e7a73f0fe46f430e3136ada94a75167b45026880a90a762cd",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#86b2efd74440/deliveries/#518368526bdf/document/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "4ed07829470f1e226df3850fec0396d3af1a18f9ba2e1763887e3ee4ccdba513",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#86b2efd74440/deliveries/#518368526bdf/updatedAt",
+      "beforeHash": "8653bf01c7e50b3e3678ac3f3a110addae2afa03e4f21d437c63cae87a4ac1ba",
+      "afterHash": "87829ef9698ed62518bdf264737f885cf4015d0a11bdc11fb20495f5cea2f282",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#86b2efd74440/direct/leaseId",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "0efc0bed4fdcf646d06f91640b242b0db4b07328adad711727a4274bc857682f",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#86b2efd74440/direct/leaseUntil",
+      "beforeHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "afterHash": "e8468472c39631ac49ddc9ddbcceefbaece8ece474c4959145929673d6f52387",
+      "classification": "workflow_poll"
+    },
+    {
+      "path": "etrn/trips/#86b2efd74440/direct/lastCheckAttemptAt",
+      "beforeHash": "7cc50697e5d09ecabd217b9b71f184df2dab8d459f4c4cecc373f52553c93e79",
+      "afterHash": "44ec632075af85cc24286e874d284d289506c77e22e5de8c59f1a2416a3a8198",
+      "classification": "workflow_poll"
+    }
+  ],
+  "unexplainedChanges": 4,
+  "protectedFilesUnchanged": true,
+  "workerFilesUnchanged": false,
+  "workerFileChanges": [
+    "crm-bridge/auth.json"
+  ],
+  "workerBridgeAuth": {
+    "available": true,
+    "rawBytesUnchanged": false,
+    "beforeSha256": "488f080fbb880e16a9bdda9ffb24313639fbeb09bd3a8550075068ee5f9d9b93",
+    "afterSha256": "8ccd1130a716688db1385a9e7ff199bc78d6c619cda3cd0ae3d3105c35b2328d",
+    "validatedSchema": true,
+    "unexplainedChanges": 0,
+    "fieldChanges": [
+      {
+        "field": "nonces",
+        "beforeHash": "2a6e08a776543a3f97e13f8b5eb453fae7225d337fcc622aeee3ce131ced958b",
+        "afterHash": "452b845c1fc4e06954aa169ac713aaea793f482240aa570bbcae97d459eef619",
+        "classification": "request_nonce_journal",
+        "beforeCount": 7,
+        "afterCount": 6,
+        "added": 6,
+        "removed": 7,
+        "modified": 0,
+        "changedEntryHashes": [
+          "10c3ecb58ba09f7e88c4cd015f58dbdc5055889a49e18331b2062ee240b94556",
+          "17dad14f2e531a933b5087c55f35b22d4490fe45c624f6842e477e81a7def108",
+          "1dd61b4859ddc7e0abac2712ea5c32248160db4b1244419192bd3d00f040b4b0",
+          "29328b4422658d041472b491251e83fc02bd5d1818865a532878c6ad0b49f219",
+          "31e1d01ad2a787b74e26c092fe046460c9eced53794ffece5ec113226eb363a2",
+          "33213d2ea77f47cc347f7a396d0bac29a8e753905418aca4af72bd0c6c3882bd",
+          "44e923b27022bbdd41ab1c6ec88e07bb20b5f8d23672352a1d793dd1c0b37b7a",
+          "6e64cabf9e2d827da9327786bf0ced04bf383c3e8ad2a75ea5c755aa9800b162",
+          "9cb2549c07111de33168013cb5989bece4e16c0e32c8035965bf6a7b68052445",
+          "b9d6a88ea0280c411d9ee972a619aecb738dc929fbd9b233c4c94108b79820dc",
+          "bfa5d0c9925bbfe3b93210f645ccabf62fc02f947af3aa933c548b05274ad1d8",
+          "dbcfd19b999f044efc5ced99327f90197c041e54221c34fefca7f8a9b0189d18",
+          "e2670a3d2506f8627d2142b7b0beca5784430a6434725e612f227e845f7c8c55"
+        ],
+        "removedEntriesExpiredAtAfterCapture": true
+      }
+    ],
+    "identityAndRevocationsUnchanged": true,
+    "onlyRequestNonceJournalChanged": true
+  },
+  "workerNonBridgeFilesUnchanged": true,
+  "otherServicesUnchanged": true
+}

@@ -1,0 +1,229 @@
+{
+  "at": "2026-10-22T10:51:24.312851+00:00",
+  "metadataOnly": true,
+  "businessWrites": 0,
+  "image": "artel-crm:20261022-operator-active-plans-5a0fda77",
+  "imageId": "sha256:060b7c81fca18e327850554a62b9a9773d71c7ffed9f1e28a446897dfe09d1d2",
+  "health": "healthy",
+  "restartCount": 0,
+  "serverBundleSha256": "38240b1ce9c6af3ec2b7a82063783ab4b41208520ea8748384ac3126990eeb56",
+  "backendReusedExactly": true,
+  "operatorExactBothPhases": true,
+  "authenticatedUiVerified": true,
+  "rawPreservation": {
+    "after": {
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 4,
+      "classifiedCrmUnexplainedChanges": 0,
+      "allReviewedInvariantsPassed": true
+    },
+    "after-ui": {
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 98,
+      "classifiedCrmUnexplainedChanges": 25,
+      "allReviewedInvariantsPassed": false
+    }
+  },
+  "requestChanges": {
+    "tripRequests": {
+      "oldCount": 37,
+      "newCount": 40,
+      "added": 3,
+      "removed": 0,
+      "allOldRecordsExact": true
+    },
+    "tripRequestCreates": {
+      "oldCount": 37,
+      "newCount": 40,
+      "added": 3,
+      "removed": 0,
+      "allOldRecordsExact": true
+    }
+  },
+  "fullByteEqualityClaimed": false,
+  "allReviewedInvariantsPassed": false,
+  "preservationReviewRequired": true,
+  "unresolvedOtherSubsystemChanges": [
+    {
+      "path": "tripSaby/trips/#8cf942a0026a/order/exchangeStage",
+      "beforeHash": "8bdf3397cce9558038b99fee5fe7d77f6240d7b446e1f9f88a5cbf428839e857",
+      "afterHash": "2ded29462083f2525d0eea0866e2a2c10ec915b39544ff77cf0f9e5b0fe67fca",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/order/remoteStatus",
+      "beforeHash": "e31989649939c0cc607362eaba6b9a1f8ba1cd6577179ba5704d58938cfa2fd0",
+      "afterHash": "5bb024ea6c4c4e454c3ff0811bd12c4b520a71461aeeb8f9235b6eb33c952a21",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/order/signatureStatus",
+      "beforeHash": "3ea2616a8026c02e802b601fc5e363dfef9ae3c54801fb18792ace1c1bed17c4",
+      "afterHash": "3db3320fc5b930a4c5520f0cbf535fb7148fd5ea75e681eb3534758f0a8d1aae",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/order/remoteStateCode",
+      "beforeHash": "8be13c81ac497232a96221a069b568f26f5f6b771a360a76fcfef0fe1de4becd",
+      "afterHash": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/order/exchangeStage",
+      "beforeHash": "60b2e4d69a7f73b83062ea2033732c5f103354556c667f954b5027b3094040f7",
+      "afterHash": "2ded29462083f2525d0eea0866e2a2c10ec915b39544ff77cf0f9e5b0fe67fca",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierFill/requestedAt",
+      "beforeHash": "ad41748f4e69b3c711b9536282e07ca27fb4f03f90a2c2263f6ccc97aa141f7e",
+      "afterHash": "cd274183fbb589a5b10a49956462cfd233e6eb8b1bcee541c58ddfe92746ce3e",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierFill/state",
+      "beforeHash": "71ce8ff4c179188015b1c36fa4d86d9581a3e9f2b2fad8a879d8cc2538d6b475",
+      "afterHash": "a9347c50430fb5947a6d022b1ae4dcfc5f961af3fd9a22899aff3b4437c0136b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierFill/driverSaved",
+      "beforeHash": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+      "afterHash": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierFill/vehicleSaved",
+      "beforeHash": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+      "afterHash": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierFill/intent",
+      "beforeHash": null,
+      "afterHash": "225af2c1c6e2bfb15e7797e96eb685cd31653637fb709bbfb95c5fe0496e8d8f",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierFill/responsibleSaved",
+      "beforeHash": null,
+      "afterHash": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/sender/state",
+      "beforeHash": "71ce8ff4c179188015b1c36fa4d86d9581a3e9f2b2fad8a879d8cc2538d6b475",
+      "afterHash": "82dd43841f057ad05a70ca320e5eb77c2f0e384a8bd599e3af6611162e202197",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/sender/message",
+      "beforeHash": "f8925a23a33647237374e5d1c46b99c2560f282c097d9a7c6557aa524d2690eb",
+      "afterHash": "f0b6ff4bb47fe0a2a37e1dfc1b557b02cc6e43ad213ba79e42e8d8f09042856b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/carrier/state",
+      "beforeHash": "1e010d28aa80609939549e19b00537e38ef61ece2e7a0fc0c05a513d3d4fa0a9",
+      "afterHash": "a9c04f9d51fd373f548b23b57b82ab90c48811694d72d8038560ca10f6da67c5",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/carrier/binding",
+      "beforeHash": null,
+      "afterHash": "da2b88c8c9ac39afdc49e9b06b7ad08fa5fb185bcd70033c46c7801cdb267f04",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/carrier/businessHash",
+      "beforeHash": null,
+      "afterHash": "af7c2d1f7b69d957b9fc3e0de728e6439d2361c7ef75c480a7aaf3da9d83dfa2",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/carrier/message",
+      "beforeHash": null,
+      "afterHash": "f1bd3f4d69ddd77c123b5f4da4bf52e5133f9d6b5f5ca75ffc8d9d2890624cff",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/signing/carrierDraft",
+      "beforeHash": null,
+      "afterHash": "2cb02282f3931b665651c4ddefdff8025da64b9f01294a946c81f16b7623d88c",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripRequests/#13d33c52a134",
+      "beforeHash": null,
+      "afterHash": "fcc916d2595b9491436158e5b0746d4b6366f2fe6cac75f49b40164ff3f0db3e",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripRequests/#d03726b9e423",
+      "beforeHash": null,
+      "afterHash": "8468bdd27e229a493f6db96ddd7e997c5943cd200be431d7cac39450813220ac",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripRequests/#600614f6ac30",
+      "beforeHash": null,
+      "afterHash": "598a9c94d7fe9261423f7e9ee5349314846c616a9f7de8e0c093ef706aa66d18",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripRequestCreates/#19c234be1f4c",
+      "beforeHash": null,
+      "afterHash": "aa5625ce59aeb6d17b81f9b2859989aa5107c7cee7ecbcb1ad322c803d93aa7f",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripRequestCreates/#62b924fec7f5",
+      "beforeHash": null,
+      "afterHash": "3d9f6a4866215367501cf760a2bd58e8dc747ae39bc40e36d920a3a0861c4208",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripRequestCreates/#97898fdbc7cb",
+      "beforeHash": null,
+      "afterHash": "5f7f91fe906f7dd8bb95d5a67d55d445c09fdd91d4ac07f996a734c3cea737a3",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "cabinets/connections/#1f4d5d1826ce/accounts/1/amountMinor",
+      "beforeHash": "b3e51771971b04fd6a5e3853009b1a28a78b92e6b6f266a33fa4de3e878e175e",
+      "afterHash": "26697b87de664de1f45b2cdc2c5db72bc45d9c725529b16a0aa513152ba55f2c",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    }
+  ],
+  "unresolvedChangeCauseProven": false,
+  "inputSha256": {
+    "config.json": "8d6cd407074c68db1c301ad7cb0a380e5f8a2685c40c5adc66245d5307f36551",
+    "final-independent-classification.json": "1c67dabb7c25c37c85ca458b4b624127326fd8d50b5f51283cbbb3c2e4b0cec4",
+    "authenticated-ui-proof.json": "eb8cdd17a9dfa9585b6b807f5eb25cbb8d31f694772ed66c3b9de9fe47d9e355"
+  }
+}

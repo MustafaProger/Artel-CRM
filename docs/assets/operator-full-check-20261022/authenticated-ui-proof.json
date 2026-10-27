@@ -1,0 +1,23 @@
+{
+  "authenticatedUI": "Chrome / Egor",
+  "liveViews": [
+    "active plans 10",
+    "completed plans 7 with Smirnov -6000 balance",
+    "split 10000 + 26000 across two plans",
+    "manager Eldar 16000",
+    "recipient requisites",
+    "open returns 3 and completed returns 3",
+    "deferred 4 including overdue and unscheduled"
+  ],
+  "productionUIBusinessWrites": 0,
+  "immediateTransactionReadbackVerified": true,
+  "afterUIHashAuditCompleted": false,
+  "afterUIHashAuditReason": "SSH banner exchange timeout",
+  "screenshots": [
+    "active.png",
+    "completed.png",
+    "operations.png",
+    "returns.png",
+    "deferred.png"
+  ]
+}

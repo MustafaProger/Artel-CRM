@@ -1,0 +1,28 @@
+{
+  "tripId": "shipment-trip-064adc49-4568-4c24-b1bf-c647d36049b0",
+  "tripNumber": 31,
+  "date": "2026-10-22",
+  "plannedAt": "2026-10-22T11:43",
+  "rows": 2,
+  "fieldsCopiedExactly": true,
+  "litres": [
+    "8000",
+    "9500"
+  ],
+  "masses": [
+    null,
+    null
+  ],
+  "driverProgress": null,
+  "loadingActorMode": "sender",
+  "automationState": "waiting_departure",
+  "directAttempt": false,
+  "documentCount": 0,
+  "oldTripExact": true,
+  "oldShipmentRecordsExact": true,
+  "oldDriverProgressExact": true,
+  "newShipmentIds": [
+    "shipment-local-9c717eeb-27df-4392-b644-a2eec7981f4a",
+    "shipment-local-dd8cff7d-63e1-42ea-9dcf-c2dc2c78778f"
+  ]
+}

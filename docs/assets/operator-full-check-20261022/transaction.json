@@ -1,0 +1,47 @@
+{
+  "mode": "apply-authorized-operator-only",
+  "at": "2026-10-22T08:18:39.845326+00:00",
+  "release": "artel-crm:20261022-operator-service-7e724319",
+  "imageId": "sha256:c686744854cfbe8350e57ebf7051f92e77fc2f58bc54f8043a6aff5e689db500",
+  "helperSha256": "a50512cccb9e0173d0be3b41d7e7e25867be2823f5d3c8f30e9c5f830f1b6637",
+  "runtimeUnchanged": true,
+  "result": {
+    "scope": "replace-operator-only",
+    "at": "2026-10-22T08:18:38.604Z",
+    "beforeRevision": 1181468,
+    "afterRevision": 1181469,
+    "beforeRawSha256": "a83a11d46ab532d539492b3bf3aa70a32987b94ef54b4b7128be60d6037cc995",
+    "expectedAfterRawSha256": "dc791560d1b22bd48f55d400b2ebaccfe230aac769b8e8a786c3e1e6b107fa31",
+    "outsideOperatorSha256": "08ae860c9b204898843b6de748b6f12bb7a7701db5280297bc1f5c5cbf0c25b5",
+    "beforeOperatorSha256": "442363c3260c39983a0258899080e8706c6ef47a6ede64b7389a85832e583e8d",
+    "candidateSha256": "33385927afac49ceb311f1b374783bf74d4fb6ab387811008fbd2c977241ec5b",
+    "actorId": "user-4985082e-1005-4397-af6a-315eb7367eeb",
+    "actorName": "Egor",
+    "actorSha256": "c7ae13e5e606215934de3bb801f6528dd6425a30379ffa166da4cd65cab09255",
+    "servicesSha256": "5dbf2d7580fe5dba73125f384bb91518efb90a0c08f38d469cc9e1a975699e66",
+    "removedCounts": {
+      "recipients": 0,
+      "plans": 6,
+      "refuellings": 16,
+      "cases": 13,
+      "requests": 75
+    },
+    "insertedCounts": {
+      "recipients": 0,
+      "plans": 7,
+      "refuellings": 16,
+      "cases": 11,
+      "requests": 64
+    },
+    "auditDirectory": "/var/lib/artel/operations/backups/operator-demo-33385927afac49ce",
+    "backupReadbackVerified": true,
+    "outsideOperatorUnchanged": true,
+    "pushUnchanged": true,
+    "externalRequests": 0,
+    "notificationsDispatched": 0,
+    "committed": true,
+    "operatorReadbackVerified": true,
+    "readbackRevision": 1181469,
+    "outsideOperatorReadbackUnchanged": true
+  }
+}

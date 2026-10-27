@@ -203,3 +203,16 @@ test('session revocation through external atomic replacement is effective on the
   await rename(replacement, f.store.path);
   assert.equal(authenticate(await f.store.read(source), request), null);
 });
+
+test('large multibyte store remains exact across cold reads, cached reads and mutations', async t => {
+  const f = await fixture(t);
+  const content = 'Кириллица 🛢️ العربية '.repeat(35000);
+  const initial = { ...f.expected, syntheticMetadata: { content } } as OperationsData & { syntheticMetadata: { content: string } };
+  await writeFile(f.store.path, encodeOperations(initial));
+  for (let i = 0; i < 3; i++) assert.deepEqual(await f.store.read(source), initial);
+  await f.store.mutate(source, data => { data.shipments[shipmentId].fields.note = 'saved'; return { changed: true, result: null }; });
+  const raw = await readFile(f.store.path, 'utf8');
+  for (let i = 0; i < 3; i++) assert.deepEqual(await f.store.read(source), decodeOperations(raw, source));
+  await assert.rejects(f.store.mutate(source, data => { data.sourceSha256 = 'wrong-source'; return { changed: true, result: null }; }));
+  assert.equal(await readFile(f.store.path, 'utf8'), raw);
+});

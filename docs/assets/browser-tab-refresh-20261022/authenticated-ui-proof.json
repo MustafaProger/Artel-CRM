@@ -1,0 +1,15 @@
+{
+  "verified": true,
+  "readOnly": true,
+  "businessWrites": 0,
+  "browser": "Chrome",
+  "account": "Egor",
+  "at": "2026-10-22T12:00:49.757800+00:00",
+  "checks": {
+    "tripSearchPreservedAfterNativeTabSwitch": true,
+    "requestSearchPreservedAfterNativeTabSwitch": true,
+    "mapViewLinkPreservedAfterNativeTabSwitch": true
+  },
+  "networkRequestCountsVerified": "synthetic Chromium/WebKit only",
+  "uiNewTabUsed": true
+}

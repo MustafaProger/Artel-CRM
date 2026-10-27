@@ -131,6 +131,11 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     p.signer.status = settings.signerStatus || '';
     p.loadingActor = loadingRole(source, depot?.loadingActorCompanyId);
     p.infrastructureOwner = loadingRole(source, depot?.infrastructureOwnerCompanyId);
+    // New order-based trips leave Saby's separate "Отгружает" party empty
+    // (the sender loads). Existing authorized delivery roles remain unchanged.
+    const saved = _data.tripSaby?.trips[trip.id]?.deliveries.find(row => row.shipmentId === delivery.id)?.snapshot;
+    p.loadingActor = saved ? structuredClone(saved.profile.loadingActor)
+      : { sameAsConsignor: true, party: { ...sender, phone: sender.phone || '', edoId: '' } };
     p.instructions = { regulatory, redirectionParty: 'Грузополучатель', redirectionMethod: 'По телефону', redirectionPhone: address?.receiverPhone || '', transshipmentForbidden: '', ...Object.fromEntries(Object.entries(settings.instructions || {}).filter(([, value]) => value)) };
     p.instructions.regulatory = regulatory;
     if (driverFlow) {

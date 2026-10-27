@@ -14,7 +14,8 @@ export const decimal = (value: string | null | undefined) => {
   const parsed = new Exact(text)
   return parsed.isFinite() && Math.abs(parsed.e) <= 100 ? parsed : null
 }
-export const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date())
+const moscowDateFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' })
+export const today = () => moscowDateFormatter.format(new Date())
 export function validDate(value?: string | null): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value)) return null
   const date = new Date(`${value.slice(0, 10)}T00:00:00Z`)

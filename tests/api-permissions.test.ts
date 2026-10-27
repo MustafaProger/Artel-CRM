@@ -325,7 +325,6 @@ test('editing visible permissions preserves hidden grants and cabinet access sta
   } finally { await f.close(); }
 });
 
-
 test('cabinet balances can be granted and revoked independently of role and account management', async () => {
   const f = await fixture(); try {
     const user = f.users[0];

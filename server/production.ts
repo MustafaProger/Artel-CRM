@@ -152,6 +152,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
     cabinetEnvironment: env,
+    accountPasswordKey: env.ARTEL_ACCOUNT_PASSWORD_KEY,
     setupToken: env.ARTEL_SETUP_TOKEN, cronSecret: env.CRON_SECRET, checkoApiKey: env.CHECKO_API_KEY,
     sabyClient: sabyScheduler.client,
     sabyWorkflowMonitoringEnabled: sabyEnabled,

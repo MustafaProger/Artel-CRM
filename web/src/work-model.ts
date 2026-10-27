@@ -1,6 +1,10 @@
 import type { AccountUser } from './auth-model';
 import type { Company } from './model';
 
+/** The Work picker uses the same active clients and suppliers as Directories. */
+export const isWorkDirectoryCompany = (company: Company): boolean =>
+  !company.directoryArchived && company.roles.some(role => role === 'customer' || role === 'supplier');
+
 export const workStatuses = [
   { id: 'todo', name: 'К выполнению' },
   { id: 'doing', name: 'В работе' },

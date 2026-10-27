@@ -1,0 +1,222 @@
+{
+  "synthetic": true,
+  "mode": "source",
+  "checks": [
+    "chromium: old 100 litres credits 7200 at new price 90",
+    {
+      "engine": "chromium",
+      "width": 320,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 600,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1100,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "form": true
+    },
+    "chromium: real synthetic save across two tasks plus early manager",
+    {
+      "engine": "chromium",
+      "width": 320,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 600,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1100,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1920,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    "chromium: filter both tasks; double click one write; lost response same key no duplicate; conflict reload; persistence; details retain requisites",
+    "chromium: no case table Возвраты",
+    "chromium: no case table Ожидают заправки",
+    {
+      "engine": "webkit",
+      "width": 320,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 600,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1100,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "form": true
+    },
+    "webkit: real synthetic save across two tasks plus early manager",
+    {
+      "engine": "webkit",
+      "width": 320,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 600,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1100,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1920,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    "webkit: filter both tasks; double click one write; lost response same key no duplicate; conflict reload; persistence; details retain requisites",
+    "webkit: no case table Возвраты",
+    "webkit: no case table Ожидают заправки"
+  ],
+  "axe": [
+    {
+      "engine": "chromium",
+      "screen": "form",
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "screen": "cases",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "screen": "form",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "screen": "cases",
+      "violations": []
+    }
+  ],
+  "errors": [],
+  "passed": true,
+  "stateSha256": "e73a97c89fd9e84c7c5c10b2e88d127f3a5e0153d2c9b6e3ebacc2662e1c8d82"
+}

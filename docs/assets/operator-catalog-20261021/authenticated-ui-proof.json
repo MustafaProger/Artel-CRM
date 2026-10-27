@@ -1,0 +1,251 @@
+{
+  "verified": true,
+  "readOnly": true,
+  "businessWrites": 0,
+  "viewportRestored": true,
+  "viewportOverrideUsed": false,
+  "account": "Egor",
+  "operationCount": 16,
+  "beforeRows": [
+    {
+      "heights": [
+        77
+      ],
+      "id": "ee98efeb-88e0-444b-baee-41cb126ade61"
+    },
+    {
+      "heights": [
+        61,
+        61
+      ],
+      "id": "bb160b55-7725-418c-82f4-d27dac37019e"
+    },
+    {
+      "heights": [
+        61,
+        61
+      ],
+      "id": "37d9ccf8-f18b-4c91-965e-1e632c50459d"
+    },
+    {
+      "heights": [
+        61,
+        61
+      ],
+      "id": "8f1fe4a4-8b5f-4427-9d03-2a6d4791a0b8"
+    },
+    {
+      "heights": [
+        78
+      ],
+      "id": "061ae970-8c35-5213-a8c9-af8448d2dbbc"
+    },
+    {
+      "heights": [
+        61,
+        61
+      ],
+      "id": "480aecb7-ad35-5035-ac13-7282411a7448"
+    },
+    {
+      "heights": [
+        61,
+        61,
+        61
+      ],
+      "id": "8c12325d-0d38-503c-a671-508ea9b47221"
+    },
+    {
+      "heights": [
+        61,
+        61,
+        61
+      ],
+      "id": "fc934f15-c3e4-515b-a293-e9cd3b9e173d"
+    },
+    {
+      "heights": [
+        93.59375
+      ],
+      "id": "84179da7-cfca-5ace-a30c-6eeb8d0440f4"
+    },
+    {
+      "heights": [
+        93.59375
+      ],
+      "id": "80690b50-9e5b-5755-afef-e6b7ed49622e"
+    },
+    {
+      "heights": [
+        93.59375
+      ],
+      "id": "333a821d-d510-551f-a686-f3370e95f648"
+    },
+    {
+      "heights": [
+        61,
+        61
+      ],
+      "id": "33ae8d59-c8ff-5b80-ad24-88028746691e"
+    },
+    {
+      "heights": [
+        78
+      ],
+      "id": "8dd88122-6755-58ea-ab9e-355de3d227a6"
+    },
+    {
+      "heights": [
+        93.59375
+      ],
+      "id": "8d13c987-1dec-590a-af9b-8bed01aee24b"
+    },
+    {
+      "heights": [
+        78
+      ],
+      "id": "7d11bc02-c345-5be4-a449-6f55d3f15b44"
+    },
+    {
+      "heights": [
+        77
+      ],
+      "id": "95b4795c-a21c-576d-ab3e-45f23d55d57b"
+    }
+  ],
+  "afterRows": [
+    {
+      "heights": [
+        61
+      ],
+      "id": "ee98efeb-88e0-444b-baee-41cb126ade61",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        40.5078125,
+        37.0859375
+      ],
+      "id": "bb160b55-7725-418c-82f4-d27dac37019e",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        40.5078125,
+        37.0859375
+      ],
+      "id": "37d9ccf8-f18b-4c91-965e-1e632c50459d",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        40.5078125,
+        37.0859375
+      ],
+      "id": "8f1fe4a4-8b5f-4427-9d03-2a6d4791a0b8",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        62
+      ],
+      "id": "061ae970-8c35-5213-a8c9-af8448d2dbbc",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        35.5,
+        35.5
+      ],
+      "id": "480aecb7-ad35-5035-ac13-7282411a7448",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        35.5,
+        35,
+        32.5
+      ],
+      "id": "8c12325d-0d38-503c-a671-508ea9b47221",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        35.5,
+        35,
+        35.5
+      ],
+      "id": "fc934f15-c3e4-515b-a293-e9cd3b9e173d",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        77.59375
+      ],
+      "id": "84179da7-cfca-5ace-a30c-6eeb8d0440f4",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        77.59375
+      ],
+      "id": "80690b50-9e5b-5755-afef-e6b7ed49622e",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        77.59375
+      ],
+      "id": "333a821d-d510-551f-a686-f3370e95f648",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        38.796875,
+        38.796875
+      ],
+      "id": "33ae8d59-c8ff-5b80-ad24-88028746691e",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        62
+      ],
+      "id": "8dd88122-6755-58ea-ab9e-355de3d227a6",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        77.59375
+      ],
+      "id": "8d13c987-1dec-590a-af9b-8bed01aee24b",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        62
+      ],
+      "id": "7d11bc02-c345-5be4-a449-6f55d3f15b44",
+      "padding": "8px"
+    },
+    {
+      "heights": [
+        61
+      ],
+      "id": "95b4795c-a21c-576d-ab3e-45f23d55d57b",
+      "padding": "8px"
+    }
+  ],
+  "groupsTabCount": 0,
+  "serviceNames": [
+    "Выберите сервис",
+    "РН",
+    "ЛК",
+    "ГПН",
+    "ЯНД",
+    "ННК"
+  ],
+  "selectedService": "РН",
+  "discount": "10",
+  "newFormClosedWithoutSaving": true
+}

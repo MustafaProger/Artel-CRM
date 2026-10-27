@@ -1,0 +1,59 @@
+{
+  "at": "2026-10-22T08:31:56.635Z",
+  "businessWrites": 0,
+  "heading": "НК АРТЭЛЬ → Клиенты",
+  "history": [
+    "Накладная № 2 ",
+    "Накладная № 3 "
+  ],
+  "loading": "Погрузка в этом рейсеОтправитель:Общество с ограниченной ответственностью \"НК АРТЭЛЬ\"Отдельное лицо в поле «Отгружает» не указывается. Документ-основание и сотрудник погрузки не требуются.Владелец нефтебазы:ПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО \"ТРАНСНЕФТЬ\"Ответственный НК:Тоджиев Диер Фаридунович",
+  "readOnly": true,
+  "scripts": [
+    "https://artel-crm.online/assets/crm-iR8RDJIq.js",
+    "chrome-extension://onhiacboedfinnofagfgoaanfedhmfab/dist/quick-control-panel/runtime.js",
+    "chrome-extension://onhiacboedfinnofagfgoaanfedhmfab/dist/quick-control-panel/main.js"
+  ],
+  "steps": [
+    {
+      "current": "step",
+      "state": "is-current",
+      "text": "1Подготовка"
+    },
+    {
+      "current": null,
+      "state": "is-done",
+      "text": "Подтверждение водителя"
+    },
+    {
+      "current": null,
+      "state": "is-pending",
+      "text": "3Создание ЭТрН0 из 2"
+    },
+    {
+      "current": null,
+      "state": "is-pending",
+      "text": "4Подпись отправителя НК0 из 2"
+    },
+    {
+      "current": null,
+      "state": "is-pending",
+      "text": "5Подпись перевозчика НК0 из 2"
+    },
+    {
+      "current": null,
+      "state": "is-pending",
+      "text": "6Передача клиентам0 из 2"
+    },
+    {
+      "current": null,
+      "state": "is-pending",
+      "text": "7Приёмка клиентами0 из 2"
+    }
+  ],
+  "url": "https://artel-crm.online/#trips",
+  "verified": true,
+  "viewport": {
+    "height": 745,
+    "width": 1470
+  }
+}

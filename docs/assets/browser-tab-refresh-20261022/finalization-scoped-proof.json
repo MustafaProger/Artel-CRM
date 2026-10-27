@@ -1,0 +1,81 @@
+{
+  "at": "2026-10-22T12:01:54.035030+00:00",
+  "metadataOnly": true,
+  "businessWrites": 0,
+  "image": "artel-crm:20261022-no-tab-refresh-ea218f24",
+  "imageId": "sha256:c0dd00a680a00fe8d65eb2aa9faa2e47fb4bb6272fcf46fadb49bf55678aa9f5",
+  "health": "healthy",
+  "restartCount": 0,
+  "backendReusedExactly": true,
+  "exactFactsBothPhases": true,
+  "authenticatedUiVerified": true,
+  "rawPreservation": {
+    "after": {
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 4,
+      "classifiedCrmUnexplainedChanges": 0,
+      "allReviewedInvariantsPassed": true
+    },
+    "after-ui": {
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 73,
+      "classifiedCrmUnexplainedChanges": 7,
+      "allReviewedInvariantsPassed": false
+    }
+  },
+  "fullByteEqualityClaimed": false,
+  "allReviewedInvariantsPassed": false,
+  "preservationReviewRequired": true,
+  "unresolvedOtherSubsystemChanges": [
+    {
+      "path": "tripSaby/trips/#8cf942a0026a/order/exchangeStage",
+      "beforeHash": "8bdf3397cce9558038b99fee5fe7d77f6240d7b446e1f9f88a5cbf428839e857",
+      "afterHash": "2ded29462083f2525d0eea0866e2a2c10ec915b39544ff77cf0f9e5b0fe67fca",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#69704349d42b/order/exchangeStage",
+      "beforeHash": "8bdf3397cce9558038b99fee5fe7d77f6240d7b446e1f9f88a5cbf428839e857",
+      "afterHash": "2ded29462083f2525d0eea0866e2a2c10ec915b39544ff77cf0f9e5b0fe67fca",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/order/exchangeStage",
+      "beforeHash": "13a1da4a5eebe01929523771ce859a0899d4d06d0a91f18e0e05d97b99b4c8b9",
+      "afterHash": "427513486421b78cec9a7d85edc050c9e516898a4d5fd7a7b823651502c75b8f",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#2531d32588c2/carrierEvidence",
+      "beforeHash": "cf9cab2d7576cb10b292650f9144fd0e5bb98ecbc968510b9c6f95a2f48c3211",
+      "afterHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#27d88246613d/order/exchangeStage",
+      "beforeHash": "13a1da4a5eebe01929523771ce859a0899d4d06d0a91f18e0e05d97b99b4c8b9",
+      "afterHash": "427513486421b78cec9a7d85edc050c9e516898a4d5fd7a7b823651502c75b8f",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "tripSaby/trips/#27d88246613d/carrierEvidence",
+      "beforeHash": "817a974678a3ace35a2507475d5345ea8f01d2ec7008f860256c5e069e60213b",
+      "afterHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    },
+    {
+      "path": "etrn/trips/#3700b94038a1/direct/lastError",
+      "beforeHash": "f9297719492b9c4f0028d3a1786d94c0664d561fee71b96b7772be2add9f50d1",
+      "afterHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "classification": "requires_review",
+      "independentClassification": "requires_review"
+    }
+  ],
+  "unresolvedChangeCauseProven": false
+}

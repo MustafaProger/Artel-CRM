@@ -20,6 +20,7 @@ import type { Plugin } from 'vite';
 import { hasSection, type AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
+import { decryptAccountPassword } from './account-passwords';
 import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie } from './auth';
 import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
 import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
@@ -313,6 +314,7 @@ export interface LocalApiOptions {
   /** Only isolated domain tests may disable authentication. Runtime always requires it. */
   requireAuthentication?: boolean;
   bankEnvironment?: Record<string, string | undefined>;
+  accountPasswordKey?: string;
   cabinetEnvironment?: Record<string, string | undefined>;
   bankRequest?: BankRequest;
   sberRequest?: SberRequest;
@@ -454,6 +456,19 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       const secure = options.secureCookies ?? !isLocalHost(request.headers.host);
       if (pathname.startsWith('/api/auth/')) {
+        const passwordUserId = pathname.match(/^\/api\/auth\/users\/([^/]+)\/password$/)?.[1];
+        if (passwordUserId) {
+          if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+          requireAccounts(requireUser(await operations.read(base.provenance.sourceSha256), request));
+          const body = await jsonBody(request);
+          if (Object.keys(body).some(key => key !== 'version') || !Number.isSafeInteger(body.version)) throw new ApiError(400, 'Передайте текущую версию пользователя.');
+          const data = await operations.read(base.provenance.sourceSha256);
+          requireAccounts(requireUser(data, request));
+          const user = data.accounts?.users.find(row => row.id === decodeURIComponent(passwordUserId) && !row.deletedAt);
+          if (!user) throw new ApiError(404, 'Пользователь не найден.');
+          if (user.version !== body.version) throw new ApiError(409, 'Пользователь уже изменён. Обновите список.');
+          return write(response, 200, JSON.stringify({ password: decryptAccountPassword(user, options.accountPasswordKey ?? process.env.ARTEL_ACCOUNT_PASSWORD_KEY) }));
+        }
         const userId = pathname.match(/^\/api\/auth\/users\/([^/]+)$/)?.[1];
         if (request.method === 'GET' && pathname === '/api/auth/session') {
           const data = await operations.read(base.provenance.sourceSha256);
@@ -463,7 +478,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const data = await operations.read(base.provenance.sourceSha256);
           const actor = requireUser(data, request);
           requireAccounts(actor);
-          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(publicUser);
+          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(user => ({ ...publicUser(user), passwordAvailable: !!user.passwordCiphertext }));
           const directories = currentSnapshot(base, data, false).directories!;
           const staff = { managers: directories.managers.map(({ id, name }) => ({ id, name })), drivers: directories.drivers.filter(driver => !directories.deletedEntries?.drivers?.includes(driver.id)).map(({ id, name }) => ({ id, name })) };
           return write(response, 200, JSON.stringify({users, currentUserId: actor.id, staff}));
@@ -488,7 +503,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             if(data.accounts?.users.length)throw new ApiError(409,'Директор уже создан. Выполните вход.');
             const setupToken=options.setupToken ?? process.env.ARTEL_SETUP_TOKEN;
             if(secure && (!setupToken || body.setupToken !== setupToken))throw new ApiError(403,'Для первоначальной настройки нужен серверный ключ настройки.');
-            await saveUser(data,currentSnapshot(base,data),body,undefined,true);
+            await saveUser(data,currentSnapshot(base,data),body,undefined,true,options.accountPasswordKey);
             return { result:await login(data,body),changed:true };
           }
           const actor=requireUser(data,request);
@@ -501,11 +516,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             const { changed, ...deleted } = deleteUser(data, actor, decodeURIComponent(userId), body);
             return { result: { status: 200, ...deleted }, changed };
           }
-          return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined)},changed:true};
+          return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey)},changed:true};
         });
         if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure,logistics ? 'logistics' : undefined));
         const {token:_token,...safeResult}=result as typeof result & {token?:string};
-        void _token;
         return write(response,result.status,JSON.stringify(safeResult));
       }
       const driverAccessMatch = pathname.match(/^\/api\/drivers\/([^/]+)\/access$/);
@@ -520,7 +534,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const body = await jsonBody(request);
         const result = await operations.mutate(base.provenance.sourceSha256, async data => {
           requireAccounts(requireUser(data, request));
-          const { changed, ...result } = await mutateDriverAccess(data, currentSnapshot(base, data, false), driverId, request.method!, body);
+          const { changed, ...result } = await mutateDriverAccess(data, currentSnapshot(base, data, false), driverId, request.method!, body, options.accountPasswordKey);
           return { result, changed };
         });
         return write(response, 200, JSON.stringify(result));

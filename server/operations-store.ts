@@ -188,7 +188,7 @@ export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Parti
 
 export class OperationsStore {
   readonly path: string;
-  #readCache?: { raw: string; sourceSha256: string };
+  #readCache?: { bytes: Buffer; raw: string; sourceSha256: string };
   constructor(directory: string) { this.path = resolve(directory, 'operations.json'); }
 
   async backup(data: OperationsData): Promise<string> {
@@ -204,12 +204,12 @@ export class OperationsStore {
   }
 
   async read(sourceSha256: string): Promise<OperationsData> {
-    let raw: string;
+    let bytes: Buffer;
     try {
       const handle = await open(this.path, 'r');
       try {
         if ((await handle.stat()).size > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
-        raw = await handle.readFile('utf8');
+        bytes = await handle.readFile();
       } finally { await handle.close(); }
     } catch (error) {
       this.#readCache = undefined;
@@ -221,13 +221,14 @@ export class OperationsStore {
     try {
       // Always read the file: timestamps cannot prove that data or access rights
       // are unchanged. Reuse validation only for the exact bytes and source.
-      if (this.#readCache?.raw === raw && this.#readCache.sourceSha256 === sourceSha256) {
+      if (this.#readCache?.sourceSha256 === sourceSha256 && this.#readCache.bytes.equals(bytes)) {
         // Parse the original bytes and apply the same migrations on every hit;
         // no mutable object is cached or shared with callers/mutation callbacks.
-        return migrateOperations((JSON.parse(raw) as { data: OperationsData }).data);
+        return migrateOperations((JSON.parse(this.#readCache.raw) as { data: OperationsData }).data);
       }
+      const raw = bytes.toString('utf8');
       const data = decodeOperations(raw, sourceSha256);
-      this.#readCache = { raw, sourceSha256 };
+      this.#readCache = { bytes, raw, sourceSha256 };
       return data;
     } catch (error) {
       this.#readCache = undefined;
@@ -262,6 +263,8 @@ export class OperationsStore {
             const file = await open(temporary, 'wx', 0o600);
             try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
             await rename(temporary, this.path);
+            // encodeOperations already validated these exact bytes; keep callers isolated.
+            this.#readCache = { bytes: Buffer.from(encoded), raw: encoded, sourceSha256 };
           } finally { await unlink(temporary).catch(() => undefined); }
         }
         return result;
