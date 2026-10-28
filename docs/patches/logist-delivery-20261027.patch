@@ -1,0 +1,191 @@
+--- a/scripts/verify_trip_process_ui.mjs
++++ b/scripts/verify_trip_process_ui.mjs
+@@ -46,7 +46,7 @@
+     await expect(card.getByRole('button', { name: 'Рейс выполнен', exact: true })).toHaveCount(0);
+     check(`${engine}: fourth tab, grouping, idle vehicle, planned trip and completion gate`);
+     await expect(panel.getByRole('button', { name: 'Прибыл на место доставки', exact: true })).toHaveCount(0);
+-    await expect(card).toContainText('Ожидаем отметку водителя');
++    await expect(card.getByRole('button', {name:'Завершить доставку',exact:true}).first()).toBeDisabled();
+     const controlStyles = await page.evaluate(() => {
+       const style = selector => { const el = document.querySelector(selector), s = getComputedStyle(el); return { radius:s.borderRadius, background:s.backgroundColor, font:s.fontSize, height:el.getBoundingClientRect().height }; };
+       return { top:style('.trips-section-tabs'), filter:style('.execution-filters'), topButton:style('.trips-section-tabs button'), filterButton:style('.execution-filters button') };
+@@ -86,7 +86,7 @@
+     await expect(card.locator('summary').first()).toHaveAttribute('aria-expanded','true');
+     await expect.poll(() => card.evaluate(el => el.getAnimations().length)).toBe(0);
+     await page.emulateMedia({ reducedMotion:'reduce' });
+-    check(`${engine}: shared filter geometry, driver-only UI, opening/closing frames, rapid reversal, keyboard and reduced motion`);
++    check(`${engine}: shared filter geometry, staff delivery UI, opening/closing frames, rapid reversal, keyboard and reduced motion`);
+ 
+     const driver = await browser.newContext({ viewport: { width: 390, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'America/Los_Angeles' });
+     const login = await driver.request.post(runtime.base + '/api/auth/login', { data: { login: credentials.access.login, password: credentials.temporaryPassword } }); assert.equal(login.status(),200);
+@@ -123,17 +123,16 @@
+       report.axe.push({engine,label,violations:results.violations}); assert.deepEqual(results.violations,[],`${engine} ${label} axe`);
+     }
+     // The driver closes the last stop; neither UI sends a separate complete call.
+-    const second = dp.getByRole('button',{name:'Прибыл на место доставки',exact:true}); await second.click();
+-    await expect(dp.locator('.driver-execution-footer')).toContainText('Рейс завершён');
+-    await panel.getByRole('button',{name:'Обновить',exact:true}).click();
++    const second = card.getByRole('button',{name:'Завершить доставку',exact:true}); await second.click();
++    await dp.reload(); await expect(dp.locator('.driver-execution-footer')).toContainText('Рейс завершён');
+     await expect(card).toHaveCount(0);
+     await panel.getByRole('button',{name:/^Завершённые/}).click(); await expect(card).toContainText('Завершён');
+     await page.reload(); await page.getByRole('button',{name:'В процессе',exact:true}).click(); await panel.getByRole('button',{name:/^Завершённые/}).click();
+     await card.locator('summary').first().click(); await expect(card).not.toContainText('Водитель:'); await expect(card).toContainText('Прибыл');
+     await dp.goto(runtime.base+'/#driver-trips'); await dp.getByRole('button',{name:'Обновить мои рейсы',exact:true}).click(); await dp.getByRole('button',{name:'Архивные',exact:true}).click(); await expect(dp.locator(`a[href="#driver-trip/${id}"]`)).toBeVisible();
+     const after = await rt.store.read(rt.source); const {revision:_a,tripExecutions:_b,accounts:_c,...stableAfter}=after; const {revision:_d,tripExecutions:_e,accounts:_f,...stableBefore}=before; assert.deepEqual(stableAfter,stableBefore);
+-    assert.equal(after.tripExecutions[id].version,2);
+-    check(`${engine}: driver final delivery, automatic closure, archive, reload, durable facts and all unrelated data exact`);
++    assert.equal(after.tripExecutions[id].version,2); assert.equal(after.tripExecutions[id].completed.role,'logistics'); assert.equal(after.tripExecutions[id].completed.kind,undefined);
++    check(`${engine}: staff final delivery, automatic closure, archive, reload, durable facts and all unrelated data exact`);
+     await browser.close(); browser=null;
+   }
+   assert.equal(report.providerCalls,0); assert.deepEqual(report.browserErrors,[]); report.passed=true;
+--- a/server/trip-execution.ts
++++ b/server/trip-execution.ts
+@@ -1,6 +1,6 @@
+ import { createHash } from 'node:crypto';
+ import type { Snapshot, Shipment } from '../web/src/model';
+-import type { AccountUser } from '../web/src/auth-model';
++import { hasSection, type AccountUser } from '../web/src/auth-model';
+ import type { TripExecution, TripExecutionEvent } from '../web/src/trip-execution-model';
+ import type { OperationsData } from './operations-store';
+ import { ApiError } from './api-error';
+@@ -35,7 +35,7 @@
+ }
+ /** Caller authenticates and checks the entire trip inside the same store transaction. No provider calls. */
+ export function recordTripExecution(snapshot: Snapshot, data: OperationsData, actor: AccountUser, tripId: string, action: 'deliver' | 'complete', body: Record<string, unknown>) {
+-  if (actor.role !== 'driver') throw new ApiError(403, 'Доставку подтверждает только назначенный водитель в своём кабинете.');
++  if (actor.role !== 'driver' && !hasSection(actor, 'trips')) throw new ApiError(403, 'Раздел рейсов недоступен.');
+   if (Object.keys(body).some(key => !['versions','executionVersion', ...(action === 'deliver' ? ['deliveryId'] : [])].includes(key))) throw new ApiError(400, 'В запросе есть неизвестные поля.');
+   const rows = snapshot.shipments.filter(row => row.fields.trip_id === tripId);
+   if (!rows.length || actor.role === 'driver' && (!actor.driverId || rows.some(row => row.fields.driver_id !== actor.driverId))) throw new ApiError(404, 'Рейс не найден.');
+@@ -49,7 +49,7 @@
+   if (current.deliveries[deliveryId as string]) return { changed: false, result: current };
+   if (!Number.isSafeInteger(body.executionVersion) || body.executionVersion !== current.version) throw new ApiError(409, 'Статус уже изменён. Обновите рейс перед подтверждением.');
+   if (current.completed) throw new ApiError(409, 'Рейс уже закрыт.');
+-  const event: TripExecutionEvent = { at: new Date().toISOString(), by: actor.id, name: actor.name, role: 'driver', kind: 'arrival' };
++  const event: TripExecutionEvent = { at: new Date().toISOString(), by: actor.id, name: actor.name, role: actor.role === 'driver' ? 'driver' : 'logistics', ...(actor.role === 'driver' ? { kind: 'arrival' as const } : {}) };
+   const record = (data.tripExecutions ??= {})[tripId] ?? { composition: fingerprint(rows), version: 0, deliveries: {}, completed: null };
+   if (Object.values(record.deliveries).some(previous => previous.at > event.at)) throw new ApiError(409, 'Серверное время раньше предыдущей доставки. Повторите позже.');
+   record.deliveries[deliveryId as string] = event;
+--- a/tests/api-driver-trip-actions.test.ts
++++ b/tests/api-driver-trip-actions.test.ts
+@@ -357,14 +357,11 @@
+     const logistics = `/api/shipment-trips/${f.created.trip.id}/execution`;
+     assert.equal((await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.cookie)).status, 403);
+     assert.equal((await f.request(`${f.path}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie)).status, 403);
+-    const beforeDenied = await f.store.read(f.source);
+-    const denied = await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie);
+-    assert.equal(denied.status, 403, denied.text);
+-    assert.match(denied.body.error, /только назначенный водитель/);
+-    assert.deepEqual(await f.store.read(f.source), beforeDenied, 'logistics cannot record a delivery or change any data');
+-    const second = await f.action('deliver', body(trip.deliveries[1].id));
+-    assert.equal(second.status, 200, second.text); assert.equal(second.body.trip.execution.stage, 'completed');
+-    assert.equal(second.body.trip.execution.deliveries[trip.deliveries[1].id].role, 'driver');
++    const second = await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie);
++    assert.equal(second.status, 200, second.text); assert.equal(second.body.execution.stage, 'completed');
++    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].role, 'logistics');
++    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].kind, undefined);
++    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].name, 'Синтетический директор');
+     trip = (await f.read()).body.trip;
+     assert.equal(trip.archived, true);
+     assert.deepEqual(trip.execution.completed, trip.execution.deliveries[trip.deliveries[1].id]);
+@@ -447,3 +444,25 @@
+     assert.equal(f.provider.calls.length,0);
+   } finally { await f.close(); }
+ });
++
++test('staff delivery requires current trips permission and preserves the real actor', async () => {
++  const f = await fixture(false, undefined, [true,true]);
++  try {
++    let trip = (await f.read()).body.trip;
++    await f.action('arrive', { versions: trip.versions });
++    trip = (await f.action('depart', { versions:trip.versions, masses:trip.deliveries.map((r: { id: string }) => ({ deliveryId:r.id, netTonnes:'1' })) })).body.trip;
++    const { recordTripExecution } = await import('../server/trip-execution');
++    const data = await f.store.read(f.source), snapshot = currentSnapshot(f.base,data,false);
++    const actor: AccountUser = { id:'staff-test', name:'Логист', login:'staff-test', role:'logistician', managerId:null, active:true, version:1, sections:['trips'] };
++    const payload = { versions:trip.versions, executionVersion:0, deliveryId:trip.deliveries[0].id };
++    const before = structuredClone(data);
++    for (const denied of [{...actor,sections:[]}, {...actor,active:false}]) {
++      assert.throws(() => recordTripExecution(snapshot,data,denied,trip.id,'deliver',payload), /недоступен/);
++      assert.deepEqual(data,before);
++    }
++    const result = recordTripExecution(snapshot,data,actor,trip.id,'deliver',payload);
++    assert.equal(result.result.deliveries[payload.deliveryId].by,actor.id);
++    assert.equal(result.result.deliveries[payload.deliveryId].role,'logistics');
++    assert.equal(recordTripExecution(snapshot,data,actor,trip.id,'deliver',payload).changed,false);
++  } finally { await f.close(); }
++});
+--- a/web/src/TripExecutionAction.tsx
++++ b/web/src/TripExecutionAction.tsx
+@@ -20,8 +20,8 @@
+   if (elapsed) return <span className="execution-event"><Check size={15}/><span><strong>{event.kind === 'arrival' ? 'Прибыл' : 'Доставка отмечена'} {duration}</strong><small>{driverDateTimeLabel(event.at)}</small></span></span>
+   return <span className="execution-event"><Check size={15}/><span>{driverDateTimeLabel(event.at)}</span></span>
+ }
+-export default function TripExecutionAction({ tripId, versions, execution, deliveryId, onSaved, onReload }: {
+-  tripId: string; versions: Record<string, number>; execution: TripExecution; deliveryId: string; customer?: string
++export default function TripExecutionAction({ tripId, versions, execution, deliveryId, staff = false, onSaved, onReload }: {
++  tripId: string; versions: Record<string, number>; execution: TripExecution; deliveryId: string; customer?: string; staff?: boolean
+   onSaved: (result: { execution?: TripExecution; trip?: DriverTrip }) => void; onReload: () => void
+ }) {
+   const [busy, setBusy] = useState(false), [error, setError] = useState('')
+@@ -33,7 +33,7 @@
+     if (flight.current || !ready || error) return
+     flight.current = true; setBusy(true); setError('')
+     try {
+-      const path = `/api/driver/trips/${encodeURIComponent(tripId)}`
++      const path = staff ? `/api/shipment-trips/${encodeURIComponent(tripId)}/execution` : `/api/driver/trips/${encodeURIComponent(tripId)}`
+       const response = await apiFetch(`${path}/deliver`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versions, executionVersion: execution.version, deliveryId }) })
+       const result = await response.json()
+       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить отметку.')
+@@ -42,7 +42,7 @@
+     finally { flight.current = false; setBusy(false) }
+   }
+   return <div className="execution-action">
+-    <button className="button primary" disabled={!ready || busy || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}Прибыл на место доставки</button>
++    <button className="button primary" disabled={!ready || busy || !!error} onClick={() => void save()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}{staff ? 'Завершить доставку' : 'Прибыл на место доставки'}</button>
+     {!ready && <small>{execution.stage === 'conflict' ? 'Состав рейса изменён. Обратитесь к логисту.' : 'Доступно после убытия с погрузки.'}</small>}
+     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={busy} onClick={() => { setError(''); onReload() }}>Обновить рейс</button></div>}
+   </div>
+--- a/web/src/TripProcessPanel.tsx
++++ b/web/src/TripProcessPanel.tsx
+@@ -5,7 +5,7 @@
+ import { compareTripsNewestFirst } from './trip-order'
+ import { formatDate, number } from './utils'
+ import { executionStageHint, executionStageLabel } from './trip-execution-model'
+-import { ExecutionEvent } from './TripExecutionAction'
++import TripExecutionAction, { ExecutionEvent } from './TripExecutionAction'
+ import ScrollableSegments from './ScrollableSegments'
+ import AnimatedDetails from './AnimatedDetails'
+ import './trip-execution.css'
+@@ -34,7 +34,7 @@
+       <div className="execution-search-row"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск машины или рейса" placeholder="Рейс, водитель, клиент или адрес" value={query} onChange={e => setQuery(e.target.value)}/></label><button className="button execution-refresh" aria-label="Обновить" title="Обновить" onClick={onReload} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button><select aria-label="Машина" value={vehicleId} onChange={e => setVehicleId(e.target.value)}><option value="">Все машины</option>{vehicles.filter(v => v.id).map(v => <option key={v.id} value={v.id}>{v.plate}</option>)}</select><select aria-label="Этап рейса" value={stage} onChange={e => setStage(e.target.value)}><option value="">Все этапы</option>{Object.entries(executionStageLabel).filter(([key]) => key !== 'delivered' && (filter !== 'active' || key !== 'completed') && (filter !== 'completed' || key === 'completed')).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></div>
+       <div className="execution-toolbar"><ScrollableSegments className="execution-filters" label="Статус рейсов" value={filter}>{([{ id: 'active', label: 'В работе', count: active.length }, { id: 'completed', label: 'Завершённые', count: trips.length-active.length }, { id: 'all', label: 'Все', count: trips.length }] as const).map(f => <button type="button" className="button" key={f.id} aria-pressed={filter === f.id} onClick={() => changeFilter(f.id)}>{f.label}<small>{f.count}</small></button>)}</ScrollableSegments></div>
+     </div>
+-    <div className="execution-context"><span>Показано рейсов: {visibleCount}{loading ? ' · Обновляем…' : ' · Автообновление 30 с'}</span><AnimatedDetails className="execution-help" summary="Как работают статусы?"><div className="execution-help-body"><p>Водитель нажимает «Прибыл на место доставки» у нужного клиента. Здесь отображаются время прибытия и время с этой отметки.</p><dl>{(['planned','loading','enroute','delivering','completed'] as const).map(s => <div key={s}><dt>{executionStageLabel[s]}</dt><dd>{executionStageHint[s]}</dd></div>)}</dl><p>Прибытие на последнюю точку автоматически завершает рейс. Документы СБИС и приёмка клиента в ЭТрН учитываются отдельно.</p><p>Если отметки нет, это не доказывает, что старый рейс фактически не выполнен.</p></div></AnimatedDetails></div>
++    <div className="execution-context"><span>Показано рейсов: {visibleCount}{loading ? ' · Обновляем…' : ' · Автообновление 30 с'}</span><AnimatedDetails className="execution-help" summary="Как работают статусы?"><div className="execution-help-body"><p>Водитель нажимает «Прибыл на место доставки» у нужного клиента. Сотрудник с доступом к рейсу может нажать «Завершить доставку». В истории сохраняются автор и время отметки.</p><dl>{(['planned','loading','enroute','delivering','completed'] as const).map(s => <div key={s}><dt>{executionStageLabel[s]}</dt><dd>{executionStageHint[s]}</dd></div>)}</dl><p>Последняя подтверждённая доставка автоматически завершает рейс. Документы СБИС и приёмка клиента в ЭТрН учитываются отдельно.</p><p>Если отметки нет, это не доказывает, что старый рейс фактически не выполнен.</p></div></AnimatedDetails></div>
+     {error && <p className="shipment-error" role="alert">{error}</p>}
+     {loading && !trips.length && <p role="status">Загружаем рейсы…</p>}
+     <div className="execution-fleet">{groups.map(group => <article className="execution-vehicle" key={group.id}>
+@@ -47,8 +47,8 @@
+           <div className="execution-trip-body">
+             <p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
+             <div className="execution-loading"><MapPin size={16}/><div><span>Погрузка</span><p>{trip.fields.loading_address || 'Адрес не указан'}</p></div></div>
+-            <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <span className="execution-awaiting">Ожидаем отметку водителя</span>}</li>)}</ol>
+-            {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после отметки прибытия на последнюю точку.</p>}
++            <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <>{execution && <TripExecutionAction key={`${c.id}-${execution.version}`} staff tripId={trip.id} versions={Object.fromEntries(trip.customers.map(row => [row.id, row.version]))} execution={execution} deliveryId={c.id} onSaved={onReload} onReload={onReload}/>}</>}</li>)}</ol>
++            {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после подтверждения последней доставки.</p>}
+             {trip.fields.trip_notes && <AnimatedDetails className="execution-notes" summary="Примечание к рейсу"><p>{trip.fields.trip_notes}</p></AnimatedDetails>}
+           </div>
+         </AnimatedDetails>
+--- a/web/src/trip-execution-model.ts
++++ b/web/src/trip-execution-model.ts
+@@ -15,7 +15,7 @@
+   planned: 'Водитель ещё не отметил прибытие на погрузку.',
+   loading: 'Водитель прибыл. Ждём массу груза и отметку об убытии.',
+   enroute: 'Водитель убыл с погрузки. Ни одна доставка пока не подтверждена.',
+-  delivering: 'Водитель подтвердил часть доставок. Ждём остальные точки маршрута.',
++  delivering: 'Часть доставок подтверждена. Ждём остальные точки маршрута.',
+   delivered: 'Все доставки отмечены. Обновите данные для проверки завершения.',
+   completed: 'Все доставки подтверждены. Рейс завершён и находится в архиве водителя.',
+   conflict: 'Состав рейса изменился после отметок. Логисту нужно сверить доставки.',
