@@ -238,7 +238,7 @@
 + for(const width of [320,390,768,1440]){
 +  await page.setViewportSize({width,height:1000});await expect(table).toBeVisible();
 +  const refresh=page.getByRole('button',{name:'Обновить сверки',exact:true}), month=page.getByLabel('Месяц сверки');
-+  const rb=await refresh.boundingBox(),mb=await month.boundingBox();assert.ok(rb.x+rb.width<=mb.x);assert.ok(Math.abs(rb.y+rb.height/2-mb.y-mb.height/2)<2);assert.equal(await refresh.textContent(),'');await expect(page.locator('.operator-reconciliation h2')).toHaveCount(0);await expect(page.getByText('Как считаются итоги',{exact:true})).toHaveCount(0);
++  const rb=await refresh.boundingBox(),mb=await month.boundingBox();assert.ok(rb.x+rb.width<=mb.x);assert.ok(Math.abs(rb.y+rb.height/2-mb.y-mb.height/2)<2);if(width<=768)await expect(refresh.locator('.reconciliation-refresh-label')).toBeHidden();else {await expect(refresh.locator('.reconciliation-refresh-label')).toBeVisible();const hb=await page.locator('.operator-reconciliation-heading').boundingBox();assert.ok(Math.abs(mb.x+mb.width-hb.x-hb.width)<2);}await expect(page.locator('.operator-reconciliation h2')).toHaveCount(0);await expect(page.getByText('Как считаются итоги',{exact:true})).toHaveCount(0);
 +  if(width<=768){await expect(day.locator('.reconciliation-mobile-columns')).toBeVisible();for(const pair of [[1,2],[3,4],[5,6]]){const a=await day.locator('td').nth(pair[0]-1).boundingBox(),b=await day.locator('td').nth(pair[1]-1).boundingBox();assert.ok(Math.abs(a.y-b.y)<1);assert.ok(a.x+a.width<=b.x+1)}assert.equal(await day.locator('[data-source="CRM"]').evaluate(el=>getComputedStyle(el,'::before').content), '"CRM"');}
 +  assert.equal(await day.evaluate(el=>getComputedStyle(el).display),width<=768?'grid':'table-row');
 +  assert.ok(await table.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'table/cards have no horizontal overflow');
@@ -852,7 +852,7 @@
 +  const rows = dailyRows.map(day => ({date: day.date, row: day.rows.find(row => row.id === activeService)})).filter((item): item is {date: string; row: ReconciliationRow} => !!item.row)
 +  const selected = rows.find(item => item.date === selectedDate)
 +  return <section className="operator-reconciliation" aria-label="Сверки">
-+    <div className="operator-reconciliation-heading"><button type="button" className="button reconciliation-refresh" aria-label="Обновить сверки" title="Обновить сверки" disabled={busy} onClick={onRefresh}><RefreshCw size={20} aria-hidden="true"/></button><input type="month" aria-label="Месяц сверки" disabled={!!editingDate} required value={month} onChange={event => {if(event.target.value) {setMonth(event.target.value);setNotice('')}}}/></div>
++    <div className="operator-reconciliation-heading"><button type="button" className="button reconciliation-refresh" aria-label="Обновить сверки" title="Обновить сверки" disabled={busy} onClick={onRefresh}><RefreshCw size={20} aria-hidden="true"/><span className="reconciliation-refresh-label">Обновить</span></button><input type="month" aria-label="Месяц сверки" disabled={!!editingDate} required value={month} onChange={event => {if(event.target.value) {setMonth(event.target.value);setNotice('')}}}/></div>
 +    <ScrollableSegments className="operator-reconciliation-services" label="Сервисы сверки" value={activeService}>
 +      {services.map(service => {
 +        const color = workspace.services.find(item => item.id === service.id)?.backgroundColor ?? operatorServiceBackground(service.name, service.id)
@@ -1164,11 +1164,11 @@
    plans: OperatorPlanSummary[];
 --- /dev/null
 +++ b/web/src/operator-reconciliation.css
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,120 @@
 +.operator-reconciliation {display:grid;gap:16px;min-width:0}
-+.operator-reconciliation-heading {display:flex;align-items:center;gap:10px;flex-wrap:nowrap}
++.operator-reconciliation-heading {display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:nowrap}
 +.operator-reconciliation-heading input {flex:1;max-width:260px!important;width:0!important;min-height:44px}
-+.operator-reconciliation-heading .reconciliation-refresh {display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px;padding:0}
++.operator-reconciliation-heading .reconciliation-refresh {display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;gap:8px;height:44px;padding:0 16px}
 +.operator-reconciliation-summary:empty {display:none}
 +.reconciliation-mobile-columns {display:none}
 +.reconciliation-history {display:inline-flex;vertical-align:middle;align-items:center;justify-content:center;width:28px;min-height:28px;margin-right:6px;border:0;background:none;color:#58645d;cursor:pointer;border-radius:6px}
@@ -1254,6 +1254,9 @@
 +.operator-reconciliation-card:not(.is-matched):not(.is-different) .operator-reconciliation-delta {background:transparent}
 +/* One editor and one set of values, reflowed as a small table per day. */
 +@container reconciliation (max-width:760px) {
++  .operator-reconciliation-heading {justify-content:flex-start}
++  .operator-reconciliation-heading .reconciliation-refresh {flex:0 0 44px;width:44px;padding:0}
++  .reconciliation-refresh-label {display:none}
 +  .operator-reconciliation-scroll {border:0;background:transparent;border-radius:0;overflow:visible}
 +  .operator-reconciliation-table {display:block;width:100%;min-width:0}
 +  .operator-reconciliation-table thead {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
