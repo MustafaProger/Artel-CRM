@@ -1,0 +1,515 @@
+--- a/web/src/TripProcessPanel.tsx
++++ b/web/src/TripProcessPanel.tsx
+@@ -8,6 +8,7 @@
+ import TripExecutionAction, { ExecutionEvent } from './TripExecutionAction'
+ import ScrollableSegments from './ScrollableSegments'
+ import AnimatedDetails from './AnimatedDetails'
++import TripCopyButton from './TripCopyButton'
+ import './trip-execution.css'
+
+ export default function TripProcessPanel({ trips, data, loading, error, onReload }: {
+@@ -43,7 +44,7 @@
+         const execution = trip.execution
+         const done = trip.customers.filter(c => execution?.deliveries[c.id]).length, total = trip.customers.length
+         const labels = [...new Set(trip.customers.map(c => name(c.fields.customer_id)))].join(' · ')
+-        return <AnimatedDetails key={trip.id} className="execution-trip" testId="execution-trip" summary={<><div className="execution-trip-identity"><strong>{tripLabel(trip)}</strong><span>{formatDate(trip.fields.date)} · {driver(trip.fields.driver_id)}</span></div><div className="execution-trip-route"><span>{labels}</span><small>{number(trip.customers.reduce((n,c) => n + Number(c.fields.quantity_litres || 0), 0))} л</small></div><div className="execution-trip-status"><span className={`execution-stage stage-${execution?.stage || 'unknown'}`}>{execution ? executionStageLabel[execution.stage] : 'Статус уточняется'}</span><span className="execution-progress-label">Доставлено {done} из {total}</span><progress max={Math.max(total,1)} value={done} aria-label={`Доставлено ${done} из ${total}`}/></div><ChevronDown className="execution-chevron" size={18}/></>}>
++        return <div key={trip.id} className="execution-trip-entry"><AnimatedDetails className="execution-trip" testId="execution-trip" summary={<><div className="execution-trip-identity"><strong>{tripLabel(trip)}</strong><span>{formatDate(trip.fields.date)} · {driver(trip.fields.driver_id)}</span></div><div className="execution-trip-route"><span>{labels}</span><small>{number(trip.customers.reduce((n,c) => n + Number(c.fields.quantity_litres || 0), 0))} л</small></div><div className="execution-trip-status"><span className={`execution-stage stage-${execution?.stage || 'unknown'}`}>{execution ? executionStageLabel[execution.stage] : 'Статус уточняется'}</span><span className="execution-progress-label">Доставлено {done} из {total}</span><progress max={Math.max(total,1)} value={done} aria-label={`Доставлено ${done} из ${total}`}/></div><ChevronDown className="execution-chevron" size={18}/></>}>
+           <div className="execution-trip-body">
+             <p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
+             <div className="execution-loading"><MapPin size={16}/><div><span>Погрузка</span><p>{trip.fields.loading_address || 'Адрес не указан'}</p></div></div>
+@@ -51,7 +52,7 @@
+             {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после подтверждения последней доставки.</p>}
+             {trip.fields.trip_notes && <AnimatedDetails className="execution-notes" summary="Примечание к рейсу"><p>{trip.fields.trip_notes}</p></AnimatedDetails>}
+           </div>
+-        </AnimatedDetails>
++        </AnimatedDetails><TripCopyButton trip={trip} data={data} kind="summary"/><TripCopyButton trip={trip} data={data} kind="driver"/></div>
+       })}</div>
+     </article>)}</div>
+     {!loading && !error && !groups.length && <div className="panel trips-empty"><Truck size={30}/><h2>Рейсы не найдены</h2><p>Измените поиск или фильтры.</p><button className="button" onClick={() => { setQuery(''); setVehicleId(''); changeFilter('all') }}>Сбросить фильтры</button></div>}
+--- a/web/src/trip-execution.css
++++ b/web/src/trip-execution.css
+@@ -9,7 +9,7 @@
+ .execution-context { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); align-items:start }
+ .execution-help { max-width:640px }.execution-help>summary { cursor:pointer; color:var(--accent); font-size:13px; padding:4px 0 }.execution-help-body { padding:16px 20px; margin-top:10px; background:#fff; border:1px solid var(--border,#e3e5e8); border-radius:12px; line-height:1.6 }.execution-help p { margin:0 0 10px }.execution-help p:last-child { margin:10px 0 0 }.execution-help dl { display:grid; gap:8px; margin:12px 0 }.execution-help dl>div { display:grid; grid-template-columns:150px 1fr; gap:12px }.execution-help dt { color:var(--ink,#1d1d1f); font-weight:600 }.execution-help dd { margin:0 }
+ .execution-fleet { display:grid; gap:22px; min-width:0 }.execution-vehicle { min-width:0; overflow-wrap:anywhere }.execution-vehicle>header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:0 3px 10px }.execution-vehicle>header>div { display:flex; align-items:center; gap:8px }.execution-vehicle h3 { font-size:15px; margin:0; letter-spacing:.3px }.execution-vehicle>header>span { font-size:12px; color:var(--muted) }.execution-vehicle>header svg { color:var(--muted) }
+-.execution-trip-list { border:1px solid var(--border,#e3e5e8); border-radius:var(--ui-card-radius); box-shadow:var(--ui-card-shadow); background:var(--surface,#fff); overflow:hidden }.execution-trip { min-width:0 }.execution-trip+.execution-trip { border-top:1px solid var(--border,#e3e5e8) }.execution-trip>summary { display:grid; grid-template-columns:minmax(150px,1fr) minmax(160px,1.4fr) minmax(145px,180px) 18px; gap:22px; align-items:center; padding:18px 20px; transition:background-color var(--motion-feedback) ease; cursor:pointer; list-style:none }.execution-trip>summary::-webkit-details-marker { display:none }.execution-trip>summary:hover { background:var(--surface-soft,#f5f5f7) }.execution-trip>summary:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; border-radius:10px }.execution-trip[data-expanded=true]>summary { background:var(--surface-soft,#f5f5f7); border-bottom:1px solid var(--border,#e3e5e8) }.execution-chevron { color:var(--muted); transition:transform 280ms var(--motion-ease) }.execution-trip[data-expanded=true]>summary>.execution-chevron { transform:rotate(180deg) }
++.execution-trip-list { border:1px solid var(--border,#e3e5e8); border-radius:var(--ui-card-radius); box-shadow:var(--ui-card-shadow); background:var(--surface,#fff); overflow:hidden }.execution-trip { min-width:0 }.execution-trip-entry+.execution-trip-entry { border-top:1px solid var(--border,#e3e5e8) }.execution-trip>summary { display:grid; grid-template-columns:minmax(150px,1fr) minmax(160px,1.4fr) minmax(145px,180px) 18px; gap:22px; align-items:center; padding:18px 20px; transition:background-color var(--motion-feedback) ease; cursor:pointer; list-style:none }.execution-trip>summary::-webkit-details-marker { display:none }.execution-trip>summary:hover { background:var(--surface-soft,#f5f5f7) }.execution-trip>summary:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; border-radius:10px }.execution-trip[data-expanded=true]>summary { background:var(--surface-soft,#f5f5f7); border-bottom:1px solid var(--border,#e3e5e8) }.execution-chevron { color:var(--muted); transition:transform 280ms var(--motion-ease) }.execution-trip[data-expanded=true]>summary>.execution-chevron { transform:rotate(180deg) }
+ .execution-trip-identity,.execution-trip-route,.execution-trip-status { display:grid; gap:6px; min-width:0 }.execution-trip-identity strong { font-size:15px }.execution-trip-identity>span { font-size:12px; color:var(--muted) }.execution-trip-route>span { font-size:13px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden }.execution-trip-route small { font-size:12px; color:var(--muted) }.execution-trip-status { justify-items:start; gap:5px }.execution-stage { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; background:#f0f2f4; color:#515b64; border-radius:6px; font-size:12px; line-height:1.4; font-weight:500 }.execution-stage::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0 }.stage-loading { background:#fff3dc; color:#795013 }.stage-enroute,.stage-delivering { background:#edf3fb; color:#315c88 }.stage-completed { background:var(--accent-soft,#e6f3ec); color:var(--accent) }.stage-conflict { background:#fff0ed; color:#a03625 }.execution-progress-label { font-size:11px; color:var(--muted) }.execution-trip-status progress { appearance:none; height:3px; width:120px; max-width:100%; border:0; border-radius:3px; overflow:hidden; background:#e9edeb; color:#44866a }.execution-trip-status progress::-webkit-progress-bar { background:#e9edeb }.execution-trip-status progress::-webkit-progress-value { background:#44866a }.execution-trip-status progress::-moz-progress-bar { background:#44866a }
+ .execution-trip-body { padding:18px 20px; min-width:0 }.execution-next { margin:0 0 18px; color:var(--muted); font-size:13px; line-height:1.5 }.execution-loading { display:flex; align-items:flex-start; gap:9px; color:var(--muted); font-size:12px; margin-bottom:14px }.execution-loading svg { flex-shrink:0; margin-top:2px }.execution-loading p { margin:3px 0 0; color:var(--ink,#1d1d1f); line-height:1.5 }
+ .execution-deliveries { margin:0; padding:0; list-style:none; display:grid }.execution-deliveries>li { border-top:1px solid var(--border,#e3e5e8); padding:16px 0; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:start; gap:12px; min-width:0 }.execution-stop-number { display:grid; place-items:center; width:26px; height:26px; border-radius:50%; background:#f0f2f4; color:var(--muted); font-size:12px }.is-delivered .execution-stop-number { background:var(--accent-soft,#e6f3ec); color:var(--accent) }.execution-customer strong { font-size:14px; font-weight:600 }.execution-customer p { margin:5px 0 7px; font-size:13px; color:var(--muted); line-height:1.5 }.execution-customer>span { font-size:12px; font-weight:500 }.execution-customer small { font-size:12px; color:var(--muted); margin-left:12px }
+@@ -39,3 +39,23 @@
+   .execution-search-row select { grid-column:2 }
+   .execution-search-row select:last-child { grid-column:3 }
+ }
++
++.execution-trip-entry { position:relative; min-width:0 }
++.execution-trip-entry>.execution-trip>summary { padding-right:130px }
++.execution-copy { position:absolute; top:18px; right:18px; width:44px; height:44px; min-width:44px; padding:0; display:grid; place-items:center }
++.execution-copy-summary { right:70px }
++.execution-copy-notice { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap }
++.execution-copy-fallback { padding:0 20px 18px; display:grid; gap:10px }
++.execution-copy-fallback p { margin:0; font-size:13px; color:var(--muted) }
++.execution-copy-fallback textarea { width:100%; min-width:0; resize:vertical; font:inherit; font-size:14px; padding:12px; border:1px solid var(--border); border-radius:var(--ui-field-radius); background:var(--surface); color:var(--ink) }
++.execution-copy-fallback .button { justify-self:start }
++@media(max-width:700px) {
++  .execution-trip-entry>.execution-trip>summary { grid-template-columns:minmax(0,1fr) 18px; padding:14px }
++  .execution-trip-entry .execution-trip-identity { grid-column:1; grid-row:1; padding-right:94px; min-height:44px }
++  .execution-trip-entry .execution-trip-route { grid-column:1; grid-row:2 }
++  .execution-trip-entry .execution-trip-status { grid-column:1; grid-row:3 }
++  .execution-trip-entry .execution-chevron { grid-column:2; grid-row:3 }
++  .execution-copy { top:14px; right:14px }
++  .execution-copy-summary { right:66px }
++  .execution-copy-fallback { padding:0 14px 14px }
++}
+--- /dev/null
++++ b/web/src/trip-copy-text.ts
+@@ -0,0 +1,54 @@
++import Decimal from 'decimal.js'
++import type { DirectoryData, ShipmentTrip } from './model'
++import { mapLink } from './map-link'
++
++const line = (value: string | null | undefined, fallback: string) => value?.replace(/\s+/gu, ' ').trim() || fallback
++
++function amount(value: string | null | undefined, fixed = false): string {
++  if (!value?.trim()) return '—'
++  try {
++    const parsed = new Decimal(value.replace(/\s/gu, '').replace(',', '.'))
++    if (!parsed.isFinite()) return '—'
++    return (fixed ? parsed.toFixed(2) : parsed.toFixed()).replace('.', ',')
++  } catch { return '—' }
++}
++
++/** Copy the saved trip values, preserving delivery order and explicit zeroes. */
++export function tripCopyText(trip: ShipmentTrip, data: DirectoryData): string {
++  const fields = trip.fields
++  const date = fields.date?.match(/^\d{4}-(\d{2})-(\d{2})(?:$|T)/)
++  const company = (id: string | null | undefined, fallback: string) => line(data.companies.find(row => row.id === id)?.name, fallback)
++  return [
++    date ? `${date[2]}.${date[1]}` : 'Дата не указана',
++    `${company(fields.supplier_id, 'Поставщик не указан')} ${amount(fields.purchase_price_unspecified_unit)}`,
++    line(data.directories?.products.find(row => row.id === fields.product_id)?.name, 'Товар не указан'),
++    ...trip.customers.map(({ fields: delivery }) => `${amount(delivery.quantity_litres)} л ${company(delivery.customer_id, 'Контрагент не указан')} ${amount(delivery.sale_price_per_litre, true)}`),
++    `${line(data.directories?.drivers.find(row => row.id === fields.driver_id)?.name, 'Водитель не указан')} ${trip.customers.map(row => amount(row.fields.transport_amount)).join('+') || '—'}`,
++  ].join('\n')
++}
++
++/** Driver handoff deliberately contains no prices or delivery fees. */
++export function tripDriverCopyText(trip: ShipmentTrip, data: DirectoryData): string {
++  const depot = data.directories?.oilDepots?.find(row => row.id === trip.fields.oil_depot_id)
++  const supplier = data.companies.find(row => row.id === trip.fields.supplier_id)
++  const deliveries = trip.customers.map(({ fields }) => {
++    const customer = data.companies.find(row => row.id === fields.customer_id)
++    const place = data.directories?.addresses.find(row => row.id === fields.unloading_address_id && row.companyId === fields.customer_id && row.kind === 'delivery')
++    // Saved destination wins over subsequent edits to the address directory.
++    const hasSavedAddress = !!fields.unloading_address?.trim()
++    const address = hasSavedAddress ? fields.unloading_address : place?.address
++    const link = mapLink({
++      mapUrl: fields.unloading_map_url || (!hasSavedAddress ? place?.mapUrl : null),
++      latitude: fields.unloading_latitude || (!hasSavedAddress ? place?.latitude : null),
++      longitude: fields.unloading_longitude || (!hasSavedAddress ? place?.longitude : null),
++      address,
++    })
++    return [
++      `${line(customer?.name, 'Контрагент не указан')} ${amount(fields.quantity_litres)} л`,
++      line(address, 'Адрес не указан'),
++      link ? `${link.label === 'Найти адрес в Яндекс.Картах' ? 'Яндекс (поиск адреса): ' : ''}${link.href}` : 'Ссылка Яндекса не указана',
++      `${line(place?.receiverName, 'Приёмщик')} ${line(place?.receiverPhone, 'телефон не указан')}`,
++    ].join('\n')
++  })
++  return [`Погрузка на ${line(depot?.name, 'нефтебаза не указана')} от ${line(supplier?.name, 'поставщик не указан')}`, ...deliveries].join('\n\n')
++}
+--- /dev/null
++++ b/web/src/TripCopyButton.tsx
+@@ -0,0 +1,40 @@
++import { useEffect, useState } from 'react'
++import { Check, ClipboardList, Truck } from 'lucide-react'
++import type { DirectoryData, ShipmentTrip } from './model'
++import { tripLabel } from './trip-identity'
++import { tripCopyText, tripDriverCopyText } from './trip-copy-text'
++
++export default function TripCopyButton({ trip, data, kind }: { trip: ShipmentTrip; data: DirectoryData; kind: 'summary' | 'driver' }) {
++  const [status, setStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
++  const [fallbackText, setFallbackText] = useState('')
++  useEffect(() => {
++    if (status !== 'copied') return
++    const timer = window.setTimeout(() => setStatus('idle'), 2500)
++    return () => window.clearTimeout(timer)
++  }, [status])
++  const copy = async () => {
++    const text = kind === 'driver' ? tripDriverCopyText(trip, data) : tripCopyText(trip, data)
++    setStatus('copying')
++    try {
++      await navigator.clipboard.writeText(text)
++      setStatus('copied')
++      setFallbackText('')
++    } catch {
++      setFallbackText(text)
++      setStatus('error')
++    }
++  }
++  const description = kind === 'driver' ? 'Задание водителю' : 'Сводка с ценами'
++  const label = status === 'copied' ? `${description}: ${tripLabel(trip)} — скопировано` : `Скопировать: ${description.toLocaleLowerCase('ru')}, ${tripLabel(trip).toLocaleLowerCase('ru')}`
++  return <>
++    <button type="button" className={`button execution-copy execution-copy-${kind}`} title={label} aria-label={label} onClick={() => void copy()} disabled={status === 'copying'}>
++      {status === 'copied' ? <Check size={18} aria-hidden="true"/> : kind === 'driver' ? <Truck size={18} aria-hidden="true"/> : <ClipboardList size={18} aria-hidden="true"/>}
++    </button>
++    <span className="execution-copy-notice" role="status">{status === 'copied' ? label : ''}</span>
++    {status === 'error' && <div className={`execution-copy-fallback execution-copy-fallback-${kind}`}>
++      <p role="alert">Не удалось скопировать. Выделите текст ниже и скопируйте вручную.</p>
++      <textarea aria-label={`${description}: ${tripLabel(trip)}`} readOnly value={fallbackText} rows={Math.min(fallbackText.split('\n').length, 12)} onFocus={event => event.currentTarget.select()}/>
++      <button type="button" className="button" onClick={() => { setStatus('idle'); setFallbackText('') }}>Закрыть</button>
++    </div>}
++  </>
++}
+--- /dev/null
++++ b/tests/trip-copy-text.test.ts
+@@ -0,0 +1,98 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { emptyDirectories } from '../server/directory-operations'
++import type { DirectoryData, ShipmentTrip } from '../web/src/model'
++import { tripCopyText, tripDriverCopyText } from '../web/src/trip-copy-text'
++
++const data: DirectoryData = {
++  companies: ['Комплекс Ойл', 'Ип Киртока', 'ооо спс', 'ао АиФ'].map((name, index) => ({ id: String(index), name, roles: [], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] })),
++  directories: { ...emptyDirectories(), products: [{ id: 'product', name: 'ДТ' }], drivers: [{ id: 'driver', name: 'Пётр' }] },
++}
++const trip: ShipmentTrip = {
++  id: 'trip', fields: { date: '2026-10-23', supplier_id: '0', purchase_price_unspecified_unit: '77000', product_id: 'product', driver_id: 'driver' },
++  customers: ['4000', '5500', '8000'].map((quantity, i) => ({ id: `delivery-${i}`, version: 1, paidAmount: '0', fields: { customer_id: String(i + 1), quantity_litres: quantity, sale_price_per_litre: ['70', '73', '72'][i], transport_amount: ['8000', '7000', '8000'][i] } })),
++}
++
++test('copies the requested multiline format with product and unabridged per-delivery amounts', () => {
++  const before = JSON.stringify({ trip, data })
++  assert.equal(tripCopyText(trip, data), '23.10\nКомплекс Ойл 77000\nДТ\n4000 л Ип Киртока 70,00\n5500 л ооо спс 73,00\n8000 л ао АиФ 72,00\nПётр 8000+7000+8000')
++  assert.equal(JSON.stringify({ trip, data }), before)
++})
++
++test('single delivery, decimal precision, zeroes and comma inputs', () => {
++  const value = structuredClone(trip)
++  value.customers = [value.customers[0]]
++  Object.assign(value.customers[0].fields, { quantity_litres: '15048.125', sale_price_per_litre: '69,40', transport_amount: '0' })
++  value.fields.purchase_price_unspecified_unit = '78 400,50'
++  assert.equal(tripCopyText(value, data), '23.10\nКомплекс Ойл 78400,5\nДТ\n15048,125 л Ип Киртока 69,40\nПётр 0')
++})
++
++test('unknown values stay explicit instead of becoming zero or disappearing from the sum', () => {
++  const value = structuredClone(trip)
++  value.fields = {}
++  value.customers[0].fields = { transport_amount: null }
++  value.customers[1].fields.transport_amount = 'NaN'
++  value.customers[2].fields.transport_amount = '0'
++  assert.equal(tripCopyText(value, { companies: [] }), 'Дата не указана\nПоставщик не указан —\nТовар не указан\n— л Контрагент не указан —\n5500 л Контрагент не указан 73,00\n8000 л Контрагент не указан 72,00\nВодитель не указан —+—+0')
++})
++
++test('directory line breaks cannot split the message and date does not depend on timezone', () => {
++  const value = structuredClone(data)
++  value.companies[0].name = ' Комплекс\nОйл\t '
++  assert.ok(tripCopyText({ ...trip, fields: { ...trip.fields, date: '2026-10-23T00:00:00+03:00' } }, value).startsWith('23.10\nКомплекс Ойл 77000\nДТ\n'))
++})
++
++function driverFixture() {
++  const value = structuredClone(trip), directory = structuredClone(data)
++  value.fields.oil_depot_id = 'depot'
++  directory.directories!.oilDepots = [{ id: 'depot', name: 'ВЛПДС' }]
++  directory.companies[0].name = 'ВСК-Трейд'
++  directory.companies[1].name = 'Бетон-Крафт'
++  directory.companies[2].name = 'джи аш трейд'
++  value.customers = value.customers.slice(0, 2)
++  directory.directories!.addresses = value.customers.map((row, i) => {
++    Object.assign(row.fields, { unloading_address_id: `address-${i}`, unloading_address: `Адрес ${i + 1}`, unloading_map_url: `https://yandex.ru/maps/-/${i ? 'CXbEvClB' : 'CXbEvMOg'}`, quantity_litres: i ? '12000' : '5500' })
++    return { id: `address-${i}`, name: `Площадка ${i}`, kind: 'delivery' as const, companyId: String(i + 1), address: 'Позднее изменённый адрес', mapUrl: 'https://yandex.ru/maps/-/different', receiverName: i ? 'Владимир' : '', receiverPhone: i ? '+7 968 757-09-09' : '79919688774' }
++  })
++  return { value, directory }
++}
++
++test('driver message matches destinations, saved links and each site contact, without financial fields', () => {
++  const { value, directory } = driverFixture()
++  const before = JSON.stringify({ value, directory })
++  assert.equal(tripDriverCopyText(value, directory), 'Погрузка на ВЛПДС от ВСК-Трейд\n\nБетон-Крафт 5500 л\nАдрес 1\nhttps://yandex.ru/maps/-/CXbEvMOg\nПриёмщик 79919688774\n\nджи аш трейд 12000 л\nАдрес 2\nhttps://yandex.ru/maps/-/CXbEvClB\nВладимир +7 968 757-09-09')
++  assert.equal(JSON.stringify({ value, directory }), before)
++})
++
++test('missing driver details are explicit and a mismatched company cannot provide contacts', () => {
++  const { value, directory } = driverFixture()
++  value.customers = [value.customers[0]]
++  directory.directories!.addresses[0].companyId = 'other-customer'
++  value.customers[0].fields.unloading_address = null
++  value.customers[0].fields.unloading_map_url = null
++  const text = tripDriverCopyText(value, directory)
++  assert.ok(text.endsWith('Адрес не указан\nСсылка Яндекса не указана\nПриёмщик телефон не указан'))
++  assert.ok(!text.includes('79919688774'))
++})
++
++test('missing saved links use saved coordinates or an explicitly labelled address search, never a changed directory destination', () => {
++  const { value, directory } = driverFixture()
++  value.customers = [value.customers[0]]
++  const fields = value.customers[0].fields
++  fields.unloading_map_url = 'javascript:alert(1)'
++  fields.unloading_latitude = '55.75'
++  fields.unloading_longitude = '37.61'
++  assert.ok(tripDriverCopyText(value, directory).includes('https://yandex.ru/maps/?pt=37.61%2C55.75&z=16'))
++  fields.unloading_latitude = fields.unloading_longitude = null
++  const text = tripDriverCopyText(value, directory)
++  assert.ok(text.includes('Яндекс (поиск адреса): https://yandex.ru/maps/?text='))
++  assert.ok(!text.includes('different'))
++})
++
++test('legacy destination without saved address uses the matching address directory', () => {
++  const { value, directory } = driverFixture()
++  value.customers = [value.customers[0]]
++  value.customers[0].fields.unloading_address = value.customers[0].fields.unloading_map_url = null
++  const text = tripDriverCopyText(value, directory)
++  assert.ok(text.includes('Позднее изменённый адрес\nhttps://yandex.ru/maps/-/different\nПриёмщик 79919688774'))
++})
+--- /dev/null
++++ b/scripts/verify_trip_copy_ui.mjs
+@@ -0,0 +1,189 @@
++import assert from 'node:assert/strict';
++import { randomUUID } from 'node:crypto';
++import { mkdir, readFile, writeFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { chromium, webkit, expect } from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import { integrationRuntime, integrationConfig } from '../tests/helpers/trip-saby-integration.ts';
++import { SabyClient } from '../server/saby-client.ts';
++import { startTripsQaServer } from './qa-trips-runtime.mjs';
++import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
++const root = resolve(import.meta.dirname, '..'), built = process.argv.includes('--built');
++const output = resolve(root, '.local/trip-copy-ui-revision3', built ? 'built' : 'source'); await mkdir(output, { recursive: true });
++const rt = await integrationRuntime();
++const report = { syntheticOnly: true, workingStoreAccessed: false, providerCalls: 0, checks: [], screenshots: [], browserErrors: [], axe: [] };
++let runtime, browser;
++const check = text => { report.checks.push(text); console.log('PASS', text); };
++try {
++  const client = new SabyClient(integrationConfig(), async () => { report.providerCalls++; throw new Error('Provider forbidden'); });
++  runtime = await startTripsQaServer({ root, snapshotDirectory: rt.snapshotDirectory, operationsDirectory: resolve(rt.directory, 'store'), sabyClient: client });
++  if (built) runtime.server.middlewares.stack.unshift({ route: '', handle(req, res, next) {
++    const path = new URL(req.url, runtime.base).pathname; if (path.startsWith('/api/')) return next();
++    const relative = path === '/' ? 'index.html' : path.slice(1); if (relative.includes('..')) return next();
++    readFile(resolve(root, 'app-dist', relative)).then(body => { res.setHeader('Content-Type', relative.endsWith('.js') ? 'text/javascript' : relative.endsWith('.css') ? 'text/css' : 'text/html'); res.end(body); }).catch(() => next());
++  } });
++  const { cookie } = await bootstrapQaAuth(runtime.base);
++  const call = async (path, method='GET', body) => {
++    const response = await fetch(runtime.base + path, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
++    const result = await response.json(); assert.ok(response.ok, `${path} ${response.status}: ${result.error}`); return result;
++  };
++  const credentials = await call('/api/drivers/driver/access', 'POST', { action: 'issue', version: 0 });
++  await rt.store.mutate(rt.source, data => { data.directories.vehicles.push({ id: 'idle-vehicle', plate: 'СВОБОДНАЯ777' }); return { result: null, changed: true }; });
++  for (const [engine, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
++    const fields = Object.fromEntries(['organization_id','supplier_id','carrier_id','oil_depot_id','product_id','purchase_price_unspecified_unit','driver_id','vehicle_id','additional_costs'].map(k => [k,rt.trip.fields[k]]));
++    Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2026-10-27T12:30', trip_notes: `Синтетическая проверка процесса ${engine}` });
++    const customers = rt.trip.customers.map(row => ({ fields: { ...Object.fromEntries(['customer_id','manager_id','payment_form_id','quantity_litres','sale_price_per_litre','transport_amount','unloading_address_id'].map(k => [k,row.fields[k]])), etrn_not_required: 'true', invoice_not_required: 'true' } }));
++    const created = await call('/api/shipment-trips', 'POST', { fields, customers, idempotencyKey: randomUUID() });
++    const id = created.trip.id;
++    browser = await launcher.launch({ headless: true });
++    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'America/Los_Angeles' }); await authenticateContext(context, runtime.base, cookie);
++    const page = await context.newPage(); page.on('pageerror', e => report.browserErrors.push(e.message));
++    await page.goto(runtime.base + '/#trips'); await page.getByRole('button', { name: 'В процессе', exact: true }).click();
++    const panel = page.getByRole('region', { name: 'Процесс рейсов' });
++    const card = panel.getByTestId('execution-trip').filter({ hasText: `Рейс №${created.trip.number}` });
++    await expect(card).toContainText('Ждёт погрузки'); await expect(panel).not.toContainText('СВОБОДНАЯ777');
++    const entry = card.locator('..'), copy = entry.locator('.execution-copy-summary');
++    const expectedText = '27.10\nСинтетический поставщик 50000\nДТ\n8000 л ИП ПолучательТестовый Тест 60,00\n6000 л ИП ПолучательТестовый Тест 60,00\nТест 1000+1000';
++    const beforeCopy = await rt.store.read(rt.source);
++    if (engine === 'chromium') await context.grantPermissions(['clipboard-read', 'clipboard-write']);
++    else await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{ writeText:async text => { window.copiedTripText=text; } } }));
++    for (const width of [320,390,768,1440]) {
++      await page.setViewportSize({width,height:1000});
++      await copy.click();
++      await expect(copy).toHaveAttribute('aria-label', /скопировано$/);
++      await expect(card).not.toHaveAttribute('open');
++      const text = await page.evaluate(engine => engine === 'chromium' ? navigator.clipboard.readText() : window.copiedTripText, engine);
++      assert.equal(text, expectedText);
++      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1));
++      const copyBox=await copy.boundingBox(); assert.ok(copyBox.width>=44 && copyBox.height>=44);
++    }
++    await copy.focus(); await page.keyboard.press('Enter'); await expect(copy).toHaveAttribute('aria-label', /скопировано$/);
++    await page.keyboard.press('Space'); await expect(card).not.toHaveAttribute('open');
++    assert.deepEqual(await rt.store.read(rt.source), beforeCopy, 'copy does not change any store data');
++    check(`${engine}: exact text, native Chromium clipboard, four widths, Enter/Space, closed card and unchanged store`);
++    await page.evaluate(() => { window.savedClipboard=navigator.clipboard; Object.defineProperty(navigator,'clipboard',{ configurable:true,value:{writeText:async()=>{throw new Error('denied');}} }); });
++    await copy.click(); await expect(entry.getByRole('alert')).toContainText('Не удалось скопировать');
++    const fallback=entry.getByRole('textbox'); await expect(fallback).toHaveValue(expectedText); await fallback.focus();
++    assert.equal(await fallback.evaluate(el=>el.selectionEnd-el.selectionStart),expectedText.length);
++    await expect(card).not.toHaveAttribute('open');
++    const failureAxe=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
++    assert.deepEqual(failureAxe.violations,[]); report.axe.push({engine,label:'copy failure',violations:failureAxe.violations});
++    await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:window.savedClipboard}));
++    await copy.click(); await expect(entry.getByRole('alert')).toHaveCount(0); await expect(copy).toHaveAttribute('aria-label', /скопировано$/);
++    check(`${engine}: clipboard rejection, selectable fallback, recovery and axe`);
++    const driverCopy = entry.locator('.execution-copy-driver');
++    await expect(copy).toHaveText(''); await expect(driverCopy).toHaveText('');
++    const expectedDriverText = 'Погрузка на Синтетическая нефтебаза от Синтетический поставщик\n\nИП ПолучательТестовый Тест 8000 л\nСинтетическая доставка\nЯндекс (поиск адреса): https://yandex.ru/maps/?text=%D0%A1%D0%B8%D0%BD%D1%82%D0%B5%D1%82%D0%B8%D1%87%D0%B5%D1%81%D0%BA%D0%B0%D1%8F+%D0%B4%D0%BE%D1%81%D1%82%D0%B0%D0%B2%D0%BA%D0%B0\nПриёмщикТестовый Тест +70000000009\n\nИП ПолучательТестовый Тест 6000 л\nСинтетическая доставка\nЯндекс (поиск адреса): https://yandex.ru/maps/?text=%D0%A1%D0%B8%D0%BD%D1%82%D0%B5%D1%82%D0%B8%D1%87%D0%B5%D1%81%D0%BA%D0%B0%D1%8F+%D0%B4%D0%BE%D1%81%D1%82%D0%B0%D0%B2%D0%BA%D0%B0\nПриёмщикТестовый Тест +70000000009';
++    for (const width of [320,390,768,1440]) {
++      await page.setViewportSize({width,height:1000});
++      await driverCopy.click(); await expect(driverCopy).toHaveAttribute('aria-label', /скопировано$/);
++      assert.equal(await page.evaluate(engine => engine === 'chromium' ? navigator.clipboard.readText() : window.copiedTripText, engine), expectedDriverText);
++      await expect(card).not.toHaveAttribute('open');
++      const a=await copy.boundingBox(),b=await driverCopy.boundingBox(); assert.ok(a.x+a.width<=b.x && Math.abs(a.y-b.y)<1);
++      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1));
++      await page.screenshot({path:resolve(output,`${engine}-two-copy-buttons-${width}.png`),fullPage:true});
++    }
++    await driverCopy.focus(); await page.keyboard.press('Enter'); await expect(driverCopy).toHaveAttribute('aria-label', /скопировано$/);
++    await page.keyboard.press('Space'); await expect(card).not.toHaveAttribute('open');
++    assert.deepEqual(await rt.store.read(rt.source),beforeCopy);
++    await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('denied');}}}));
++    await driverCopy.click(); await expect(entry.locator('.execution-copy-fallback-driver textarea')).toHaveValue(expectedDriverText);
++    await page.evaluate(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:window.savedClipboard}));
++    await driverCopy.click(); await expect(entry.locator('.execution-copy-fallback-driver')).toHaveCount(0);
++    check(`${engine}: driver text, two distinct labelled icons, adjacent buttons, four widths, keyboard, denied clipboard and unchanged data`);
++    await card.locator('summary').first().click();
++    await expect(card.getByRole('button', { name: 'Рейс выполнен', exact: true })).toHaveCount(0);
++    check(`${engine}: fourth tab, grouping, idle vehicle, planned trip and completion gate`);
++    await expect(panel.getByRole('button', { name: 'Прибыл на место доставки', exact: true })).toHaveCount(0);
++    await expect(card.getByRole('button', {name:'Завершить доставку',exact:true}).first()).toBeDisabled();
++    const controlStyles = await page.evaluate(() => {
++      const style = selector => { const el = document.querySelector(selector), s = getComputedStyle(el); return { radius:s.borderRadius, background:s.backgroundColor, font:s.fontSize, height:el.getBoundingClientRect().height }; };
++      return { top:style('.trips-section-tabs'), filter:style('.execution-filters'), topButton:style('.trips-section-tabs button'), filterButton:style('.execution-filters button') };
++    });
++    assert.deepEqual(controlStyles.filter, controlStyles.top);
++    assert.deepEqual(controlStyles.filterButton, controlStyles.topButton);
++    await card.locator('summary').first().click();
++    assert.equal(await card.getAttribute('open'), null, 'reduced motion closes immediately');
++    assert.equal(await card.evaluate(el => el.getAnimations().length), 0);
++    await page.emulateMedia({ reducedMotion:'no-preference' });
++    await card.locator('summary').first().click();
++    const opening = await card.evaluate(el => {
++      const a=el.getAnimations().find(a => a.effect.getKeyframes().some(k => k.height));
++      if(!a) return null;
++      a.pause(); a.currentTime=55; const early=el.getBoundingClientRect().height;
++      a.currentTime=220; const late=el.getBoundingClientRect().height;
++      a.play(); return {early,late};
++    });
++    assert.ok(opening && opening.late>opening.early+5, 'height grows through intermediate frames');
++    await expect.poll(() => card.evaluate(el => el.getAnimations().length)).toBe(0);
++    await card.locator('summary').first().click();
++    const closing = await card.evaluate(el => {
++      const a=el.getAnimations().find(a => a.effect.getKeyframes().some(k => k.height));
++      if(!a) return null;
++      a.pause(); a.currentTime=55; const early=el.getBoundingClientRect().height;
++      a.currentTime=220; const late=el.getBoundingClientRect().height;
++      const open=el.open, inert=el.querySelector('.animated-details-content').inert;
++      a.play(); return {early,late,open,inert};
++    });
++    assert.ok(closing && closing.early>closing.late+5 && closing.open && closing.inert, 'closing animates and removes hidden controls from focus');
++    await expect(card).not.toHaveAttribute('open');
++    // Rapid reversal starts from the currently rendered height, without a jump or stuck open state.
++    await card.locator('summary').first().click();
++    await card.locator('summary').first().click({ force:true });
++    await expect(card).not.toHaveAttribute('open');
++    await card.locator('summary').first().focus(); await page.keyboard.press('Space');
++    await expect(card.locator('summary').first()).toHaveAttribute('aria-expanded','true');
++    await expect.poll(() => card.evaluate(el => el.getAnimations().length)).toBe(0);
++    await page.emulateMedia({ reducedMotion:'reduce' });
++    check(`${engine}: shared filter geometry, staff delivery UI, opening/closing frames, rapid reversal, keyboard and reduced motion`);
++
++    const driver = await browser.newContext({ viewport: { width: 390, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'America/Los_Angeles' });
++    const login = await driver.request.post(runtime.base + '/api/auth/login', { data: { login: credentials.access.login, password: credentials.temporaryPassword } }); assert.equal(login.status(),200);
++    const dp = await driver.newPage(); await dp.clock.install(); dp.on('pageerror', e => report.browserErrors.push(e.message)); await dp.goto(runtime.base + `/#driver-trip/${id}`);
++    const loading = dp.getByRole('region', { name: 'Действия на погрузке', exact: true });
++    await expect(dp.getByRole('button', { name: 'Прибыл на место доставки', exact: true }).first()).toBeDisabled();
++    await loading.getByRole('button', { name: 'Прибыл', exact: true }).click();
++    await expect(loading).toContainText('Прибытие сохранено');
++    await panel.getByRole('button', { name: 'Обновить', exact: true }).click(); await expect(card).toContainText('На погрузке');
++    for (let i=0;i<customers.length;i++) await loading.getByLabel(`Масса нетто доставки ${i+1}, т`, { exact:true }).fill('1,234');
++    await loading.getByRole('button', { name:'Убыл',exact:true }).click(); await expect(loading).toContainText('Убытие и все массы сохранены в CRM');
++    await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card.locator('.execution-stage')).toHaveText('В пути');
++    const before = await rt.store.read(rt.source);
++    const first = dp.locator('.driver-stop').nth(2);
++    await first.getByRole('button', { name:'Прибыл на место доставки',exact:true }).click();
++    await expect(first.getByRole('button',{name:'Подтвердить',exact:true})).toHaveCount(0);
++    await expect(dp.locator('.execution-record')).toHaveCount(1);
++    await dp.clock.fastForward(120_000); await expect(dp.locator('.execution-record')).toContainText('Прибыл 2 минуты назад');
++    await expect(dp.locator('.execution-record')).not.toContainText('Водитель:');
++    await panel.getByRole('button', { name:'Обновить',exact:true }).click(); await expect(card).toContainText('Доставлено 1 из 2');
++    await expect(card.getByRole('button',{name:'Рейс выполнен',exact:true})).toHaveCount(0);
++    await expect(card.locator('.execution-stage')).toHaveText('Доставляет');
++    check(`${engine}: real UI arrival/departure, single-click driver first delivery and independent remaining customer`);
++    for (const width of [320,390,768,1440]) {
++      for (const [target,label] of [[page,'logistics'],[dp,'driver']]) {
++        await target.setViewportSize({width,height:1000});
++        assert.ok(await target.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1), `${engine} ${label} fits ${width}`);
++        const path=resolve(output,`${engine}-${label}-${width}.png`); await target.screenshot({path,fullPage:true}); report.screenshots.push(path);
++      }
++      check(`${engine}: both workspaces fit ${width}px`);
++    }
++    for (const [target,label] of [[page,'logistics'],[dp,'driver']]) {
++      const results = await new AxeBuilder({page:target}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
++      report.axe.push({engine,label,violations:results.violations}); assert.deepEqual(results.violations,[],`${engine} ${label} axe`);
++    }
++    // The driver closes the last stop; neither UI sends a separate complete call.
++    const second = card.getByRole('button',{name:'Завершить доставку',exact:true}); await second.click();
++    await dp.reload(); await expect(dp.locator('.driver-execution-footer')).toContainText('Рейс завершён');
++    await expect(card).toHaveCount(0);
++    await panel.getByRole('button',{name:/^Завершённые/}).click(); await expect(card).toContainText('Завершён'); await copy.click(); await expect(copy).toHaveAttribute('aria-label', /скопировано$/);
++    await page.reload(); await page.getByRole('button',{name:'В процессе',exact:true}).click(); await panel.getByRole('button',{name:/^Завершённые/}).click();
++    await card.locator('summary').first().click(); await expect(card).not.toContainText('Водитель:'); await expect(card).toContainText('Прибыл');
++    await dp.goto(runtime.base+'/#driver-trips'); await dp.getByRole('button',{name:'Обновить мои рейсы',exact:true}).click(); await dp.getByRole('button',{name:'Архивные',exact:true}).click(); await expect(dp.locator(`a[href="#driver-trip/${id}"]`)).toBeVisible();
++    const after = await rt.store.read(rt.source); const {revision:_a,tripExecutions:_b,accounts:_c,...stableAfter}=after; const {revision:_d,tripExecutions:_e,accounts:_f,...stableBefore}=before; assert.deepEqual(stableAfter,stableBefore);
++    assert.equal(after.tripExecutions[id].version,2); assert.equal(after.tripExecutions[id].completed.role,'logistics'); assert.equal(after.tripExecutions[id].completed.kind,undefined);
++    check(`${engine}: staff final delivery, automatic closure, archive, reload, durable facts and all unrelated data exact`);
++    await browser.close(); browser=null;
++  }
++  assert.equal(report.providerCalls,0); assert.deepEqual(report.browserErrors,[]); report.passed=true;
++} catch(e) { report.error=String(e.stack||e); throw e; }
++finally { await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2)); if(browser) await browser.close(); if(runtime) await runtime.server.close(); await rt.close(); }
+--- /dev/null
++++ b/scripts/preview_trip_copy.mjs
+@@ -0,0 +1,56 @@
++// Local review only: synthetic store, no provider access. Never loaded by the production bundle.
++import { resolve } from 'node:path';
++import { randomUUID } from 'node:crypto';
++import { integrationRuntime, integrationConfig } from '../tests/helpers/trip-saby-integration.ts';
++import { startTripsQaServer } from './qa-trips-runtime.mjs';
++import { bootstrapQaAuth } from './qa-auth.mjs';
++import { SabyClient } from '../server/saby-client.ts';
++const root=resolve(import.meta.dirname,'..'), rt=await integrationRuntime();
++const client=new SabyClient(integrationConfig(),async()=>{throw new Error('External provider disabled for local preview');});
++const runtime=await startTripsQaServer({root,snapshotDirectory:rt.snapshotDirectory,operationsDirectory:resolve(rt.directory,'store'),sabyClient:client,port:5193});
++const {cookie}=await bootstrapQaAuth(runtime.base);
++const call=async(path,method='GET',body,cookieValue=cookie)=>{
++ const res=await fetch(runtime.base+path,{method,headers:{cookie:cookieValue,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const value=await res.json();if(!res.ok)throw new Error(`${path}: ${value.error}`);return value;
++};
++await rt.store.mutate(rt.source,data=>{
++ data.shipments={};
++ const customer=data.companies.find(c=>c.id==='customer'); customer.name='Стройснаб · демо';
++ data.companies.find(c=>c.id==='supplier').name='Комплекс Ойл · демо';
++ data.companies.push({...structuredClone(customer),id:'customer-two',name:'Бетонный завод · демо',inn:undefined});
++ data.directories.vehicles[0].plate='М442НО797';data.directories.drivers[0].name='Пётр · демо';data.directories.drivers[0].fullName='Пётр · демо';
++ data.directories.vehicles.push({...data.directories.vehicles[0],id:'vehicle-two',plate:'А477АА777'});
++ data.directories.drivers.push({...data.directories.drivers[0],id:'driver-two',name:'Геннадий · демо',fullName:'Геннадий · демо',vehicleId:'vehicle-two'});
++ data.directories.oilDepots[0].address='Московская область, село Константиново, 105Б';
++ data.directories.addresses.find(a=>a.id==='delivery').address='Котельники, Промзона Силикат, с9';
++ data.directories.addresses.push({...data.directories.addresses.find(a=>a.id==='delivery'),id:'delivery-two',companyId:'customer-two',address:'Москва, район Коммунарка, улица Александры Монаховой, 10'});
++ return {changed:true,result:null};
++});
++const driverCookies={};
++for(const id of ['driver','driver-two']){
++ const access=await call(`/api/drivers/${id}/access`,'POST',{action:'issue',version:0});
++ const response=await fetch(runtime.base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login:access.access.login,password:access.temporaryPassword})});
++ if(!response.ok)throw new Error('Preview driver login failed');driverCookies[id]=response.headers.get('set-cookie').split(';')[0];
++}
++let previewDriverTrip;
++for(let i=0;i<7;i++){
++ const driverId=i>=4?'driver-two':'driver';
++ const fields=Object.fromEntries(['organization_id','supplier_id','carrier_id','oil_depot_id','product_id','purchase_price_unspecified_unit','additional_costs'].map(k=>[k,rt.trip.fields[k]]));
++ Object.assign(fields,{driver_id:driverId,vehicle_id:i>=4?'vehicle-two':'vehicle',trip_flow_version:'driver-v1',purchase_price_unspecified_unit:'77000',loading_at:`2026-10-${27-Math.floor(i/3)}T09:00`,trip_notes:'Локальный демонстрационный рейс. Все события условные, внешние системы отключены.'});
++ const customers=rt.trip.customers.map((row,j)=>({fields:{...Object.fromEntries(['manager_id','payment_form_id','sale_price_per_litre','transport_amount'].map(k=>[k,row.fields[k]])),customer_id:j?'customer-two':'customer',unloading_address_id:j?'delivery-two':'delivery',quantity_litres:j?'5500':'4000',sale_price_per_litre:j?'73':'70',transport_amount:j?'7000':'8000',etrn_not_required:'true',invoice_not_required:'true'}}));
++ const created=await call('/api/shipment-trips','POST',{fields,customers,idempotencyKey:randomUUID()});
++ const path=`/api/driver/trips/${created.trip.id}`, dc=driverCookies[driverId];let trip=(await call(path,'GET',null,dc)).trip;
++ const stage=['delivering','enroute','loading','completed','planned','enroute','completed'][i];
++ if(stage!=='planned')trip=(await call(path+'/arrive','POST',{versions:trip.versions},dc)).trip;
++ if(!['planned','loading'].includes(stage))trip=(await call(path+'/depart','POST',{versions:trip.versions,masses:trip.deliveries.map(d=>({deliveryId:d.id,netTonnes:'4.274'}))},dc)).trip;
++ if(['delivering','completed'].includes(stage))trip=(await call(path+'/deliver','POST',{versions:trip.versions,executionVersion:trip.execution.version,deliveryId:trip.deliveries[0].id},dc)).trip;
++ if(stage==='completed')trip=(await call(path+'/deliver','POST',{versions:trip.versions,executionVersion:trip.execution.version,deliveryId:trip.deliveries[1].id},dc)).trip;
++ if(i===0)previewDriverTrip=trip.id;
++}
++runtime.server.middlewares.stack.unshift({route:'',handle(req,res,next){
++ const path=new URL(req.url,runtime.base).pathname;
++ if(path!=='/__preview' && path!=='/__driver')return next();
++ const driver=path==='/__driver';res.setHeader('Set-Cookie',`${driver?driverCookies.driver:cookie}; Path=/; HttpOnly; SameSite=Strict`);res.writeHead(302,{Location:driver?`/#driver-trip/${previewDriverTrip}`:'/#trips'});res.end();
++}});
++console.log(`LOCAL_PREVIEW ${runtime.base}/__preview`);
++console.log(`LOCAL_DRIVER ${runtime.base}/__driver`);
++for(const signal of ['SIGINT','SIGTERM'])process.on(signal,async()=>{await runtime.server.close();await rt.close();process.exit(0)});
