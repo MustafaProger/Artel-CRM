@@ -163,6 +163,8 @@ export async function createProductionRuntime(env: Environment = process.env) {
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Referrer-Policy', 'same-origin');
     response.setHeader('X-Frame-Options', 'DENY');
+    // Keep React/OpenLayers styles and PDF downloads intact while blocking executable markup.
+    response.setHeader('Content-Security-Policy', "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     const pathname = requestPath(request);
     if (!productionRequestAllowed(request, configuration.origin)
         && !publicShellNavigationAllowed(request, configuration.origin, pathname)) return json(response, 403, { error: 'Доступ запрещён.' });

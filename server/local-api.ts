@@ -380,6 +380,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
   });
   const yandexTiles = createYandexTiles({ environment: options.yandexTilesEnvironment, fetcher: options.fetcher });
   const limitPushReceipt = createPushReceiptLimiter();
+  let pendingLogins = 0;
+  const gateLogin = async <T>(isLogin: boolean, action: () => Promise<T>): Promise<T> => {
+    if (!isLogin) return action();
+    if (pendingLogins >= 4) throw new ApiError(429, 'Вход сейчас занят. Повторите попытку через несколько секунд.');
+    pendingLogins++;
+    try { return await action(); }
+    finally { pendingLogins--; }
+  };
   let cache: { signature: string; snapshot: Promise<Snapshot> } | undefined;
   async function baseSnapshot() {
     const names = ['manifest', 'companies', 'shipments', 'payments', 'stock_summaries', 'manager_labels', 'validation_report'];
@@ -497,8 +505,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
         const body = await jsonBody(request);
-        const result = await operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
-          if(pathname === '/api/auth/login')return { result: await login(data,body,logistics ? 'logistics' : undefined), changed:true };
+        const result = await gateLogin(pathname === '/api/auth/login', () => operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
+          if(pathname === '/api/auth/login'){
+            let changed=false;
+            const result=await login(data,body,logistics ? 'logistics' : undefined,()=>{changed=true;});
+            return {result,changed};
+          }
           if(pathname === '/api/auth/setup') {
             if(data.accounts?.users.length)throw new ApiError(409,'Директор уже создан. Выполните вход.');
             const setupToken=options.setupToken ?? process.env.ARTEL_SETUP_TOKEN;
@@ -517,7 +529,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { result: { status: 200, ...deleted }, changed };
           }
           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey)},changed:true};
-        });
+        }));
         if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure,logistics ? 'logistics' : undefined));
         const {token:_token,...safeResult}=result as typeof result & {token?:string};
         return write(response,result.status,JSON.stringify(safeResult));

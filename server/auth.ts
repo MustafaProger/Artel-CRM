@@ -134,25 +134,50 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   }
   return { id, deleted: true, changed: true };
 }
-export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics') {
+export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics',onChanged:()=>void=()=>{}) {
   const accounts=data.accounts;
   if(!accounts?.users.length)throw new ApiError(403,'Сначала создайте учётную запись директора.');
   const name=typeof input.login==='string'?input.login.trim().toLowerCase().slice(0,64):'';
-  const now=Date.now(), key=hash(name), globalKey=hash('artel-global-login-limit');
-  for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now)delete accounts.attempts[k];
-  if((accounts.attempts[key]?.count??0)>=5 || (accounts.attempts[globalKey]?.count??0)>=50)return {error:'Слишком много попыток. Повторите через 15 минут.',status:429};
+  const now=Date.now(), key=hash(`artel:auth:user:${name}`), globalKey=hash('artel:auth:global-login-limit:v2');
+  for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now){delete accounts.attempts[k];onChanged();}
+  // Preserve existing throttles when separating user keys from the old global
+  // sentinel, which was also a legal account login. No password or session changes.
+  const migrateAttempt = (oldKey: string, newKey: string, limit: number, remove = true) => {
+    const old = accounts.attempts[oldKey];
+    if (!old) return;
+    const current = accounts.attempts[newKey];
+    accounts.attempts[newKey] = { count: Math.min(limit, Math.max(old.count, current?.count ?? 0)), until: Math.max(old.until, current?.until ?? 0) };
+    if (remove) delete accounts.attempts[oldKey];
+    onChanged();
+  };
+  const legacyGlobalKey=hash('artel-global-login-limit');
+  migrateAttempt(legacyGlobalKey,globalKey,50,false);
+  for(const account of accounts.users)migrateAttempt(hash(account.login),hash(`artel:auth:user:${account.login}`),5,hash(account.login)!==legacyGlobalKey);
+  if(accounts.attempts[legacyGlobalKey]){delete accounts.attempts[legacyGlobalKey];onChanged();}
+  if(/^[a-z0-9._-]{3,64}$/.test(name))migrateAttempt(hash(name),key,5);
+  const limited = {error:'Слишком много попыток. Повторите через 15 минут.',status:429};
+  const userLimited=(accounts.attempts[key]?.count??0)>=5;
+  const globalLimited=(accounts.attempts[globalKey]?.count??0)>=50;
   const user=accounts.users.find(u=>u.login===name && u.active && !u.deletedAt);
+  // A random-username flood must not lock every employee out. Known and unknown
+  // names follow the same password-derivation path; the API bounds concurrent
+  // logins before they can enter the storage transaction queue.
   const password=typeof input.password==='string' && input.password.length<=256?input.password:'';
   const actual=await scrypt(password,user?.salt??'00000000000000000000000000000000',64) as Buffer;
+  if(userLimited)return limited;
   if(!user || !driverAccountAvailable(data, user) || !timingSafeEqual(actual,Buffer.from(user.passwordHash,'hex'))){
-    for(const k of [key,globalKey])accounts.attempts[k]={count:(accounts.attempts[k]?.count??0)+1,until:accounts.attempts[k]?.until??now+900000};
-    return {error:'Неверный логин или пароль.',status:401};
+    if(!globalLimited || user){
+      for(const k of [key,globalKey])accounts.attempts[k]={count:Math.min((accounts.attempts[k]?.count??0)+1,k===globalKey?50:5),until:accounts.attempts[k]?.until??now+900000};
+      onChanged();
+    }
+    return globalLimited?limited:{error:'Неверный логин или пароль.',status:401};
   }
-  delete accounts.attempts[key];
+  if(accounts.attempts[key]){delete accounts.attempts[key];onChanged();}
   if (audience && user.role !== 'driver' && !hasSection(user, 'trips')) return { error: 'Раздел рейсов недоступен. Обратитесь к администратору.', status: 403 };
   const token=randomBytes(32).toString('hex');
   accounts.sessions=accounts.sessions.filter(s=>s.expiresAt>now).slice(-499);
   accounts.sessions.push({hash:hash(token),userId:user.id,expiresAt:now+28800000,...(audience ? { audience } : {})});
+  onChanged();
   return {token,user:publicUser(user),status:200};
 }
 export function logout(data:OperationsData,request:IncomingMessage){const token=sessionToken(request);if(data.accounts && token)data.accounts.sessions=data.accounts.sessions.filter(s=>s.hash!==hash(token));}

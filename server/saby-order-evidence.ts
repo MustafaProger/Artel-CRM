@@ -9,16 +9,26 @@ export const SABY_SENDER_COORDINATE_MISMATCH = 'Координаты маршр�
 function failure(): never { throw new SabyError('unknown', 'Текущий титул заявки в Saby не подтверждает сохранённые сведения рейса. Новые ЭТрН не создаются; требуется сверка.', true); }
 const namePattern = /^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё.:-]*$/u;
 function xmlText(value: string): string {
-  let invalid = false;
-  const text = value.replace(/&([^;]*);/g, (_all, entity: string) => {
-    const known: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' };
-    if (Object.hasOwn(known, entity)) return known[entity];
-    const number = /^#\d+$/.test(entity) ? Number(entity.slice(1)) : /^#x[\da-f]+$/i.test(entity) ? parseInt(entity.slice(2), 16) : NaN;
-    if (!Number.isInteger(number) || ![9, 10, 13].includes(number) && (number < 32 || number > 0x10ffff || number >= 0xd800 && number <= 0xdfff || number === 0xfffe || number === 0xffff)) { invalid = true; return ''; }
-    return String.fromCodePoint(number);
-  });
-  if (invalid || /&(?![^;]*;)/.test(value) || /&[^;]*$/.test(value)) failure();
-  return text;
+  const known: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' };
+  const parts: string[] = [];
+  let offset = 0;
+  // Advance past each complete entity exactly once. A regex searching for a
+  // missing semicolon can retry from every '&' and block the server quadratically.
+  for (;;) {
+    const start = value.indexOf('&', offset);
+    if (start < 0) { parts.push(value.slice(offset)); return parts.join(''); }
+    parts.push(value.slice(offset, start));
+    const end = value.indexOf(';', start + 1);
+    if (end < 0) failure();
+    const entity = value.slice(start + 1, end);
+    if (Object.hasOwn(known, entity)) parts.push(known[entity]);
+    else {
+      const number = /^#\d+$/.test(entity) ? Number(entity.slice(1)) : /^#x[\da-f]+$/i.test(entity) ? parseInt(entity.slice(2), 16) : NaN;
+      if (!Number.isInteger(number) || ![9, 10, 13].includes(number) && (number < 32 || number > 0x10ffff || number >= 0xd800 && number <= 0xdfff || number === 0xfffe || number === 0xffff)) failure();
+      parts.push(String.fromCodePoint(number));
+    }
+    offset = end + 1;
+  }
 }
 /** A bounded closed XML reader: no DTD, entity expansion, network, or executable processing. */
 export function parseXml(bytes: Uint8Array): XmlNode {

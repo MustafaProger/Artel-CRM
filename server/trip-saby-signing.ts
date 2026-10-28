@@ -182,7 +182,9 @@ export async function getTripSigningPreview(context: SigningContext): Promise<Tr
   await check(); const data = await store.read(source); const record = data.tripSaby?.trips[tripId];
   if (!record?.order.id) throw new ApiError(409, 'Сначала создайте заявку рейса в Saby.');
   const client = (context.client ?? new SabyClient(sabyConfigFromEnv())).withRequestGuard(check);
-  return previewFor(client, record);
+  const preview = await previewFor(client, record);
+  await check();
+  return preview;
 }
 export async function beginTripSigning(client: SabyClient, record: TripSabyRecord, request: TripSabySigningStartRequest, requestedBy: string, update: (mutation: (row: TripSabyRecord) => void) => Promise<void>) {
   validateSigningStart(request);

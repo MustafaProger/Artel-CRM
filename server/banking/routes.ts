@@ -6,26 +6,31 @@ import { csv } from './domain';
 import { BankingService } from './service';
 
 export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
-  requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
+  const authorize = async () => requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
+  await authorize();
   const method = request.method, path = url.pathname;
-  const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
+  // Body reads and provider calls may outlive logout or an administrator's revocation.
+  const send = async (value: unknown) => { await authorize(); response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
   if (path === '/api/banking' && method === 'GET') return send(await service.list(url.searchParams));
   if (path === '/api/banking/export' && method === 'GET') {
     const output = csv(await service.rows(url.searchParams));
+    await authorize();
     response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="artel-bank-operations.csv"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(output); return;
   }
   const sync = path.match(/^\/api\/banking\/connections\/([a-z-]+)\/(sync|continue)$/);
   if (sync && method === 'POST') {
     const body = await readBody();
-    if (sync[2] === 'sync') await service.start(sync[1], body.from, body.to);
+    await authorize();
+    if (sync[2] === 'sync') { await service.start(sync[1], body.from, body.to); await authorize(); }
     return send(await service.tick(sync[1]) ?? { pending: true });
   }
   const operation = path.match(/^\/api\/banking\/operations\/([a-f0-9]{64})(?:\/(refresh|print))?$/);
   if (operation) {
     if (!operation[2] && method === 'GET') return send({ operation: await service.operation(operation[1]) });
-    if (operation[2] === 'refresh' && method === 'POST') { await readBody(); return send({ operation: await service.enrich(operation[1]) }); }
+    if (operation[2] === 'refresh' && method === 'POST') { await readBody(); await authorize(); return send({ operation: await service.enrich(operation[1]) }); }
     if (operation[2] === 'print' && method === 'GET') {
       const buffer = await service.print(operation[1]);
+      await authorize();
       response.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="bank-payment-${operation[1].slice(0, 12)}.pdf"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(buffer); return;
     }
   }

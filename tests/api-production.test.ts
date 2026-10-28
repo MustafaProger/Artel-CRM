@@ -98,6 +98,7 @@ test('production serves the compiled app only and validates host, origin, traver
   const f = await fixture(); const runtime = await f.runtime();
   try {
     const health = await runtime.request('/healthz', { origin: null });
+    assert.equal(health.headers['content-security-policy'], "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     assert.equal(health.status, 200); assert.deepEqual(JSON.parse(health.text), { status: 'ok' });
     assert.equal((await runtime.request('/healthz', { host: 'evil.example' })).status, 403);
     assert.equal((await runtime.request('/', { origin: 'https://evil.example' })).status, 403);

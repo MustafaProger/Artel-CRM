@@ -5,17 +5,20 @@ import { ApiError } from '../api-error';
 import { SberService } from './sber-service';
 
 export async function sberRoutes(service: SberService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
-  requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
+  const authorize = async () => requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
+  await authorize();
   const path = url.pathname.replace('/api/banking/sber/sber-artel/', '/api/banking/sber/').replace('/api/banking/sber/sber-nk-artel/', '/api/banking/sber/'), method = request.method;
-  const send = (value: unknown) => {
+  // Never release a slow response to a session revoked while the request was pending.
+  const send = async (value: unknown) => {
+    await authorize();
     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     response.end(JSON.stringify(value));
   };
   if (path === '/api/banking/sber/statements' && method === 'GET') return send(await service.list(url.searchParams));
-  if (path === '/api/banking/sber/sync' && method === 'POST') { const body = await readBody(); return send(await service.start(body.from, body.to)); }
-  if (path === '/api/banking/sber/continue' && method === 'POST') { await readBody(); return send(await service.tick()); }
+  if (path === '/api/banking/sber/sync' && method === 'POST') { const body = await readBody(); await authorize(); return send(await service.start(body.from, body.to)); }
+  if (path === '/api/banking/sber/continue' && method === 'POST') { await readBody(); await authorize(); return send(await service.tick()); }
   const operation = path.match(/^\/api\/banking\/sber\/operations\/([a-f0-9]{64})(\/refresh)?$/);
   if (operation && !operation[2] && method === 'GET') return send({ operation: await service.operation(operation[1]) });
-  if (operation && operation[2] && method === 'POST') { await readBody(); return send({ operation: await service.enrich(operation[1]) }); }
+  if (operation && operation[2] && method === 'POST') { await readBody(); await authorize(); return send({ operation: await service.enrich(operation[1]) }); }
   throw new ApiError(404, 'Маршрут выписки Сбера не найден.');
 }

@@ -118,6 +118,24 @@ async function legacyCarrierFixture() {
   return f;
 }
 
+test('signing preview withholds certificate details when access is revoked during the final provider read', async () => {
+  const f = await fixture(); let revoked = false;
+  try {
+    assert.equal((await f.preview()).ready, true);
+    f.setHook(async (side, request) => {
+      if (side === 'carrier' && request.method === 'sabyCertificate.List') revoked = true;
+    });
+    await assert.rejects(
+      getTripSigningPreview({ ...f, client: new SabyClient(f.config, f.send), authorize: () => {
+        if (revoked) throw new ApiError(401, 'Synthetic session revoked');
+      } }),
+      error => error instanceof ApiError && error.status === 401,
+    );
+    assert.equal(revoked, true, 'The simulated revocation must occur during the provider response');
+    assert.equal(f.writes().length, 0);
+  } finally { await f.close(); }
+});
+
 test('GET preview, old POST and scheduler never initiate signing; public projection contains no signing bytes or private state', async () => {
   const f = await fixture(); try {
     const p = await f.preview(); assert.equal(p.ready, true); await f.run();

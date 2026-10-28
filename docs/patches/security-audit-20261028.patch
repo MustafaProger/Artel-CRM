@@ -1,0 +1,1234 @@
+diff --git a/package-lock.json b/package-lock.json
+index 1237be30f5d4fdc92efa141da6d4c86bed7ce77a..44d9fda66b512d191440aaf105b8eb692289ca3f 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1858,9 +1858,9 @@
+       }
+     },
+     "node_modules/@vercel/blob": {
+-      "version": "2.8.0",
+-      "resolved": "https://registry.npmjs.org/@vercel/blob/-/blob-2.8.0.tgz",
+-      "integrity": "sha512-Nu+HWKpkgovCh/ezlG7wCVwF7RErTzLzZMbGKFBdGBCbTKyK+s5VXPLl+0+TpNEQPH8AVaGzOpIsXUOtkqylCQ==",
++      "version": "2.8.2",
++      "resolved": "https://registry.npmjs.org/@vercel/blob/-/blob-2.8.2.tgz",
++      "integrity": "sha512-ZUUWO2VA00r9ZTRtKgH4va7FGOUxUtge2FaRr9WZmeeX2s3C3qVe2tOTLTbv/tkcd+L+ijxaI2eP9S1/mGHc9Q==",
+       "license": "Apache-2.0",
+       "dependencies": {
+         "@vercel/oidc": "^3.6.1",
+@@ -1875,9 +1875,9 @@
+       }
+     },
+     "node_modules/@vercel/cli-config": {
+-      "version": "0.2.6",
+-      "resolved": "https://registry.npmjs.org/@vercel/cli-config/-/cli-config-0.2.6.tgz",
+-      "integrity": "sha512-2AsKCf6gE/Eniq09ARm1RK9rQMV5pcAHU7BFcR9MISO+4/RsjjkaYbQN6G85/xi9pYZ5CJNXvYn4TI6p1jKBcg==",
++      "version": "0.3.1",
++      "resolved": "https://registry.npmjs.org/@vercel/cli-config/-/cli-config-0.3.1.tgz",
++      "integrity": "sha512-sISbygqlFXYb8qfPu/+2Cf/A8IjrlAuZePdag3EDQr2PRA455s7UZtl9Ro674CWsB/saBRmz3jEkw0YsQs8OoQ==",
+       "license": "Apache-2.0",
+       "dependencies": {
+         "xdg-app-paths": "5",
+@@ -1897,12 +1897,12 @@
+       }
+     },
+     "node_modules/@vercel/oidc": {
+-      "version": "3.8.7",
+-      "resolved": "https://registry.npmjs.org/@vercel/oidc/-/oidc-3.8.7.tgz",
+-      "integrity": "sha512-fRu59npOu+1vsV570tiLKskfuRyOJ1MqceAkXbTIfWPnM+c9ve1tSK81oj4umKKirymlGUss3V60Lm5I38rKDw==",
++      "version": "3.8.10",
++      "resolved": "https://registry.npmjs.org/@vercel/oidc/-/oidc-3.8.10.tgz",
++      "integrity": "sha512-sPw1kIfQEA6/2dB+zlAJHnhhNBRJ8t/t4HfFvKO+g0EPBA7NbCKyGovuhgAV6Mnl865ka7HqCEguIy596czdAw==",
+       "license": "Apache-2.0",
+       "dependencies": {
+-        "@vercel/cli-config": "0.2.6",
++        "@vercel/cli-config": "0.3.1",
+         "@vercel/cli-exec": "1.0.1",
+         "jose": "^5.9.6"
+       },
+@@ -2060,9 +2060,9 @@
+       "license": "MIT"
+     },
+     "node_modules/brace-expansion": {
+-      "version": "5.0.9",
+-      "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.9.tgz",
+-      "integrity": "sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==",
++      "version": "5.0.12",
++      "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz",
++      "integrity": "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+@@ -3508,9 +3508,9 @@
+       "license": "ISC"
+     },
+     "node_modules/source-map-js": {
+-      "version": "1.2.1",
+-      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+-      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
++      "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz",
++      "integrity": "sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==",
+       "dev": true,
+       "license": "BSD-3-Clause",
+       "engines": {
+@@ -3639,9 +3639,9 @@
+       }
+     },
+     "node_modules/undici": {
+-      "version": "6.28.1",
+-      "resolved": "https://registry.npmjs.org/undici/-/undici-6.28.1.tgz",
+-      "integrity": "sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA==",
++      "version": "6.29.1",
++      "resolved": "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz",
++      "integrity": "sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==",
+       "license": "MIT",
+       "engines": {
+         "node": ">=18.17"
+@@ -3705,9 +3705,9 @@
+       }
+     },
+     "node_modules/vite": {
+-      "version": "6.4.3",
+-      "resolved": "https://registry.npmjs.org/vite/-/vite-6.4.3.tgz",
+-      "integrity": "sha512-NTKlcQjlAK7MlQoyb6LgaqHc8sso/pVyUJYWMws3jg21uTJw/LddqIFPcPqP6PzpgbIcZyKI85sFE4HBrQDA8A==",
++      "version": "6.4.5",
++      "resolved": "https://registry.npmjs.org/vite/-/vite-6.4.5.tgz",
++      "integrity": "sha512-4enwjFfi4IwtEh0w+jPzpLVOFQiPHmmzPxcHXQOyEur47o6u0jE573DmGpjA+7irXoMLYRZD5ZaFUEneS3abPg==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+@@ -4375,9 +4375,9 @@
+       }
+     },
+     "node_modules/zod": {
+-      "version": "4.1.11",
+-      "resolved": "https://registry.npmjs.org/zod/-/zod-4.1.11.tgz",
+-      "integrity": "sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg==",
++      "version": "4.6.7",
++      "resolved": "https://registry.npmjs.org/zod/-/zod-4.6.7.tgz",
++      "integrity": "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==",
+       "license": "MIT",
+       "funding": {
+         "url": "https://github.com/sponsors/colinhacks"
+diff --git a/package.json b/package.json
+index f5f1e788bd7f88c2d6b7ee87e2ed01d9b7dad0a4..14e981a9f48a5bfb320dcbb9d6c98ec3527200e3 100644
+--- a/package.json
++++ b/package.json
+@@ -67,5 +67,10 @@
+     "typescript": "^5.9.0",
+     "typescript-eslint": "^8.70.0",
+     "vite": "^6.4.0"
++  },
++  "overrides": {
++    "@vercel/cli-config": {
++      "zod": "^4.6.6"
++    }
+   }
+ }
+diff --git a/scripts/verify_invoices_ui.mjs b/scripts/verify_invoices_ui.mjs
+index 521492c97aab3ec3191fff2c653ad91769196f0b..6a78310f4a7a0e689f4f5b1b42b019fc5f3ca9b2 100644
+--- a/scripts/verify_invoices_ui.mjs
++++ b/scripts/verify_invoices_ui.mjs
+@@ -145,19 +145,22 @@ try {
+     await expect(page.getByRole('button', { name: 'Проверить данные счёта', exact: true })).toHaveCount(0);
+     await expect(page.getByRole('tablist', { name: 'Раздел счетов' })).toHaveCount(0);
+     await expect(page.getByRole('region', { name: 'История счетов', exact: true })).toBeVisible();
+-    await expect(page.getByRole('button', { name: 'Уведомления о счетах', exact: true })).toHaveCount(1);
++    await expect(page.getByRole('button', { name: 'Уведомления о счетах', exact: true })).toHaveCount(0);
++    const notifications = page.locator('.sidebar-user-controls').getByRole('button', { name: 'Уведомления', exact: true });
++    await expect(notifications).toHaveCount(1);
+     await expect(page.locator('.invoice-action-toolbar')).toHaveCount(0);
+     await expect(page.locator('.invoice-topbar .invoice-toolbar')).toBeVisible();
+     await expect(page.locator('.bottom-nav,.brand-header')).toHaveCount(0);
+-    await page.getByRole('button', { name: 'Уведомления о счетах', exact: true }).click();
+-    await expect(page.getByRole('dialog', { name: 'Уведомления о счетах' })).toBeVisible();
+-    await expect(page.getByRole('dialog', { name: 'Уведомления о счетах' })).toContainText('Сообщим, когда ваш счёт и PDF будут готовы. Уведомление откроет личную историю.');
++    await notifications.click();
++    const notificationDialog = page.getByRole('dialog', { name: 'Уведомления', exact: true });
++    await expect(notificationDialog).toBeVisible();
++    await expect(notificationDialog).toContainText('Уведомления включаются сразу для всех доступных вам разделов: работы, счетов и операторской.');
+     await expect(page.getByText('Подтвердите включение уведомлений для текущего пользователя.', { exact: true })).toBeVisible();
+     assert.ok(pushPosts.length > 0 && pushPosts.every(body => body.explicit === false));
+-    await page.getByRole('button', { name: 'Включить уведомления', exact: true }).click();
++    await notificationDialog.getByRole('button', { name: 'Включить для всех разделов', exact: true }).click();
+     await expect.poll(() => pushPosts.some(body => body.explicit === true)).toBe(true);
+     check(`${engine}: automatic push binding requires consent and explicit enable carries user confirmation`);
+-    await expect(page.getByRole('dialog', { name: 'Уведомления о счетах' })).toBeHidden();
++    await expect(notificationDialog).toBeHidden();
+     check(`${engine}: native CRM shell, single heading and toolbar, common notification menu, no second login`);
+ 
+     await page.evaluate(() => { location.hash = '#operator'; });
+diff --git a/scripts/verify_security_pages.mjs b/scripts/verify_security_pages.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f2225372ea4fbfc99457c51694e11ca2ad1b9d2
+--- /dev/null
++++ b/scripts/verify_security_pages.mjs
+@@ -0,0 +1,295 @@
++// Local security regression: temporary synthetic data, no provider traffic or working stores.
++import assert from 'node:assert/strict';
++import { randomUUID } from 'node:crypto';
++import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { pathToFileURL } from 'node:url';
++import { createServer, request as httpRequest } from 'node:http';
++import { chromium, webkit, expect as baseExpect } from '@playwright/test';
++import { OperationsStore } from '../server/operations-store.ts';
++import { emptyDirectories } from '../server/directory-operations.ts';
++import { SabyClient, sabyConfigFromEnv } from '../server/saby-client.ts';
++import { enabledPages } from '../web/src/page-catalog.ts';
++import { writeTripsQaSnapshot, startTripsQaServer } from './qa-trips-runtime.mjs';
++import { authenticateContext, bootstrapQaAuth } from './qa-auth.mjs';
++
++const root = resolve(import.meta.dirname, '..');
++const built = process.argv.includes('--built');
++const output = resolve(process.env.ARTEL_SECURITY_QA_OUTPUT || resolve(root, '.local/security-pages'), built ? 'built' : 'source');
++const expect = baseExpect.configure({ timeout: 20000 });
++// Never inherit service credentials or background jobs from the invoking shell.
++for (const key of Object.keys(process.env)) if (/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key)) delete process.env[key];
++process.env.ARTEL_OPERATOR_QA_BUILT = built ? '1' : '0';
++process.env.SABY_WORKFLOW_ENABLED = 'false';
++process.env.ARTEL_CABINET_SYNC_ENABLED = 'false';
++process.env.ARTEL_GEOCODER_ENABLED = 'false';
++process.env.ARTEL_BANK_SYNC_ENABLED = 'false';
++process.env.ARTEL_BANK_REQUESTS_ENABLED = 'false';
++process.env.PUSH_SCHEDULE_ENABLED = 'false';
++const temporary = await mkdtemp(resolve(tmpdir(), 'artel-security-pages-'));
++const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'store');
++const report = { passed: false, syntheticOnly: true, mode: built ? 'built' : 'source', workingStoreAccessed: false, checks: [], pages: [], forms: [], errors: [], consoleErrors: [], failedAssets: [], deniedResponses: [], externalRequests: [], invoiceWorkerMocked: true, staticBankIdentifiersMasked: true };
++const check = name => { report.checks.push(name); console.log('PASS', name); };
++await mkdir(output, { recursive: true });
++const source = await writeTripsQaSnapshot(snapshotDirectory);
++const store = new OperationsStore(operationsDirectory);
++await store.mutate(source, data => {
++  data.sourceOperationsCleared = true;
++  data.directories = { ...emptyDirectories(), fleetSeedApplied: true,
++    managers: ['admin', 'employee', 'manager', 'logistician'].map(role => ({ id: `qa-${role}`, name: `Учебный ${role}` })),
++    vehicles: [{ id: 'qa-vehicle', plate: 'Т000ЕЕ00', capacityLitres: '16000' }],
++    drivers: [{ id: 'qa-driver', name: 'Учебный водитель', fullName: 'Учебный водитель', vehicleId: 'qa-vehicle' }],
++  };
++  return { changed: true, result: null };
++});
++// A second guard catches server-side fetches in addition to blocked browser egress.
++const originalFetch = globalThis.fetch;
++globalThis.fetch = (input, init) => {
++  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
++  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') {
++    report.externalRequests.push({ source: 'server', origin: url.origin });
++    return Promise.reject(new Error('External requests forbidden in security QA'));
++  }
++  return originalFetch(input, init);
++};
++const denied = async () => { throw new Error('Provider forbidden in synthetic security QA'); };
++let runtime, browser;
++const selectors = { overview: '.overview-page', work: '.work-page', shipments: '.shipments-workspace', trips: '.trips-page', payments: '.banking-page', 'cabinet-balances': '.cabinet-page', china: '.china-page', invoices: '.invoice-workspace', operator: '.operator-workspace', accounts: '.account-management', directories: '.directories-page' };
++const invoiceFixture = {
++  integration: { status: 'read_only', message: 'Синтетический обработчик счетов', checkedAt: '2026-10-28T12:00:00Z' },
++  invoiceProfiles: [], invoiceCreation: { mode: 'live', connections: [] }, canPrepare: false,
++  organizations: [], buyers: [], connections: [], defaultUnitPrice: '79',
++  settings: { defaultUnitPrice: '79', revision: 1, updatedAt: null, updatedBy: null },
++  product: { name: 'Учебное топливо', unit: 'л', vatRate: '22', vatMode: 'included' },
++  canCreate: false, canEditDefaultPrice: false, history: { status: 'ready', items: [] },
++};
++async function startBuiltRuntime() {
++  const { createProductionRuntime } = await import(pathToFileURL(resolve(root, 'server-render/production.mjs')));
++  const setupToken = randomUUID();
++  const environment = {
++    ARTEL_PUBLIC_ORIGIN: 'https://security-qa.local.test', ARTEL_LISTEN_HOST: '127.0.0.1', PORT: '0',
++    ARTEL_SNAPSHOT_DIR: snapshotDirectory, ARTEL_STORE_DIR: operationsDirectory, ARTEL_SETUP_TOKEN: setupToken,
++    ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false', ARTEL_CABINET_SYNC_ENABLED: 'false',
++    ARTEL_GEOCODER_ENABLED: 'false', SABY_WORKFLOW_ENABLED: 'false', PUSH_SCHEDULE_ENABLED: 'false',
++  };
++  const production = await createProductionRuntime(environment); await production.start();
++  const proxy = createServer((request, response) => {
++    const headers = { ...request.headers, host: 'security-qa.local.test' };
++    if (headers.origin) headers.origin = environment.ARTEL_PUBLIC_ORIGIN;
++    const upstream = httpRequest({ host: '127.0.0.1', port: production.server.address().port, path: request.url, method: request.method, headers }, result => {
++      response.writeHead(result.statusCode, result.headers); result.pipe(response);
++    });
++    upstream.on('error', () => { response.writeHead(502); response.end(); }); request.pipe(upstream);
++  });
++  await new Promise(done => proxy.listen(0, '127.0.0.1', done));
++  const base = `http://127.0.0.1:${proxy.address().port}`;
++  return { base, bootstrap: async () => {
++    const state = await fetch(base + '/api/auth/session').then(response => response.json()); assert.equal(state.needsSetup, true);
++    const response = await fetch(base + '/api/auth/setup', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Учебный директор', login: 'qa.security.director', password: randomUUID(), setupToken }) });
++    assert.equal(response.status, 200);
++    return { cookie: response.headers.get('set-cookie').split(';')[0], user: (await response.json()).user };
++  }, server: { close: async () => { await production.stop(); await new Promise(done => proxy.close(done)); } } };
++}
++try {
++  if (built) {
++    runtime = await startBuiltRuntime();
++  } else {
++    runtime = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient: new SabyClient(sabyConfigFromEnv({}), denied) });
++    runtime.bootstrap = () => bootstrapQaAuth(runtime.base);
++  }
++  assert.match(runtime.base, /^http:\/\/127\.0\.0\.1:\d+$/);
++  const director = await runtime.bootstrap();
++  const call = async (path, method = 'GET', body, cookie = director.cookie, expected = 200) => {
++    const response = await fetch(runtime.base + path, { method, headers: { Cookie: cookie, Origin: runtime.base, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
++    assert.equal(response.status, expected, `${method} ${path}: ${response.status} ${await response.clone().text()}`);
++    return response.json();
++  };
++  const allIds = enabledPages.map(page => page.id);
++  const staffSections = ['overview', 'work', 'shipments', 'trips', 'operator', 'directories', 'invoices'].filter(id => allIds.includes(id));
++  const credentials = [];
++  for (const role of ['admin', 'employee', 'manager', 'logistician']) {
++    const login = `qa.security.${role}`, password = randomUUID();
++    const { user } = await call('/api/auth/users', 'POST', { name: `Учебный ${role}`, login, password, role, managerId: `qa-${role}`, sections: staffSections }, director.cookie, 201);
++    credentials.push({ role, login, password, user });
++  }
++  const driverAccess = await call('/api/drivers/qa-driver/access', 'POST', { action: 'issue', version: 0 }, director.cookie, 200);
++  credentials.push({ role: 'driver', login: driverAccess.access.login, password: driverAccess.temporaryPassword });
++  const operator = await call('/api/operator');
++  if (Array.isArray(operator.plans)) await call('/api/operator/plans', 'POST', {
++    clientName: 'Учебный клиент аудита', idempotencyKey: randomUUID(),
++    recipients: [{ id: randomUUID(), name: 'Учебный получатель', bank: 'Учебный банк', card: '0000 0000 0000 0001', phone: '+70000000001', details: 'Синтетические реквизиты', limit: '10000' }],
++  }, director.cookie, 201);
++  await call('/api/work/tasks', 'POST', { requestId: randomUUID(), title: '<img src=x onerror=alert(1)> Учебная задача', description: 'Синтетическая проверка экранирования', assigneeId: director.user.id }, director.cookie, 201);
++  for (const [engine, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
++    browser = await launcher.launch({ headless: true });
++    const contextFor = async identity => {
++      const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', reducedMotion: 'reduce' });
++      // Native headless WebKit push discovery can stall. Push has separate focused tests.
++      await context.addInitScript(() => {
++        if (navigator.serviceWorker) Object.defineProperty(navigator.serviceWorker, 'getRegistration', { configurable: true, value: async () => undefined });
++        window.__securityCspViolations = [];
++        document.addEventListener('securitypolicyviolation', event => window.__securityCspViolations.push(event.effectiveDirective));
++      });
++      await context.route('**/*', route => {
++        const url = new URL(route.request().url());
++        if (url.origin !== runtime.base) { report.externalRequests.push({ source: 'browser', origin: url.origin, engine, role: identity.role }); return route.abort(); }
++        if (url.pathname === '/api/invoices' && route.request().method() === 'GET') return route.fulfill({ json: invoiceFixture });
++        return route.continue();
++      });
++      context.on('page', page => {
++        page.on('pageerror', error => report.errors.push({ engine, role: identity.role, message: error.message }));
++        page.on('console', message => { if (message.type() === 'error') report.consoleErrors.push({ engine, role: identity.role, message: message.text() }); });
++        page.on('response', response => {
++          if (response.status() >= 400) {
++            const item = { engine, role: identity.role, path: new URL(response.url()).pathname, status: response.status(), resource: response.request().resourceType() };
++            if (response.status() === 403) report.deniedResponses.push(item); else report.failedAssets.push(item);
++          }
++        });
++      });
++      return context;
++    };
++    const layout = async (page, role, id, width) => {
++      await page.setViewportSize({ width, height: 1000 });
++      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
++      const dimensions = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
++      assert.ok(dimensions.document <= width + 1, `${engine}/${role}/${id}/${width}: horizontal overflow ${dimensions.document}`);
++      assert.deepEqual(await page.evaluate(() => window.__securityCspViolations), [], `${engine}/${role}/${id}: no CSP regressions`);
++      await expect(page.getByText('Не удалось открыть раздел', { exact: true })).toHaveCount(0);
++      await expect(page.getByText('Данные пока недоступны', { exact: true })).toHaveCount(0);
++      report.pages.push({ engine, role, id, width });
++    };
++    const visit = async (page, id) => {
++      await page.goto(`${runtime.base}/#${id}`); await expect(page.locator(selectors[id])).toBeVisible();
++    };
++    const context = await contextFor({ role: 'director' });
++    await authenticateContext(context, runtime.base, director.cookie);
++    const page = await context.newPage();
++    // Every enabled route is cold-loaded, including the newer invoices/operator pages.
++    for (const item of enabledPages) {
++      assert.ok(selectors[item.id], `Define a smoke selector for new page ${item.id}`);
++      await visit(page, item.id);
++      for (const width of [1440, 390]) {
++        await layout(page, 'director', item.id, width);
++        // Hide static bank registry identifiers only in the artifact pixels.
++        // The browser and API use their real request/authentication paths.
++        await page.screenshot({ path: resolve(output, `${engine}-${item.id}-${width}.png`), mask: [page.getByText(/^\d{20}$/)] });
++      }
++      if (item.id === 'work') {
++        await expect(page.getByText('<img src=x onerror=alert(1)> Учебная задача', { exact: true })).toBeVisible();
++        assert.equal(await page.locator('.work-page img').count(), 0, 'Task HTML stays literal text');
++      }
++      const formNames = { work: 'Новая задача', shipments: 'Добавить отгрузку', trips: 'Новый рейс', china: 'Добавить день', accounts: 'Добавить пользователя', directories: 'Добавить', invoices: 'Настройки счетов' };
++      const name = formNames[item.id] || (item.id === 'operator' ? (await page.getByRole('button', { name: 'Новая операция', exact: true }).count() ? 'Новая операция' : 'Новая заправка') : null);
++      if (name) {
++        if (item.id === 'trips' && !await page.getByRole('button', { name, exact: true }).isVisible()) await page.locator('.trips-section-tabs').getByRole('button', { name: 'Рейсы', exact: true }).click();
++        await page.getByRole('button', { name, exact: true }).click();
++        const editor = page.locator(item.id === 'accounts' ? '.account-form' : 'dialog[open]');
++        await expect(editor).toBeVisible();
++        assert.ok(await editor.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${item.id} form fits mobile`);
++        report.forms.push({ engine, id: item.id, width: 390 });
++        if (item.id === 'accounts') await editor.getByRole('button', { name: 'Отмена', exact: true }).click();
++        else await page.keyboard.press('Escape');
++      }
++    }
++    await visit(page, 'overview');
++    for (const item of enabledPages) {
++      if (await page.locator('.sidebar').evaluate(el => el.inert)) await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
++      await page.locator('.sidebar nav').getByRole('button', { name: item.title, exact: true }).click();
++      await expect(page.locator(selectors[item.id])).toBeVisible();
++    }
++    check(`${engine}: ${enabledPages.length} pages cold-loaded at desktop/mobile, forms, literal HTML, sidebar navigation`);
++    await context.close();
++
++    for (const identity of credentials) {
++      const staff = await contextFor(identity), staffPage = await staff.newPage();
++      await staffPage.goto(runtime.base);
++      await expect(staffPage.getByRole('heading', { name: 'Вход', exact: true })).toBeVisible();
++      await staffPage.getByLabel('Логин', { exact: true }).fill(identity.login);
++      await staffPage.getByLabel('Пароль', { exact: true }).fill(identity.password);
++      await staffPage.getByRole('button', { name: 'Войти', exact: true }).click();
++      await expect(staffPage.locator(identity.role === 'driver' ? '.driver-shell' : '.app-shell')).toBeVisible();
++      // Browser loopback secure-context exceptions differ from APIRequestContext's
++      // cookie jar. Verify the actual browser session, then send that exact
++      // synthetic cookie explicitly for negative API and revocation assertions.
++      const session = await staffPage.evaluate(async () => (await fetch('/api/auth/session')).json());
++      assert.equal(session.user.role, identity.role);
++      const sessionCookie = (await staff.cookies()).filter(cookie => cookie.name === 'artel_session').map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
++      assert.ok(sessionCookie, 'Browser retains the authenticated session cookie');
++      const apiHeaders = { Cookie: sessionCookie, Origin: runtime.base };
++      const staffPages = identity.role === 'admin' ? allIds : staffSections;
++      if (identity.role === 'driver') {
++        await expect(staffPage.locator('.driver-shell')).toBeVisible();
++        for (const width of [1440, 390]) await layout(staffPage, identity.role, 'driver-trips', width);
++        assert.equal((await staff.request.get(`${runtime.base}/api/auth/users`, { headers: apiHeaders })).status(), 403);
++        assert.equal((await staff.request.get(`${runtime.base}/api/snapshot`, { headers: apiHeaders })).status(), 403);
++      } else {
++        for (const id of staffPages) {
++          await visit(staffPage, id);
++          for (const width of [1440, 390]) await layout(staffPage, identity.role, id, width);
++        }
++        if (identity.role !== 'admin') {
++          for (const path of ['/api/auth/users', '/api/banking/operations']) assert.equal((await staff.request.get(runtime.base + path, { headers: apiHeaders })).status(), 403, `${identity.role} cannot read ${path}`);
++          assert.equal((await staff.request.post(runtime.base + '/api/auth/users', { headers: apiHeaders, data: {} })).status(), 403);
++          await staffPage.goto(runtime.base + '/#accounts');
++          await expect(staffPage.getByRole('alert')).toContainText('Раздел недоступен');
++          await expect(staffPage.locator('.account-management')).toHaveCount(0);
++        }
++      }
++      if (identity.role !== 'driver' && await staffPage.locator('.sidebar').evaluate(el => el.inert)) await staffPage.getByRole('button', { name: 'Открыть меню', exact: true }).click();
++      await staffPage.getByRole('button', { name: 'Выйти', exact: true }).click();
++      await expect(staffPage.getByRole('heading', { name: 'Вход', exact: true })).toBeVisible();
++      assert.equal((await staff.request.get(runtime.base + '/api/auth/session', { headers: apiHeaders }).then(response => response.json())).user, null);
++      assert.equal((await staff.request.get(runtime.base + '/api/snapshot', { headers: apiHeaders })).status(), 401);
++      check(`${engine}: ${identity.role} UI login, allowed pages, isolation, logout and revoked session`);
++      await staff.close();
++    }
++    if (built) {
++      // Negative CSP checks are isolated from the zero-error normal-page audit.
++      const policyContext = await browser.newContext({ serviceWorkers: 'block' });
++      await policyContext.route('**/*', route => new URL(route.request().url()).origin === runtime.base ? route.continue() : route.abort());
++      const policyPage = await policyContext.newPage();
++      const response = await policyPage.goto(runtime.base);
++      assert.match(response.headers()['content-security-policy'] || '', /script-src\s+'self'/);
++      const result = await policyPage.evaluate(async () => {
++        const violations = [];
++        document.addEventListener('securitypolicyviolation', event => violations.push(event.effectiveDirective));
++        window.__securityInlineExecuted = false;
++        const script = document.createElement('script'); script.textContent = 'window.__securityInlineExecuted = true'; document.head.append(script);
++        const base = document.createElement('base'); base.href = 'https://forbidden.invalid/'; document.head.append(base);
++        await new Promise(done => setTimeout(done, 100));
++        return { executed: window.__securityInlineExecuted, baseURI: document.baseURI, violations };
++      });
++      assert.equal(result.executed, false);
++      assert.ok(result.baseURI.startsWith(runtime.base));
++      assert.ok(result.violations.some(value => value.startsWith('script-src')));
++      assert.ok(result.violations.includes('base-uri'));
++      const download = policyPage.waitForEvent('download');
++      await policyPage.evaluate(() => {
++        const anchor = document.createElement('a');
++        anchor.href = URL.createObjectURL(new Blob(['%PDF-1.4\n% synthetic QA download\n'], { type: 'application/pdf' }));
++        anchor.download = 'synthetic-security.pdf'; document.body.append(anchor); anchor.click(); anchor.remove();
++      });
++      assert.equal((await download).suggestedFilename(), 'synthetic-security.pdf');
++      await policyContext.close();
++      check(`${engine}: CSP blocks inline scripts/base replacement; PDF blob download remains available`);
++    }
++    await browser.close(); browser = null;
++  }
++  assert.deepEqual(report.errors, [], 'No uncaught browser errors');
++  assert.deepEqual(report.consoleErrors, [], 'No browser console errors');
++  assert.deepEqual(report.failedAssets, [], 'No failed page resources or APIs');
++  assert.deepEqual(report.deniedResponses, [], 'Allowed pages never receive unexpected 403 responses');
++  assert.deepEqual(report.externalRequests, [], 'No external traffic attempted');
++  report.passed = true;
++  console.log(JSON.stringify({ passed: true, pages: report.pages.length, checks: report.checks.length, forms: report.forms.length, output }));
++} catch (error) {
++  report.failure = error instanceof Error ? error.message : String(error);
++  throw error;
++} finally {
++  await browser?.close();
++  await runtime?.server.close();
++  globalThis.fetch = originalFetch;
++  await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2));
++  await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
++}
+diff --git a/server/auth.ts b/server/auth.ts
+index ce3985bb6d5a8122dfeeace8d3e1977a05b5e3d8..5cb38e75b84be8300e2d7bf5aa8ac67e5a8823b4 100644
+--- a/server/auth.ts
++++ b/server/auth.ts
+@@ -144,25 +144,50 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
+   }
+   return { id, deleted: true, changed: true };
+ }
+-export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics') {
++export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics',onChanged:()=>void=()=>{}) {
+   const accounts=data.accounts;
+   if(!accounts?.users.length)throw new ApiError(403,'Сначала создайте учётную запись директора.');
+   const name=typeof input.login==='string'?input.login.trim().toLowerCase().slice(0,64):'';
+-  const now=Date.now(), key=hash(name), globalKey=hash('artel-global-login-limit');
+-  for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now)delete accounts.attempts[k];
+-  if((accounts.attempts[key]?.count??0)>=5 || (accounts.attempts[globalKey]?.count??0)>=50)return {error:'Слишком много попыток. Повторите через 15 минут.',status:429};
++  const now=Date.now(), key=hash(`artel:auth:user:${name}`), globalKey=hash('artel:auth:global-login-limit:v2');
++  for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now){delete accounts.attempts[k];onChanged();}
++  // Preserve existing throttles when separating user keys from the old global
++  // sentinel, which was also a legal account login. No password or session changes.
++  const migrateAttempt = (oldKey: string, newKey: string, limit: number, remove = true) => {
++    const old = accounts.attempts[oldKey];
++    if (!old) return;
++    const current = accounts.attempts[newKey];
++    accounts.attempts[newKey] = { count: Math.min(limit, Math.max(old.count, current?.count ?? 0)), until: Math.max(old.until, current?.until ?? 0) };
++    if (remove) delete accounts.attempts[oldKey];
++    onChanged();
++  };
++  const legacyGlobalKey=hash('artel-global-login-limit');
++  migrateAttempt(legacyGlobalKey,globalKey,50,false);
++  for(const account of accounts.users)migrateAttempt(hash(account.login),hash(`artel:auth:user:${account.login}`),5,hash(account.login)!==legacyGlobalKey);
++  if(accounts.attempts[legacyGlobalKey]){delete accounts.attempts[legacyGlobalKey];onChanged();}
++  if(/^[a-z0-9._-]{3,64}$/.test(name))migrateAttempt(hash(name),key,5);
++  const limited = {error:'Слишком много попыток. Повторите через 15 минут.',status:429};
++  const userLimited=(accounts.attempts[key]?.count??0)>=5;
++  const globalLimited=(accounts.attempts[globalKey]?.count??0)>=50;
+   const user=accounts.users.find(u=>u.login===name && u.active && !u.deletedAt);
++  // A random-username flood must not lock every employee out. Known and unknown
++  // names follow the same password-derivation path; the API bounds concurrent
++  // logins before they can enter the storage transaction queue.
+   const password=typeof input.password==='string' && input.password.length<=256?input.password:'';
+   const actual=await scrypt(password,user?.salt??'00000000000000000000000000000000',64) as Buffer;
++  if(userLimited)return limited;
+   if(!user || !driverAccountAvailable(data, user) || !timingSafeEqual(actual,Buffer.from(user.passwordHash,'hex'))){
+-    for(const k of [key,globalKey])accounts.attempts[k]={count:(accounts.attempts[k]?.count??0)+1,until:accounts.attempts[k]?.until??now+900000};
+-    return {error:'Неверный логин или пароль.',status:401};
++    if(!globalLimited || user){
++      for(const k of [key,globalKey])accounts.attempts[k]={count:Math.min((accounts.attempts[k]?.count??0)+1,k===globalKey?50:5),until:accounts.attempts[k]?.until??now+900000};
++      onChanged();
++    }
++    return globalLimited?limited:{error:'Неверный логин или пароль.',status:401};
+   }
+-  delete accounts.attempts[key];
++  if(accounts.attempts[key]){delete accounts.attempts[key];onChanged();}
+   if (audience && user.role !== 'driver' && !hasSection(user, 'trips')) return { error: 'Раздел рейсов недоступен. Обратитесь к администратору.', status: 403 };
+   const token=randomBytes(32).toString('hex');
+   accounts.sessions=accounts.sessions.filter(s=>s.expiresAt>now).slice(-499);
+   accounts.sessions.push({hash:hash(token),userId:user.id,expiresAt:now+28800000,...(audience ? { audience } : {})});
++  onChanged();
+   return {token,user:publicUser(user),status:200};
+ }
+ export function logout(data:OperationsData,request:IncomingMessage){
+diff --git a/server/banking/routes.ts b/server/banking/routes.ts
+index 1909ae2d70d92ef44c79d1f90af76136d902651a..360d5a29a8a71222ca8d13d15883c7e98065b10b 100644
+--- a/server/banking/routes.ts
++++ b/server/banking/routes.ts
+@@ -6,26 +6,31 @@ import { csv } from './domain';
+ import { BankingService } from './service';
+ 
+ export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
+-  requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
++  const authorize = async () => requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
++  await authorize();
+   const method = request.method, path = url.pathname;
+-  const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
++  // Body reads and provider calls may outlive logout or an administrator's revocation.
++  const send = async (value: unknown) => { await authorize(); response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
+   if (path === '/api/banking' && method === 'GET') return send(await service.list(url.searchParams));
+   if (path === '/api/banking/export' && method === 'GET') {
+     const output = csv(await service.rows(url.searchParams));
++    await authorize();
+     response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="artel-bank-operations.csv"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(output); return;
+   }
+   const sync = path.match(/^\/api\/banking\/connections\/([a-z-]+)\/(sync|continue)$/);
+   if (sync && method === 'POST') {
+     const body = await readBody();
+-    if (sync[2] === 'sync') await service.start(sync[1], body.from, body.to);
++    await authorize();
++    if (sync[2] === 'sync') { await service.start(sync[1], body.from, body.to); await authorize(); }
+     return send(await service.tick(sync[1]) ?? { pending: true });
+   }
+   const operation = path.match(/^\/api\/banking\/operations\/([a-f0-9]{64})(?:\/(refresh|print))?$/);
+   if (operation) {
+     if (!operation[2] && method === 'GET') return send({ operation: await service.operation(operation[1]) });
+-    if (operation[2] === 'refresh' && method === 'POST') { await readBody(); return send({ operation: await service.enrich(operation[1]) }); }
++    if (operation[2] === 'refresh' && method === 'POST') { await readBody(); await authorize(); return send({ operation: await service.enrich(operation[1]) }); }
+     if (operation[2] === 'print' && method === 'GET') {
+       const buffer = await service.print(operation[1]);
++      await authorize();
+       response.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="bank-payment-${operation[1].slice(0, 12)}.pdf"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(buffer); return;
+     }
+   }
+diff --git a/server/banking/sber-routes.ts b/server/banking/sber-routes.ts
+index 2203cb6bba6dc0afe37348fb437985874050dafe..da4ef21a26ee10fcca5886f78a247184b7cba1ab 100644
+--- a/server/banking/sber-routes.ts
++++ b/server/banking/sber-routes.ts
+@@ -5,17 +5,20 @@ import { ApiError } from '../api-error';
+ import { SberService } from './sber-service';
+ 
+ export async function sberRoutes(service: SberService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
+-  requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
++  const authorize = async () => requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
++  await authorize();
+   const path = url.pathname.replace('/api/banking/sber/sber-artel/', '/api/banking/sber/').replace('/api/banking/sber/sber-nk-artel/', '/api/banking/sber/'), method = request.method;
+-  const send = (value: unknown) => {
++  // Never release a slow response to a session revoked while the request was pending.
++  const send = async (value: unknown) => {
++    await authorize();
+     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+     response.end(JSON.stringify(value));
+   };
+   if (path === '/api/banking/sber/statements' && method === 'GET') return send(await service.list(url.searchParams));
+-  if (path === '/api/banking/sber/sync' && method === 'POST') { const body = await readBody(); return send(await service.start(body.from, body.to)); }
+-  if (path === '/api/banking/sber/continue' && method === 'POST') { await readBody(); return send(await service.tick()); }
++  if (path === '/api/banking/sber/sync' && method === 'POST') { const body = await readBody(); await authorize(); return send(await service.start(body.from, body.to)); }
++  if (path === '/api/banking/sber/continue' && method === 'POST') { await readBody(); await authorize(); return send(await service.tick()); }
+   const operation = path.match(/^\/api\/banking\/sber\/operations\/([a-f0-9]{64})(\/refresh)?$/);
+   if (operation && !operation[2] && method === 'GET') return send({ operation: await service.operation(operation[1]) });
+-  if (operation && operation[2] && method === 'POST') { await readBody(); return send({ operation: await service.enrich(operation[1]) }); }
++  if (operation && operation[2] && method === 'POST') { await readBody(); await authorize(); return send({ operation: await service.enrich(operation[1]) }); }
+   throw new ApiError(404, 'Маршрут выписки Сбера не найден.');
+ }
+diff --git a/server/local-api.ts b/server/local-api.ts
+index ba5f01fcd70a0734332a5fcc03dc42cb46015755..953810f2bb78a52092aa798f53cf76b237ffe0f0 100644
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -389,6 +389,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
+   });
+   const yandexTiles = createYandexTiles({ environment: options.yandexTilesEnvironment, fetcher: options.fetcher });
+   const limitPushReceipt = createPushReceiptLimiter();
++  let pendingLogins = 0;
++  const gateLogin = async <T>(isLogin: boolean, action: () => Promise<T>): Promise<T> => {
++    if (!isLogin) return action();
++    if (pendingLogins >= 4) throw new ApiError(429, 'Вход сейчас занят. Повторите попытку через несколько секунд.');
++    pendingLogins++;
++    try { return await action(); }
++    finally { pendingLogins--; }
++  };
+   let cache: { signature: string; snapshot: Promise<Snapshot> } | undefined;
+   async function baseSnapshot() {
+     const names = ['manifest', 'companies', 'shipments', 'payments', 'stock_summaries', 'manager_labels', 'validation_report'];
+@@ -506,8 +514,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
+         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
+         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
+         const body = await jsonBody(request);
+-        const result = await operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
+-          if(pathname === '/api/auth/login')return { result: await login(data,body,logistics ? 'logistics' : undefined), changed:true };
++        const result = await gateLogin(pathname === '/api/auth/login', () => operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
++          if(pathname === '/api/auth/login'){
++            let changed=false;
++            const result=await login(data,body,logistics ? 'logistics' : undefined,()=>{changed=true;});
++            return {result,changed};
++          }
+           if(pathname === '/api/auth/setup') {
+             if(data.accounts?.users.length)throw new ApiError(409,'Директор уже создан. Выполните вход.');
+             const setupToken=options.setupToken ?? process.env.ARTEL_SETUP_TOKEN;
+@@ -526,7 +538,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
+             return { result: { status: 200, ...deleted }, changed };
+           }
+           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey)},changed:true};
+-        });
++        }));
+         if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure,logistics ? 'logistics' : undefined));
+         const {token:_token,...safeResult}=result as typeof result & {token?:string};
+         void _token;
+diff --git a/server/production.ts b/server/production.ts
+index cd5bee1f5ce50767cef554c4bbefb50fba0ae8dd..c0697a5e1bbb7bec37cccbbeab096deb2448c4a2 100644
+--- a/server/production.ts
++++ b/server/production.ts
+@@ -166,6 +166,8 @@ export async function createProductionRuntime(env: Environment = process.env) {
+     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+     response.setHeader('Referrer-Policy', 'same-origin');
+     response.setHeader('X-Frame-Options', 'DENY');
++    // Keep React/OpenLayers styles and PDF downloads intact while blocking executable markup.
++    response.setHeader('Content-Security-Policy', "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+     const pathname = requestPath(request);
+     if (!productionRequestAllowed(request, configuration.origin)
+         && !publicShellNavigationAllowed(request, configuration.origin, pathname)) return json(response, 403, { error: 'Доступ запрещён.' });
+diff --git a/server/saby-order-evidence.ts b/server/saby-order-evidence.ts
+index 0298c94bb7f09b06bef57d1734da5c454045ef04..4f76ddfc681243d7c66e24824ce4c4afeb8306e9 100644
+--- a/server/saby-order-evidence.ts
++++ b/server/saby-order-evidence.ts
+@@ -12,16 +12,26 @@ export const SABY_SENDER_COORDINATE_MISMATCH = 'Координаты маршр
+ function failure(): never { throw new SabyError('unknown', 'Текущий титул заявки в Saby не подтверждает сохранённые сведения рейса. Новые ЭТрН не создаются; требуется сверка.', true); }
+ const namePattern = /^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё.:-]*$/u;
+ function xmlText(value: string): string {
+-  let invalid = false;
+-  const text = value.replace(/&([^;]*);/g, (_all, entity: string) => {
+-    const known: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' };
+-    if (Object.hasOwn(known, entity)) return known[entity];
+-    const number = /^#\d+$/.test(entity) ? Number(entity.slice(1)) : /^#x[\da-f]+$/i.test(entity) ? parseInt(entity.slice(2), 16) : NaN;
+-    if (!Number.isInteger(number) || ![9, 10, 13].includes(number) && (number < 32 || number > 0x10ffff || number >= 0xd800 && number <= 0xdfff || number === 0xfffe || number === 0xffff)) { invalid = true; return ''; }
+-    return String.fromCodePoint(number);
+-  });
+-  if (invalid || /&(?![^;]*;)/.test(value) || /&[^;]*$/.test(value)) failure();
+-  return text;
++  const known: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' };
++  const parts: string[] = [];
++  let offset = 0;
++  // Advance past each complete entity exactly once. A regex searching for a
++  // missing semicolon can retry from every '&' and block the server quadratically.
++  for (;;) {
++    const start = value.indexOf('&', offset);
++    if (start < 0) { parts.push(value.slice(offset)); return parts.join(''); }
++    parts.push(value.slice(offset, start));
++    const end = value.indexOf(';', start + 1);
++    if (end < 0) failure();
++    const entity = value.slice(start + 1, end);
++    if (Object.hasOwn(known, entity)) parts.push(known[entity]);
++    else {
++      const number = /^#\d+$/.test(entity) ? Number(entity.slice(1)) : /^#x[\da-f]+$/i.test(entity) ? parseInt(entity.slice(2), 16) : NaN;
++      if (!Number.isInteger(number) || ![9, 10, 13].includes(number) && (number < 32 || number > 0x10ffff || number >= 0xd800 && number <= 0xdfff || number === 0xfffe || number === 0xffff)) failure();
++      parts.push(String.fromCodePoint(number));
++    }
++    offset = end + 1;
++  }
+ }
+ /** A bounded closed XML reader: no DTD, entity expansion, network, or executable processing. */
+ export function parseXml(bytes: Uint8Array): XmlNode {
+diff --git a/server/trip-saby-signing.ts b/server/trip-saby-signing.ts
+index 6a07485c6687c2a958b742699c7097cfeb3ebeb3..3f60d9d450b64b8086019b5aa24dd3a48ee615d8 100644
+--- a/server/trip-saby-signing.ts
++++ b/server/trip-saby-signing.ts
+@@ -200,7 +200,9 @@ export async function getTripSigningPreview(context: SigningContext): Promise<Tr
+   await check(); const data = await store.read(source); const record = data.tripSaby?.trips[tripId];
+   if (!record?.order.id) throw new ApiError(409, 'Сначала создайте заявку рейса в Saby.');
+   const client = (context.client ?? new SabyClient(sabyConfigFromEnv())).withRequestGuard(check);
+-  return previewFor(client, record);
++  const preview = await previewFor(client, record);
++  await check();
++  return preview;
+ }
+ export async function beginTripSigning(client: SabyClient, record: TripSabyRecord, request: TripSabySigningStartRequest, requestedBy: string, update: (mutation: (row: TripSabyRecord) => void) => Promise<void>) {
+   validateSigningStart(request);
+diff --git a/tests/api-banking-security.test.ts b/tests/api-banking-security.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ffd73627ead091cfabcc3527c9058d4a70d18958
+--- /dev/null
++++ b/tests/api-banking-security.test.ts
+@@ -0,0 +1,97 @@
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import type { IncomingMessage, ServerResponse } from 'node:http';
++import { test } from 'node:test';
++import { ApiError } from '../server/api-error';
++import type { OperationsData } from '../server/operations-store';
++import { bankingRoutes } from '../server/banking/routes';
++import { sberRoutes } from '../server/banking/sber-routes';
++import type { BankingService } from '../server/banking/service';
++import type { SberService } from '../server/banking/sber-service';
++
++const operationId = 'b'.repeat(64);
++type ServiceAction = 'list' | 'rows' | 'operation' | 'start' | 'tick' | 'enrich' | 'print';
++const cases: { path: string; method: 'GET' | 'POST'; actions: ServiceAction[] }[] = [
++  { path: '/api/banking', method: 'GET', actions: ['list'] },
++  { path: '/api/banking/export', method: 'GET', actions: ['rows'] },
++  { path: `/api/banking/operations/${operationId}`, method: 'GET', actions: ['operation'] },
++  { path: `/api/banking/operations/${operationId}/print`, method: 'GET', actions: ['print'] },
++  { path: `/api/banking/operations/${operationId}/refresh`, method: 'POST', actions: ['enrich'] },
++  { path: '/api/banking/connections/tbank-nk-artel/sync', method: 'POST', actions: ['start', 'tick'] },
++  { path: '/api/banking/connections/tbank-nk-artel/continue', method: 'POST', actions: ['tick'] },
++  { path: '/api/banking/sber/statements', method: 'GET', actions: ['list'] },
++  { path: `/api/banking/sber/operations/${operationId}`, method: 'GET', actions: ['operation'] },
++  { path: `/api/banking/sber/operations/${operationId}/refresh`, method: 'POST', actions: ['enrich'] },
++  { path: '/api/banking/sber/sync', method: 'POST', actions: ['start'] },
++  { path: '/api/banking/sber/continue', method: 'POST', actions: ['tick'] },
++];
++
++function fixture(entry: typeof cases[number], revokeAt?: 'body' | ServiceAction, demote = false) {
++  const token = 'a'.repeat(64);
++  const accounts: NonNullable<OperationsData['accounts']> = {
++    users: [{ id: 'security-test-admin', name: 'Synthetic admin', login: 'synthetic.admin', role: 'admin', managerId: null, active: true, version: 1, passwordHash: '0'.repeat(128), salt: '0'.repeat(32) }],
++    sessions: [{ hash: createHash('sha256').update(token).digest('hex'), userId: 'security-test-admin', expiresAt: Date.now() + 60000 }],
++    attempts: {},
++  };
++  const calls: ServiceAction[] = [];
++  const sent: unknown[] = [];
++  const revoke = () => {
++    if (demote) { accounts.users[0].role = 'employee'; accounts.users[0].sections = ['payments']; }
++    else accounts.sessions = [];
++  };
++  const result = (action: ServiceAction, value: unknown) => async () => {
++    calls.push(action);
++    if (revokeAt === action) revoke();
++    return value;
++  };
++  const service = {
++    source: 'synthetic-security-test',
++    store: { read: async () => ({ accounts }) },
++    list: result('list', { items: [] }), rows: result('rows', []),
++    operation: result('operation', { id: operationId }), enrich: result('enrich', { id: operationId }),
++    print: result('print', Buffer.from('%PDF-synthetic')), start: result('start', { pending: true }), tick: result('tick', { pending: false }),
++  };
++  const request = { method: entry.method, url: entry.path, headers: { cookie: `artel_session=${token}` } } as IncomingMessage;
++  const response = { writeHead: (...args: unknown[]) => { sent.push(args); }, end: (value: unknown) => { sent.push(value); } } as unknown as ServerResponse;
++  const readBody = async () => {
++    if (revokeAt === 'body') revoke();
++    return { from: '2026-10-01', to: '2026-10-02' };
++  };
++  const run = () => entry.path.startsWith('/api/banking/sber/')
++    ? sberRoutes(service as unknown as SberService, request, response, new URL(entry.path, 'http://localhost'), readBody)
++    : bankingRoutes(service as unknown as BankingService, request, response, new URL(entry.path, 'http://localhost'), readBody);
++  return { run, calls, sent };
++}
++
++for (const entry of cases) {
++  test(`bank request preserves successful behavior without repeating work: ${entry.method} ${entry.path}`, async () => {
++    const f = fixture(entry);
++    await f.run();
++    assert.deepEqual(f.calls, entry.actions);
++    assert.equal(f.sent.length, 2);
++    assert.equal((f.sent[0] as unknown[])[0], 200);
++  });
++
++  for (const demote of [false, true]) {
++    test(`bank response is withheld after ${demote ? 'privilege removal' : 'session revocation'} during work: ${entry.method} ${entry.path}`, async () => {
++      const f = fixture(entry, entry.actions.at(-1), demote);
++      await assert.rejects(f.run, error => error instanceof ApiError && error.status === (demote ? 403 : 401));
++      assert.deepEqual(f.calls, entry.actions);
++      assert.deepEqual(f.sent, []);
++    });
++  }
++
++  if (entry.method === 'POST') test(`bank request revoked while reading body performs no work: ${entry.path}`, async () => {
++    const f = fixture(entry, 'body');
++    await assert.rejects(f.run, error => error instanceof ApiError && error.status === 401);
++    assert.deepEqual(f.calls, []);
++    assert.deepEqual(f.sent, []);
++  });
++}
++
++test('bank sync does not start a provider tick after access was revoked while queueing the job', async () => {
++  const f = fixture(cases.find(entry => entry.path === '/api/banking/connections/tbank-nk-artel/sync')!, 'start');
++  await assert.rejects(f.run, error => error instanceof ApiError && error.status === 401);
++  assert.deepEqual(f.calls, ['start']);
++  assert.deepEqual(f.sent, []);
++});
+diff --git a/tests/api-login-security.test.ts b/tests/api-login-security.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c211a6cf400cd368423fa1f7644013a9727dd056
+--- /dev/null
++++ b/tests/api-login-security.test.ts
+@@ -0,0 +1,231 @@
++import assert from 'node:assert/strict';
++import crypto, { createHash, scryptSync } from 'node:crypto';
++import { syncBuiltinESMExports } from 'node:module';
++import { createServer } from 'node:http';
++import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import type { AddressInfo } from 'node:net';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { test } from 'node:test';
++import { login } from '../server/auth';
++import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
++import { OperationsStore, type OperationsData, type OperationsStorage } from '../server/operations-store';
++
++const digest = (value: string) => createHash('sha256').update(value).digest('hex');
++const globalKey = digest('artel:auth:global-login-limit:v2');
++const userKey = (login: string) => digest(`artel:auth:user:${login}`);
++const password = 'synthetic-security-password';
++const salt = 'a'.repeat(32);
++const passwordHash = scryptSync(password, salt, 64).toString('hex');
++function fixture(globalLimit = false) {
++  const accounts: NonNullable<OperationsData['accounts']> = {
++    users: [{ id: 'security-owner', name: 'Synthetic owner', login: 'security.owner', role: 'director', managerId: null, active: true, version: 1, salt, passwordHash }],
++    sessions: [], attempts: globalLimit ? { [globalKey]: { count: 50, until: Date.now() + 900000 } } : {},
++  };
++  const data = { accounts } as OperationsData;
++  return { data, accounts };
++}
++
++test('fifty unrelated failed logins cannot prevent a valid existing account from signing in', async () => {
++  const f = fixture();
++  for (let i = 0; i < 50; i++) assert.equal((await login(f.data, { login: `unknown-${i}`, password: 'wrong' })).status, 401);
++  const signed = await login(f.data, { login: 'security.owner', password });
++  assert.equal(signed.status, 200);
++  assert.equal(f.accounts.sessions.length, 1);
++  assert.equal(f.accounts.attempts[globalKey].count, 50);
++});
++
++test('exhausted global budget gives the same reply for unknown and incorrect existing credentials', async () => {
++  const f = fixture(true);
++  const unknown = await login(f.data, { login: 'unknown', password: 'wrong' });
++  const known = await login(f.data, { login: 'security.owner', password: 'wrong' });
++  assert.deepEqual(known, unknown);
++  assert.equal(known.status, 429);
++  assert.equal(f.accounts.attempts[userKey('security.owner')].count, 1);
++  assert.equal(f.accounts.attempts[globalKey].count, 50);
++  assert.equal(f.accounts.sessions.length, 0);
++});
++
++test('blocked unknown usernames allocate no additional attempt entries or persistent changes', async () => {
++  const f = fixture(true), before = structuredClone(f.accounts);
++  let changed = false;
++  for (let i = 0; i < 8; i++) assert.equal((await login(f.data, { login: `new-unknown-${i}`, password: 'wrong' }, undefined, () => { changed = true; })).status, 429);
++  assert.equal(changed, false);
++  assert.deepEqual(f.accounts, before);
++});
++
++test('the existing five-attempt account limit stays in force after global exhaustion', async () => {
++  const f = fixture(true);
++  for (let i = 0; i < 5; i++) assert.equal((await login(f.data, { login: 'security.owner', password: 'wrong' })).status, 429);
++  const before = structuredClone(f.accounts);
++  let changed = false;
++  assert.equal((await login(f.data, { login: 'security.owner', password }, undefined, () => { changed = true; })).status, 429);
++  assert.equal(changed, false);
++  assert.deepEqual(f.accounts, before);
++});
++
++test('locked known and unknown accounts use the same scrypt path after global exhaustion', async t => {
++  const original = crypto.scrypt;
++  let derivations = 0;
++  t.mock.method(crypto, 'scrypt', (...args: unknown[]) => { derivations++; return Reflect.apply(original, crypto, args); });
++  syncBuiltinESMExports();
++  try {
++    // Load an isolated module so promisify captures the observed implementation.
++    const moduleUrl = new URL('../server/auth.ts', import.meta.url);
++    moduleUrl.search = '?security-scrypt-path';
++    const isolated = await import(moduleUrl.href) as typeof import('../server/auth');
++    const f = fixture(true);
++    f.accounts.attempts[userKey('security.owner')] = { count: 5, until: Date.now() + 900000 };
++    const before = structuredClone(f.accounts);
++    let changed = false;
++    for (const name of ['security.owner', 'new-unknown']) {
++      const start = derivations;
++      assert.equal((await isolated.login(f.data, { login: name, password: 'wrong' }, undefined, () => { changed = true; })).status, 429);
++      assert.equal(derivations - start, 1, `${name} must run exactly one password derivation`);
++    }
++    assert.equal(changed, false);
++    assert.deepEqual(f.accounts, before);
++  } finally {
++    t.mock.restoreAll();
++    syncBuiltinESMExports();
++  }
++});
++
++test('expiry cleanup, failed attempts and successful sessions signal their actual persistence needs', async () => {
++  const f = fixture(true);
++  f.accounts.attempts[userKey('security.owner')] = { count: 5, until: Date.now() + 900000 };
++  f.accounts.attempts[digest('expired')] = { count: 2, until: Date.now() - 1 };
++  let changed = false;
++  assert.equal((await login(f.data, { login: 'security.owner', password }, undefined, () => { changed = true; })).status, 429);
++  assert.equal(changed, true);
++  assert.equal(f.accounts.attempts[digest('expired')], undefined);
++  f.accounts.attempts[userKey('security.owner')].until = Date.now() - 1;
++  changed = false;
++  assert.equal((await login(f.data, { login: 'security.owner', password }, undefined, () => { changed = true; })).status, 200);
++  assert.equal(changed, true);
++  assert.equal(f.accounts.attempts[userKey('security.owner')], undefined);
++  assert.equal(f.accounts.sessions.length, 1);
++  const fresh = fixture();
++  changed = false;
++  assert.equal((await login(fresh.data, { login: 'security.owner', password: 'wrong' }, undefined, () => { changed = true; })).status, 401);
++  assert.equal(changed, true);
++});
++
++test('inactive accounts and logistics permissions remain closed under the shared login limit', async () => {
++  const f = fixture(true);
++  f.accounts.users[0].active = false;
++  assert.equal((await login(f.data, { login: 'security.owner', password })).status, 429);
++  assert.equal(f.accounts.sessions.length, 0);
++  f.accounts.users[0].active = true;
++  f.accounts.users[0].role = 'employee';
++  f.accounts.users[0].sections = [];
++  assert.equal((await login(f.data, { login: 'security.owner', password }, 'logistics')).status, 403);
++  assert.equal(f.accounts.sessions.length, 0);
++  f.accounts.users[0].sections = ['trips'];
++  assert.equal((await login(f.data, { login: 'security.owner', password }, 'logistics')).status, 200);
++  assert.equal(f.accounts.sessions[0].audience, 'logistics');
++});
++
++test('legacy throttles survive key migration and a sentinel-named account cannot clear the shared limit', async () => {
++  const f = fixture();
++  f.accounts.users.push({ ...f.accounts.users[0], id: 'sentinel-user', login: 'artel-global-login-limit' });
++  f.accounts.users.push({ ...f.accounts.users[0], id: 'unrelated-user', login: 'unrelated' });
++  const until = Date.now() + 900000;
++  f.accounts.attempts[digest('artel-global-login-limit')] = { count: 50, until };
++  f.accounts.attempts[digest('security.owner')] = { count: 5, until };
++  assert.equal((await login(f.data, { login: 'security.owner', password })).status, 429);
++  assert.deepEqual(f.accounts.attempts[globalKey], { count: 50, until });
++  assert.deepEqual(f.accounts.attempts[userKey('security.owner')], { count: 5, until });
++  assert.deepEqual(f.accounts.attempts[userKey('artel-global-login-limit')], { count: 5, until });
++  assert.equal(f.accounts.attempts[digest('artel-global-login-limit')], undefined);
++  assert.equal((await login(f.data, { login: 'unrelated', password })).status, 200);
++  assert.equal(f.accounts.attempts[globalKey].count, 50);
++
++  const fresh = fixture();
++  fresh.accounts.users[0].login = 'artel-global-login-limit';
++  assert.equal((await login(fresh.data, { login: 'artel-global-login-limit', password: 'wrong' })).status, 401);
++  assert.equal(fresh.accounts.attempts[globalKey].count, 1);
++  assert.equal((await login(fresh.data, { login: 'artel-global-login-limit', password })).status, 200);
++  assert.equal(fresh.accounts.attempts[globalKey].count, 1);
++  assert.equal(fresh.accounts.attempts[userKey('artel-global-login-limit')], undefined);
++  await login(fresh.data, { login: 'artel:auth:global-login-limit:v2', password: 'wrong' });
++  assert.equal(fresh.accounts.attempts[globalKey].count, 2, 'Invalid login text cannot migrate or erase the new shared counter');
++});
++
++test('login API does not rewrite storage for unchanged throttled requests and keeps its public response', async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-login-security-'));
++  const store = new OperationsStore(directory), base = await loadSnapshot();
++  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store });
++  const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/auth/login`;
++  const call = async (name: string, candidate: string) => {
++    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ login: name, password: candidate }) });
++    return { status: response.status, body: await response.json(), cookie: response.headers.get('set-cookie') };
++  };
++  try {
++    await store.mutate(base.provenance.sourceSha256, data => { data.accounts = fixture(true).accounts; return { changed: true, result: null }; });
++    const before = await readFile(store.path, 'utf8');
++    for (let i = 0; i < 3; i++) {
++      const limited = await call(`unknown-${i}`, 'wrong');
++      assert.equal(limited.status, 429);
++      assert.deepEqual(Object.keys(limited.body).sort(), ['error', 'status']);
++    }
++    assert.equal(await readFile(store.path, 'utf8'), before);
++    const signed = await call('security.owner', password);
++    assert.equal(signed.status, 200);
++    assert.deepEqual(Object.keys(signed.body).sort(), ['status', 'user']);
++    assert.match(signed.cookie ?? '', /HttpOnly; SameSite=Strict/);
++    assert.equal((await store.read(base.provenance.sourceSha256)).accounts!.sessions.length, 1);
++    assert.notEqual(await readFile(store.path, 'utf8'), before);
++  } finally {
++    await new Promise<void>(done => server.close(() => done()));
++    await rm(directory, { recursive: true, force: true });
++  }
++});
++
++test('four pending logins bound the transaction queue without blocking authenticated reads; slots recover after failure', async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-login-gate-'));
++  const store = new OperationsStore(directory), base = await loadSnapshot();
++  const token = 'c'.repeat(64);
++  const accounts = fixture(true).accounts;
++  accounts.sessions.push({ userId: accounts.users[0].id, hash: digest(token), expiresAt: Date.now() + 60000 });
++  await store.mutate(base.provenance.sourceSha256, data => { data.accounts = accounts; return { result: null, changed: true }; });
++  let release!: () => void, full!: () => void, holding = true, entries = 0, failNext = false;
++  const hold = new Promise<void>(resolve => { release = resolve; });
++  const allEntered = new Promise<void>(resolve => { full = resolve; });
++  const guardedStore: OperationsStorage = {
++    read: source => store.read(source),
++    mutate: async (source, update) => {
++      entries++;
++      if (entries === 4) full();
++      if (holding) await hold;
++      if (failNext) { failNext = false; throw new Error('synthetic storage failure'); }
++      return store.mutate(source, update);
++    },
++  };
++  const middleware = createSnapshotMiddleware(undefined, { operationsStore: guardedStore, operationsDirectory: directory });
++  const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  const call = (name: string, candidate = 'wrong') => fetch(url + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ login: name, password: candidate }) });
++  const pending = Array.from({ length: 4 }, (_, i) => call(`pending-${i}`));
++  try {
++    await allEntered;
++    assert.equal((await call('overflow')).status, 429);
++    assert.equal(entries, 4, 'Excess login must never join the storage transaction queue');
++    const session = await fetch(url + '/api/auth/session', { headers: { cookie: `artel_session=${token}` } });
++    assert.equal(session.status, 200);
++    assert.equal((await session.json()).user.id, accounts.users[0].id);
++    holding = false; release();
++    assert.deepEqual((await Promise.all(pending)).map(response => response.status), [429, 429, 429, 429]);
++    failNext = true;
++    assert.equal((await call('security.owner', password)).status, 500);
++    assert.equal((await call('security.owner', password)).status, 200);
++  } finally {
++    holding = false; release();
++    await Promise.allSettled(pending);
++    await new Promise<void>(done => server.close(() => done()));
++    await rm(directory, { recursive: true, force: true });
++  }
++});
+diff --git a/tests/api-production.test.ts b/tests/api-production.test.ts
+index e7a61c829daca4dae958a883cf7e3cbfb1da5e92..b7144cd9cca976f7ebb51c0b125735637b464b80 100644
+--- a/tests/api-production.test.ts
++++ b/tests/api-production.test.ts
+@@ -98,6 +98,7 @@ test('production serves the compiled app only and validates host, origin, traver
+   const f = await fixture(); const runtime = await f.runtime();
+   try {
+     const health = await runtime.request('/healthz', { origin: null });
++    assert.equal(health.headers['content-security-policy'], "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+     assert.equal(health.status, 200); assert.deepEqual(JSON.parse(health.text), { status: 'ok' });
+     assert.equal((await runtime.request('/healthz', { host: 'evil.example' })).status, 403);
+     assert.equal((await runtime.request('/', { origin: 'https://evil.example' })).status, 403);
+diff --git a/tests/api-trip-saby-signing.test.ts b/tests/api-trip-saby-signing.test.ts
+index 04aad689360daf2b8dab706d9e9df93fadae91f0..805561dc88faf5a5b71c21a2568e92bb0d054306 100644
+--- a/tests/api-trip-saby-signing.test.ts
++++ b/tests/api-trip-saby-signing.test.ts
+@@ -121,6 +121,24 @@ async function legacyCarrierFixture() {
+   return f;
+ }
+ 
++test('signing preview withholds certificate details when access is revoked during the final provider read', async () => {
++  const f = await fixture(); let revoked = false;
++  try {
++    assert.equal((await f.preview()).ready, true);
++    f.setHook(async (side, request) => {
++      if (side === 'carrier' && request.method === 'sabyCertificate.List') revoked = true;
++    });
++    await assert.rejects(
++      getTripSigningPreview({ ...f, client: new SabyClient(f.config, f.send), authorize: () => {
++        if (revoked) throw new ApiError(401, 'Synthetic session revoked');
++      } }),
++      error => error instanceof ApiError && error.status === 401,
++    );
++    assert.equal(revoked, true, 'The simulated revocation must occur during the provider response');
++    assert.equal(f.writes().length, 0);
++  } finally { await f.close(); }
++});
++
+ test('GET preview, old POST and scheduler never initiate signing; public projection contains no signing bytes or private state', async () => {
+   const f = await fixture(); try {
+     const p = await f.preview(); assert.equal(p.ready, true); await f.run();
+diff --git a/tests/security-boundaries.test.ts b/tests/security-boundaries.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a214574bf645f955d8c9025688de5b1dcf5c2fe
+--- /dev/null
++++ b/tests/security-boundaries.test.ts
+@@ -0,0 +1,94 @@
++import assert from 'node:assert/strict';
++import { spawnSync } from 'node:child_process';
++import { createHash } from 'node:crypto';
++import { mkdtemp, rm, writeFile } from 'node:fs/promises';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { test } from 'node:test';
++import { createSnapshotMiddleware } from '../server/local-api';
++import { OperationsStore } from '../server/operations-store';
++import { parseXml } from '../server/saby-order-evidence';
++import { SabyError } from '../server/saby-client';
++
++const xml = (body: string) => Buffer.from(`<?xml version="1.0" encoding="utf-8"?>${body}`);
++
++test('XML entity decoding preserves named and numeric references in text and attributes', () => {
++  const root = parseXml(xml('<root text="&quot;&apos;&lt;&gt;&amp;&#9;&#10;&#13;&#x410;&#128512;">A&amp;B &lt; &#65;&#x41;&#x1f600;</root>'));
++  assert.equal(root.attributes.text, "\"'<>&\t\n\rА😀");
++  assert.deepEqual(root.children, ['A&B < AA😀']);
++  assert.deepEqual(parseXml(xml('<root>&amp;lt;</root>')).children, ['&lt;']);
++});
++
++test('XML rejects malformed, nested, unknown and invalid Unicode references', () => {
++  for (const value of ['&', 'text&tail', '&amp', '&bogus;', '&&amp;', '&amp&amp;', '&#;', '&#x;', '&#0;', '&#31;', '&#55296;', '&#65534;', '&#x10ffff0;', '&#-1;']) {
++    assert.throws(() => parseXml(xml(`<root>${value}</root>`)), SabyError, value);
++    assert.throws(() => parseXml(xml(`<root attr="${value}"/>`)), SabyError, value);
++  }
++});
++
++test('malformed XML cannot monopolize the process with repeated unterminated entities', () => {
++  // Isolate synchronous parsing so a regression is killed rather than blocking
++  // the entire test runner. Five seconds is a watchdog, not a speed benchmark:
++  // this bounded input previously required roughly 25 seconds of CPU time.
++  const parser = new URL('../server/saby-order-evidence.ts', import.meta.url).href;
++  const errors = new URL('../server/saby-client.ts', import.meta.url).href;
++  const source = `
++    import { parseXml } from ${JSON.stringify(parser)};
++    import { SabyError } from ${JSON.stringify(errors)};
++    for (const body of [
++      '<root>' + '&'.repeat(262144) + '</root>',
++      '<root attr="' + '&'.repeat(262144) + '"/>',
++      '<root>' + '&'.repeat(262144) + ';</root>',
++    ]) {
++      try { parseXml(Buffer.from(body)); process.exit(1); }
++      catch (error) { if (!(error instanceof SabyError)) process.exit(2); }
++    }
++  `;
++  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source], { timeout: 5000, encoding: 'utf8' });
++  assert.equal(result.error, undefined, result.error?.message);
++  assert.equal(result.status, 0, result.stderr);
++});
++
++test('malformed request bodies and unexpected storage failures stay bounded and do not mutate data', async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-security-boundaries-'));
++  const source = 'a'.repeat(64);
++  const meta = { source_file: 'synthetic.xlsx', source_sha256: source, created_at_utc: '2026-01-01T00:00:00Z', source_kind: 'test', google_verified: false, formula_policy: '', ownership_policy: '' };
++  const validation = { status: 'ok', registry_verified: false, issue_counts: {}, cell_issues: [], record_flag_counts: {}, duplicate_record_candidates: [], legal_form_alias_candidate_groups: [], multiple_manager_companies: [], limitations: [] };
++  const files: Record<string, { sha256: string; bytes: number }> = {};
++  for (const name of ['companies', 'shipments', 'payments', 'stock_summaries', 'manager_labels', 'validation_report']) {
++    const raw = JSON.stringify({ meta, data: name === 'validation_report' ? validation : [] });
++    await writeFile(resolve(directory, `${name}.json`), raw);
++    files[`${name}.json`] = { sha256: createHash('sha256').update(raw).digest('hex'), bytes: Buffer.byteLength(raw) };
++  }
++  await writeFile(resolve(directory, 'manifest.json'), JSON.stringify({ meta, counts: {}, files }));
++  const store = new OperationsStore(resolve(directory, 'store'));
++  let failRead = true, mutations = 0;
++  const middleware = createSnapshotMiddleware(directory, { operationsStore: {
++    read: async checksum => { if (failRead) { failRead = false; throw new Error('synthetic-private-token /private/server/path'); } return store.read(checksum); },
++    mutate: async (checksum, action) => { mutations++; return store.mutate(checksum, action); },
++  } });
++  const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  try {
++    const failed = await fetch(`${origin}/api/auth/session`);
++    assert.equal(failed.status, 500);
++    assert.doesNotMatch(await failed.text(), /synthetic-private-token|\/private\/server\/path|Error:|at .*\.ts/);
++    for (const body of ['{', '[]', 'null', '"text"']) {
++      const reply = await fetch(`${origin}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
++      assert.equal(reply.status, 400); await reply.arrayBuffer();
++    }
++    const wrongType = await fetch(`${origin}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' });
++    assert.equal(wrongType.status, 415); await wrongType.arrayBuffer();
++    const oversized = await fetch(`${origin}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ login: 'a'.repeat(131072) }) });
++    assert.equal(oversized.status, 413); await oversized.arrayBuffer();
++    const recovered = await fetch(`${origin}/api/auth/session`);
++    assert.equal(recovered.status, 200); assert.equal((await recovered.json()).needsSetup, true);
++    assert.equal(mutations, 0);
++  } finally {
++    await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
++    await rm(directory, { recursive: true, force: true });
++  }
++});
+diff --git a/tests/trip-nk-supply-delivery.test.ts b/tests/trip-nk-supply-delivery.test.ts
+index fc3d5dc97ea3b62a660c26378b228d9dc7f86e82..9fe962df5b66512c23871af8440de77ca37e4ede 100644
+--- a/tests/trip-nk-supply-delivery.test.ts
++++ b/tests/trip-nk-supply-delivery.test.ts
+@@ -223,7 +223,7 @@ for (const excluded of [[false, true], [true, false], [true, true]]) test(`direc
+     assert.equal(departure.status, 200, departure.text);
+     const required = f.created.trip.customers.filter((_, index) => !excluded[index]);
+     assert.equal(departure.body.trip.etrnRequired, required.length > 0);
+-    assert.equal(departure.body.trip.archived, required.length === 0);
++    assert.equal(departure.body.trip.archived, false, 'departure never completes physical deliveries, including trips without ETRN');
+     assert.deepEqual(departure.body.trip.deliveries.map((row: { netTonnes: string }) => row.netTonnes), ['6.745', '7.985']);
+     const saved = await f.store.read(f.source);
+     const before = encodeOperations(saved);
+@@ -234,7 +234,18 @@ for (const excluded of [[false, true], [true, false], [true, true]]) test(`direc
+     assert.deepEqual(f.created.trip.customers.map(row => saved.shipments[row.id].fields.invoice_not_required), ['true', 'false']);
+     assert.deepEqual(Object.keys(saved.etrn!.trips[id].loadingFacts!.deliveries), f.created.trip.customers.map(row => row.id));
+     assert.equal(encodeOperations(saved), before, 'projection is read only');
+-    assert.equal(f.provider.calls.length, 0, 'save, departure and projection never authorize direct signing');
++    let current = departure.body.trip;
++    for (const [index, delivery] of f.created.trip.customers.entries()) {
++      const delivered = await f.request(`${driverPath}/deliver`, 'POST', { versions: current.versions, executionVersion: current.execution.version, deliveryId: delivery.id }, f.cookie);
++      assert.equal(delivered.status, 200, delivered.text);
++      current = delivered.body.trip;
++      assert.equal(current.archived, index === f.created.trip.customers.length - 1, 'only the last physical delivery archives the trip');
++      assert.equal(current.execution.deliveries[delivery.id].role, 'driver');
++    }
++    const completed = await f.store.read(f.source);
++    assert.deepEqual(completed.etrn, saved.etrn, 'physical completion does not create or change electronic documents or loading facts');
++    assert.deepEqual(completed.shipments, saved.shipments, 'physical completion preserves masses, invoice flags and ETRN exclusions');
++    assert.equal(f.provider.calls.length, 0, 'save, departure, projection and physical completion never authorize direct signing');
+   } finally { await f.close(); }
+ });
+ 
+diff --git a/tests/trip-saby-driver-format.test.ts b/tests/trip-saby-driver-format.test.ts
+index e6eb9391a967b2bbdf9407cd6eac29b078121b9c..99357388fd4d4024b002b45c30a7b3d654bcace5 100644
+--- a/tests/trip-saby-driver-format.test.ts
++++ b/tests/trip-saby-driver-format.test.ts
+@@ -79,7 +79,9 @@ test('completed driver masses become exact per-delivery cargo with stable IDs an
+       assert.deepEqual(sabyConsignmentBlockers(row.snapshot), []);
+       const note = serializeSabyConsignmentNote(row.snapshot, attempt, created, '101'); const content = decode(note.xml);
+       assert.match(content, /МетОпрМасс="03" КолМестПрием="1"/);
+-      assert.match(content, /ЛицоПА="Грузоотправитель" СпосПерУкПА="По телефону"/);
++      assert.equal(row.snapshot.profile.instructions.redirectionMethod, 'Электронное уведомление перевозчика о переадресовке');
++      assert.match(content, /ЛицоПА="Грузоотправитель" СпосПерУкПА="Электронное уведомление перевозчика о переадресовке"/);
++      assert.doesNotMatch(content, /СпосПерУкПА="По телефону"/);
+       assert.match(content, /ФДатВрПриб="02\.04\.2025T09:23:01\+03:00"/);
+       assert.match(content, /ФДатВрУбыт="02\.04\.2025T10:31:02\+03:00"/);
+       assert.doesNotMatch(content, /ДатВрДостГр=/);
