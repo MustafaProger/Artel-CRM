@@ -1,0 +1,11 @@
+--- a/web/src/operator-reconciliation.css
++++ b/web/src/operator-reconciliation.css
+@@ -48,7 +48,7 @@
+ .operator-reconciliation {grid-template-columns:minmax(0,1fr);container-type:inline-size;container-name:reconciliation}
+ .operator-reconciliation-heading>*,.operator-reconciliation-scroll {min-width:0}
+ .operator-reconciliation-heading input {box-sizing:border-box;min-width:0;max-width:100%;width:100%}
+-div.scrollable-segments.operator-reconciliation-services[class] {gap:6px;padding:3px;background:transparent;box-shadow:none;border:0;max-width:100%;min-width:0}
++div.scrollable-segments.operator-reconciliation-services[class] {justify-self:end;gap:6px;padding:3px;background:transparent;box-shadow:none;border:0;max-width:100%;min-width:0}
+ div.scrollable-segments.operator-reconciliation-services[class]>button {border:1px solid transparent;padding:9px 18px;min-height:40px}
+ div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true],div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true]:hover {border-color:#81998a;box-shadow:inset 0 0 0 1px #81998a}
+ .operator-reconciliation-services>button:focus-visible {outline:3px solid #226b52;outline-offset:-3px}
