@@ -1,0 +1,1104 @@
+--- /dev/null
++++ b/scripts/operator-review-built.mjs
+@@ -0,0 +1,15 @@
++import {cp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
++import {resolve} from 'node:path';
++import {spawn} from 'node:child_process';
++import {startOperatorQaServer} from './qa-operator-runtime.mjs';
++const root=resolve(import.meta.dirname,'..'), folder=resolve(root,'../built-review');await mkdir(folder,{recursive:true});
++await cp(resolve(root,'../preview/snapshot'),resolve(folder,'snapshot'),{recursive:true});await cp(resolve(root,'../preview/store'),resolve(folder,'store'),{recursive:true});
++process.env.ARTEL_OPERATOR_QA_BUILT='1';
++const runtime=await startOperatorQaServer({root,snapshotDirectory:resolve(folder,'snapshot'),operationsDirectory:resolve(folder,'store')});
++const access=JSON.parse(await readFile(resolve(root,'../preview/access.json'),'utf8'));
++try{
++ for(const script of ['verify_operator_review.mjs','verify_operator_push_state.mjs']){
++  const code=await new Promise(done=>{const child=spawn(process.execPath,['--import','tsx',resolve(root,'scripts',script)],{cwd:root,stdio:'inherit',env:{...process.env,ARTEL_REVIEW_BUILT:'1',ARTEL_REVIEW_BASE:runtime.base,ARTEL_REVIEW_COOKIE:access.cookie}});child.on('exit',done)});
++  if(code!==0)throw new Error(script+' failed');
++ }
++}finally{await runtime.server.close()}
+--- /dev/null
++++ b/scripts/operator-review-preview.mjs
+@@ -0,0 +1,36 @@
++// Local review only: synthetic data, loopback, integrations disabled.
++import {mkdir,writeFile,readFile} from 'node:fs/promises';
++import {resolve} from 'node:path';
++import {randomUUID} from 'node:crypto';
++import {writeTripsQaSnapshot,startTripsQaServer} from './qa-trips-runtime.mjs';
++const root=resolve(import.meta.dirname,'..'), folder=resolve(root,'../preview');
++await mkdir(folder,{recursive:true});
++const snapshotDirectory=resolve(folder,'snapshot'),operationsDirectory=resolve(folder,'store');
++await writeTripsQaSnapshot(snapshotDirectory);
++const runtime=await startTripsQaServer({root,snapshotDirectory,operationsDirectory,port:5191});
++const state=await(await fetch(runtime.base+'/api/auth/session')).json();
++const login={login:'review',password:'LocalReview2026!'};
++let response=await fetch(runtime.base+(state.needsSetup?'/api/auth/setup':'/api/auth/login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...login,name:'Локальный просмотр'})});
++if(!response.ok)throw new Error('Local login failed');
++const cookie=response.headers.get('set-cookie').split(';')[0];
++const api=async(path,method='GET',body)=>{
++ const res=await fetch(runtime.base+path,{method,headers:{cookie,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const result=await res.json();if(!res.ok)throw new Error(JSON.stringify({path,status:res.status,result}));return result;
++};
++if(state.needsSetup){
++ const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Moscow'}).format(new Date());
++ const recipientId=randomUUID();
++ const plan=await api('/api/operator/plans','POST',{clientName:'Учебный клиент',recipients:[{id:recipientId,name:'Учебный получатель',bank:'Учебный банк',card:'0000',phone:'+70000000000',details:'Синтетические реквизиты',limit:'5000000'}],idempotencyKey:randomUUID()});
++ let work=await api('/api/operator');
++ for(const [index,service] of work.services.entries()){
++  const current=(await api('/api/operator')).plans.find(row=>row.id===plan.id);
++  const row=await api('/api/operator/refuellings','POST',{schemaVersion:3,planId:plan.id,planVersion:current.version,date:today,name:['Учебный водитель Алексей','Учебный водитель Сергей','Учебный водитель Роман','Учебный водитель Виктор','Учебный водитель Павел'][index],serviceId:service.id,serviceVersion:service.version??0,discountPercent:service.discountPercent,litres:'500',pricePerLitre:'70',amount:'31500',amountMode:'auto',comment:'Позвонить перед заправкой. Телефон: +7 000 000-00-00',allocations:[{kind:'recipient',recipientId,amount:'31500'}],idempotencyKey:randomUUID()});
++  await api(`/api/operator/refuellings/${row.id}/payment`,'PATCH',{version:1,paid:true,idempotencyKey:randomUUID()});
++  if(index===0||index===1){const entry=await api('/api/operator/cases','POST',{operationId:row.id,operationVersion:2,kind:index===0?'return':'deferred',...(index===0?{litres:'50'}:{}),idempotencyKey:randomUUID()});await api(`/api/operator/cases/${entry.id}/task`,'PATCH',{version:1,dueDate:today,comment:'Проверить остаток в конце дня',idempotencyKey:randomUUID()});}
++  if(index<2)await api('/api/operator/reconciliations','POST',{date:today,serviceId:service.id,litres:index===0?'500':'495',amount:index===0?'34650':'34500',idempotencyKey:randomUUID()});
++ }
++ const manager=await api('/api/directories','POST',{kind:'managers',name:'Учебный оператор'});
++ await api('/api/auth/users','POST',{login:'operator.review',password:'LocalOperator2026!',name:'Учебный оператор',role:'employee',managerId:manager.entry.id,sections:['work','operator','directories'],directoryGrants:['operatorServices'],active:true});
++}
++await writeFile(resolve(folder,'access.json'),JSON.stringify({base:runtime.base,cookie,synthetic:true}));
++console.log(JSON.stringify({url:runtime.base+'/#operator',synthetic:true,integrations:false}));
++for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{await runtime.server.close();process.exit(0)});
+--- /dev/null
++++ b/scripts/verify_operator_directory_grants.mjs
+@@ -0,0 +1,49 @@
++// Every visible grant is saved through the account form and opened in a separate employee session.
++import assert from 'node:assert/strict';
++import {randomUUID} from 'node:crypto';
++import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
++import {tmpdir} from 'node:os';
++import {resolve} from 'node:path';
++import {chromium,webkit,expect} from '@playwright/test';
++import {startTripsQaServer,writeTripsQaSnapshot} from './qa-trips-runtime.mjs';
++import {bootstrapQaAuth,authenticateContext} from './qa-auth.mjs';
++import {sharedDirectories} from '../web/src/auth-model.ts';
++const root=resolve(import.meta.dirname,'..'), built=process.argv.includes('--built');
++const temp=await mkdtemp(resolve(tmpdir(),'artel-operator-grants-'));
++const output=resolve(root,'../revision2',built?'grants-built':'grants-source');await mkdir(output,{recursive:true});
++await writeTripsQaSnapshot(resolve(temp,'snapshot'));
++const runtime=await startTripsQaServer({root,snapshotDirectory:resolve(temp,'snapshot'),operationsDirectory:resolve(temp,'store')});
++const {cookie}=await bootstrapQaAuth(runtime.base);
++if(built)runtime.server.middlewares.stack.unshift({route:'',handle(req,res,next){const path=new URL(req.url,runtime.base).pathname;if(path.startsWith('/api/'))return next();const relative=path==='/'?'index.html':path.slice(1);if(relative.includes('..'))return next();readFile(resolve(root,'app-dist',relative)).then(body=>{res.setHeader('Content-Type',relative.endsWith('.js')?'text/javascript':relative.endsWith('.css')?'text/css':'text/html');res.end(body)}).catch(()=>next())}});
++const api=async(path,method='GET',body)=>{const response=await fetch(runtime.base+path,{method,headers:{cookie,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const result=await response.json();assert.ok(response.ok,JSON.stringify(result));return result};
++const password=randomUUID();
++const manager=(await api('/api/directories','POST',{kind:'managers',name:'Оператор проверки прав'})).entry;
++const user=(await api('/api/auth/users','POST',{name:manager.name,login:'grants-operator',password,role:'employee',managerId:manager.id,sections:['work','operator','directories'],directoryGrants:[]})).user;
++const report={synthetic:true,checks:[],errors:[]};let browser;
++try{
++for(const [engine,launcher] of [['chromium',chromium],['webkit',webkit]]){
++ browser=await launcher.launch();const admin=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block',reducedMotion:'reduce'});await authenticateContext(admin,runtime.base,cookie);
++ await admin.route('**/*',route=>new URL(route.request().url()).origin===runtime.base?route.continue():route.abort());
++ const page=await admin.newPage();page.on('pageerror',e=>report.errors.push(e.message));
++ for(const grant of sharedDirectories.filter(grant=>grant.id!=='paymentForms')){
++  await page.goto(runtime.base+'/#accounts');
++  await page.locator('.account-row').filter({hasText:user.login}).getByRole('button',{name:'Изменить',exact:true}).click();
++  for(const item of sharedDirectories.filter(grant=>grant.id!=='paymentForms'))await page.getByLabel(`Справочник: ${item.title}`,{exact:true}).setChecked(item.id===grant.id);
++  await page.getByRole('button',{name:'Сохранить пользователя',exact:true}).click();await expect(page.locator('.account-form')).toHaveCount(0);
++  const saved=(await api('/api/auth/users')).users.find(item=>item.id===user.id);assert.deepEqual(saved.directoryGrants,[grant.id]);
++  const staff=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block',reducedMotion:'reduce'});await staff.route('**/*',route=>new URL(route.request().url()).origin===runtime.base?route.continue():route.abort());
++  assert.equal((await staff.request.post(runtime.base+'/api/auth/login',{headers:{Origin:runtime.base},data:{login:user.login,password}})).status(),200);
++  const staffPage=await staff.newPage();staffPage.on('pageerror',e=>report.errors.push(e.message));await staffPage.goto(runtime.base+'/#directories');
++  await expect(staffPage.locator('.directory-tabs>button')).toHaveCount(1);await expect(staffPage.locator('.directory-tabs').getByRole('button',{name:grant.title,exact:true})).toBeVisible();await expect(staffPage.getByRole('button',{name:'Добавить',exact:true})).toBeEnabled();
++  await staffPage.getByRole('button',{name:'Добавить',exact:true}).click();await expect(staffPage.getByRole('dialog')).toBeVisible();await expect(staffPage.getByRole('dialog').getByRole('button',{name:'Сохранить',exact:true})).toBeVisible();await staffPage.keyboard.press('Escape');
++  assert.ok(await staffPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
++  const response=await staff.request.get(runtime.base+'/api/directories');assert.equal(response.status(),200);
++  assert.equal((await staff.request.get(runtime.base+'/api/auth/users')).status(),403);
++  await staffPage.screenshot({path:resolve(output,`${engine}-${grant.id}.png`)});
++  report.checks.push(`${engine}: ${grant.id} saved, visible alone, create form and API accessible; account administration denied`);
++  console.log('PASS',report.checks.at(-1));await staff.close();
++ }
++ await admin.close();await browser.close();browser=null;
++}
++assert.deepEqual(report.errors,[]);report.passed=true;
++}finally{await browser?.close();await runtime.server.close();await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await rm(temp,{recursive:true,force:true})}
+--- /dev/null
++++ b/scripts/verify_operator_push_state.mjs
+@@ -0,0 +1,34 @@
++import {chromium,expect} from '@playwright/test';
++import {readFile,mkdir,writeFile} from 'node:fs/promises';
++import {resolve} from 'node:path';
++import assert from 'node:assert/strict';
++import {authenticateContext} from './qa-auth.mjs';
++const root=resolve(import.meta.dirname,'..'),access=JSON.parse(await readFile(resolve(root,'../preview/access.json'),'utf8'));
++const base=process.env.ARTEL_REVIEW_BASE||access.base,cookie=process.env.ARTEL_REVIEW_COOKIE||access.cookie;
++const browser=await chromium.launch({headless:true}), context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce'});await authenticateContext(context,base,cookie);
++expect.configure({timeout:15000});
++const report={synthetic:true,realPush:false,checks:[]};
++try{
++await context.addInitScript(()=>{
++ window.__pushPermission='default';window.__unsubscribeCount=0;window.__permissionEvents=new EventTarget();
++ Object.defineProperty(navigator,'permissions',{configurable:true,value:{query:async()=>window.__permissionEvents}});
++ Object.defineProperty(window,'Notification',{configurable:true,value:class {static get permission(){return window.__pushPermission}static async requestPermission(){return window.__pushPermission='granted'}}});
++ let subscription={endpoint:'https://fcm.googleapis.com/fcm/send/local-review',options:{},toJSON(){return {endpoint:this.endpoint,keys:{auth:'synthetic',p256dh:'synthetic'}}},async unsubscribe(){window.__unsubscribeCount++;return true}};
++ const worker={pushManager:{async getSubscription(){return subscription},async subscribe(){return subscription}}};
++ Object.defineProperty(navigator,'serviceWorker',{configurable:true,value:{register:async()=>worker,ready:Promise.resolve(worker),getRegistration:async()=>worker,addEventListener(){},removeEventListener(){}}});
++ if(!('PushManager' in window))window.PushManager=class {};
++});
++let posts=0,probe=0,fail=false,configFailure=true;
++await context.route('**/api/push/config',route=>configFailure?route.fulfill({status:503,json:{error:'Временная ошибка связи для проверки'}}):route.fulfill({json:{enabled:true,publicKey:'AQ',lastRunAt:Date.now(),intervalSeconds:60}}));
++await context.route('**/api/push/subscription',route=>{posts++;return route.fulfill({json:{ok:true}})});
++await context.route('**/api/push/test',route=>{assert.equal(route.request().postDataJSON().async,true);return route.fulfill({status:202,json:{ok:true,probeId:'local-probe-'+(++probe),queued:true}})});
++await context.route('**/api/push/test-status?*',route=>route.fulfill({json:{probeId:'local-probe-'+probe,status:fail?'failed':'confirmed',...(fail?{failure:'expired_subscription'}:{notificationCreatedAt:Date.now()})}}));
++const page=await context.newPage();await page.goto(base+'/#operator');await page.getByRole('button',{name:/^Уведомления(?:, включены)?$/}).click();const dialog=page.getByRole('dialog');
++await expect(dialog.getByRole('button',{name:'Повторить проверку подключения'})).toBeEnabled();configFailure=false;await dialog.getByRole('button',{name:'Повторить проверку подключения'}).click();await expect(dialog.getByRole('button',{name:'Включить для всех разделов'})).toBeEnabled();report.checks.push('configuration failure recovers in-place without page reload');await expect(dialog.getByText('Уведомления всех доступных вам разделов включены в этом браузере.',{exact:true})).toHaveCount(0);assert.equal(posts,0);report.checks.push('existing subscription without browser permission is not enabled');
++await dialog.getByRole('button',{name:'Включить для всех разделов'}).click();await expect(dialog).not.toBeVisible();await page.getByRole('button',{name:/^Уведомления(?:, включены)?$/}).click();await expect(dialog.getByRole('button',{name:'Проверить уведомление'})).toBeEnabled();assert.equal(posts,1);
++await dialog.getByRole('button',{name:'Проверить уведомление'}).click();await expect(dialog.getByText('Браузер получил тестовое уведомление.',{exact:true})).toBeVisible();report.checks.push('explicit permission, registration and receipt confirmation');
++fail=true;await dialog.getByRole('button',{name:'Проверить уведомление'}).click();await expect(dialog.getByRole('button',{name:'Включить для всех разделов'})).toBeVisible();await expect(dialog.getByText('Подписка устройства истекла. Включите уведомления повторно.',{exact:true})).toBeVisible();
++await dialog.getByRole('button',{name:'Включить для всех разделов'}).click();await expect(dialog).not.toBeVisible();assert.equal(await page.evaluate(()=>window.__unsubscribeCount),1);report.checks.push('expired device subscription is renewed explicitly');
++await page.getByRole('button',{name:/^Уведомления(?:, включены)?$/}).click();await page.evaluate(()=>{window.__pushPermission='denied';window.__permissionEvents.dispatchEvent(new Event('change'))});await expect(dialog.getByRole('button',{name:'Включить для всех разделов'})).toBeDisabled();await expect(dialog.getByText('Уведомления всех доступных вам разделов включены в этом браузере.',{exact:true})).toHaveCount(0);report.checks.push('browser permission revocation immediately updates status');
++const output=resolve(root,'../ui',process.env.ARTEL_REVIEW_BUILT?'built':'source');await mkdir(output,{recursive:true});await page.screenshot({path:resolve(output,'push-revoked.png'),fullPage:true});await writeFile(resolve(output,'push-report.json'),JSON.stringify({...report,passed:true},null,2));console.log(JSON.stringify(report));
++}finally{await browser.close()}
+--- /dev/null
++++ b/scripts/verify_operator_review.mjs
+@@ -0,0 +1,58 @@
++import {chromium,webkit,expect as baseExpect} from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import assert from 'node:assert/strict';
++import {readFile,mkdir,writeFile} from 'node:fs/promises';
++import {resolve} from 'node:path';
++import {authenticateContext} from './qa-auth.mjs';
++const root=resolve(import.meta.dirname,'..'), access=JSON.parse(await readFile(resolve(root,'../preview/access.json'),'utf8'));
++const base=process.env.ARTEL_REVIEW_BASE||access.base, cookie=process.env.ARTEL_REVIEW_COOKIE||access.cookie;
++const output=resolve(root,'../ui',process.env.ARTEL_REVIEW_BUILT?'built':'source');await mkdir(output,{recursive:true});
++const expect=baseExpect.configure({timeout:20000});
++const report={checks:[],axe:[],errors:[],synthetic:true};let browser,page;
++const pass=name=>{report.checks.push(name);console.log('PASS',name)};
++try{
++for(const [engine,launcher] of [['chromium',chromium],['webkit',webkit]]){
++ browser=await launcher.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block'});await authenticateContext(context,base,cookie);
++ await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
++ page=await context.newPage();page.on('pageerror',error=>report.errors.push(error.message));await page.goto(base+'/#operator');
++ await expect(page.getByRole('button',{name:'Новая операция',exact:true})).toBeEnabled();
++ let reads=0;await page.route('**/api/operator',async route=>{reads++;await new Promise(done=>setTimeout(done,4000));await route.continue()});
++ const begin=Date.now();await page.getByRole('button',{name:'Новая операция',exact:true}).click();const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible({timeout:1000});assert.ok(Date.now()-begin<1200);assert.equal(reads,0);await page.unroute('**/api/operator');
++ await expect(dialog.getByRole('button',{name:'Обновить задания и справочники'})).toHaveCount(0);await dialog.getByLabel('Сервис',{exact:true}).selectOption('operator-service-rosneft');
++ assert.equal(await dialog.getByLabel('Сервис',{exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(48, 54, 61)');
++ await dialog.getByRole('button',{name:'Закрыть форму',exact:true}).click();await expect(dialog).toContainText('Закрыть форму без сохранения?');assert.ok((await dialog.boundingBox()).width<=480);
++ await page.screenshot({path:resolve(output,`${engine}-discard.png`)});await dialog.getByRole('button',{name:'Продолжить ввод'}).click();await expect(dialog.getByLabel('Сервис',{exact:true})).toHaveValue('operator-service-rosneft');await dialog.getByRole('button',{name:'Закрыть форму',exact:true}).click();await dialog.getByRole('button',{name:'Не сохранять'}).click();await expect(dialog).toHaveCount(0);pass(`${engine}: immediate form, service color and compact discard`);
++ for(const kind of ['Возвраты','Ожидают заправки']){
++  await page.getByRole('tab',{name:new RegExp('^'+kind)}).click();await expect(page.getByText('Цена за литр:',{exact:false}).first()).toBeVisible();await page.getByRole('button',{name:/^Подробности:/}).first().click();await expect(page.getByRole('dialog')).toContainText('Получатели и реквизиты');await expect(page.getByRole('dialog')).toContainText('Позвонить перед заправкой');await page.getByRole('dialog').getByRole('button',{name:/Закрыть/}).first().click();
++ }
++ pass(`${engine}: return and deferred full operation details`);
++ await page.getByRole('tab',{name:'Сверки',exact:true}).click();
++ const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Moscow'}).format(new Date());
++ const filters=page.getByRole('group',{name:'Сервисы сверки'}), table=page.locator('.operator-reconciliation-table');
++ assert.equal(await page.getByRole('tab').last().textContent(),'Сверки');
++ await filters.getByRole('button',{name:'Роснефть',exact:true}).click();
++ await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('34 650,00');
++ await expect(table.locator(`tr[data-date="${today}"] .is-matched`)).toHaveCount(2);
++ assert.equal(await filters.getByRole('button',{name:'Роснефть',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(48, 54, 61)');
++ await filters.getByRole('button',{name:'Лукойл',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"] .is-different`)).toHaveCount(2);
++ await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('150,00');
++ await filters.getByRole('button',{name:'ННК',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"] .is-empty`)).toHaveCount(2);
++ assert.equal(await table.locator(`tr[data-date="${today}"] .is-empty`).first().evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
++ await filters.getByRole('button',{name:'ГПН',exact:true}).click();await table.getByRole('button',{name:new RegExp(`отчёт ГПН за ${today}$`)}).click();
++ const card=page.locator('.operator-reconciliation-card');await card.getByRole('button',{name:/Внести отчёт|Изменить отчёт/}).click();await card.getByLabel('Литры из кабинета ГПН',{exact:true}).fill('499');await card.getByLabel('Сумма из кабинета ГПН',{exact:true}).fill('34600');await expect(page.getByRole('button',{name:'Закрыть сверку'})).toBeDisabled();await page.keyboard.press('Escape');await expect(card).toBeVisible();
++ await card.getByRole('button',{name:'Сохранить отчёт',exact:true}).click();await expect(card.getByRole('button',{name:'Изменить отчёт'})).toBeVisible();await expect(card).toContainText('Есть расхождение');await expect(card.locator('.operator-reconciliation-delta')).toContainText('50,00');
++ await card.getByText(/История отчёта/).click();await expect(card.locator('li').first()).toContainText('499');
++ await page.getByRole('button',{name:'Закрыть сверку'}).click();await page.reload();await page.getByRole('tab',{name:'Сверки',exact:true}).click();await filters.getByRole('button',{name:'ГПН',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('50,00');pass(`${engine}: table ordering, service colors, exact deltas and persisted report`);
++ await table.getByRole('button',{name:`Операции ГПН за ${today}`,exact:true}).click();await expect(card).toContainText('Операции за день · 1');await expect(card).toContainText('Учебный водитель Роман');await expect(card).not.toContainText('Учебный водитель Сергей');await card.locator('.operator-reconciliation-operation').click();await expect(page.getByRole('dialog').getByLabel('Имя водителя',{exact:true})).toHaveValue('Учебный водитель Роман');await page.getByRole('button',{name:'Закрыть форму',exact:true}).click();pass(`${engine}: date and service drilldown opens exact operation`);
++ await page.getByLabel('Месяц сверки').fill('2026-02');await expect(table.locator('tbody tr')).toHaveCount(28);await expect(table.locator('.is-empty')).toHaveCount(56);await page.getByLabel('Месяц сверки').fill('2024-02');await expect(table.locator('tbody tr')).toHaveCount(29);await page.getByLabel('Месяц сверки').fill(today.slice(0,7));pass(`${engine}: calendar month, leap year and missing values`);
++ for(const width of [320,390,768,1440]){
++  await page.setViewportSize({width,height:1000});await expect(table).toBeVisible();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`${engine} overflow ${width}`);
++  const axe=await new AxeBuilder({page}).include('.operator-reconciliation').withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();report.axe.push({engine,width,violations:axe.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>n.target)}))});assert.deepEqual(axe.violations.map(v=>v.id),[]);
++  await page.screenshot({path:resolve(output,`${engine}-reconciliation-${width}.png`)});pass(`${engine}: reconciliation ${width}px and axe`);
++ }
++ await context.close();await browser.close();browser=null;
++}
++browser=await chromium.launch({headless:true});const operator=await browser.newContext({viewport:{width:390,height:844}});const login=await operator.request.post(base+'/api/auth/login',{headers:{Origin:base},data:{login:'operator.review',password:'LocalOperator2026!'}});assert.equal(login.status(),200);page=await operator.newPage();await page.goto(base+'/#directories');await expect(page.getByRole('button',{name:'Сервисы операторской',exact:true})).toBeVisible();for(const title of ['Клиенты','Сотрудники','Места погрузки и доставки','Поставщики'])await expect(page.locator('.directory-tabs').getByRole('button',{name:title,exact:true})).toHaveCount(0);await page.screenshot({path:resolve(output,'operator-services-only.png'),fullPage:true});pass('operator grants show only services on mobile');await operator.close();await browser.close();browser=null;
++assert.deepEqual(report.errors,[]);report.passed=true;
++}catch(error){report.failure=String(error.stack||error);if(page&&!page.isClosed())await page.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{});throw error}
++finally{await browser?.close();await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2))}
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -640,7 +640,7 @@
+         : company;
+       if (pathname === '/api/operator' || pathname.startsWith('/api/operator/')) {
+         // This workspace always requires a real active account, including local mode.
+-        const match = pathname.match(/^\/api\/operator(?:\/(recipients|refuellings|plans|cases)(?:\/([a-f0-9-]{36})(?:\/(payment|archive|delete|settle|task))?)?)?$/);
++        const match = pathname.match(/^\/api\/operator(?:\/(recipients|refuellings|plans|cases|reconciliations)(?:\/([a-f0-9-]{36})(?:\/(payment|archive|delete|settle|task))?)?)?$/);
+         if (!match) throw new ApiError(404, 'Маршрут не найден.');
+         if (request.method === 'GET' && !match[1]) {
+           const stored = await operations.read(base.provenance.sourceSha256);
+@@ -648,12 +648,16 @@
+         }
+         if (!match[1] || request.method !== (match[2] ? 'PATCH' : 'POST')) throw new ApiError(405, 'Метод не поддерживается.');
+         const body = await jsonBody(request, false, 262144);
+-        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings' | 'plans' | 'cases', body, match[2], match[3] as 'payment' | 'archive' | 'delete' | 'settle' | 'task' | undefined, currentSnapshot(base, stored, false).directories));
+-        if (pushReady(config)) {
++        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings' | 'plans' | 'cases' | 'reconciliations', body, match[2], match[3] as 'payment' | 'archive' | 'delete' | 'settle' | 'task' | undefined, currentSnapshot(base, stored, false).directories));
++        // The operation is durable. Provider delivery must not delay its HTTP acknowledgement.
++        const respondAsync = request.headers.prefer === 'respond-async';
++        if (respondAsync) write(response, match[2] || saved.replayed ? 200 : 201, JSON.stringify(saved));
++        if (pushReady(config) && match[1] !== 'reconciliations') {
+           try { await dispatchOperatorNotifications(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush); }
+           catch { /* The committed event will be retried by the notification scheduler. */ }
+         }
+-        return write(response, match[2] || saved.replayed ? 200 : 201, JSON.stringify(saved));
++        if (!respondAsync) write(response, match[2] || saved.replayed ? 200 : 201, JSON.stringify(saved));
++        return;
+       }
+       const tripRequestMatch = pathname.match(/^\/api\/trip-requests(?:\/([^/]+))?$/);
+       if (tripRequestMatch) {
+@@ -761,12 +765,13 @@
+             device.testAt = Date.now();
+             return { result: { device: { ...device }, ...createPushProbe(data, device), targetUrl }, changed: true };
+           });
++          const sendTest = async () => {
+           try {
+             await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
+           } catch (error) {
+             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
+             // A browser receipt is stronger evidence than a sender timeout after delivery.
+-            if (received !== undefined) return write(response, 200, JSON.stringify({ ok: true, probeId }));
++            if (received !== undefined) return {ok: true, probeId};
+             if ([404, 410].includes((error as {statusCode: number}).statusCode)) {
+               await operations.mutate(base.provenance.sourceSha256, data => ({ result: null, changed: unsubscribe(data, device.endpoint, device.userId) }));
+               throw new ApiError(410, 'Подписка истекла. Выключите и снова включите уведомления.');
+@@ -778,7 +783,22 @@
+           } catch {
+             console.error('Проверка уведомления отправлена. Не удалось сохранить результат сервиса; подтверждение устройства доступно по номеру проверки.');
+           }
+-          return write(response, 200, JSON.stringify({ ok: true, probeId }));
++          return {ok: true, probeId};
++          };
++          if (body.async === true) {
++            write(response, 202, JSON.stringify({ok: true, probeId, queued: true}));
++            try { await sendTest(); }
++            catch (error) {
++              await mutatePushProbe(operations, base.provenance.sourceSha256, data => {
++                const probe = data.push?.probes?.[probeId];
++                if (!probe || probe.notificationCreatedAt !== undefined) return {result: null, changed: false};
++                probe.failure = error instanceof ApiError && error.status === 410 ? 'expired_subscription' : 'provider_unavailable';
++                return {result: null, changed: true};
++              }).catch(() => { console.error('Не удалось сохранить ошибку проверки уведомлений.'); });
++            }
++            return;
++          }
++          return write(response, 200, JSON.stringify(await sendTest()));
+         } else {
+           await operations.mutate(base.provenance.sourceSha256, data => {
+             const user = authorized(data);
+--- a/server/operator.ts
++++ b/server/operator.ts
+@@ -122,6 +122,11 @@
+   if (row.id !== id || !uuid.test(id) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || !['createdAt','updatedAt'].every(k => typeof row[k] === 'string' && Number.isFinite(Date.parse(row[k] as string)))) throw new Error('Invalid operator metadata');
+ }
+ /** Optional extension: reading old stores never creates or migrates business records. */
++function reconciliationFields(body: Record<string, unknown>) {
++  const date = body.date;
++  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date) throw new ApiError(400, 'Укажите существующую дату сверки.');
++  return {date, serviceId: text(body, 'serviceId', true), service: text(body, 'service', true), litres: decimal(body, 'litres', 'Литры кабинета', 6, true), amount: decimal(body, 'amount', 'Сумма кабинета', 2, true)};
++}
+ export function validateOperator(value: unknown) {
+   if (value === undefined) return;
+   if (!object(value) || !object(value.recipients) || !object(value.refuellings) || !object(value.requests)) throw new Error('Invalid operator storage');
+@@ -148,10 +153,27 @@
+     }
+     if (row.paid !== paid) throw new Error('Invalid payment status');
+   }
++  if (value.reconciliations !== undefined) {
++    if (!object(value.reconciliations)) throw new Error('Invalid reconciliations');
++    const days = new Set<string>();
++    for (const [id, row] of Object.entries(value.reconciliations)) {
++      if (!object(row)) throw new Error('Invalid reconciliation');
++      metadata(row, id); reconciliationFields(row);
++      const key = `${row.date}:${row.serviceId}`;
++      if (days.has(key) || !Array.isArray(row.history) || row.history.length !== row.version) throw new Error('Invalid reconciliation history');
++      days.add(key);
++      for (const event of row.history) {
++        if (!object(event) || typeof event.at !== 'string' || !Number.isFinite(Date.parse(event.at)) || typeof event.actorId !== 'string' || !event.actorId || typeof event.actorName !== 'string' || !event.actorName) throw new Error('Invalid reconciliation event');
++        decimal(event, 'litres', 'Литры', 6, true); decimal(event, 'amount', 'Сумма', 2, true);
++      }
++      const last = row.history.at(-1);
++      if (last.litres !== row.litres || last.amount !== row.amount || last.at !== row.updatedAt) throw new Error('Invalid reconciliation snapshot');
++    }
++  }
+   validateOperatorPlans(value as unknown as OperatorData);
+   validateOperatorCases(value as unknown as OperatorData);
+   for (const [key,record] of Object.entries(value.requests)) {
+-    if (!uuid.test(key) || !object(record) || typeof record.actorId !== 'string' || !record.actorId || typeof record.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(record.fingerprint) || !['recipients','refuellings','plans','cases'].includes(String(record.collection)) || typeof record.id !== 'string' || !object(value[record.collection as string]) || !Object.hasOwn(value[record.collection as string] as object,record.id)) throw new Error('Invalid operator request');
++    if (!uuid.test(key) || !object(record) || typeof record.actorId !== 'string' || !record.actorId || typeof record.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(record.fingerprint) || !['recipients','refuellings','plans','cases','reconciliations'].includes(String(record.collection)) || typeof record.id !== 'string' || !object(value[record.collection as string]) || !Object.hasOwn(value[record.collection as string] as object,record.id)) throw new Error('Invalid operator request');
+     if (record.collection === 'cases') {
+       const row = (value as unknown as OperatorData).cases![record.id];
+       if (!Number.isSafeInteger(record.version) || Number(record.version) < 1 || Number(record.version) > row.version || record.settlementId !== undefined && !row.settlements.some(event => event.id === record.settlementId) || record.taskEventId !== undefined && !row.taskHistory?.some(event => event.id === record.taskEventId) || record.settlementId !== undefined && record.taskEventId !== undefined) throw new Error('Invalid operator case request');
+@@ -166,9 +188,9 @@
+     const createdByName = plan.createdByName ?? data.accounts?.users.find(user => user.id === plan.createdBy)?.name;
+     return { ...operatorPlanSummary(state, plan, usage), ...(createdByName === undefined ? {} : { createdByName }) };
+   }).sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+-  return { ...readOperatorCatalog(directories), plans, cases: Object.values(state.cases ?? {}).map(operatorCaseSummary).sort((a,b) => b.createdAt.localeCompare(a.createdAt)), recipients: Object.values(state.recipients).sort((a,b) => a.name.localeCompare(b.name,'ru')), refuellings: Object.values(state.refuellings).filter(row => !row.deletedAt).sort((a,b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)) };
+-}
+-export function mutateOperator(data: OperationsData, actor: AccountUser, collection: 'recipients' | 'refuellings' | 'plans' | 'cases', body: Record<string,unknown>, id?: string, action?: 'payment' | 'archive' | 'delete' | 'settle' | 'task', directories: OperatorCatalogSource = {}) {
++  return { ...readOperatorCatalog(directories), ...(state.reconciliations ? {reconciliations: Object.values(state.reconciliations)} : {}), plans, cases: Object.values(state.cases ?? {}).map(operatorCaseSummary).sort((a,b) => b.createdAt.localeCompare(a.createdAt)), recipients: Object.values(state.recipients).sort((a,b) => a.name.localeCompare(b.name,'ru')), refuellings: Object.values(state.refuellings).filter(row => !row.deletedAt).sort((a,b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)) };
++}
++export function mutateOperator(data: OperationsData, actor: AccountUser, collection: 'recipients' | 'refuellings' | 'plans' | 'cases' | 'reconciliations', body: Record<string,unknown>, id?: string, action?: 'payment' | 'archive' | 'delete' | 'settle' | 'task', directories: OperatorCatalogSource = {}) {
+   requireSection(actor,'operator');
+   const state = data.operator ?? empty();
+   if (id && !Object.hasOwn(state[collection] ?? {},id)) throw new ApiError(404,'Запись не найдена.');
+@@ -186,7 +208,18 @@
+   if (previous && previous.version !== body.version) throw new ApiError(409,'Запись изменена другим сотрудником. Закройте форму, обновите список и повторите действие.');
+   const now = new Date().toISOString();
+   const recordId = id ?? randomUUID();
+-  if (action === 'delete' && collection === 'refuellings' && id) {
++  if (!action && collection === 'reconciliations') {
++    keys(body, ['idempotencyKey', 'version', 'date', 'serviceId', 'litres', 'amount']);
++    const prior = id ? state.reconciliations?.[id] : undefined;
++    const service = readOperatorCatalog(directories).services.find(row => row.id === body.serviceId);
++    const historic = Object.values(state.refuellings).find(row => !row.deletedAt && (row.schemaVersion !== undefined ? row.serviceId === body.serviceId : `legacy:${row.service}` === body.serviceId));
++    if (!service && !historic && !prior) throw new ApiError(400, 'Сервис не найден. Обновите операторскую.');
++    const fields = reconciliationFields({...body, service: service?.name ?? historic?.service ?? prior!.service});
++    if (prior && (prior.date !== fields.date || prior.serviceId !== fields.serviceId)) throw new ApiError(400, 'Дата и сервис сохранённой сверки не меняются.');
++    if (!prior && Object.values(state.reconciliations ?? {}).some(row => row.date === fields.date && row.serviceId === fields.serviceId)) throw new ApiError(409, 'Отчёт за этот день уже сохранён. Обновите сверку.');
++    state.reconciliations ??= {};
++    state.reconciliations[recordId] = {...fields, id: recordId, version: (prior?.version ?? 0) + 1, createdAt: prior?.createdAt ?? now, updatedAt: now, history: [...prior?.history ?? [], {litres: fields.litres, amount: fields.amount, at: now, actorId: actor.id, actorName: actor.name}]};
++  } else if (action === 'delete' && collection === 'refuellings' && id) {
+     keys(body, ['idempotencyKey', 'version']);
+     const row = state.refuellings[id];
+     assertOperatorOperationMutable(state, row);
+--- a/server/push-probe.ts
++++ b/server/push-probe.ts
+@@ -23,7 +23,8 @@
+   if (!probe || probe.userId !== userId) throw new ApiError(404, 'Проверка уведомления не найдена.');
+   return {
+     probeId,
+-    status: probe.notificationCreatedAt !== undefined ? 'confirmed' : now >= probe.expiresAt ? 'expired' : 'pending',
++    status: probe.notificationCreatedAt !== undefined ? 'confirmed' : probe.failure ? 'failed' : now >= probe.expiresAt ? 'expired' : 'pending',
++    ...(probe.failure ? {failure: probe.failure} : {}),
+     providerAcceptedAt: probe.providerAcceptedAt ?? null,
+     notificationCreatedAt: probe.notificationCreatedAt ?? null,
+     expiresAt: probe.expiresAt,
+--- a/server/push.ts
++++ b/server/push.ts
+@@ -18,6 +18,7 @@
+ interface TripAssignment { token: string; driverId: string; at: number }
+ export interface PushProbe {
+   userId: string; deviceId: string; tokenHash: string; createdAt: number; expiresAt: number;
++  failure?: 'expired_subscription' | 'provider_unavailable';
+   providerAcceptedAt?: number; notificationCreatedAt?: number;
+ }
+ export interface PushData { operatorPlanEvents?: Record<string, OperatorPlanEvent>; devices: PushDevice[]; deliveries: Record<string, Delivery>; taskAssignments?: Record<string, TaskAssignment>; tripAssignments?: Record<string, TripAssignment>; probes?: Record<string, PushProbe>; lastRunAt?: number; invoiceEvents?: Record<string, { userId: string; jobId: string; occurredAt: number }>; invoiceRevocations?: Record<string, number> }
+@@ -88,6 +89,7 @@
+     if (!value.probes || typeof value.probes !== 'object' || Array.isArray(value.probes) || Object.keys(value.probes).length > 1000) throw new Error('Invalid push probes');
+     for (const [id, row] of Object.entries(value.probes)) {
+       if (!/^[a-f0-9-]{36}$/.test(id) || !row || typeof row.userId !== 'string' || !row.userId || typeof row.deviceId !== 'string' || !row.deviceId || !/^[a-f0-9]{64}$/.test(row.tokenHash) || !Number.isSafeInteger(row.createdAt) || row.createdAt < 0 || !Number.isSafeInteger(row.expiresAt) || row.expiresAt <= row.createdAt || row.expiresAt - row.createdAt > 300000) throw new Error('Invalid push probe');
++      if (row.failure !== undefined && !['expired_subscription', 'provider_unavailable'].includes(row.failure)) throw new Error('Invalid push probe failure');
+       for (const at of [row.providerAcceptedAt, row.notificationCreatedAt]) if (at !== undefined && (!Number.isSafeInteger(at) || at < row.createdAt)) throw new Error('Invalid push probe result');
+     }
+   }
+--- a/tests/api-operator-notifications.test.ts
++++ b/tests/api-operator-notifications.test.ts
+@@ -152,3 +152,17 @@
+     assert.notEqual((await f.store.read(f.source)).push!.operatorPlanEvents![`${plan.id}:completed`].token, first);
+   } finally { await f.close(); }
+ });
++
++test('operation form receives durable result while provider is still pending',async()=>{
++ let hold=false, release!:()=>void, finished!:()=>void;
++ const gate=new Promise<void>(resolve=>{release=resolve}),sent=new Promise<void>(resolve=>{finished=resolve});
++ const f=await fixture(async()=>{if(hold){await gate;finished()}});
++ try{
++  const plan=await f.createPlan(['100']);hold=true;
++  const body=f.operation(plan.id,plan.version,[{kind:'recipient',recipientId:plan.recipients[0].id,amount:'100'}],'100');
++  const result=await Promise.race([f.request('/api/operator/refuellings','POST',body,f.admin,{Prefer:'respond-async'}),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('operation waited for push provider')),2000))]);
++  assert.equal(result.status,201);assert.ok((await f.read()).refuellings.some(row=>row.id===result.body.id));
++  release();await sent;
++  for(let i=0;i<50;i++){const data=await f.store.read(f.source);if(Object.values(data.push?.deliveries??{}).every(row=>!row.lease))break;await new Promise(resolve=>setTimeout(resolve,20))}
++ }finally{release();await new Promise(resolve=>setTimeout(resolve,150));await f.close()}
++});
+--- /dev/null
++++ b/tests/api-operator-reconciliation.test.ts
+@@ -0,0 +1,60 @@
++import test from 'node:test'
++import assert from 'node:assert/strict'
++import {randomUUID} from 'node:crypto'
++import {operatorFixture} from './api-operator.test'
++import {reconciliationRows} from '../web/src/operator-reconciliation'
++import {availableDirectoryTabs, type AccountUser} from '../web/src/auth-model'
++import {OperationsStore} from '../server/operations-store'
++import {dirname} from 'node:path'
++import type {OperatorWorkspace} from '../web/src/operator-model'
++
++test('daily reconciliation persists zero, protects versions, replay ownership and unrelated business facts',async()=>{
++ const f=await operatorFixture();try {
++  const base={date:'2026-10-28',serviceId:'operator-service-rosneft',litres:'0',amount:'0',idempotencyKey:randomUUID()}
++  const before=await f.store.read(f.source)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',base,f.denied.cookie)).status,403)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',{...base,amount:'-1'},f.operator.cookie)).status,400)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',{...base,date:'2026-02-30'},f.operator.cookie)).status,400)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',{...base,serviceId:'unknown'},f.operator.cookie)).status,400)
++  const created=await f.request('/api/operator/reconciliations','POST',base,f.operator.cookie)
++  assert.equal(created.status,201)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',base,f.operator.cookie)).body.replayed,true)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',base,f.admin)).status,409)
++  assert.equal((await f.request('/api/operator/reconciliations','POST',{...base,idempotencyKey:randomUUID()},f.operator.cookie)).status,409)
++  const path=`/api/operator/reconciliations/${created.body.id}`
++  assert.equal((await f.request(path,'PATCH',{...base,version:0,idempotencyKey:randomUUID()},f.operator.cookie)).status,409)
++  const edit={...base,litres:'450,5',amount:'34650',version:1,idempotencyKey:randomUUID()}
++  assert.equal((await f.request(path,'PATCH',edit,f.operator.cookie)).status,200)
++  assert.equal((await f.request(path,'PATCH',edit,f.operator.cookie)).body.replayed,true)
++  const after=await new OperationsStore(dirname(f.store.path)).read(f.source)
++  assert.equal(after.operator!.reconciliations![created.body.id].history.length,2)
++  assert.equal(after.operator!.reconciliations![created.body.id].history[1].actorId,f.operator.user.id)
++  assert.deepEqual(after.operator!.refuellings,before.operator!.refuellings)
++  assert.deepEqual(after.operator!.recipients,before.operator!.recipients)
++  const {operator:unused,revision:unused2,...rest}=after;void unused;void unused2
++  const {operator:unused3,revision:unused4,...prior}=before;void unused3;void unused4
++  assert.deepEqual(rest,prior)
++ }finally{await f.close()}
++})
++
++test('daily totals use operation date, exact addition, historical discount, include unpaid and exclude deleted',async()=>{
++ const f=await operatorFixture();try{
++  for(const discountPercent of ['10','8']) assert.equal((await f.request('/api/operator/refuellings','POST',{...f.fuelBody(),date:'2026-10-28',service:'Роснефть',amount:'31500',discountPercent},f.operator.cookie)).status,201)
++  assert.equal((await f.request('/api/operator/refuellings','POST',{...f.fuelBody(),date:'2026-10-27',service:'Роснефть',amount:'100'},f.operator.cookie)).status,201)
++  const work=(await f.request('/api/operator','GET',undefined,f.operator.cookie)).body as OperatorWorkspace
++  const row=reconciliationRows(work,'2026-10-28').find(row=>row.id==='operator-service-rosneft')!
++  assert.equal(row.rows.length,2);assert.equal(row.litres,'201');assert.equal(row.amount,'68670.00');assert.equal(row.deltaAmount,null)
++  work.services.find(service=>service.id===row.id)!.discountPercent='99'
++  assert.equal(reconciliationRows(work,'2026-10-28').find(item=>item.id===row.id)!.amount,row.amount)
++  work.refuellings.find(item=>item.date==='2026-10-28')!.deletedAt=new Date().toISOString()
++  assert.equal(reconciliationRows(work,'2026-10-28').find(item=>item.id===row.id)!.rows.length,1)
++ }finally{await f.close()}
++})
++
++test('operator-only employee sees only explicitly granted service directory',()=>{
++ const user:AccountUser={id:'staff',name:'Staff',login:'staff',role:'employee',managerId:'staff',active:true,version:1,sections:['work','operator','directories'],directoryGrants:['operatorServices']}
++ assert.deepEqual(availableDirectoryTabs(user),['operatorServices'])
++ assert.deepEqual(availableDirectoryTabs({...user,directoryGrants:[]}),[])
++ assert.ok(availableDirectoryTabs({...user,role:'admin'}).includes('customers'))
++ assert.deepEqual(availableDirectoryTabs({...user,active:false}),[])
++})
+--- a/tests/api-push.test.ts
++++ b/tests/api-push.test.ts
+@@ -383,3 +383,20 @@
+     assert.equal(sends, 2);
+   } finally { await f.close(); }
+ });
++
++test('async notification probe acknowledges before a slow provider and persists its failure',async()=>{
++ let release!:()=>void;
++ const gate=new Promise<void>(resolve=>{release=resolve});
++ const f=await fixture(async()=>{await gate;throw new Error('synthetic provider offline')});
++ try {
++  const sub=subscription();
++  assert.equal((await f.manager('/api/push/subscription','POST',{explicit:true,subscription:sub})).status,200);
++  const result=await Promise.race([f.manager('/api/push/test','POST',{endpoint:sub.endpoint,async:true}),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('HTTP acknowledgement waited for provider')),2000))]);
++  assert.equal(result.status,202);assert.equal(result.body.queued,true);
++  const path=`/api/push/test-status?probeId=${result.body.probeId}`;
++  assert.equal((await f.manager(path)).body.status,'pending');release();
++  let status;
++  for(let i=0;i<30;i++){status=(await f.manager(path)).body;if(status.status==='failed')break;await new Promise(resolve=>setTimeout(resolve,20))}
++  assert.equal(status.status,'failed');assert.equal(status.failure,'provider_unavailable');
++ }finally{release();await f.close()}
++});
+--- a/web/src/AccountDirectoryAccess.tsx
++++ b/web/src/AccountDirectoryAccess.tsx
+@@ -1,7 +1,7 @@
+ import { sharedDirectories, type SharedDirectory } from './auth-model';
+ export default function AccountDirectoryAccess({ grants, privileged, enabled, onChange }: { grants: SharedDirectory[]; privileged: boolean; enabled: boolean; onChange: (grants: SharedDirectory[]) => void }) {
+   return <div className="account-directory-access"><h4>Разделы справочника</h4>
+-    <p>Свои клиенты, их адреса и запись сотрудника доступны автоматически. Обзор, отгрузки и работа показывают только связанные с сотрудником данные.</p>
++    <p>Клиенты и их адреса видны при доступе к обзору, отгрузкам или рейсам. Остальные вкладки определяются галочками ниже. Обзор, отгрузки и работа показывают только связанные с сотрудником данные.</p>
+     <p>Включённый общий справочник доступен целиком: просмотр, добавление, изменение и удаление.</p>
+     <div className="account-section-grid">{sharedDirectories.filter(directory => directory.id !== 'paymentForms').map(directory => <label key={directory.id}><input type="checkbox" className="account-toggle" aria-label={`Справочник: ${directory.title}`} checked={privileged || grants.includes(directory.id)} disabled={privileged || !enabled} onChange={event => onChange(event.target.checked ? [...grants, directory.id] : grants.filter(id => id !== directory.id))}/><span>{directory.title}</span></label>)}</div>
+   </div>;
+--- a/web/src/DirectoriesPage.tsx
++++ b/web/src/DirectoriesPage.tsx
+@@ -35,6 +35,9 @@
+ 
+ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=true,canManageTab,canViewAccounts=false,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;canManageTab?:(tab:DirectoryTab)=>boolean;canViewAccounts?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
+   const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
++  useEffect(() => {
++    if (allowedTabs && !allowedTabs.includes(tab)) {setTab(allowedTabs[0] ?? 'operatorServices'); setEditor(null); setDeleting(null)}
++  }, [allowedTabs, tab])
+   const canManage = baseCanManage && (!canManageTab || canManageTab(tab))
+   const [editor,setEditor] = useState<{id?:string;kind?:'managers'|'drivers'} | null>(null), [notice,setNotice] = useState(''), [deleting,setDeleting] = useState<DirectoryRow|null>(null)
+   const [accessUsers,setAccessUsers] = useState<AccountUser[]|null>(null), [accessError,setAccessError] = useState(''), [accessRevision,setAccessRevision] = useState(0)
+@@ -70,6 +73,7 @@
+   const roleRows=personnel&&roleFilter!=='all'?personnelRows.filter(row=>accessUsers&&(roleFilter==='none'?!row.accountRoles?.length:row.accountRoles?.includes(roleFilter))):personnelRows
+   const visible = roleRows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
+   const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
++  if (allowedTabs && !allowedTabs.length) return <p className="empty-state">Нет доступных справочников. Обратитесь к администратору.</p>
+   return <div className="directories-page">
+     {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setRoleFilter('all');setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
+     {notice && <p className="directory-notice" role="status">{notice}</p>}
+--- a/web/src/OperatorCases.tsx
++++ b/web/src/OperatorCases.tsx
+@@ -27,9 +27,10 @@
+   onSettle: (entry: OperatorCaseSummary, method: 'money' | 'fuel') => void
+   onViewSource: (operationId: string) => void
+   onTask: (entry: OperatorCaseSummary) => void
+-}
+-
+-export function CaseCards({ entries, onSettle, onViewSource, onTask, focusedId = '', taskView = false }: CaseCardActions & { entries: OperatorCaseSummary[]; focusedId?: string; taskView?: boolean }) {
++  operations?: OperatorRefuelling[]
++}
++
++export function CaseCards({ operations = [], entries, onSettle, onViewSource, onTask, focusedId = '', taskView = false }: CaseCardActions & { entries: OperatorCaseSummary[]; focusedId?: string; taskView?: boolean }) {
+   const [detailsId, setDetailsId] = useState('')
+   const selected = entries.find(entry => entry.id === detailsId)
+   useEffect(() => {
+@@ -38,14 +39,14 @@
+   return <><div className="operator-case-cards operator-card-grid">{entries.map(entry => <article id={`operator-case-${entry.id}`} className={`operator-case-card operator-card${focusedId === entry.id ? ' is-focused' : ''}`} tabIndex={-1} key={entry.id}>
+     <header><div>{taskView && <span className="operator-case-kind">{entry.kind === 'return' ? 'Возврат водителю' : 'Заправка из остатка'}</span>}<h3>{entry.source.driverName}</h3><span>Заправка от {calendarDate(entry.source.date)}</span></div><div className="operator-card-state"><OperatorDetailsButton label={`Подробности: ${entry.source.driverName}`} onClick={() => setDetailsId(entry.id)}/></div></header>
+     <div className={`operator-case-deadline${entry.status === 'open' && entry.task && entry.task.dueDate < operatorToday() ? ' is-overdue' : ''}`}>{entry.status === 'completed' ? <><Check size={14} aria-hidden="true"/>Выполнено</> : entry.task ? <><CalendarDays size={14} aria-hidden="true"/><time dateTime={entry.task.dueDate}>{caseTaskDate(entry)}</time></> : 'Срок не назначен'}</div>
+-    <OperatorServiceBadge service={entry.source.service} discountPercent={entry.source.discountPercent}/>
+-    <CaseTotals entry={entry}/>
++    <OperatorServiceBadge service={entry.source.service} serviceId={operations.find(row => row.id === entry.operationId && row.schemaVersion !== undefined)?.schemaVersion !== undefined ? (operations.find(row => row.id === entry.operationId) as import('./operator-model').OperatorRefuellingV2).serviceId : undefined} discountPercent={entry.source.discountPercent}/>
++    <CaseTotals entry={entry}/><p className="operator-case-price">Цена за литр: <strong>{display(entry.source.pricePerLitre, true)} ₽</strong></p>
+     {entry.status === 'open' && <footer className="operator-card-actions">
+       {entry.kind === 'return' && <button type="button" className="button operator-return-action" aria-label="Вернуть деньги" title="Вернуть деньги водителю" onClick={event => { event.currentTarget.focus({ preventScroll: true }); onSettle(entry, 'money') }}><RotateCcw size={15} aria-hidden="true"/>Возврат</button>}
+       <button type="button" className="button operator-fuel-action" aria-label="Отметить заправку" title="Отметить выполненную заправку" onClick={event => { event.currentTarget.focus({ preventScroll: true }); onSettle(entry, 'fuel') }}><Fuel size={15} aria-hidden="true"/>Заправка</button>
+     </footer>}
+   </article>)}</div>
+-  {selected && <CaseDetails entry={selected} onClose={() => setDetailsId('')} onTask={onTask} onViewSource={onViewSource}/>}
++  {selected && <CaseDetails operation={operations.find(row => row.id === selected.operationId)} entry={selected} onClose={() => setDetailsId('')} onTask={onTask} onViewSource={onViewSource}/>}
+   </>
+ }
+ 
+@@ -53,11 +54,20 @@
+   return <dl className="operator-case-totals"><div><dt>Осталось литров</dt><dd>{display(entry.remainingLitres)} л</dd></div><div><dt>Сумма остатка</dt><dd>{display(entry.remainingAmount, true)} ₽</dd></div></dl>
+ }
+ 
+-function CaseDetails({ entry, onClose, onTask, onViewSource }: Pick<CaseCardActions, 'onTask' | 'onViewSource'> & { entry: OperatorCaseSummary; onClose: () => void }) {
++function CaseDetails({ operation, entry, onClose, onTask, onViewSource }: Pick<CaseCardActions, 'onTask' | 'onViewSource'> & { operation?: OperatorRefuelling; entry: OperatorCaseSummary; onClose: () => void }) {
+   return <OperatorDetailsDrawer title={entry.kind === 'return' ? 'Возврат водителю' : 'Заправка из остатка'} onClose={onClose}>{navigate => <>
+     <section><h3>{entry.source.driverName}</h3><p>Заправка от {calendarDate(entry.source.date)} · {entry.status === 'completed' ? 'Выполнено' : 'Открыто'}</p></section>
+-    <OperatorServiceBadge service={entry.source.service} discountPercent={entry.source.discountPercent}/>
++    <OperatorServiceBadge service={entry.source.service} serviceId={operation?.schemaVersion !== undefined ? operation.serviceId : undefined} discountPercent={entry.source.discountPercent}/>
+     <CaseTotals entry={entry}/>
++    <dl className="operator-source-details">
++      <div><dt>Цена за литр</dt><dd>{display(entry.source.pricePerLitre, true)} ₽</dd></div>
++      <div><dt>Исходный литраж</dt><dd>{display(entry.source.litres)} л</dd></div>
++      <div><dt>Сумма операции</dt><dd>{display(entry.source.amount, true)} ₽</dd></div>
++      {operation?.schemaVersion !== undefined && operation?.groupName && <div><dt>Группа</dt><dd>{operation.groupName}</dd></div>}
++      {operation?.schemaVersion === 3 && <div><dt>Клиент / задание</dt><dd>{operation.planClientName}</dd></div>}
++      {operation && <div className="operator-source-wide"><dt>Получатели и реквизиты</dt><dd>{operation.schemaVersion !== undefined ? operation.recipientText : [operation.recipient.name, operation.recipient.bank, operation.recipient.card, operation.recipient.phone, operation.recipient.details].filter(Boolean).join(' · ')}</dd></div>}
++      {operation?.comment && <div className="operator-source-wide"><dt>Комментарий к операции</dt><dd>{operation.comment}</dd></div>}
++    </dl>
+     {entry.task && <div className={`operator-case-task${entry.status === 'open' && entry.task.dueDate < operatorToday() ? ' is-overdue' : ''}`}><strong><CalendarDays size={14} aria-hidden="true"/><time dateTime={entry.task.dueDate}>{caseTaskDate(entry)}</time></strong>{entry.task.comment && <p>{entry.task.comment}</p>}<small>Поставил: {entry.task.createdByName || 'Пользователь CRM'}</small>{entry.taskHistory && entry.taskHistory.length > 1 && <small>Изменил: {entry.task.updatedByName} · {timestamp(entry.task.updatedAt)}</small>}</div>}
+     <div className="operator-case-origin"><p>Оформлено: {display(entry.litres)} л · {display(entry.amount, true)} ₽</p><p>{entry.kind === 'return' ? 'Создал возврат' : 'Перенёс заправку'}: {entry.createdByName || 'Пользователь CRM'}<br/>{timestamp(entry.createdAt)}</p><button type="button" className="operator-case-source" onClick={event => { event.currentTarget.focus({ preventScroll: true }); navigate(() => onViewSource(entry.operationId)) }}>Исходная операция<ArrowUpRight size={15} aria-hidden="true"/></button></div>
+     {entry.settlements.length > 0 && <details className="operator-case-history" open><summary>История исполнения · {entry.settlements.length}<ChevronDown size={17} aria-hidden="true"/></summary><ol>{entry.settlements.map(event => <li key={event.id}><strong>{event.method === 'money' ? 'Деньги возвращены' : event.method === 'carryover' ? 'Зачтено в новой заправке' : 'Заправка выполнена'}</strong><span>{display(event.litres)} л · {display(event.amount, true)} ₽</span><small>{event.actorName} · {timestamp(event.at)}</small>{event.operationId && <button type="button" className="operator-case-source" onClick={click => { click.currentTarget.focus({ preventScroll: true }); navigate(() => onViewSource(event.operationId!)) }}>Операция заправки<ArrowUpRight size={15} aria-hidden="true"/></button>}</li>)}</ol></details>}
+@@ -66,7 +76,7 @@
+   </>}</OperatorDetailsDrawer>
+ }
+ 
+-export function CaseList({ cases, kind, status, onSettle, onViewSource, onTask, focusedId = '' }: CaseCardActions & {
++export function CaseList({ operations, cases, kind, status, onSettle, onViewSource, onTask, focusedId = '' }: CaseCardActions & {
+   cases: OperatorCaseSummary[]; kind: OperatorCaseKind; status: 'open' | 'completed'; focusedId?: string
+ }) {
+   const entries = cases.filter(entry => entry.kind === kind)
+@@ -74,7 +84,7 @@
+   return <section className="operator-cases" aria-label={kind === 'return' ? 'Возвраты' : 'Ожидают заправки'}>
+     <div className="operator-cases-heading"><h2>{kind === 'return' ? 'Возвраты водителям' : 'Ожидают заправки'}</h2></div>
+     {rows.length === 0 ? <div className="operator-cases-empty"><span aria-hidden="true">{kind === 'return' ? <RotateCcw size={24}/> : <Fuel size={24}/>}</span><p>{status === 'completed' ? 'Выполненных записей пока нет.' : kind === 'return' ? 'Открытых возвратов пока нет.' : 'Ожидающих заправки пока нет.'}</p>{status === 'open' && <small>Оформите запись через «Действие» у оплаченной операции. Затем в подробностях карточки можно поставить задание на нужную дату.</small>}</div> : <>
+-      <CaseCards entries={rows} focusedId={focusedId} onSettle={onSettle} onViewSource={onViewSource} onTask={onTask}/>
++      <CaseCards operations={operations} entries={rows} focusedId={focusedId} onSettle={onSettle} onViewSource={onViewSource} onTask={onTask}/>
+     </>}
+   </section>
+ }
+--- a/web/src/OperatorPage.tsx
++++ b/web/src/OperatorPage.tsx
+@@ -15,7 +15,9 @@
+ import { display, readWorkspace, isDefinitiveOperatorRejection } from './operator-ui-utils'
+ import { calculateOperatorPayable } from './operator-calculation'
+ import type { OperatorPlanSummary, OperatorRefuelling, OperatorWorkspace } from './operator-model'
+-import { OperatorServicesContext } from './OperatorServiceBadge'
++import { operatorServiceBackground, operatorServiceInk } from './operator-service-presentation'
++import OperatorReconciliation from './OperatorReconciliation'
++import OperatorServiceBadge, { OperatorServicesContext } from './OperatorServiceBadge'
+ import { operatorDiscountAt } from './operator-catalog'
+ import './operator.css'
+ 
+@@ -52,23 +54,8 @@
+     catch (e) { if (serial === request.current) setError((e as Error).message) }
+     finally { if (serial === request.current) setBusy(false) }
+   }
+-  const openingOperation = useRef(false)
+-  const openNewOperation = async () => {
+-    if (openingOperation.current) return
+-    openingOperation.current = true
+-    const serial = ++request.current
+-    setBusy(true); setError('')
+-    try {
+-      const next = await readWorkspace()
+-      if (serial !== request.current) return
+-      setData(next)
+-      setEditor({ kind: 'fuel', planId: next.plans.some(plan => plan.id === planId) ? planId : undefined })
+-    } catch (reason) {
+-      if (serial === request.current) setError((reason as Error).message)
+-    } finally {
+-      openingOperation.current = false
+-      if (serial === request.current) setBusy(false)
+-    }
++  const openNewOperation = () => {
++    if (data) setEditor({ kind: 'fuel', planId: data.plans.some(plan => plan.id === planId && plan.status === 'active') ? planId : undefined })
+   }
+   useEffect(() => { void reload(); return () => { request.current++ } }, [])
+   useEffect(() => { if (!message) return; const timer = setTimeout(() => setMessage(''), 3500); return () => clearTimeout(timer) }, [message])
+@@ -84,7 +71,7 @@
+   return <OperatorServicesContext.Provider value={data?.services ?? []}><section className="operator-workspace" aria-label="Операторская">
+     <div className="operator-topbar">
+       <ScrollableSegments className="operator-tabs" role="tablist" label="Раздел операторской" value={tab}>
+-        {[['plans', `Задания · ${(data?.plans ?? []).filter(plan => plan.status === 'active').length + scheduled.filter(entry => entry.status === 'open').length}`], ['operations', 'Операции'], ['return', `Возвраты · ${(data?.cases ?? []).filter(entry => entry.kind === 'return' && entry.status === 'open').length}`], ['deferred', `Ожидают заправки · ${(data?.cases ?? []).filter(entry => entry.kind === 'deferred' && entry.status === 'open').length}`]].map(([id, label]) => <button type="button" key={id} id={`operator-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="operator-content" onClick={() => { if (id !== tab || focusedCaseId) setCaseStatus('open'); setTab(id); setFocusedCaseId('') }}>{label}</button>)}
++        {[['plans', `Задания · ${(data?.plans ?? []).filter(plan => plan.status === 'active').length + scheduled.filter(entry => entry.status === 'open').length}`], ['operations', 'Операции'], ['return', `Возвраты · ${(data?.cases ?? []).filter(entry => entry.kind === 'return' && entry.status === 'open').length}`], ['deferred', `Ожидают заправки · ${(data?.cases ?? []).filter(entry => entry.kind === 'deferred' && entry.status === 'open').length}`], ['reconciliation', 'Сверки']].map(([id, label]) => <button type="button" key={id} id={`operator-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="operator-content" onClick={() => { if (id !== tab || focusedCaseId) setCaseStatus('open'); setTab(id); setFocusedCaseId('') }}>{label}</button>)}
+       </ScrollableSegments>
+       <div className="operator-controls">
+         {tab === 'plans' && data && <div className="operator-plan-heading">
+@@ -99,7 +86,7 @@
+         </div>}
+       <div className="operator-toolbar">
+         <button className="button operator-toolbar-icon mobile-icon-action" aria-label="Обновить" title="Обновить" disabled={busy} onClick={() => void reload()}><RefreshCw size={18} aria-hidden="true" /><span className="mobile-action-label">Обновить</span></button>
+-        {tab === 'plans' ? <button className="button primary operator-toolbar-icon mobile-icon-action" aria-label="Новое задание" title="Новое задание" disabled={!data} onClick={() => setTaskPicker(true)}><Plus size={20} aria-hidden="true" /><span className="mobile-action-label">Новое задание</span></button> : tab === 'return' || tab === 'deferred' ? <button className="button primary operator-toolbar-icon mobile-icon-action" aria-label={tab === 'return' ? 'Создать возврат' : 'Отложить заправку'} title={tab === 'return' ? 'Создать возврат' : 'Отложить заправку'} disabled={!data} onClick={event => { event.currentTarget.focus({ preventScroll: true }); setSourcePicker(tab as OperatorCaseKind) }}><Plus size={20} aria-hidden="true"/><span className="mobile-action-label">{tab === 'return' ? 'Создать возврат' : 'Отложить заправку'}</span></button> : <button className="button primary operator-toolbar-icon mobile-icon-action" aria-label="Новая операция" title="Новая операция" disabled={busy || !data?.plans.length} onClick={() => void openNewOperation()}><Plus size={20} aria-hidden="true" /><span className="mobile-action-label">Новая операция</span></button>}
++        {tab === 'reconciliation' ? null : tab === 'plans' ? <button className="button primary operator-toolbar-icon mobile-icon-action" aria-label="Новое задание" title="Новое задание" disabled={!data} onClick={() => setTaskPicker(true)}><Plus size={20} aria-hidden="true" /><span className="mobile-action-label">Новое задание</span></button> : tab === 'return' || tab === 'deferred' ? <button className="button primary operator-toolbar-icon mobile-icon-action" aria-label={tab === 'return' ? 'Создать возврат' : 'Отложить заправку'} title={tab === 'return' ? 'Создать возврат' : 'Отложить заправку'} disabled={!data} onClick={event => { event.currentTarget.focus({ preventScroll: true }); setSourcePicker(tab as OperatorCaseKind) }}><Plus size={20} aria-hidden="true"/><span className="mobile-action-label">{tab === 'return' ? 'Создать возврат' : 'Отложить заправку'}</span></button> : <button className="button primary operator-toolbar-icon mobile-icon-action" aria-label="Новая операция" title="Новая операция" disabled={!data?.plans.some(plan => plan.status === 'active')} onClick={() => void openNewOperation()}><Plus size={20} aria-hidden="true" /><span className="mobile-action-label">Новая операция</span></button>}
+         </div>
+         </div>
+     </div>
+@@ -109,10 +96,11 @@
+     {payment.busy && <p role="status">Сохраняем отметку оплаты…</p>}
+     {message && <p className="operator-feedback" role="status">{message}</p>}
+     {!data ? <p role="status">{busy ? 'Загружаем операторскую…' : 'Данные не загружены.'}</p> : <div id="operator-content" role="tabpanel" aria-labelledby={`operator-tab-${tab}`}>
++      {tab === 'reconciliation' && <OperatorReconciliation workspace={data} onSaved={next => setData(next)} onOperation={row => setEditor({kind:'fuel',row})}/>}
+       {tab === 'plans' && <>
+       <section className="operator-task-section" aria-label="Задания на приём оплаты"><h2>Приём оплаты</h2><PlanCards plans={data.plans.filter(plan => plan.status === planStatus)} onSelect={id => { setPlanId(id); setTab('operations') }} onEdit={plan => setPlanEditor({ plan })} /></section>
+       <section className="operator-task-section" aria-label="Задания на возвраты и заправки"><h2>Возвраты и заправки</h2>
+-      {taskRows.length ? <CaseCards entries={taskRows} taskView onSettle={settleCase} onViewSource={viewCaseSource} onTask={setCaseTask}/> : <p className="operator-case-explanation">{scheduled.length ? 'Заданий с выбранным состоянием нет.' : 'Откройте подробности возврата или ожидающей заправки, нажмите «Запланировать» и выберите дату.'}</p>}</section>
++      {taskRows.length ? <CaseCards entries={taskRows} operations={data.refuellings} taskView onSettle={settleCase} onViewSource={viewCaseSource} onTask={setCaseTask}/> : <p className="operator-case-explanation">{scheduled.length ? 'Заданий с выбранным состоянием нет.' : 'Откройте подробности возврата или ожидающей заправки, нажмите «Запланировать» и выберите дату.'}</p>}</section>
+       </>}
+       {tab === 'operations' && <>
+         <div className="operator-journal-heading"><h2>Операции по водителям <span>{rows.length}</span></h2></div>
+@@ -127,7 +115,7 @@
+         {from && to && from > to && <p role="alert">Начало периода позже окончания.</p>}
+         {rows.length ? <OperatorJournal rows={rows} onView={row => setEditor({ kind: 'fuel', row })} onAction={setActionRow} paymentDisabled={payment.disabled} onPayment={row => void payment.change(row)} cases={data.cases} onCase={entry => { setCaseStatus(entry.status); setTab(entry.kind); setFocusedCaseId(entry.id) }} /> : <div className="empty-state"><strong>{data.refuellings.length ? 'Операции не найдены' : 'Операций пока нет'}</strong><span>{data.refuellings.length ? 'Измените задание, поиск или фильтры.' : 'Выберите задание и создайте операцию для водителя. Оплату можно подтвердить позже.'}</span></div>}
+       </>}
+-      {(tab === 'return' || tab === 'deferred') && <CaseList key={`${tab}:${focusedCaseId}`} cases={data.cases ?? []} kind={tab as OperatorCaseKind} status={caseStatus} focusedId={focusedCaseId} onSettle={settleCase} onTask={setCaseTask} onViewSource={viewCaseSource} />}
++      {(tab === 'return' || tab === 'deferred') && <CaseList operations={data.refuellings} key={`${tab}:${focusedCaseId}`} cases={data.cases ?? []} kind={tab as OperatorCaseKind} status={caseStatus} focusedId={focusedCaseId} onSettle={settleCase} onTask={setCaseTask} onViewSource={viewCaseSource} />}
+     </div>}
+     {actionRow && data && <OperatorOperationActions paymentDisabled={payment.disabled} row={actionRow} onClose={() => setActionRow(null)} canReturn={actionRow.paid && claimedLitres(data, actionRow).lt(actionRow.litres)} canDefer={actionRow.paid && claimedLitres(data, actionRow).isZero()} historyLocked={operationLocked(data, actionRow)} onAction={action => {
+       if (action === 'return' || action === 'defer') setCaseEditor({ mode: 'create', source: actionRow, kind: action === 'return' ? 'return' : 'deferred' })
+@@ -246,7 +234,7 @@
+     }
+     lock.current = true; setSaving(true); setError(''); setStale(false)
+     try {
+-      const response = await apiFetch(path, { method: row ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(20000) })
++      const response = await apiFetch(path, { method: row ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'respond-async' }, body, signal: AbortSignal.timeout(20000) })
+       const result = await response.json()
+       if (!response.ok) {
+         if (isDefinitiveOperatorRejection(response.status, result.error, uncertain)) { pending.current = null; setUncertain(false) } else setUncertain(true)
+@@ -261,20 +249,20 @@
+     } catch { setUncertain(true); setError('Ответ не получен или повторное чтение не удалось. Проверьте сохранение тем же запросом.') }
+     finally { lock.current = false; setSaving(false) }
+   }
+-  return <dialog ref={dialog} className="operator-dialog" aria-labelledby="operator-editor-title" onCancel={event => { event.preventDefault(); dismiss() }}>
++  return <dialog ref={dialog} className={`operator-dialog${discard ? ' operator-discard-dialog' : ''}`} aria-labelledby="operator-editor-title" onCancel={event => { event.preventDefault(); dismiss() }}>
+     <form onSubmit={event => void submit(event)}>
+       <header><h2 id="operator-editor-title">{title}</h2><button type="button" className="icon-button" aria-label="Закрыть форму" disabled={saving} onClick={dismiss}><X size={20} /></button></header>
+       <div className="operator-dialog-body">
+       {error && <p role="alert" className="soft-notice">{error}</p>}
+-      {(stale || editor.kind === 'fuel' && !readonly) && <button type="button" className="button" disabled={saving || uncertain} onClick={() => void refreshCatalog()}>{planned ? 'Обновить задания и справочники' : 'Обновить справочники'}</button>}
++      {stale && !discard && <button type="button" className="button" disabled={saving || uncertain} onClick={() => void refreshCatalog()}>Загрузить актуальные данные</button>}
+       {discard ? <div className="operator-discard"><p>Закрыть форму без сохранения?</p><div className="operator-actions"><button type="button" className="button" onClick={() => setDiscard(false)}>Продолжить ввод</button><button type="button" className="button" onClick={close}>Не сохранять</button></div></div> : <>
+         {editor.kind === 'delete' ? <div className="operator-delete-summary"><p>Удалить операцию водителя <strong>{editor.row.name}</strong> на <strong>{display(editor.row.amount, true)} ₽</strong>?</p><p>{editor.row.schemaVersion === 3 ? 'Суммы вернутся в доступные остатки задания. Операция исчезнет из журнала.' : 'Операция исчезнет из журнала.'}</p></div> : editor.kind === 'payment' ? <><p><strong>{editor.row.name}</strong> · {display(editor.row.amount, true)} ₽</p><p>{editor.row.paid ? 'Отметка будет снята. Предыдущее подтверждение останется в истории.' : 'Подтвердите, что деньги получены. Это ручная отметка оператора.'}</p><pre>{recipientText(editor.row)}</pre></> : <fieldset disabled={saving || uncertain || readonly} className="operator-form-grid">
+           {planned && <label className="operator-full">Задание<select aria-label="Задание" required disabled={!!fuel} value={plan?.id ?? ''} onChange={event => { setPlanId(event.target.value); setAllocations([]) }}><option value="">Выберите задание</option>{operationPlans.map(item => <option key={item.id} value={item.id} disabled={item.status === 'completed'}>{item.clientName} · {planDate(item.createdAt)} · осталось {display(item.remaining, true)} ₽</option>)}</select></label>}
+           {field('date', 'Дата заправки', 'date')}{field('name', 'Имя водителя')}
+-          <label>Сервис<select aria-label="Сервис" required value={values.serviceId} onChange={event => update('serviceId', event.target.value)}><option value="">Выберите сервис</option>
++          <label>Сервис<select style={values.serviceId ? {backgroundColor: catalog.services.find(item => item.id === values.serviceId)?.backgroundColor ?? operatorServiceBackground(catalog.services.find(item => item.id === values.serviceId)?.name ?? '', values.serviceId), color: operatorServiceInk(catalog.services.find(item => item.id === values.serviceId)?.backgroundColor ?? operatorServiceBackground(catalog.services.find(item => item.id === values.serviceId)?.name ?? '', values.serviceId))} : undefined} aria-label="Сервис" required value={values.serviceId} onChange={event => update('serviceId', event.target.value)}><option value="">Выберите сервис</option>
+             {fuel?.schemaVersion !== undefined && !catalog.services.some(item => item.id === fuel.serviceId) && <option value={fuel.serviceId}>{fuel.service}</option>}
+             {catalog.services.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+-          </select></label>
++          </select>{values.serviceId && <OperatorServiceBadge service={catalog.services.find(item => item.id === values.serviceId)?.name ?? fuel?.service ?? ''} serviceId={values.serviceId} part="name"/>}</label>
+           <label>Скидка, %<input aria-label="Скидка, %" value={values.discountPercent.replace('.', ',')} readOnly /></label>
+           {field('litres', 'Литры')}{field('pricePerLitre', 'Цена за литр, ₽')}
+           {!fuel && (catalog.cases ?? []).some(entry => entry.status === 'open') && <div className="operator-full operator-carryover-picker">
+--- /dev/null
++++ b/web/src/OperatorReconciliation.tsx
+@@ -0,0 +1,97 @@
++import { Fragment, useEffect, useRef, useState } from 'react'
++import type { CSSProperties, FormEvent } from 'react'
++import Decimal from 'decimal.js'
++import type { OperatorRefuelling, OperatorWorkspace } from './operator-model'
++import { reconciliationRows } from './operator-reconciliation'
++import OperatorServiceBadge from './OperatorServiceBadge'
++import { display, readWorkspace, isDefinitiveOperatorRejection } from './operator-ui-utils'
++import { apiFetch } from './workspace-api'
++import ScrollableSegments from './ScrollableSegments'
++import { operatorServiceInk, operatorServiceBackground } from './operator-service-presentation'
++import { useDialogMotion } from './useDialogMotion'
++import { X } from 'lucide-react'
++import './operator-reconciliation.css'
++const today = () => new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date())
++export default function OperatorReconciliation({workspace, onSaved, onOperation}: {workspace: OperatorWorkspace; onSaved: (next: OperatorWorkspace) => void; onOperation: (row: OperatorRefuelling) => void}) {
++  const [month, setMonth] = useState(today().slice(0, 7))
++  const [serviceId, setServiceId] = useState(workspace.services[0]?.id ?? '')
++  const [selectedDate, setSelectedDate] = useState<string | null>(null)
++  const days = /^\d{4}-\d{2}$/.test(month) ? Array.from({length: new Date(Number(month.slice(0,4)), Number(month.slice(5)), 0).getDate()}, (_, index) => `${month}-${String(index + 1).padStart(2, '0')}`).filter(date => month !== today().slice(0, 7) || date <= today()).reverse() : []
++  const dailyRows = days.map(date => ({date, rows: reconciliationRows(workspace, date)}))
++  const services = [...new Map(dailyRows.flatMap(day => day.rows.map(row => [row.id, {id: row.id, name: row.name}] as const))).values()]
++  const activeService = services.some(service => service.id === serviceId) ? serviceId : services[0]?.id ?? ''
++  const rows = dailyRows.map(day => ({date: day.date, row: day.rows.find(row => row.id === activeService)})).filter((item): item is {date: string; row: ReturnType<typeof reconciliationRows>[number]} => !!item.row)
++  const selected = rows.find(item => item.date === selectedDate)
++  const count = rows.filter(({row}) => row.report && new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero()).length
++  return <section className="operator-reconciliation" aria-label="Сверки">
++    <div className="operator-reconciliation-heading"><div><h2>Сверки</h2><p>Итоги CRM и отчёты оператора по дням.</p></div><label>Месяц<input type="month" aria-label="Месяц сверки" required value={month} onChange={event => {if(event.target.value) setMonth(event.target.value)}}/></label></div>
++    <ScrollableSegments className="operator-reconciliation-services" label="Сервисы сверки" value={activeService}>
++      {services.map(service => {const color = workspace.services.find(item => item.id === service.id)?.backgroundColor ?? operatorServiceBackground(service.name, service.id); return <button type="button" key={service.id} aria-pressed={activeService === service.id} onClick={() => setServiceId(service.id)} style={color ? {'--service-fill': color, '--service-ink': operatorServiceInk(color), backgroundColor: color, color: operatorServiceInk(color)} as CSSProperties : undefined}>{service.name}</button>})}
++    </ScrollableSegments>
++    <p className="operator-reconciliation-note">Разница = CRM − отчёт оператора. Нажмите на дату, чтобы открыть операции и историю отчёта.</p>
++    <details className="operator-reconciliation-method"><summary>Как считаются итоги</summary><p>Все операции за дату заправки, независимо от оплаты. К сумме каждой операции прибавляется сохранённый в ней процент: 31 500 ₽ + 10% = 34 650 ₽. Округление до копеек по операции. Удалённые операции исключены. Прочерк означает отсутствие данных; сохранённый ноль участвует в сверке.</p></details>
++    <p className="operator-reconciliation-summary" role="status">Совпало: {count} · С расхождением: {rows.filter(({row}) => row.report).length - count} · Ожидают отчёта: {rows.filter(({row}) => row.rows.length && !row.report).length}</p>
++    {rows.length ? <div className="operator-reconciliation-scroll" role="region" aria-label="Таблица сверок, прокрутка по горизонтали" tabIndex={0}><table className="operator-reconciliation-table" aria-label={`Сверки: ${services.find(service => service.id === activeService)?.name}, ${month}`}>
++      <thead><tr><th rowSpan={2} scope="col">Дата</th><th colSpan={2} scope="colgroup">CRM</th><th colSpan={2} scope="colgroup">Отчёт оператора</th><th colSpan={2} scope="colgroup">Разница</th><th rowSpan={2} scope="col">Отчёт</th></tr><tr>{['CRM', 'Отчёт оператора', 'Разница'].map(group => <Fragment key={group}><th scope="col">Литры</th><th scope="col">Сумма, ₽</th></Fragment>)}</tr></thead>
++      <tbody>{rows.map(({date, row}) => {const status = row.report ? new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero() ? 'matched' : 'different' : 'empty'; return <tr key={date} data-date={date}>
++        <th scope="row"><button type="button" className="operator-reconciliation-date" aria-label={`Операции ${row.name} за ${date}`} onClick={() => setSelectedDate(date)}>{date.split('-').reverse().join('.')}<small>{row.rows.length ? `${row.rows.length} оп.` : 'Нет операций'}</small></button></th>
++        <td>{row.rows.length || row.report ? display(row.litres) : '—'}</td><td>{row.rows.length || row.report ? display(row.amount,true) : '—'}</td>
++        <td>{row.report ? display(row.report.litres) : '—'}</td><td>{row.report ? display(row.report.amount,true) : '—'}</td>
++        <td className={`reconciliation-difference is-${status}`} aria-label={status === 'empty' ? 'Разница не рассчитана' : status === 'matched' ? 'Совпадает' : 'Есть расхождение'}>{row.deltaLitres === null ? '—' : display(row.deltaLitres)}</td><td className={`reconciliation-difference is-${status}`}>{row.deltaAmount === null ? '—' : display(row.deltaAmount,true)}</td>
++        <td><button type="button" className="operator-reconciliation-edit" aria-label={`${row.report ? 'Изменить' : 'Внести'} отчёт ${row.name} за ${date}`} onClick={() => setSelectedDate(date)}>{row.report ? 'Изменить' : 'Внести'}</button></td>
++      </tr>})}</tbody>
++    </table></div> : <p>В справочнике пока нет сервисов.</p>}
++    {selected && <ReconciliationDetails key={`${selected.date}:${activeService}`} row={selected.row} date={selected.date} onSaved={onSaved} onOperation={operation => {setSelectedDate(null);onOperation(operation)}} onClose={() => setSelectedDate(null)}/>}
++  </section>
++}
++function ReconciliationDetails({row, date, onSaved, onOperation, onClose}: {row: ReturnType<typeof reconciliationRows>[number]; date: string; onSaved: (next: OperatorWorkspace) => void; onOperation: (row: OperatorRefuelling) => void; onClose: () => void}) {
++  const dialog = useRef<HTMLDialogElement>(null)
++  const [dirty, setDirty] = useState(false)
++  const {close} = useDialogMotion(dialog, onClose)
++  return <dialog ref={dialog} className="detail-dialog operator-reconciliation-dialog" aria-labelledby="reconciliation-detail-title" onCancel={event => {event.preventDefault();if (!dirty) close()}}>
++    <div className="directory-editor-heading"><h2 id="reconciliation-detail-title">{row.name} · {date.split('-').reverse().join('.')}</h2><button type="button" className="icon-button" aria-label="Закрыть сверку" disabled={dirty} onClick={close}><X size={20}/></button></div>
++    <div className="directory-editor-body">{dirty && <p className="muted">Сохраните отчёт или отмените ввод, чтобы закрыть сверку.</p>}<ReconciliationCard key={row.report?.version ?? 0} row={row} date={date} onSaved={onSaved} onOperation={onOperation} onDirty={setDirty} locked={dirty}/></div>
++  </dialog>
++}
++function ReconciliationCard({row, date, onSaved, onOperation, onDirty, locked}: {row: ReturnType<typeof reconciliationRows>[number]; date: string; onSaved: (next: OperatorWorkspace) => void; onOperation: (row: OperatorRefuelling) => void; onDirty:(dirty:boolean)=>void; locked: boolean}) {
++  const [editing,setEditing] = useState(false), [litres,setLitres] = useState(row.report?.litres ?? ''), [amount,setAmount] = useState(row.report?.amount ?? '')
++  const [saving,setSaving] = useState(false), [uncertain,setUncertain] = useState(false), [error,setError] = useState('')
++  useEffect(() => () => onDirty(false), [onDirty])
++  useEffect(() => {
++    if (!editing) return
++    const prevent = (event: BeforeUnloadEvent) => {event.preventDefault();event.returnValue=''}
++    window.addEventListener('beforeunload', prevent)
++    return () => window.removeEventListener('beforeunload', prevent)
++  }, [editing])
++  const pending = useRef<string | null>(null), lock = useRef(false)
++  const matches = row.report && new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero()
++  const save = async (event: FormEvent) => {
++    event.preventDefault(); if (lock.current) return
++    pending.current ??= JSON.stringify({date, serviceId: row.id, litres, amount, ...(row.report ? {version: row.report.version} : {}), idempotencyKey: crypto.randomUUID()})
++    lock.current=true;setSaving(true);setError('')
++    try {
++      const response = await apiFetch(`/api/operator/reconciliations${row.report ? `/${row.report.id}` : ''}`, {method: row.report ? 'PATCH' : 'POST', headers:{'Content-Type':'application/json'}, body: pending.current, signal: AbortSignal.timeout(20000)})
++      const result = await response.json()
++      if (!response.ok) {
++        if (isDefinitiveOperatorRejection(response.status, result.error, uncertain)) {pending.current=null;setUncertain(false)} else setUncertain(true)
++        setError(result.error || 'Не удалось сохранить отчёт.'); return
++      }
++      setUncertain(true)
++      const next = await readWorkspace()
++      if (!next.reconciliations?.some(item => item.id === result.id)) throw new Error('Не удалось подтвердить сохранение.')
++      pending.current=null;setUncertain(false);setEditing(false);onDirty(false);onSaved(next)
++    } catch {setUncertain(true);setError('Ответ не получен. Проверьте сохранение тем же запросом.')}
++    finally {lock.current=false;setSaving(false)}
++  }
++  return <article className={`operator-reconciliation-card${row.report ? matches ? ' is-matched' : ' is-different' : ''}`}>
++    <header><OperatorServiceBadge service={row.name} serviceId={row.id} part="name"/><span>{row.report ? matches ? 'Совпадает' : 'Есть расхождение' : 'Ожидает отчёта'}</span></header>
++    <table aria-label={`Итоги ${row.name}`}><thead><tr><th scope="col">Источник</th><th scope="col">Литры</th><th scope="col">Сумма, ₽</th></tr></thead><tbody>
++      <tr><th scope="row">CRM</th><td>{display(row.litres)}</td><td>{display(row.amount,true)}</td></tr>
++      <tr><th scope="row">Личный кабинет</th><td>{row.report ? display(row.report.litres) : '—'}</td><td>{row.report ? display(row.report.amount,true) : '—'}</td></tr>
++      <tr className="operator-reconciliation-delta"><th scope="row">Разница</th><td>{row.deltaLitres === null ? '—' : display(row.deltaLitres)}</td><td>{row.deltaAmount === null ? '—' : display(row.deltaAmount,true)}</td></tr>
++    </tbody></table>
++    {editing ? <form onSubmit={event=>void save(event)}><fieldset disabled={saving || uncertain}><label>Литры из кабинета<input aria-label={`Литры из кабинета ${row.name}`} required inputMode="decimal" value={litres} onChange={event=>setLitres(event.target.value)}/></label><label>Сумма из кабинета, ₽<input aria-label={`Сумма из кабинета ${row.name}`} required inputMode="decimal" value={amount} onChange={event=>setAmount(event.target.value)}/></label></fieldset>{error && <p role="alert">{error}</p>}<div className="operator-actions"><button className="button primary" disabled={saving}>{saving?'Сохраняем…':uncertain?'Проверить сохранение':'Сохранить отчёт'}</button><button type="button" className="button" disabled={saving || uncertain} onClick={()=>{setLitres(row.report?.litres??'');setAmount(row.report?.amount??'');setError('');setEditing(false);onDirty(false)}}>Отмена</button></div></form> : <button className="button" disabled={locked} onClick={()=>{setEditing(true);onDirty(true)}}>{row.report ? 'Изменить отчёт' : 'Внести отчёт кабинета'}</button>}
++    <details open><summary>Операции за день · {row.rows.length}</summary>{row.rows.map(operation=><button type="button" className="operator-reconciliation-operation" key={operation.id} disabled={editing} onClick={()=>onOperation(operation)}><span>{operation.name}<small>{display(operation.litres)} л · +{display(operation.discountPercent)}%</small></span><strong>{display(operation.amount,true)} ₽</strong></button>)}{!row.rows.length && <p>Операций за этот день нет.</p>}</details>
++    {row.report && <details><summary>История отчёта · {row.report.history.length}</summary><ul>{[...row.report.history].reverse().map((entry,index)=><li key={index}>{display(entry.litres)} л · {display(entry.amount,true)} ₽<small>{entry.actorName} · {new Date(entry.at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})} МСК</small></li>)}</ul></details>}
++  </article>
++}
+--- a/web/src/PushSettings.tsx
++++ b/web/src/PushSettings.tsx
+@@ -5,8 +5,11 @@
+ interface Config { enabled: boolean; publicKey: string; lastRunAt: number | null; intervalSeconds: number }
+ export default function PushSettings({ userId, kind: audience = 'work', operatorPlanId, onEnabledChange, onEnabled }: { userId: string; kind?: 'work' | 'driver' | 'invoices' | 'operator'; operatorPlanId?: string; onEnabledChange?: (enabled: boolean) => void; onEnabled?: () => void }) {
+   const [checking, setChecking] = useState(true);
++  const [connectionCheck, setConnectionCheck] = useState(0);
+   const [config, setConfig] = useState<Config | null>(null);
+   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
++  const [expiredSubscription, setExpiredSubscription] = useState(false);
++  const [registered, setRegistered] = useState(false);
+   const [probeId, setProbeId] = useState<string | null>(null);
+   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
+   const [copyNotice, setCopyNotice] = useState('');
+@@ -14,10 +17,10 @@
+   const capabilities = readPushCapabilities();
+   const { supported, ios, installed } = capabilities;
+   const diagnosticText = formatPushDiagnostics(capabilities);
+-  useEffect(() => { onEnabledChange?.(!!subscription && permission === 'granted' && !!config?.enabled); }, [subscription, permission, config?.enabled, onEnabledChange]);
++  useEffect(() => { onEnabledChange?.(registered && !!subscription && permission === 'granted' && !!config?.enabled); }, [registered, subscription, permission, config?.enabled, onEnabledChange]);
+   useEffect(() => {
+     let cancelled = false;
+-    setChecking(true);
++    setChecking(true); setRegistered(false); setError(''); setNotice('');
+     async function load() {
+       try {
+         const result: Config = await pushRequest('config', 'GET', undefined, userId);
+@@ -28,9 +31,10 @@
+         let current = await waitForPush(worker.pushManager.getSubscription(), 15000, 'Браузер не ответил при проверке подключения уведомлений. Повторите проверку позже.');
+         if (cancelled) return;
+         // A VAPID key change invalidates existing subscriptions.
+-        if (current && result.publicKey && current.options.applicationServerKey && new Uint8Array(current.options.applicationServerKey).toString() !== applicationKey(result.publicKey).toString()) { await current.unsubscribe(); current = null; }
+-        if (current && Notification.permission === 'granted' && result.enabled) await pushRequest('subscription', 'POST', { subscription: current.toJSON(), explicit: false }, userId);
+-        if (!cancelled) setSubscription(current);
++        if (current && result.publicKey && current.options.applicationServerKey && new Uint8Array(current.options.applicationServerKey).toString() !== applicationKey(result.publicKey).toString()) { await waitForPush(current.unsubscribe(), 15000, 'Не удалось обновить подключение браузера. Повторите проверку.'); current = null; }
++        if (current?.expirationTime && current.expirationTime <= Date.now()) { setExpiredSubscription(true); setSubscription(current); setPermission(Notification.permission); return; }
++        if (current && Notification.permission === 'granted' && result.enabled) { await pushRequest('subscription', 'POST', { subscription: current.toJSON(), explicit: false }, userId); if (!cancelled) setRegistered(true); }
++        if (!cancelled) { setPermission(Notification.permission); setSubscription(current); }
+       } catch (reason) {
+         if (!cancelled && (reason as Error & { status?: number }).status === 409) {
+           setSubscription(null);
+@@ -40,19 +44,27 @@
+     }
+     void load();
+     return () => { cancelled = true; };
+-  }, [userId, supported]);
++  }, [userId, supported, connectionCheck]);
+   useEffect(() => {
+-    const controller = new AbortController();
+-    let inFlight = false;
++    let cancelled = false, inFlight = false;
++    let permissionStatus: PermissionStatus | undefined;
++    const syncPermission = () => {
++      if (!('Notification' in window)) return;
++      setPermission(Notification.permission);
++      if (Notification.permission !== 'granted') {setRegistered(false);setNotice('');setProbeId(null);}
++    };
++    // Permission changes can arrive while the dialog remains open, without a focus event.
++    if (navigator.permissions?.query) void navigator.permissions.query({name:'notifications'}).then(status => {
++      if (cancelled) return;
++      permissionStatus = status; status.addEventListener('change', syncPermission);
++    }).catch(() => { /* Focus and visibility remain the fallback. */ });
+     async function refreshConfig() {
+       if (document.visibilityState !== 'visible' || inFlight) return;
++      syncPermission();
+       inFlight = true;
+       try {
+-        const response = await fetch('/api/push/config', { cache: 'no-store', signal: controller.signal, headers: { 'X-Artel-Account': userId } });
+-        if (response.ok) {
+-          const result: Config = await response.json();
+-          if (!controller.signal.aborted) setConfig(result);
+-        }
++        const result: Config = await pushRequest('config', 'GET', undefined, userId);
++        if (!cancelled) setConfig(result);
+       } catch { /* Keep the last known configuration during temporary outages. */ }
+       finally { inFlight = false; }
+     }
+@@ -60,7 +72,7 @@
+     const timer = window.setInterval(refresh, 60000);
+     window.addEventListener('focus', refresh);
+     document.addEventListener('visibilitychange', refresh);
+-    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
++    return () => { cancelled = true; permissionStatus?.removeEventListener('change', syncPermission); window.clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+   }, [userId]);
+   useEffect(() => {
+     if (!probeId) return;
+@@ -87,6 +99,7 @@
+           setProbeId(null);
+           return;
+         }
++        if (result.status === 'failed') { setProbeId(null); setNotice(''); if (result.failure === 'expired_subscription') {setRegistered(false);setExpiredSubscription(true);} setError(result.failure === 'expired_subscription' ? 'Подписка устройства истекла. Включите уведомления повторно.' : 'Сервис доставки не ответил. Проверьте подключение и повторите тест позже.'); return; }
+         if (result.status === 'expired') { unconfirmed(); return; }
+       } catch {
+         if (controller.signal.aborted) return;
+@@ -96,7 +109,7 @@
+     }
+     void check();
+     return () => { controller.abort(); window.clearTimeout(deadline); window.clearTimeout(retry); };
+-  }, [probeId]);
++  }, [probeId, userId]);
+   async function action(kind: 'enable' | 'disable' | 'test') {
+     if (busy) return;
+     setBusy(true); setError(''); setNotice(''); setProbeId(null);
+@@ -111,28 +124,32 @@
+         setNotice('Готовим уведомления в браузере…');
+         const worker = await registerPushWorker();
+         setNotice('Браузер подключает устройство к уведомлениям…');
++        if (expiredSubscription) { const previous = await waitForPush(worker.pushManager.getSubscription(), 15000, 'Браузер не ответил. Повторите подключение.'); if (previous) await waitForPush(previous.unsubscribe(), 15000, 'Не удалось обновить подписку. Повторите подключение.'); setExpiredSubscription(false); }
+         const current = await subscribePushDevice(worker, config!.publicKey);
+         setNotice('Сохраняем подключение устройства…');
+         await pushRequest('subscription', 'POST', { subscription: current.toJSON(), explicit: true }, userId);
+-        setSubscription(current);
++        setSubscription(current); setRegistered(true);
+         setNotice(audience === 'driver' ? 'Уведомления о новых рейсах включены на этом устройстве.' : 'Уведомления всех доступных вам разделов включены в этом браузере.');
+         onEnabled?.();
+       } else if (kind === 'disable' && subscription) {
+         await pushRequest('subscription', 'DELETE', { endpoint: subscription.endpoint }, userId);
+         await waitForPush(subscription.unsubscribe(), 15000, 'Сервер отключил уведомления, но браузер пока не завершил отключение. Повторите проверку позже.');
+-        setSubscription(null); setNotice('Уведомления на этом устройстве выключены.');
++        setSubscription(null); setRegistered(false); setNotice('Уведомления на этом устройстве выключены.');
+       } else if (subscription) {
+-        const result = await pushRequest('test', 'POST', { endpoint: subscription.endpoint, kind: audience, ...(audience === 'operator' && operatorPlanId ? { operatorPlanId } : {}) }, userId);
++        setPermission(Notification.permission);
++        if (Notification.permission !== 'granted') { setRegistered(false); throw new Error('Разрешение браузера отключено. Включите уведомления снова.'); }
++        const result = await pushRequest('test', 'POST', { endpoint: subscription.endpoint, async: true, kind: audience, ...(audience === 'operator' && operatorPlanId ? { operatorPlanId } : {}) }, userId);
+         if (typeof result.probeId === 'string' && result.probeId) {
+           setProbeId(result.probeId);
+-          setNotice('Сервис принял проверку. Ожидаем подтверждение браузера…');
++          setNotice('Проверка создана. Ожидаем подтверждение браузера…');
+         } else setNotice('Сервис принял проверку. Получение браузером пока не подтверждено.');
+       }
+     } catch (reason) {
+       setNotice('');
++      if ([404, 410].includes((reason as Error & {status?: number}).status ?? 0)) setRegistered(false);
+       setError(reason instanceof DOMException ? 'Браузер не смог подключить уведомления. Проверьте разрешения для CRM в браузере и настройках устройства, затем повторите попытку.' : (reason as Error).message);
+     }
+-    finally { setBusy(false); }
++    finally { if ('Notification' in window) setPermission(Notification.permission); setBusy(false); }
+   }
+   async function copyDiagnostics() {
+     try {
+@@ -142,6 +159,7 @@
+       setCopyNotice('Не удалось скопировать автоматически. Выделите и скопируйте текст в поле выше.');
+     }
+   }
++  const enabled = registered && !!subscription && permission === 'granted' && !!config?.enabled;
+   return <div className="work-push-settings">
+     {audience !== 'driver' && <p>Уведомления включаются сразу для всех доступных вам разделов: работы, счетов и операторской. Достаточно включить их один раз в этом браузере на этом устройстве. Выключение тоже действует на все разделы.</p>}
+     {!capabilities.secureContext ? <p>Для уведомлений откройте CRM по защищённому адресу, который начинается с https://.</p>
+@@ -153,12 +171,13 @@
+ 
+       {config && !config.enabled && <p>Серверная отправка ещё не настроена.</p>}
+       {config?.enabled && config.lastRunAt && Date.now() - config.lastRunAt > 20 * 60000 && <p role="status">Проверка напоминаний задерживается. Последняя проверка: {new Date(config.lastRunAt).toLocaleString('ru-RU')}.</p>}
++      {subscription && !enabled && !checking && <p role="status">Подключение устройства не подтверждено. Включите уведомления повторно.</p>}
+       {permission === 'denied' && <p>Разрешите уведомления для CRM в настройках браузера или устройства.</p>}
+-      {subscription && <p role="status">{audience === 'driver' ? 'Уведомления о новых рейсах включены.' : 'Уведомления всех доступных вам разделов включены в этом браузере.'}</p>}
+-      <div className="work-push-actions">{checking ? <p role="status">Проверяем подключение уведомлений…</p> : subscription ? <><button className="button" disabled={busy || !!probeId || !config?.enabled} onClick={() => void action('test')}>Проверить уведомление</button><button className="button" disabled={busy} onClick={() => void action('disable')}>{audience === 'driver' ? 'Выключить' : 'Выключить для всех разделов'}</button></> : <button className="button" disabled={busy || !config?.enabled || permission === 'denied'} onClick={() => void action('enable')}>{busy ? 'Подключение…' : audience === 'driver' ? 'Включить уведомления' : 'Включить для всех разделов'}</button>}</div>
++      {enabled && <p role="status">{audience === 'driver' ? 'Уведомления о новых рейсах включены.' : 'Уведомления всех доступных вам разделов включены в этом браузере.'}</p>}
++      <div className="work-push-actions">{checking ? <p role="status">Проверяем подключение уведомлений…</p> : enabled ? <><button className="button" disabled={busy || !!probeId || !config?.enabled} onClick={() => void action('test')}>Проверить уведомление</button><button className="button" disabled={busy} onClick={() => void action('disable')}>{audience === 'driver' ? 'Выключить' : 'Выключить для всех разделов'}</button></> : <button className="button" disabled={busy || !config?.enabled || permission === 'denied'} onClick={() => void action('enable')}>{busy ? 'Подключение…' : audience === 'driver' ? 'Включить уведомления' : 'Включить для всех разделов'}</button>}</div>
+ 
+     </>}
+-    {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
++    {error && <><p role="alert">{error}</p><button type="button" className="button" disabled={busy || checking || !!probeId} onClick={() => setConnectionCheck(value => value + 1)}>Повторить проверку подключения</button></>}{notice && <p role="status">{notice}</p>}
+     <details className="push-diagnostics">
+       <summary>Проверка этого устройства</summary>
+       <textarea aria-label="Диагностика уведомлений" readOnly rows={9} value={diagnosticText}/>
+--- a/web/src/auth-model.ts
++++ b/web/src/auth-model.ts
+@@ -25,4 +25,4 @@
+ export type SharedDirectory = typeof sharedDirectories[number]['id'];
+ export const validDirectoryGrants = (value: unknown): value is SharedDirectory[] => Array.isArray(value) && new Set(value).size === value.length && value.every(id => sharedDirectories.some(row => row.id === id));
+ export const hasDirectoryGrant = (user: AccountUser, kind: string) => hasSection(user, 'directories') && (isAdministrator(user) || user.directoryGrants?.includes(kind as SharedDirectory) === true);
+-export const availableDirectoryTabs = (user: AccountUser) => hasSection(user, 'directories') ? ['customers', 'addresses', 'managers', ...sharedDirectories.filter(row => hasDirectoryGrant(user, row.id) && row.id !== 'managers').map(row => row.id)] : [];
++export const availableDirectoryTabs = (user: AccountUser) => hasSection(user, 'directories') ? [...(['overview', 'shipments', 'trips'] as SectionId[]).some(section => hasSection(user, section)) ? ['customers', 'addresses'] : [], ...sharedDirectories.filter(row => hasDirectoryGrant(user, row.id)).map(row => row.id)] : [];
+--- a/web/src/operator-model.ts
++++ b/web/src/operator-model.ts
+@@ -62,14 +62,24 @@
+ export interface OperatorRefuellingV3 extends OperatorRefuellingV3Fields, OperatorRefuellingMetadata {}
+ export type OperatorRefuelling = OperatorLegacyRefuelling | OperatorRefuellingV2 | OperatorRefuellingV3;
+ export type OperatorCatalogSource = Pick<Directories, 'operatorGroups' | 'operatorServices'>;
++export interface OperatorReconciliationEvent {
++  litres: string; amount: string; at: string; actorId: string; actorName: string;
++}
++export interface OperatorReconciliationRecord {
++  id: string; date: string; serviceId: string; service: string; version: number;
++  litres: string; amount: string; createdAt: string; updatedAt: string;
++  history: OperatorReconciliationEvent[];
++}
+ export interface OperatorData {
++  reconciliations?: Record<string, OperatorReconciliationRecord>;
+   recipients: Record<string, OperatorRecipient>;
+   refuellings: Record<string, OperatorRefuelling>;
+   plans?: Record<string, OperatorPlan>;
+   cases?: Record<string, OperatorCase>;
+-  requests: Record<string, { fingerprint: string; actorId: string; collection: 'recipients' | 'refuellings' | 'plans' | 'cases'; id: string; version?: number; settlementId?: string; taskEventId?: string }>;
++  requests: Record<string, { fingerprint: string; actorId: string; collection: 'recipients' | 'refuellings' | 'plans' | 'cases' | 'reconciliations'; id: string; version?: number; settlementId?: string; taskEventId?: string }>;
+ }
+ export interface OperatorWorkspace {
++  reconciliations?: OperatorReconciliationRecord[];
+   recipients: OperatorRecipient[]; refuellings: OperatorRefuelling[];
+   groups: NamedEntry[]; services: OperatorService[];
+   plans: OperatorPlanSummary[];
+--- /dev/null
++++ b/web/src/operator-reconciliation.css
+@@ -0,0 +1,70 @@
++.operator-reconciliation {display:grid;gap:16px;min-width:0}
++.operator-reconciliation-heading {display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
++.operator-reconciliation-heading h2 {margin:0 0 6px}
++.operator-reconciliation-heading p,.operator-reconciliation-note {color:var(--muted,#66716c);margin:0;line-height:1.6}
++.operator-reconciliation-heading label {display:grid;gap:8px}
++.operator-reconciliation-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,390px),1fr));gap:20px}
++.operator-reconciliation-card {border:1px solid var(--border,#dce3df);border-radius:22px;background:var(--surface,#fff);padding:22px;display:grid;align-content:start;gap:20px;min-width:0}
++.operator-reconciliation-card header {display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
++.operator-reconciliation-card header>span:last-child {font-size:13px;color:#58645d}
++.operator-reconciliation-card.is-different header>span:last-child {color:#9b3e28}
++.operator-reconciliation-card.is-matched header>span:last-child {color:#17694c}
++.operator-reconciliation-card table {border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
++.operator-reconciliation-card th,.operator-reconciliation-card td {padding:12px 4px;border-bottom:1px solid #e4e9e6;text-align:right;overflow-wrap:anywhere}
++.operator-reconciliation-card th:first-child {text-align:left;font-weight:500}
++.operator-reconciliation-card thead {color:#68736e;font-size:12px}
++.operator-reconciliation-delta {font-weight:650;background:#f4f7f5}
++.is-different .operator-reconciliation-delta {background:#fff2eb;color:#963d25}
++.operator-reconciliation-card fieldset {border:0;padding:0;margin:0;display:grid;grid-template-columns:1fr 1fr;gap:12px;min-width:0}
++.operator-reconciliation-card label {display:grid;gap:8px;font-size:13px;min-width:0}
++.operator-reconciliation-card input {width:100%;min-width:0}
++.operator-reconciliation-card form {display:grid;gap:14px}
++.operator-reconciliation-card summary {cursor:pointer;font-size:14px;padding:4px 0}
++.operator-reconciliation-operation {background:none;border:0;border-bottom:1px solid #e4e9e6;width:100%;text-align:left;display:flex;justify-content:space-between;gap:12px;padding:14px 0;color:inherit;cursor:pointer}
++.operator-reconciliation-card small {display:block;color:#68736e;font-size:12px;margin-top:6px;overflow-wrap:anywhere}
++.operator-source-details {display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:0}
++.operator-source-details dt {font-size:13px;color:#68736e;margin-bottom:6px}
++.operator-source-details dd {margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
++.operator-source-wide {grid-column:1/-1}
++.operator-case-price {font-size:14px;color:#58645d;margin:0}
++.operator-discard-dialog {max-width:480px!important}
++.operator-discard {padding:8px 0 20px;line-height:1.5}
++.operator-discard .operator-actions {margin-top:24px}
++.operator-form-grid label>.operator-service-badges {margin-top:7px;align-self:start}
++@media(max-width:480px) {.operator-reconciliation-card {padding:16px;gap:16px}.operator-reconciliation-card table {font-size:12px}.operator-reconciliation-card fieldset {grid-template-columns:1fr}.operator-reconciliation-heading label {width:100%}.operator-reconciliation-card .operator-actions {flex-wrap:wrap}.operator-reconciliation-card .button {white-space:normal}}
++
++.operator-reconciliation-card tbody td {color:#35433b}
++.operator-reconciliation-card .operator-reconciliation-delta td {color:#35433b}
++.operator-reconciliation-card.is-different .operator-reconciliation-delta td {color:#963d25}
++.operator-reconciliation-method {font-size:14px;color:#526159}
++.operator-reconciliation-method p {line-height:1.6;margin-bottom:0}
++
++.operator-reconciliation-services {display:flex;position:relative;isolation:isolate;gap:8px;padding:8px;border-radius:28px;background:var(--surface-soft,#ededf1);max-width:100%;overflow-x:auto;min-width:0}
++.operator-reconciliation-services>button {flex:1 0 auto;position:relative;z-index:1;border:2px solid transparent;border-radius:22px;padding:12px 22px;background:var(--service-fill,#e6eee9);color:var(--service-ink,#254a39);font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
++div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true] {border-color:currentColor;box-shadow:0 2px 6px #0002}
++.operator-reconciliation-services>button:focus-visible {outline:3px solid #226b52;outline-offset:2px}
++.operator-reconciliation-services .scrollable-segments-selection {display:none}
++.operator-reconciliation-summary {margin:0;color:var(--muted,#58645d);font-size:14px}
++.operator-reconciliation-scroll {overflow:auto;max-width:100%;border:1px solid var(--border,#dce3df);border-radius:18px;background:var(--surface,#fff)}
++.operator-reconciliation-table {width:100%;min-width:850px;border-collapse:separate;border-spacing:0;font-size:14px;font-variant-numeric:tabular-nums}
++.operator-reconciliation-table th,.operator-reconciliation-table td {padding:12px 16px;text-align:right;border-bottom:1px solid var(--border,#e4e9e6);white-space:nowrap}
++.operator-reconciliation-table thead th {background:#f3f5f4;color:#43524a;font-weight:600;text-align:center}
++.operator-reconciliation-table thead tr:first-child th {border-bottom:1px solid #dce3df}
++.operator-reconciliation-table tbody th {position:sticky;left:0;background:var(--surface,#fff);text-align:left;z-index:1;border-right:1px solid var(--border,#e4e9e6)}
++.operator-reconciliation-table tbody tr:last-child>* {border-bottom:0}
++.operator-reconciliation-table tbody td {color:#35433b}
++.operator-reconciliation-table .reconciliation-difference.is-matched {background:#e3f3e9;color:#185b36;font-weight:600}
++.operator-reconciliation-table .reconciliation-difference.is-different {background:#fde8e8;color:#9a2424;font-weight:600}
++.operator-reconciliation-date,.operator-reconciliation-edit {border:0;background:none;color:#17694c;cursor:pointer;font:inherit;padding:5px 0;text-align:left;text-decoration:underline;text-underline-offset:3px}
++.operator-reconciliation-date small {display:block;color:#58645d;font-size:12px;margin-top:6px;text-decoration:none}
++.operator-reconciliation-dialog {width:min(680px,calc(100vw - 24px));max-width:680px}
++.operator-reconciliation-dialog .operator-reconciliation-card {padding:0;border:0;border-radius:0}
++.operator-reconciliation-card.is-matched .operator-reconciliation-delta {background:#e3f3e9;color:#185b36}
++.operator-reconciliation-card.is-different .operator-reconciliation-delta {background:#fde8e8;color:#9a2424}
++.operator-reconciliation-card:not(.is-matched):not(.is-different) .operator-reconciliation-delta {background:transparent}
++@media(max-width:600px) {.operator-reconciliation-services>button {padding:10px 18px}.operator-reconciliation-table th,.operator-reconciliation-table td {padding:10px 12px}.operator-reconciliation-table {min-width:780px}.operator-reconciliation-heading {gap:12px}}
++
++div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true]:hover {border-color:currentColor;box-shadow:0 2px 6px #0002}
++.operator-reconciliation {grid-template-columns:minmax(0,1fr)}
++.operator-reconciliation-heading>*,.operator-reconciliation-scroll {min-width:0}
++.operator-reconciliation-heading input {box-sizing:border-box;min-width:0;max-width:100%;width:100%}
+--- /dev/null
++++ b/web/src/operator-reconciliation.ts
+@@ -0,0 +1,18 @@
++import Decimal from 'decimal.js'
++import type { OperatorRefuelling, OperatorWorkspace } from './operator-model'
++const D = Decimal.clone({precision: 60, rounding: Decimal.ROUND_HALF_UP})
++export function reconciliationRows(workspace: OperatorWorkspace, date: string) {
++  const services = new Map(workspace.services.map(service => [service.id, {id: service.id, name: service.name}]))
++  const key = (row: OperatorRefuelling) => row.schemaVersion !== undefined ? row.serviceId : workspace.services.find(service => service.name.trim().toLocaleLowerCase('ru') === row.service.trim().toLocaleLowerCase('ru'))?.id ?? `legacy:${row.service}`
++  const operations = workspace.refuellings.filter(row => row.date === date && !row.deletedAt)
++  for (const row of operations) if (!services.has(key(row))) services.set(key(row), {id: key(row), name: row.service})
++  for (const record of workspace.reconciliations ?? []) if (record.date === date && !services.has(record.serviceId)) services.set(record.serviceId, {id: record.serviceId, name: record.service})
++  return [...services.values()].map(service => {
++    const rows = operations.filter(row => key(row) === service.id)
++    const litres = rows.reduce((sum, row) => sum.plus(row.litres), new D(0)).toFixed()
++    // Explicit business rule: add the saved service percentage to each recorded amount.
++    const amount = rows.reduce((sum, row) => sum.plus(new D(row.amount).mul(new D(1).plus(new D(row.discountPercent).div(100))).toDecimalPlaces(2)), new D(0)).toFixed(2)
++    const report = workspace.reconciliations?.find(row => row.date === date && row.serviceId === service.id)
++    return {...service, rows, litres, amount, report, deltaLitres: report ? new D(litres).minus(report.litres).toFixed() : null, deltaAmount: report ? new D(amount).minus(report.amount).toFixed(2) : null}
++  })
++}
