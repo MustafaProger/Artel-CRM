@@ -1,0 +1,321 @@
+diff --git a/scripts/check-work-response.mjs b/scripts/check-work-response.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/check-work-response.mjs
+@@ -0,0 +1,55 @@
++import {chromium,webkit,expect} from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import assert from 'node:assert/strict';
++import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
++import {tmpdir} from 'node:os';
++import {resolve} from 'node:path';
++import {randomUUID} from 'node:crypto';
++import {writeTripsQaSnapshot} from './qa-trips-runtime.mjs';
++import {startOperatorQaServer} from './qa-operator-runtime.mjs';
++import {authenticateContext} from './qa-auth.mjs';
++const root=resolve(import.meta.dirname,'..'),out=resolve(root,'../ui',process.env.ARTEL_OPERATOR_QA_BUILT==='1'?'built':'source');
++const temporary=await mkdtemp(resolve(tmpdir(),'artel-work-response-')),snapshotDirectory=resolve(temporary,'snapshot'),operationsDirectory=resolve(temporary,'store');
++await mkdir(out,{recursive:true});await writeTripsQaSnapshot(snapshotDirectory);
++const report={passed:false,synthetic:true,checks:[],axe:[],errors:[],externalRequests:[],timings:[]};
++const check=n=>{report.checks.push(n);console.log('PASS',n)};
++let runtime;
++try{
++ runtime=await startOperatorQaServer({root,snapshotDirectory,operationsDirectory});const {cookie}=await runtime.bootstrap();
++ const api=async(path,method='GET',body)=>{const res=await fetch(runtime.base+path,{method,headers:{Cookie:cookie,Origin:runtime.base,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const result=await res.json();assert.ok(res.ok,JSON.stringify(result));return result};
++ const task=(await api('/api/work/tasks','POST',{requestId:randomUUID(),title:'Проверить документы',description:'Сверить объём поставки и подтвердить комплект документов.'})).entry;
++ await api('/api/work/tasks','POST',{requestId:randomUUID(),title:'Согласовать время доставки с получателем на объекте',status:'doing',comment:'Уточнить контакт получателя'});
++ await api('/api/work/tasks','POST',{requestId:randomUUID(),title:'Отправить документы поставщику',status:'done'});
++ await api('/api/work/notes','POST',{requestId:randomUUID(),title:'На эту неделю',content:'Подготовить документы для следующей поставки.'});
++ for(const [engine,launcher] of [['chromium',chromium],['webkit',webkit]]){
++ const browser=await launcher.launch();try{
++ const ctx=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block'});await authenticateContext(ctx,runtime.base,cookie);
++ await ctx.route('**/*',route=>{if(new URL(route.request().url()).origin!==runtime.base){report.externalRequests.push(route.request().url());return route.abort()}return route.continue()});
++ const page=await ctx.newPage();page.on('pageerror',e=>report.errors.push(e.message));await page.goto(runtime.base+'/#work');
++ const box=page.getByRole('checkbox',{name:'Выполнена: Проверить документы',exact:true}),row=page.locator('.work-task-row').filter({has:box});await expect(box).not.toBeChecked();
++ // Hold both an older list read and the PATCH: the feedback must not wait on either.
++ let releaseRead,readStarted;const readGate=new Promise(r=>releaseRead=r),started=new Promise(r=>readStarted=r);const stale=await api('/api/work');let gets=0;
++ await page.route('**/api/work',async route=>{if(route.request().method()==='GET'){gets++;readStarted();await readGate;await route.fulfill({json:stale}).catch(()=>{});}else await route.continue()});
++ await page.getByRole('button',{name:'Обновить работу',exact:true}).click();await started;
++ let releasePatch;const patchGate=new Promise(r=>releasePatch=r);let patches=0;
++ await page.route('**/api/work/tasks/*',async route=>{patches++;await patchGate;await route.continue()});
++ const beforeOrder=await page.locator('.work-task-open strong').allTextContents();const began=performance.now();await box.focus();await box.press('Space');await expect(box).toBeChecked({timeout:250});await expect(row.getByRole('status')).toHaveText('Сохраняем…');
++ report.timings.push({engine,feedbackMs:performance.now()-began,patchHeld:true});await expect(box).toBeDisabled();
++ assert.equal((await api('/api/work')).work.tasks.find(r=>r.id===task.id).status,'todo');
++ releaseRead();await page.waitForTimeout(250);await expect(box).toBeChecked();await expect(row.getByRole('status')).toHaveText('Сохраняем…');
++ releasePatch();await expect(box).toBeEnabled();await expect(row.getByRole('status')).toHaveText('Готово');assert.equal((await api('/api/work')).work.tasks.find(r=>r.id===task.id).status,'done');
++ await page.waitForTimeout(250);assert.equal(gets,1,'No extra full Work read after saving');assert.equal(patches,1);assert.deepEqual(await page.locator('.work-task-open strong').allTextContents(),beforeOrder);
++ await page.unroute('**/api/work');await page.unroute('**/api/work/tasks/*');check(engine+': immediate pending feedback, stale read ignored, no follow-up GET, stable order, one PATCH');
++ await box.click();await expect(box).not.toBeChecked();await expect(box).toBeEnabled();assert.equal((await api('/api/work')).work.tasks.find(r=>r.id===task.id).status,'todo');check(engine+': uncheck persists and unlocks directly from PATCH');
++ await page.route('**/api/work/tasks/*',route=>route.fulfill({status:409,json:{error:'Задача изменена другим сотрудником.'}}));await box.click();await expect(row.getByRole('alert')).toContainText('Задача изменена');await expect(box).not.toBeChecked();await expect(box).toBeEnabled();await page.unroute('**/api/work/tasks/*');check(engine+': version conflict rolls back optimism and shows inline error');
++ await row.getByRole('button',{name:'Обновить',exact:true}).click();await expect(row.getByRole('alert')).toHaveCount(0);
++ await page.route('**/api/work/tasks/*',route=>route.abort('failed'));await box.click();await expect(row.getByRole('alert')).toContainText('Не удалось подтвердить');await expect(box).not.toBeChecked();await page.unroute('**/api/work/tasks/*');await row.getByRole('button',{name:'Обновить',exact:true}).click();await expect(row.getByRole('alert')).toHaveCount(0);check(engine+': network failure shows reconciliation message without false completion');
++ for(const width of [320,390,768,1440]){
++ await page.setViewportSize({width,height:1000});await box.focus();const g=await row.evaluate(el=>{const box=el.querySelector('.work-task-check-box').getBoundingClientRect(),title=el.querySelector('strong').getBoundingClientRect();return{centerDelta:Math.abs((box.top+box.bottom-title.top-title.bottom)/2),scroll:document.documentElement.scrollWidth,viewport:innerWidth}});assert.ok(g.centerDelta<=2,JSON.stringify(g));assert.ok(g.scroll<=width+1);
++ const a=await new AxeBuilder({page}).include('.work-page').analyze();report.axe.push({engine,width,violations:a.violations});assert.equal(a.violations.length,0);await page.screenshot({path:resolve(out,`${engine}-${width}.png`)});check(`${engine}: ${width} alignment/focus/layout/axe`);
++ }
++ await page.getByRole('button',{name:'Задача: Проверить документы',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByLabel('Срок задачи',{exact:true})).toHaveCount(0);await page.getByRole('button',{name:'Отмена',exact:true}).click();check(engine+': editor still works separately');
++ await ctx.close();
++ }finally{await browser.close()}}
++ assert.deepEqual(report.errors,[]);assert.deepEqual(report.externalRequests,[]);report.passed=true;
++}finally{await writeFile(resolve(out,'report.json'),JSON.stringify(report,null,2));await runtime?.server.close();await rm(temporary,{recursive:true,force:true,maxRetries:5,retryDelay:100})}
+diff --git a/server/local-api.ts b/server/local-api.ts
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -39,7 +39,7 @@
+ import { deleteDirectoryEntry } from './directory-deletion';
+ import { lookupCheckoCompany, validInn } from './checko';
+ import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
+-import { currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
++import { currentWorkSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
+ import { buildSettlements } from './settlements';
+ import { buildOrganizationSettlements, organizationSettlementsForActor } from './organization-settlements';
+ import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
+@@ -875,16 +875,18 @@
+         if(pathname === '/api/work' && request.method === 'GET'){
+           const data=await operations.read(base.provenance.sourceSha256);
+           const currentActor = authorized(data);
+-          return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),url.searchParams,currentActor,activeUsers(data))));
++          return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),url.searchParams,currentActor,activeUsers(data))));
+         }
+         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
+         const body=await jsonBody(request, false, 3 * 1024 * 1024);
+         const result=await operations.mutate(base.provenance.sourceSha256,data=>{
+           const currentActor=authorized(data);
+-          const result=mutateWork(data,scopeSnapshot(currentSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
++          const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
+           return {result,changed:result.changed};
+         });
+-        if (workMatch[1] === 'tasks' && result.entry && pushReady(config)) {
++        // A status-only edit cannot create an assignment; do not wait for the push queue.
++        const statusOnly = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status');
++        if (workMatch[1] === 'tasks' && result.entry && !statusOnly && pushReady(config)) {
+           // Await the attempt within the request so serverless runtimes do not drop it.
+           // The saved event remains available to the scheduler if delivery fails.
+           try { await dispatchTaskAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.entry.id); }
+diff --git a/server/shipment-operations.ts b/server/shipment-operations.ts
+--- a/server/shipment-operations.ts
++++ b/server/shipment-operations.ts
+@@ -272,6 +272,13 @@
+ export function currentShipmentAccess(base: Snapshot, store: OperationsData): ShipmentAccessContext {
+   const { shipments, directories } = currentShipmentData(base, store, false);
+   return { shipments, directories };
++}
++
++/** Work only needs current company identity and shipment ownership. Reuse structural
++ * validation without calculating shipment totals, bank allocations or dashboards. */
++export function currentWorkSnapshot(base: Snapshot, store: OperationsData): Snapshot {
++  const assembled = currentShipmentData(base, store, false);
++  return { ...assembled.base, companies: assembled.companies, shipments: assembled.shipments, directories: assembled.directories };
+ }
+ 
+ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBankSettlements = true): Snapshot {
+diff --git a/tests/api-work.test.ts b/tests/api-work.test.ts
+--- a/tests/api-work.test.ts
++++ b/tests/api-work.test.ts
+@@ -240,3 +240,40 @@
+     assert.equal((await f.bob('/api/work')).body.companies.some((c: {id: string}) => c.id === 'scope-client'), false);
+   } finally { await f.close(); }
+ });
++
++test('lean Work projection exactly preserves visible company choices, scope and mutations', async () => {
++  const { currentWorkSnapshot } = await import('../server/shipment-operations');
++  const { scopeSnapshot } = await import('../server/auth-scope');
++  const { workCompanyIds, mutateWork } = await import('../server/work-operations');
++  const f = await setup();
++  try {
++    await f.director('/api/work/tasks', 'POST', { title: 'Parity task', assigneeId: f.users[1].id, companyId: f.snapshot.companies[0].id });
++    const data = await f.store.read(base.provenance.sourceSha256);
++    const before = JSON.stringify(data);
++    for (const actor of [f.users[0], ...f.users.slice(1), { ...f.users[1], managerId: 'missing-manager' }, { ...f.users[0], role: 'admin' as const }]) {
++      const ids = workCompanyIds(data, actor);
++      const slow = scopeSnapshot(currentSnapshot(base, data), actor, 'work', ids);
++      const fast = scopeSnapshot(currentWorkSnapshot(base, data), actor, 'work', ids);
++      for (const filter of ['', 'mine', f.users[1].id]) {
++        const params = new URLSearchParams(filter ? { assigneeId: filter } : {});
++        assert.deepEqual(readWork(data, fast, params, actor, f.users), readWork(data, slow, params, actor, f.users));
++      }
++      const task = data.work!.tasks[0];
++      for (const body of [{ version: task.version, status: 'done' }, { version: task.version - 1, status: 'todo' }, { version: task.version, companyId: 'missing-company' }]) {
++        const evaluate = (snapshot: Snapshot) => {
++          try {
++            const result = mutateWork(structuredClone(data), snapshot, 'tasks', body, task.id, 'PATCH', actor, f.users);
++            if (result.entry) result.entry.updatedAt = 'ignored-clock';
++            return result;
++          } catch (e) { return { status: (e as {status:number}).status, message: (e as Error).message }; }
++        };
++        assert.deepEqual(evaluate(fast), evaluate(slow));
++      }
++    }
++    assert.equal(JSON.stringify(data), before);
++    const measure = (fn: () => unknown) => { const values = []; for (let i=0;i<21;i++) { const start=performance.now(); fn(); if(i)values.push(performance.now()-start); } values.sort((a,b)=>a-b); return { medianMs: values[10], p95Ms: values[18] }; };
++    const slow = measure(()=>scopeSnapshot(currentSnapshot(base,data),f.users[0],'work'));
++    const fast = measure(()=>scopeSnapshot(currentWorkSnapshot(base,data),f.users[0],'work'));
++    console.log('WORK_PROJECTION_BENCH', JSON.stringify({ slow, fast, equal:true, sourceShipments:base.shipments.length, isolated:true }));
++  } finally { await f.close(); }
++});
+diff --git a/web/src/WorkPage.tsx b/web/src/WorkPage.tsx
+--- a/web/src/WorkPage.tsx
++++ b/web/src/WorkPage.tsx
+@@ -1,6 +1,6 @@
+ import { useDialogMotion } from './useDialogMotion'
+ import { useCallback, useEffect, useRef, useState } from 'react';
+-import { Bell, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
++import { Bell, Check, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
+ import { isScopedEmployee, type AccountUser } from './auth-model';
+ import DirectorySelect from './DirectorySelect';
+ import type { Company } from './model';
+@@ -26,7 +26,11 @@
+   const [editor, setEditor] = useState<Editor | null>(null);
+   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+   const request = useRef<AbortController | null>(null), active = useRef(true);
++  const completing = useRef(new Set<string>());
++  const [pendingTasks, setPendingTasks] = useState<Record<string, WorkTask['status']>>({});
++  const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
+   const refresh = useCallback(async (visible = false) => {
++    if (completing.current.size) return;
+     request.current?.abort();
+     const controller = new AbortController();
+     request.current = controller;
+@@ -35,7 +39,7 @@
+       const response = await fetch(`/api/work${filter ? `?assigneeId=${encodeURIComponent(filter)}` : ''}`, { signal: controller.signal, cache: 'no-store' });
+       const result = await response.json();
+       if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рабочее пространство.');
+-      if (!controller.signal.aborted && active.current) { setData(result); setError(''); }
++      if (!controller.signal.aborted && active.current) { setData(result); setError(''); setTaskErrors({}); }
+     } catch (reason) {
+       if (!controller.signal.aborted && active.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.');
+     } finally { if (!controller.signal.aborted && active.current) setLoading(false); }
+@@ -44,10 +48,9 @@
+     active.current = true;
+     void refresh(true);
+     const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
+-    const timer = window.setInterval(onVisible, 15000);
+-    window.addEventListener('focus', onVisible);
++    const timer = window.setInterval(onVisible, 30000);
+     document.addEventListener('visibilitychange', onVisible);
+-    return () => { active.current = false; request.current?.abort(); window.clearInterval(timer); window.removeEventListener('focus', onVisible); document.removeEventListener('visibilitychange', onVisible); };
++    return () => { active.current = false; request.current?.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+   }, [refresh]);
+   useEffect(() => {
+     if (!data) return;
+@@ -60,21 +63,24 @@
+     params.delete('workId'); params.delete('workKind');
+     history.replaceState(null, '', `${location.pathname}${params.size ? `?${params}` : ''}#work`);
+   }, [data]);
+-  const completing = useRef(new Set<string>());
+-  const [pendingTasks, setPendingTasks] = useState<string[]>([]);
+   const toggleTask = async (task: WorkTask) => {
+     if (completing.current.has(task.id)) return;
+-    completing.current.add(task.id); setPendingTasks([...completing.current]); setError('');
++    const status = task.status === 'done' ? 'todo' : 'done';
++    completing.current.add(task.id);
++    request.current?.abort(); setLoading(false);
++    setPendingTasks(previous => ({ ...previous, [task.id]: status }));
++    setTaskErrors(previous => { const next = { ...previous }; delete next[task.id]; return next; });
+     try {
+-      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status: task.status === 'done' ? 'todo' : 'done' }), signal: AbortSignal.timeout(20000) });
++      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status }), signal: AbortSignal.timeout(20000) });
+       const result = await response.json();
+-      if (!response.ok) throw new Error(result.error || 'Не удалось изменить задачу.');
+-      request.current?.abort();
+-      if (active.current) { setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id ? result.entry : row) } } : previous); setNotice(task.status === 'done' ? 'Задача возвращена в работу.' : 'Задача выполнена.'); }
+-      await refresh();
++      if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
++      if (active.current) setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
+     } catch (reason) {
+-      if (active.current) setError(reason instanceof Error ? reason.message : 'Не удалось изменить задачу. Обновите список.');
+-    } finally { completing.current.delete(task.id); if (active.current) setPendingTasks([...completing.current]); }
++      if (active.current) setTaskErrors(previous => ({ ...previous, [task.id]: reason instanceof Error && reason.name !== 'TimeoutError' && reason.name !== 'TypeError' ? reason.message : 'Не удалось подтвердить сохранение. Обновите список перед повтором.' }));
++    } finally {
++      completing.current.delete(task.id);
++      if (active.current) setPendingTasks(previous => { const next = { ...previous }; delete next[task.id]; return next; });
++    }
+   };
+   const userName = (id: string) => [...(data?.users ?? []), ...(data?.historicalUsers ?? [])].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
+   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
+@@ -89,14 +95,14 @@
+   const records: Editor[] = [
+     ...(work?.tasks ?? []).map(entry => ({ kind: 'tasks' as const, entry })),
+     ...(work?.companyRecords ?? []).map(entry => ({ kind: 'companies' as const, entry })),
+-  ].filter(item => !!(item.entry as WorkTask).archivedAt === (view === 'archive')).sort((a, b) => b.entry!.updatedAt.localeCompare(a.entry!.updatedAt));
++  ].filter(item => !!(item.entry as WorkTask).archivedAt === (view === 'archive')).sort((a, b) => b.entry!.createdAt.localeCompare(a.entry!.createdAt) || a.entry!.id.localeCompare(b.entry!.id));
+   const first = new Date(month.getFullYear(), month.getMonth(), 1);
+   const start = new Date(first); start.setDate(1 - (first.getDay() + 6) % 7);
+   const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
+   return <div className="work-page">
+     <div className="work-view-toolbar">
+       <ScrollableSegments className="work-views" label="Представление работы" value={view}><button className={`button ${view === 'board' ? 'primary' : ''}`} aria-pressed={view === 'board'} onClick={() => setView('board')}><LayoutGrid size={17}/>Задачи</button><button className={`button ${view === 'calendar' ? 'primary' : ''}`} aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><CalendarDays size={17}/>Календарь</button><button className={`button ${view === 'archive' ? 'primary' : ''}`} aria-pressed={view === 'archive'} onClick={() => setView('archive')}>Архив задач</button></ScrollableSegments>
+-      <div className="work-assignee">{isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
++      <div className="work-assignee">{isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" disabled={Object.keys(pendingTasks).length > 0} value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
+       <div className="work-toolbar-actions"><button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
+       </div>
+     </div>
+@@ -106,7 +112,28 @@
+     {data && <>
+       <div className="work-layout">
+         <section className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
+-          {view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header><div className="work-company-list">{records.map(item => { const row = item.entry as WorkTask | WorkCompanyRecord; const task = 'title' in row ? row : null; return <div key={row.id} className={task ? 'work-task-row' : 'work-record-row'}>{task && <label className="work-task-check" title={task.status === 'done' ? 'Вернуть в работу' : 'Выполнить задачу'}><input type="checkbox" aria-label={`Выполнена: ${task.title}`} checked={task.status === 'done'} disabled={pendingTasks.includes(task.id) || !!task.archivedAt} onChange={() => void toggleTask(task)}/></label>}<button className={task ? 'work-card' : 'work-company-row'} onClick={() => setEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}><span><strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong><p>{companyName(row.companyId) || 'Без компании'}</p>{task?.description && <p>{task.description}</p>}<small>{userName(row.assigneeId)} · Комментариев: {row.comments?.length ?? 0} · Файлов: {row.attachments?.length ?? 0}</small></span><span className="work-card-footer">{task && <small>{workStatuses.find(status => status.id === task.status)?.name}</small>}{row.reminderAt && <small><Bell size={13}/>{dateLabel(row.reminderAt)}</small>}</span></button></div>; })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><Bell size={14}/>Напоминание · время вашего устройства</p></section>}
++          {view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header><div className="work-company-list">{records.map(item => {
++            const row = item.entry as WorkTask | WorkCompanyRecord;
++            const task = 'title' in row ? row : null;
++            const pending = Object.hasOwn(pendingTasks, row.id);
++            const status = task ? pendingTasks[row.id] ?? task.status : null;
++            return <div key={row.id} className={task ? `work-task-row${status === 'done' ? ' is-done' : ''}${pending ? ' is-saving' : ''}` : 'work-record-row'}>
++              {task && <label className="work-task-check" title={status === 'done' ? 'Вернуть в работу' : 'Выполнить задачу'}>
++                <input type="checkbox" aria-label={`Выполнена: ${task.title}`} checked={status === 'done'} disabled={pending || !!task.archivedAt} onChange={() => void toggleTask(task)}/>
++                <span className="work-task-check-box" aria-hidden="true"><Check size={16} strokeWidth={3}/></span>
++              </label>}
++              <div className="work-task-content">
++                <button className={task ? 'work-task-open' : 'work-company-row'} disabled={pending} onClick={() => setEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}>
++                  <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
++                  {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
++                  {task?.description && <span className="work-task-description">{task.description}</span>}
++                  <span className="work-task-meta"><span>{userName(row.assigneeId)}</span>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
++                </button>
++                {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
++              </div>
++              {task && <span className={`work-task-status status-${status}`} role="status">{pending ? <><LoaderCircle size={13} className="spin"/>Сохраняем…</> : status === 'done' ? 'Готово' : status === 'doing' ? 'В работе' : 'К выполнению'}</span>}
++            </div>;
++          })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><Bell size={14}/>Напоминание · время вашего устройства</p></section>}
+ 
+         </section>
+         <aside className="work-side" aria-label="Заметки">
+diff --git a/web/src/work.css b/web/src/work.css
+--- a/web/src/work.css
++++ b/web/src/work.css
+@@ -7,4 +7,34 @@
+ .work-editor-footer .button.work-delete { color: #fff; background: #b42318; border-color: #b42318; }
+ .work-editor-footer .button.work-delete:hover { background: #912018; border-color: #912018; }
+ 
+-.work-task-row{display:flex;align-items:flex-start;gap:4px;min-width:0}.work-task-row>.work-card{flex:1;min-width:0}.work-record-row{min-width:0}.work-task-check{display:flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;min-height:44px;cursor:pointer}.work-task-check input{width:20px;height:20px;margin:0;accent-color:var(--color-primary,#3671c9);cursor:pointer}.work-task-check:has(:focus-visible){outline:2px solid var(--color-primary,#3671c9);outline-offset:1px;border-radius:7px}.work-task-check:has(:disabled){cursor:default;opacity:.6}
++/* One aligned row owns its checkbox, content and status; no nested card borders. */
++.work-page .work-task-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:start;min-width:0;padding:10px 16px;border-bottom:1px solid var(--border,#e4e7eb)}
++.work-page .work-task-row:last-child{border-bottom:0}
++.work-task-content{min-width:0}
++.work-page .work-task-open{display:flex;flex-direction:column;gap:5px;width:100%;min-width:0;padding:10px 0;border:0;border-radius:6px;box-shadow:none;background:none;text-align:left;color:var(--text,#1d1d1f);font:inherit;cursor:pointer}
++.work-page .work-task-open:disabled{opacity:1;color:var(--text,#1d1d1f);cursor:wait}
++.work-page .work-task-open strong{font-size:14px;line-height:24px;font-weight:600;overflow-wrap:anywhere}
++.work-task-company,.work-task-description{font-size:13px;line-height:1.5;color:var(--muted,#626269);overflow-wrap:anywhere}
++.work-task-description{white-space:pre-line;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
++.work-task-meta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;line-height:1.6;color:var(--muted,#626269)}
++.work-task-meta>span{display:inline-flex;gap:4px;align-items:center}
++.work-task-check{position:relative;display:flex;align-items:center;justify-content:center;width:44px;height:44px;cursor:pointer;border-radius:9px}
++.work-page .work-task-check input{position:absolute;inset:0;width:44px;height:44px;margin:0;opacity:0;cursor:inherit}
++.work-task-check-box{display:flex;align-items:center;justify-content:center;width:23px;height:23px;border:1.5px solid #87958e;border-radius:7px;background:white;color:white;pointer-events:none;transition:background .12s,border-color .12s,transform .12s}
++.work-task-check-box svg{opacity:0}
++.work-task-check input:checked+.work-task-check-box{background:var(--accent,#19694d);border-color:var(--accent,#19694d)}
++.work-task-check input:checked+.work-task-check-box svg{opacity:1}
++.work-task-check input:focus-visible+.work-task-check-box{outline:3px solid #a3c8b9;outline-offset:3px}
++.work-task-check:has(input:not(:disabled)):hover .work-task-check-box{border-color:#19694d}
++.work-task-check:has(input:not(:disabled)):active .work-task-check-box{transform:scale(.92)}
++.work-task-check:has(input:disabled){cursor:wait}
++.work-task-status{display:inline-flex;align-items:center;gap:5px;justify-self:end;margin-top:12px;padding:4px 8px;border-radius:6px;background:#f1f3f2;color:#59635f;font-size:11px;line-height:16px;white-space:nowrap}
++.work-task-status.status-done{color:#176447;background:#eaf5ee}
++.work-task-row.is-done .work-task-open strong{color:#64716a;text-decoration:line-through;text-decoration-color:#a2afa7}
++.work-task-row.is-saving .work-task-status{color:#526159;background:#f1f3f2}
++.work-task-error{margin:0 0 8px;font-size:12px;line-height:1.5;color:#a12f25;overflow-wrap:anywhere}
++.work-task-error button{border:0;background:none;color:inherit;font:inherit;text-decoration:underline;min-height:32px;cursor:pointer}
++.work-page .work-task-open:focus-visible{outline:2px solid #19694d;outline-offset:3px}
++@media(max-width:650px){.work-page .work-task-row{grid-template-columns:44px minmax(0,1fr);gap:0 6px;padding:8px}.work-task-status{grid-column:2;justify-self:start;margin:0 0 10px}.work-task-meta{gap:3px 10px}}
++@media(prefers-reduced-motion:reduce){.work-task-check-box{transition:none}.work-task-check:active .work-task-check-box{transform:none}}
++@media(forced-colors:active){.work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight;border-color:Highlight;color:HighlightText;forced-color-adjust:none}}
