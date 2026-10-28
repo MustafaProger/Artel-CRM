@@ -146,7 +146,7 @@
 +}finally{await browser.close()}
 --- /dev/null
 +++ b/scripts/verify_operator_review.mjs
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,100 @@
 +import {chromium,webkit,expect as baseExpect} from '@playwright/test';
 +import AxeBuilder from '@axe-core/playwright';
 +import assert from 'node:assert/strict';
@@ -155,7 +155,7 @@
 +import {authenticateContext} from './qa-auth.mjs';
 +const root=resolve(import.meta.dirname,'..'), access=JSON.parse(await readFile(resolve(root,'../preview/access.json'),'utf8'));
 +const base=process.env.ARTEL_REVIEW_BASE||access.base, cookie=process.env.ARTEL_REVIEW_COOKIE||access.cookie;
-+const output=resolve(root,'../ui',process.env.ARTEL_REVIEW_BUILT?'built':'source');await mkdir(output,{recursive:true});
++const output=resolve(root,'../revision3/ui',process.env.ARTEL_REVIEW_BUILT?'built':'source');await mkdir(output,{recursive:true});
 +const expect=baseExpect.configure({timeout:20000});
 +const report={checks:[],axe:[],errors:[],synthetic:true};let browser,page;
 +const pass=name=>{report.checks.push(name);console.log('PASS',name)};
@@ -182,20 +182,62 @@
 + await filters.getByRole('button',{name:'Роснефть',exact:true}).click();
 + await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('34 650,00');
 + await expect(table.locator(`tr[data-date="${today}"] .is-matched`)).toHaveCount(2);
-+ assert.equal(await filters.getByRole('button',{name:'Роснефть',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(48, 54, 61)');
++ assert.equal(await filters.getByRole('button',{name:'Роснефть',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(237, 241, 238)');
++ assert.equal(await filters.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
 + await filters.getByRole('button',{name:'Лукойл',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"] .is-different`)).toHaveCount(2);
 + await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('150,00');
 + await filters.getByRole('button',{name:'ННК',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"] .is-empty`)).toHaveCount(2);
 + assert.equal(await table.locator(`tr[data-date="${today}"] .is-empty`).first().evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
-+ await filters.getByRole('button',{name:'ГПН',exact:true}).click();await table.getByRole('button',{name:new RegExp(`отчёт ГПН за ${today}$`)}).click();
-+ const card=page.locator('.operator-reconciliation-card');await card.getByRole('button',{name:/Внести отчёт|Изменить отчёт/}).click();await card.getByLabel('Литры из кабинета ГПН',{exact:true}).fill('499');await card.getByLabel('Сумма из кабинета ГПН',{exact:true}).fill('34600');await expect(page.getByRole('button',{name:'Закрыть сверку'})).toBeDisabled();await page.keyboard.press('Escape');await expect(card).toBeVisible();
-+ await card.getByRole('button',{name:'Сохранить отчёт',exact:true}).click();await expect(card.getByRole('button',{name:'Изменить отчёт'})).toBeVisible();await expect(card).toContainText('Есть расхождение');await expect(card.locator('.operator-reconciliation-delta')).toContainText('50,00');
-+ await card.getByText(/История отчёта/).click();await expect(card.locator('li').first()).toContainText('499');
-+ await page.getByRole('button',{name:'Закрыть сверку'}).click();await page.reload();await page.getByRole('tab',{name:'Сверки',exact:true}).click();await filters.getByRole('button',{name:'ГПН',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('50,00');pass(`${engine}: table ordering, service colors, exact deltas and persisted report`);
++ await filters.getByRole('button',{name:'ГПН',exact:true}).click();
++ const day=table.locator(`tr[data-date="${today}"]`), card=page.locator('.operator-reconciliation-card');
++ assert.equal(await day.locator('th small').count(),0);
++ assert.ok((await day.boundingBox()).height<=44,'compact desktop row');
++ assert.equal(await table.locator('thead tr').first().locator('th').nth(1).evaluate(el=>getComputedStyle(el).borderRightColor),'rgb(205, 217, 209)');
++ await day.getByRole('button',{name:new RegExp(`отчёт ГПН за ${today}$`)}).click();
++ await expect(page.getByRole('dialog')).toHaveCount(0);
++ const litres=day.getByLabel('Литры из кабинета ГПН',{exact:true}), amount=day.getByLabel('Сумма из кабинета ГПН',{exact:true});
++ await expect(litres).toBeFocused();await litres.fill('499');await amount.fill('34600');
++ await page.getByRole('tab',{name:'Операции',exact:true}).click();await page.getByRole('tab',{name:'Сверки',exact:true}).click();await expect(litres).toHaveValue('499');
++ await day.getByRole('button',{name:'Сохранить отчёт',exact:true}).click();await expect(day.locator('input')).toHaveCount(0);await expect(day.locator('.is-different')).toHaveCount(2);await expect(day).toContainText('50,00');
++ await day.getByRole('button',{name:`Операции ГПН за ${today}`,exact:true}).click();await card.getByText(/История отчёта/).click();await expect(card.locator('li').first()).toContainText('499');
++ await page.getByRole('button',{name:'Закрыть сверку'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
++ await page.reload();await page.getByRole('tab',{name:'Сверки',exact:true}).click();await filters.getByRole('button',{name:'ГПН',exact:true}).click();await expect(day).toContainText('50,00');pass(`${engine}: compact rows, neutral separators, one-click inline save and persistence`);
++ // Clicking a value focuses its own field; Escape or one cancel returns directly to the row.
++ let writes=0;const countWrites=request=>{if(request.url().includes('/api/operator/reconciliations')&&['POST','PATCH'].includes(request.method()))writes++};page.on('request',countWrites);
++ await day.getByRole('button',{name:`Ввести сумму ГПН за ${today}`,exact:true}).click();await expect(amount).toBeFocused();await amount.fill('123');await page.keyboard.press('Escape');await expect(day.locator('input')).toHaveCount(0);
++ await day.getByRole('button',{name:`Ввести литры ГПН за ${today}`,exact:true}).click();await litres.fill('123');await day.getByRole('button',{name:'Отменить ввод'}).click();await expect(day.locator('input')).toHaveCount(0);assert.equal(writes,0);page.off('request',countWrites);pass(`${engine}: direct cell editing and one-action cancellation without writes`);
++ // The server saves, but the browser loses the response. Retry the identical request exactly once.
++ const before=(await (await context.request.get(base+'/api/operator')).json()).reconciliations.find(r=>r.date===today&&r.serviceId==='operator-service-gpn');
++ const bodies=[];let lose=true;
++ await page.route('**/api/operator/reconciliations/**',async route=>{
++  if(route.request().method()!=='PATCH')return route.continue();
++  bodies.push(route.request().postData());
++  if(lose){lose=false;await route.fetch();await route.abort('failed')}else await route.continue();
++ });
++ await day.getByRole('button',{name:`Ввести литры ГПН за ${today}`,exact:true}).click();await litres.fill('499');await amount.fill('34600');
++ await day.getByRole('button',{name:'Сохранить отчёт',exact:true}).click();await expect(day.getByRole('button',{name:'Проверить сохранение',exact:true})).toBeVisible();await expect(litres).toBeDisabled();await expect(day.getByRole('button',{name:'Отменить ввод'})).toBeDisabled();
++ await day.getByRole('button',{name:'Проверить сохранение',exact:true}).click();await expect(day.locator('input')).toHaveCount(0);assert.equal(bodies.length,2);assert.equal(bodies[0],bodies[1]);await page.unroute('**/api/operator/reconciliations/**');
++ const after=(await (await context.request.get(base+'/api/operator')).json()).reconciliations.find(r=>r.id===before.id);assert.equal(after.version,before.version+1);pass(`${engine}: lost response retries identical request without duplicate history`);
 + await table.getByRole('button',{name:`Операции ГПН за ${today}`,exact:true}).click();await expect(card).toContainText('Операции за день · 1');await expect(card).toContainText('Учебный водитель Роман');await expect(card).not.toContainText('Учебный водитель Сергей');await card.locator('.operator-reconciliation-operation').click();await expect(page.getByRole('dialog').getByLabel('Имя водителя',{exact:true})).toHaveValue('Учебный водитель Роман');await page.getByRole('button',{name:'Закрыть форму',exact:true}).click();pass(`${engine}: date and service drilldown opens exact operation`);
 + await page.getByLabel('Месяц сверки').fill('2026-02');await expect(table.locator('tbody tr')).toHaveCount(28);await expect(table.locator('.is-empty')).toHaveCount(56);await page.getByLabel('Месяц сверки').fill('2024-02');await expect(table.locator('tbody tr')).toHaveCount(29);await page.getByLabel('Месяц сверки').fill(today.slice(0,7));pass(`${engine}: calendar month, leap year and missing values`);
++ // An empty day supports a real zero report, validation and a single history entry.
++ const emptyDate=await table.locator('tr.is-empty-day').first().getAttribute('data-date'), emptyDay=table.locator(`tr[data-date="${emptyDate}"]`);
++ await emptyDay.getByRole('button',{name:new RegExp(`Внести отчёт ГПН за ${emptyDate}$`)}).click();
++ const emptyLitres=emptyDay.getByLabel('Литры из кабинета ГПН',{exact:true}), emptyAmount=emptyDay.getByLabel('Сумма из кабинета ГПН',{exact:true});
++ writes=0;page.on('request',countWrites);await emptyDay.getByRole('button',{name:'Сохранить отчёт',exact:true}).click();assert.equal(writes,0);page.off('request',countWrites);
++ await emptyLitres.fill('-1');await emptyAmount.fill('0');await emptyDay.getByRole('button',{name:'Сохранить отчёт',exact:true}).click();await expect(emptyDay.getByRole('alert')).toBeVisible();await expect(emptyLitres).toBeEnabled();
++ await page.setViewportSize({width:390,height:1000});await expect(emptyLitres).toHaveValue('-1');await emptyLitres.fill('0');await emptyAmount.press('Enter');
++ const savedEmpty=table.locator(`tr[data-date="${emptyDate}"]`);await expect(savedEmpty.locator('input')).toHaveCount(0);await expect(savedEmpty.locator('.is-matched')).toHaveCount(2);
++ const zero=(await (await context.request.get(base+'/api/operator')).json()).reconciliations.find(r=>r.date===emptyDate&&r.serviceId==='operator-service-gpn');assert.equal(zero.litres,'0');assert.equal(zero.amount,'0');assert.equal(zero.history.length,1);pass(`${engine}: new empty-day report, required fields, negative rejection, zero and resize preserve input`);
 + for(const width of [320,390,768,1440]){
-+  await page.setViewportSize({width,height:1000});await expect(table).toBeVisible();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`${engine} overflow ${width}`);
++  await page.setViewportSize({width,height:1000});await expect(table).toBeVisible();
++  assert.equal(await day.evaluate(el=>getComputedStyle(el).display),width<=768?'grid':'table-row');
++  assert.ok(await table.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'table/cards have no horizontal overflow');
++  await day.scrollIntoViewIfNeeded();await day.getByRole('button',{name:`Ввести литры ГПН за ${today}`,exact:true}).click();await litres.fill('499');await amount.fill('34600');
++  assert.ok(await day.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'inline inputs fit card');
++  const editAxe=await new AxeBuilder({page}).include('.operator-reconciliation').withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();assert.deepEqual(editAxe.violations.map(v=>v.id),[]);report.axe.push({engine,width,state:'editing',violations:[]});
++  await page.screenshot({path:resolve(output,`${engine}-inline-${width}.png`)});
++  await amount.press('Enter');await expect(day.locator('input')).toHaveCount(0);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`${engine} overflow ${width}`);
 +  const axe=await new AxeBuilder({page}).include('.operator-reconciliation').withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();report.axe.push({engine,width,violations:axe.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>n.target)}))});assert.deepEqual(axe.violations.map(v=>v.id),[]);
 +  await page.screenshot({path:resolve(output,`${engine}-reconciliation-${width}.png`)});pass(`${engine}: reconciliation ${width}px and axe`);
 + }
@@ -654,7 +696,7 @@
      {payment.busy && <p role="status">Сохраняем отметку оплаты…</p>}
      {message && <p className="operator-feedback" role="status">{message}</p>}
      {!data ? <p role="status">{busy ? 'Загружаем операторскую…' : 'Данные не загружены.'}</p> : <div id="operator-content" role="tabpanel" aria-labelledby={`operator-tab-${tab}`}>
-+      {tab === 'reconciliation' && <OperatorReconciliation workspace={data} onSaved={next => setData(next)} onOperation={row => setEditor({kind:'fuel',row})}/>}
++      <div hidden={tab !== 'reconciliation'}><OperatorReconciliation workspace={data} onSaved={next => setData(next)} onOperation={row => setEditor({kind:'fuel',row})}/></div>
        {tab === 'plans' && <>
        <section className="operator-task-section" aria-label="Задания на приём оплаты"><h2>Приём оплаты</h2><PlanCards plans={data.plans.filter(plan => plan.status === planStatus)} onSelect={id => { setPlanId(id); setTab('operations') }} onEdit={plan => setPlanEditor({ plan })} /></section>
        <section className="operator-task-section" aria-label="Задания на возвраты и заправки"><h2>Возвраты и заправки</h2>
@@ -708,7 +750,7 @@
            {!fuel && (catalog.cases ?? []).some(entry => entry.status === 'open') && <div className="operator-full operator-carryover-picker">
 --- /dev/null
 +++ b/web/src/OperatorReconciliation.tsx
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,132 @@
 +import { Fragment, useEffect, useRef, useState } from 'react'
 +import type { CSSProperties, FormEvent } from 'react'
 +import Decimal from 'decimal.js'
@@ -720,91 +762,126 @@
 +import ScrollableSegments from './ScrollableSegments'
 +import { operatorServiceInk, operatorServiceBackground } from './operator-service-presentation'
 +import { useDialogMotion } from './useDialogMotion'
-+import { X } from 'lucide-react'
++import { Check, X } from 'lucide-react'
 +import './operator-reconciliation.css'
++
 +const today = () => new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date())
++type ReconciliationRow = ReturnType<typeof reconciliationRows>[number]
++const dateLabel = (date: string) => date.split('-').reverse().join('.')
++const statusOf = (row: ReconciliationRow) => row.report ? new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero() ? 'matched' : 'different' : 'empty'
++
 +export default function OperatorReconciliation({workspace, onSaved, onOperation}: {workspace: OperatorWorkspace; onSaved: (next: OperatorWorkspace) => void; onOperation: (row: OperatorRefuelling) => void}) {
 +  const [month, setMonth] = useState(today().slice(0, 7))
 +  const [serviceId, setServiceId] = useState(workspace.services[0]?.id ?? '')
 +  const [selectedDate, setSelectedDate] = useState<string | null>(null)
++  const [editingDate, setEditingDate] = useState<string | null>(null)
++  const [notice, setNotice] = useState('')
 +  const days = /^\d{4}-\d{2}$/.test(month) ? Array.from({length: new Date(Number(month.slice(0,4)), Number(month.slice(5)), 0).getDate()}, (_, index) => `${month}-${String(index + 1).padStart(2, '0')}`).filter(date => month !== today().slice(0, 7) || date <= today()).reverse() : []
 +  const dailyRows = days.map(date => ({date, rows: reconciliationRows(workspace, date)}))
 +  const services = [...new Map(dailyRows.flatMap(day => day.rows.map(row => [row.id, {id: row.id, name: row.name}] as const))).values()]
 +  const activeService = services.some(service => service.id === serviceId) ? serviceId : services[0]?.id ?? ''
-+  const rows = dailyRows.map(day => ({date: day.date, row: day.rows.find(row => row.id === activeService)})).filter((item): item is {date: string; row: ReturnType<typeof reconciliationRows>[number]} => !!item.row)
++  const rows = dailyRows.map(day => ({date: day.date, row: day.rows.find(row => row.id === activeService)})).filter((item): item is {date: string; row: ReconciliationRow} => !!item.row)
 +  const selected = rows.find(item => item.date === selectedDate)
-+  const count = rows.filter(({row}) => row.report && new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero()).length
++  const count = rows.filter(({row}) => statusOf(row) === 'matched').length
 +  return <section className="operator-reconciliation" aria-label="Сверки">
-+    <div className="operator-reconciliation-heading"><div><h2>Сверки</h2><p>Итоги CRM и отчёты оператора по дням.</p></div><label>Месяц<input type="month" aria-label="Месяц сверки" required value={month} onChange={event => {if(event.target.value) setMonth(event.target.value)}}/></label></div>
++    <div className="operator-reconciliation-heading"><div><h2>Сверки</h2><p>Итоги CRM и отчёты оператора по дням.</p></div><label>Месяц<input type="month" aria-label="Месяц сверки" disabled={!!editingDate} required value={month} onChange={event => {if(event.target.value) {setMonth(event.target.value);setNotice('')}}}/></label></div>
 +    <ScrollableSegments className="operator-reconciliation-services" label="Сервисы сверки" value={activeService}>
-+      {services.map(service => {const color = workspace.services.find(item => item.id === service.id)?.backgroundColor ?? operatorServiceBackground(service.name, service.id); return <button type="button" key={service.id} aria-pressed={activeService === service.id} onClick={() => setServiceId(service.id)} style={color ? {'--service-fill': color, '--service-ink': operatorServiceInk(color), backgroundColor: color, color: operatorServiceInk(color)} as CSSProperties : undefined}>{service.name}</button>})}
++      {services.map(service => {
++        const configured = workspace.services.find(item => item.id === service.id)?.backgroundColor ?? operatorServiceBackground(service.name, service.id)
++        // Keep dark catalogue colors readable as light tints in this filter only.
++        const color = operatorServiceInk(configured) === '#ffffff' ? '#edf1ee' : configured
++        return <button type="button" key={service.id} aria-disabled={!!editingDate} title={editingDate ? 'Сохраните отчёт или отмените ввод' : undefined} aria-pressed={activeService === service.id} onClick={() => {if (!editingDate) {setServiceId(service.id);setNotice('')}}} style={{'--service-fill': color, '--service-ink': operatorServiceInk(color), backgroundColor: color, color: operatorServiceInk(color)} as CSSProperties}>{service.name}</button>
++      })}
 +    </ScrollableSegments>
-+    <p className="operator-reconciliation-note">Разница = CRM − отчёт оператора. Нажмите на дату, чтобы открыть операции и историю отчёта.</p>
++    <p className="operator-reconciliation-note">Внесите отчёт прямо в строке. По дате — операции и история. Разница = CRM − отчёт оператора.</p>
 +    <details className="operator-reconciliation-method"><summary>Как считаются итоги</summary><p>Все операции за дату заправки, независимо от оплаты. К сумме каждой операции прибавляется сохранённый в ней процент: 31 500 ₽ + 10% = 34 650 ₽. Округление до копеек по операции. Удалённые операции исключены. Прочерк означает отсутствие данных; сохранённый ноль участвует в сверке.</p></details>
-+    <p className="operator-reconciliation-summary" role="status">Совпало: {count} · С расхождением: {rows.filter(({row}) => row.report).length - count} · Ожидают отчёта: {rows.filter(({row}) => row.rows.length && !row.report).length}</p>
-+    {rows.length ? <div className="operator-reconciliation-scroll" role="region" aria-label="Таблица сверок, прокрутка по горизонтали" tabIndex={0}><table className="operator-reconciliation-table" aria-label={`Сверки: ${services.find(service => service.id === activeService)?.name}, ${month}`}>
-+      <thead><tr><th rowSpan={2} scope="col">Дата</th><th colSpan={2} scope="colgroup">CRM</th><th colSpan={2} scope="colgroup">Отчёт оператора</th><th colSpan={2} scope="colgroup">Разница</th><th rowSpan={2} scope="col">Отчёт</th></tr><tr>{['CRM', 'Отчёт оператора', 'Разница'].map(group => <Fragment key={group}><th scope="col">Литры</th><th scope="col">Сумма, ₽</th></Fragment>)}</tr></thead>
-+      <tbody>{rows.map(({date, row}) => {const status = row.report ? new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero() ? 'matched' : 'different' : 'empty'; return <tr key={date} data-date={date}>
-+        <th scope="row"><button type="button" className="operator-reconciliation-date" aria-label={`Операции ${row.name} за ${date}`} onClick={() => setSelectedDate(date)}>{date.split('-').reverse().join('.')}<small>{row.rows.length ? `${row.rows.length} оп.` : 'Нет операций'}</small></button></th>
-+        <td>{row.rows.length || row.report ? display(row.litres) : '—'}</td><td>{row.rows.length || row.report ? display(row.amount,true) : '—'}</td>
-+        <td>{row.report ? display(row.report.litres) : '—'}</td><td>{row.report ? display(row.report.amount,true) : '—'}</td>
-+        <td className={`reconciliation-difference is-${status}`} aria-label={status === 'empty' ? 'Разница не рассчитана' : status === 'matched' ? 'Совпадает' : 'Есть расхождение'}>{row.deltaLitres === null ? '—' : display(row.deltaLitres)}</td><td className={`reconciliation-difference is-${status}`}>{row.deltaAmount === null ? '—' : display(row.deltaAmount,true)}</td>
-+        <td><button type="button" className="operator-reconciliation-edit" aria-label={`${row.report ? 'Изменить' : 'Внести'} отчёт ${row.name} за ${date}`} onClick={() => setSelectedDate(date)}>{row.report ? 'Изменить' : 'Внести'}</button></td>
-+      </tr>})}</tbody>
++    <p className="operator-reconciliation-summary" role="status">{notice || `Совпало: ${count} · С расхождением: ${rows.filter(({row}) => row.report).length - count} · Ожидают отчёта: ${rows.filter(({row}) => row.rows.length && !row.report).length}`}</p>
++    {rows.length ? <div className="operator-reconciliation-scroll"><table role="table" className="operator-reconciliation-table" aria-label={`Сверки: ${services.find(service => service.id === activeService)?.name}, ${month}`}>
++      <thead role="rowgroup"><tr role="row"><th rowSpan={2} scope="col" role="columnheader">Дата</th><th colSpan={2} scope="colgroup" role="columnheader">CRM</th><th colSpan={2} scope="colgroup" role="columnheader">Отчёт оператора</th><th colSpan={2} scope="colgroup" role="columnheader">Разница</th><th rowSpan={2} scope="col" role="columnheader">Отчёт</th></tr><tr role="row">{['CRM', 'Отчёт оператора', 'Разница'].map(group => <Fragment key={group}><th scope="col" role="columnheader">Литры</th><th scope="col" role="columnheader">Сумма, ₽</th></Fragment>)}</tr></thead>
++      <tbody role="rowgroup">{rows.map(({date, row}) => <ReconciliationDay key={`${activeService}:${date}`} row={row} date={date} editing={editingDate === date} locked={!!editingDate && editingDate !== date} onEdit={() => {setEditingDate(date);setNotice('')}} onCancel={() => setEditingDate(null)} onDetails={() => setSelectedDate(date)} onSaved={next => {onSaved(next);setEditingDate(null);setNotice(`Отчёт ${row.name} за ${dateLabel(date)} сохранён`)}}/>)}</tbody>
 +    </table></div> : <p>В справочнике пока нет сервисов.</p>}
-+    {selected && <ReconciliationDetails key={`${selected.date}:${activeService}`} row={selected.row} date={selected.date} onSaved={onSaved} onOperation={operation => {setSelectedDate(null);onOperation(operation)}} onClose={() => setSelectedDate(null)}/>}
++    {selected && <ReconciliationDetails key={`${selected.date}:${activeService}`} row={selected.row} date={selected.date} onOperation={operation => {setSelectedDate(null);onOperation(operation)}} onClose={() => setSelectedDate(null)}/>}
 +  </section>
 +}
-+function ReconciliationDetails({row, date, onSaved, onOperation, onClose}: {row: ReturnType<typeof reconciliationRows>[number]; date: string; onSaved: (next: OperatorWorkspace) => void; onOperation: (row: OperatorRefuelling) => void; onClose: () => void}) {
-+  const dialog = useRef<HTMLDialogElement>(null)
-+  const [dirty, setDirty] = useState(false)
-+  const {close} = useDialogMotion(dialog, onClose)
-+  return <dialog ref={dialog} className="detail-dialog operator-reconciliation-dialog" aria-labelledby="reconciliation-detail-title" onCancel={event => {event.preventDefault();if (!dirty) close()}}>
-+    <div className="directory-editor-heading"><h2 id="reconciliation-detail-title">{row.name} · {date.split('-').reverse().join('.')}</h2><button type="button" className="icon-button" aria-label="Закрыть сверку" disabled={dirty} onClick={close}><X size={20}/></button></div>
-+    <div className="directory-editor-body">{dirty && <p className="muted">Сохраните отчёт или отмените ввод, чтобы закрыть сверку.</p>}<ReconciliationCard key={row.report?.version ?? 0} row={row} date={date} onSaved={onSaved} onOperation={onOperation} onDirty={setDirty} locked={dirty}/></div>
-+  </dialog>
-+}
-+function ReconciliationCard({row, date, onSaved, onOperation, onDirty, locked}: {row: ReturnType<typeof reconciliationRows>[number]; date: string; onSaved: (next: OperatorWorkspace) => void; onOperation: (row: OperatorRefuelling) => void; onDirty:(dirty:boolean)=>void; locked: boolean}) {
-+  const [editing,setEditing] = useState(false), [litres,setLitres] = useState(row.report?.litres ?? ''), [amount,setAmount] = useState(row.report?.amount ?? '')
-+  const [saving,setSaving] = useState(false), [uncertain,setUncertain] = useState(false), [error,setError] = useState('')
-+  useEffect(() => () => onDirty(false), [onDirty])
++
++function ReconciliationDay({row, date, editing, locked, onEdit, onCancel, onDetails, onSaved}: {row: ReconciliationRow; date: string; editing: boolean; locked: boolean; onEdit: () => void; onCancel: () => void; onDetails: () => void; onSaved: (next: OperatorWorkspace) => void}) {
++  const [litres, setLitres] = useState(''), [amount, setAmount] = useState('')
++  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [error, setError] = useState('')
++  const original = useRef(row.report)
++  const pending = useRef<string | null>(null), lock = useRef(false)
++  const firstInput = useRef<HTMLInputElement>(null), secondInput = useRef<HTMLInputElement>(null), editButton = useRef<HTMLButtonElement>(null)
++  const focusField = useRef<'litres' | 'amount'>('litres')
++  const formId = `reconciliation-${row.id}-${date}`
++  const status = statusOf(row)
++  const begin = (field: 'litres' | 'amount' = 'litres') => {
++    original.current = row.report
++    setLitres(row.report?.litres ?? '');setAmount(row.report?.amount ?? '');setError('');focusField.current = field;onEdit()
++  }
++  const cancel = () => {
++    if (lock.current || uncertain) return
++    pending.current = null;setError('');onCancel();editButton.current?.focus({preventScroll:true})
++  }
 +  useEffect(() => {
 +    if (!editing) return
++    const input = focusField.current === 'amount' ? secondInput.current : firstInput.current
++    input?.focus({preventScroll:true});input?.select()
++  }, [editing])
++  const dirty = editing && (litres !== (original.current?.litres ?? '') || amount !== (original.current?.amount ?? '') || uncertain || saving)
++  useEffect(() => {
++    if (!dirty) return
 +    const prevent = (event: BeforeUnloadEvent) => {event.preventDefault();event.returnValue=''}
 +    window.addEventListener('beforeunload', prevent)
 +    return () => window.removeEventListener('beforeunload', prevent)
-+  }, [editing])
-+  const pending = useRef<string | null>(null), lock = useRef(false)
-+  const matches = row.report && new Decimal(row.deltaAmount!).isZero() && new Decimal(row.deltaLitres!).isZero()
++  }, [dirty])
 +  const save = async (event: FormEvent) => {
-+    event.preventDefault(); if (lock.current) return
-+    pending.current ??= JSON.stringify({date, serviceId: row.id, litres, amount, ...(row.report ? {version: row.report.version} : {}), idempotencyKey: crypto.randomUUID()})
-+    lock.current=true;setSaving(true);setError('')
++    event.preventDefault();if (lock.current) return
++    const prior = original.current
++    pending.current ??= JSON.stringify({date, serviceId: row.id, litres, amount, ...(prior ? {version: prior.version} : {}), idempotencyKey: crypto.randomUUID()})
++    lock.current = true;setSaving(true);setError('')
 +    try {
-+      const response = await apiFetch(`/api/operator/reconciliations${row.report ? `/${row.report.id}` : ''}`, {method: row.report ? 'PATCH' : 'POST', headers:{'Content-Type':'application/json'}, body: pending.current, signal: AbortSignal.timeout(20000)})
++      const response = await apiFetch(`/api/operator/reconciliations${prior ? `/${prior.id}` : ''}`, {method: prior ? 'PATCH' : 'POST', headers:{'Content-Type':'application/json'}, body:pending.current, signal:AbortSignal.timeout(20000)})
 +      const result = await response.json()
 +      if (!response.ok) {
 +        if (isDefinitiveOperatorRejection(response.status, result.error, uncertain)) {pending.current=null;setUncertain(false)} else setUncertain(true)
-+        setError(result.error || 'Не удалось сохранить отчёт.'); return
++        setError(result.error || 'Не удалось сохранить отчёт.');return
 +      }
 +      setUncertain(true)
 +      const next = await readWorkspace()
 +      if (!next.reconciliations?.some(item => item.id === result.id)) throw new Error('Не удалось подтвердить сохранение.')
-+      pending.current=null;setUncertain(false);setEditing(false);onDirty(false);onSaved(next)
++      pending.current=null;setUncertain(false);onSaved(next);editButton.current?.focus({preventScroll:true})
 +    } catch {setUncertain(true);setError('Ответ не получен. Проверьте сохранение тем же запросом.')}
 +    finally {lock.current=false;setSaving(false)}
 +  }
-+  return <article className={`operator-reconciliation-card${row.report ? matches ? ' is-matched' : ' is-different' : ''}`}>
-+    <header><OperatorServiceBadge service={row.name} serviceId={row.id} part="name"/><span>{row.report ? matches ? 'Совпадает' : 'Есть расхождение' : 'Ожидает отчёта'}</span></header>
-+    <table aria-label={`Итоги ${row.name}`}><thead><tr><th scope="col">Источник</th><th scope="col">Литры</th><th scope="col">Сумма, ₽</th></tr></thead><tbody>
-+      <tr><th scope="row">CRM</th><td>{display(row.litres)}</td><td>{display(row.amount,true)}</td></tr>
-+      <tr><th scope="row">Личный кабинет</th><td>{row.report ? display(row.report.litres) : '—'}</td><td>{row.report ? display(row.report.amount,true) : '—'}</td></tr>
-+      <tr className="operator-reconciliation-delta"><th scope="row">Разница</th><td>{row.deltaLitres === null ? '—' : display(row.deltaLitres)}</td><td>{row.deltaAmount === null ? '—' : display(row.deltaAmount,true)}</td></tr>
-+    </tbody></table>
-+    {editing ? <form onSubmit={event=>void save(event)}><fieldset disabled={saving || uncertain}><label>Литры из кабинета<input aria-label={`Литры из кабинета ${row.name}`} required inputMode="decimal" value={litres} onChange={event=>setLitres(event.target.value)}/></label><label>Сумма из кабинета, ₽<input aria-label={`Сумма из кабинета ${row.name}`} required inputMode="decimal" value={amount} onChange={event=>setAmount(event.target.value)}/></label></fieldset>{error && <p role="alert">{error}</p>}<div className="operator-actions"><button className="button primary" disabled={saving}>{saving?'Сохраняем…':uncertain?'Проверить сохранение':'Сохранить отчёт'}</button><button type="button" className="button" disabled={saving || uncertain} onClick={()=>{setLitres(row.report?.litres??'');setAmount(row.report?.amount??'');setError('');setEditing(false);onDirty(false)}}>Отмена</button></div></form> : <button className="button" disabled={locked} onClick={()=>{setEditing(true);onDirty(true)}}>{row.report ? 'Изменить отчёт' : 'Внести отчёт кабинета'}</button>}
-+    <details open><summary>Операции за день · {row.rows.length}</summary>{row.rows.map(operation=><button type="button" className="operator-reconciliation-operation" key={operation.id} disabled={editing} onClick={()=>onOperation(operation)}><span>{operation.name}<small>{display(operation.litres)} л · +{display(operation.discountPercent)}%</small></span><strong>{display(operation.amount,true)} ₽</strong></button>)}{!row.rows.length && <p>Операций за этот день нет.</p>}</details>
-+    {row.report && <details><summary>История отчёта · {row.report.history.length}</summary><ul>{[...row.report.history].reverse().map((entry,index)=><li key={index}>{display(entry.litres)} л · {display(entry.amount,true)} ₽<small>{entry.actorName} · {new Date(entry.at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})} МСК</small></li>)}</ul></details>}
-+  </article>
++  return <tr role="row" data-date={date} className={editing ? 'is-editing' : !row.rows.length && !row.report ? 'is-empty-day' : undefined} onKeyDown={event => {if(editing && event.key === 'Escape') {event.preventDefault();cancel()}}}>
++    <th scope="row" role="rowheader"><button type="button" className="operator-reconciliation-date" aria-label={`Операции ${row.name} за ${date}`} disabled={editing || locked} onClick={onDetails}>{dateLabel(date)}</button></th>
++    <td role="cell" data-label="CRM · Литры">{row.rows.length || row.report ? display(row.litres) : '—'}</td><td role="cell" data-label="CRM · Сумма, ₽">{row.rows.length || row.report ? display(row.amount,true) : '—'}</td>
++    <td role="cell" data-label="Отчёт · Литры" className="reconciliation-report-cell">{editing ? <input ref={firstInput} form={formId} aria-label={`Литры из кабинета ${row.name}`} required inputMode="decimal" autoComplete="off" disabled={saving || uncertain} value={litres} onChange={event=>setLitres(event.target.value)}/> : <button type="button" disabled={locked} className="reconciliation-cell-edit" aria-label={`Ввести литры ${row.name} за ${date}`} onClick={()=>begin('litres')}>{row.report ? display(row.report.litres) : '—'}</button>}</td>
++    <td role="cell" data-label="Отчёт · Сумма, ₽" className="reconciliation-report-cell">{editing ? <input ref={secondInput} form={formId} aria-label={`Сумма из кабинета ${row.name}`} required inputMode="decimal" autoComplete="off" disabled={saving || uncertain} value={amount} onChange={event=>setAmount(event.target.value)}/> : <button type="button" disabled={locked} className="reconciliation-cell-edit" aria-label={`Ввести сумму ${row.name} за ${date}`} onClick={()=>begin('amount')}>{row.report ? display(row.report.amount,true) : '—'}</button>}</td>
++    <td role="cell" data-label="Разница · Литры" className={`reconciliation-difference is-${status}`} aria-label={status === 'empty' ? 'Разница не рассчитана' : status === 'matched' ? 'Совпадает' : 'Есть расхождение'}>{row.deltaLitres === null ? '—' : display(row.deltaLitres)}</td><td role="cell" data-label="Разница · Сумма, ₽" className={`reconciliation-difference is-${status}`}>{row.deltaAmount === null ? '—' : display(row.deltaAmount,true)}</td>
++    <td role="cell" className="reconciliation-row-actions">
++      <button ref={editButton} type="button" hidden={editing} disabled={locked} className="operator-reconciliation-edit" aria-label={`${row.report ? 'Изменить' : 'Внести'} отчёт ${row.name} за ${date}`} onClick={()=>begin()}>{row.report ? 'Изменить' : 'Внести'}</button>
++      {editing && <form id={formId} onSubmit={event=>void save(event)} aria-label={`Отчёт ${row.name} за ${date}`}><div className="reconciliation-inline-actions"><button type="submit" className="reconciliation-save" disabled={saving} aria-label={saving ? 'Сохраняем отчёт' : uncertain ? 'Проверить сохранение' : 'Сохранить отчёт'} title={uncertain ? 'Проверить сохранение' : 'Сохранить отчёт'}><Check size={16}/><span>{saving?'Сохраняем…':uncertain?'Проверить':'Сохранить'}</span></button><button type="button" className="reconciliation-cancel" disabled={saving || uncertain} onClick={cancel} aria-label="Отменить ввод" title="Отменить ввод"><X size={16}/></button></div>{error && <p role="alert">{error}</p>}</form>}
++    </td>
++  </tr>
++}
++
++function ReconciliationDetails({row, date, onOperation, onClose}: {row: ReconciliationRow; date: string; onOperation: (row: OperatorRefuelling) => void; onClose: () => void}) {
++  const dialog = useRef<HTMLDialogElement>(null)
++  const {close} = useDialogMotion(dialog, onClose)
++  const matches = statusOf(row) === 'matched'
++  return <dialog ref={dialog} className="detail-dialog operator-reconciliation-dialog" aria-labelledby="reconciliation-detail-title" onCancel={event => {event.preventDefault();close()}}>
++    <div className="directory-editor-heading"><h2 id="reconciliation-detail-title">{row.name} · {dateLabel(date)}</h2><button type="button" className="icon-button" aria-label="Закрыть сверку" onClick={close}><X size={20}/></button></div>
++    <div className="directory-editor-body"><article className={`operator-reconciliation-card${row.report ? matches ? ' is-matched' : ' is-different' : ''}`}>
++      <header><OperatorServiceBadge service={row.name} serviceId={row.id} part="name"/><span>{row.report ? matches ? 'Совпадает' : 'Есть расхождение' : 'Ожидает отчёта'}</span></header>
++      <table aria-label={`Итоги ${row.name}`}><thead><tr><th scope="col">Источник</th><th scope="col">Литры</th><th scope="col">Сумма, ₽</th></tr></thead><tbody>
++        <tr><th scope="row">CRM</th><td>{display(row.litres)}</td><td>{display(row.amount,true)}</td></tr>
++        <tr><th scope="row">Личный кабинет</th><td>{row.report ? display(row.report.litres) : '—'}</td><td>{row.report ? display(row.report.amount,true) : '—'}</td></tr>
++        <tr className="operator-reconciliation-delta"><th scope="row">Разница</th><td>{row.deltaLitres === null ? '—' : display(row.deltaLitres)}</td><td>{row.deltaAmount === null ? '—' : display(row.deltaAmount,true)}</td></tr>
++      </tbody></table>
++      <details open><summary>Операции за день · {row.rows.length}</summary>{row.rows.map(operation=><button type="button" className="operator-reconciliation-operation" key={operation.id} onClick={()=>onOperation(operation)}><span>{operation.name}<small>{display(operation.litres)} л · +{display(operation.discountPercent)}%</small></span><strong>{display(operation.amount,true)} ₽</strong></button>)}{!row.rows.length && <p>Операций за этот день нет.</p>}</details>
++      {row.report && <details><summary>История отчёта · {row.report.history.length}</summary><ul>{[...row.report.history].reverse().map((entry,index)=><li key={index}>{display(entry.litres)} л · {display(entry.amount,true)} ₽<small>{entry.actorName} · {new Date(entry.at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})} МСК</small></li>)}</ul></details>}
++    </article></div>
++  </dialog>
 +}
 --- a/web/src/PushSettings.tsx
 +++ b/web/src/PushSettings.tsx
@@ -1010,7 +1087,7 @@
    plans: OperatorPlanSummary[];
 --- /dev/null
 +++ b/web/src/operator-reconciliation.css
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,109 @@
 +.operator-reconciliation {display:grid;gap:16px;min-width:0}
 +.operator-reconciliation-heading {display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
 +.operator-reconciliation-heading h2 {margin:0 0 6px}
@@ -1052,35 +1129,74 @@
 +.operator-reconciliation-method {font-size:14px;color:#526159}
 +.operator-reconciliation-method p {line-height:1.6;margin-bottom:0}
 +
-+.operator-reconciliation-services {display:flex;position:relative;isolation:isolate;gap:8px;padding:8px;border-radius:28px;background:var(--surface-soft,#ededf1);max-width:100%;overflow-x:auto;min-width:0}
-+.operator-reconciliation-services>button {flex:1 0 auto;position:relative;z-index:1;border:2px solid transparent;border-radius:22px;padding:12px 22px;background:var(--service-fill,#e6eee9);color:var(--service-ink,#254a39);font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
-+div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true] {border-color:currentColor;box-shadow:0 2px 6px #0002}
-+.operator-reconciliation-services>button:focus-visible {outline:3px solid #226b52;outline-offset:2px}
++/* The service color belongs to the button; the strip itself stays transparent. */
++.operator-reconciliation {grid-template-columns:minmax(0,1fr);container-type:inline-size;container-name:reconciliation}
++.operator-reconciliation-heading>*,.operator-reconciliation-scroll {min-width:0}
++.operator-reconciliation-heading input {box-sizing:border-box;min-width:0;max-width:100%;width:100%}
++div.scrollable-segments.operator-reconciliation-services[class] {gap:6px;padding:3px;background:transparent;box-shadow:none;border:0;max-width:100%;min-width:0}
++div.scrollable-segments.operator-reconciliation-services[class]>button {border:1px solid transparent;padding:9px 18px;min-height:40px}
++div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true],div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true]:hover {border-color:#81998a;box-shadow:inset 0 0 0 1px #81998a}
++.operator-reconciliation-services>button:focus-visible {outline:3px solid #226b52;outline-offset:-3px}
 +.operator-reconciliation-services .scrollable-segments-selection {display:none}
 +.operator-reconciliation-summary {margin:0;color:var(--muted,#58645d);font-size:14px}
-+.operator-reconciliation-scroll {overflow:auto;max-width:100%;border:1px solid var(--border,#dce3df);border-radius:18px;background:var(--surface,#fff)}
-+.operator-reconciliation-table {width:100%;min-width:850px;border-collapse:separate;border-spacing:0;font-size:14px;font-variant-numeric:tabular-nums}
-+.operator-reconciliation-table th,.operator-reconciliation-table td {padding:12px 16px;text-align:right;border-bottom:1px solid var(--border,#e4e9e6);white-space:nowrap}
-+.operator-reconciliation-table thead th {background:#f3f5f4;color:#43524a;font-weight:600;text-align:center}
-+.operator-reconciliation-table thead tr:first-child th {border-bottom:1px solid #dce3df}
-+.operator-reconciliation-table tbody th {position:sticky;left:0;background:var(--surface,#fff);text-align:left;z-index:1;border-right:1px solid var(--border,#e4e9e6)}
++.operator-reconciliation-scroll {max-width:100%;border:1px solid var(--border,#dce3df);border-radius:16px;background:var(--surface,#fff);overflow:hidden}
++.operator-reconciliation-table {width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums}
++.operator-reconciliation-table th,.operator-reconciliation-table td {padding:5px 10px;height:38px;box-sizing:border-box;text-align:right;border-bottom:1px solid var(--border,#e4e9e6);overflow-wrap:anywhere}
++.operator-reconciliation-table thead th {height:32px;background:#f3f5f4;color:#43524a;font-weight:600;text-align:center}
++.operator-reconciliation-table thead tr:first-child>th:not(:last-child),.operator-reconciliation-table thead tr:nth-child(2)>th:nth-child(even) {border-right:1px solid #cdd9d1}
++.operator-reconciliation-table thead tr:first-child>th:first-child {width:116px}
++.operator-reconciliation-table thead tr:first-child>th:last-child {width:140px}
++.operator-reconciliation-table tbody th {background:var(--surface,#fff);text-align:left;border-right:1px solid var(--border,#e4e9e6)}
 +.operator-reconciliation-table tbody tr:last-child>* {border-bottom:0}
 +.operator-reconciliation-table tbody td {color:#35433b}
 +.operator-reconciliation-table .reconciliation-difference.is-matched {background:#e3f3e9;color:#185b36;font-weight:600}
 +.operator-reconciliation-table .reconciliation-difference.is-different {background:#fde8e8;color:#9a2424;font-weight:600}
-+.operator-reconciliation-date,.operator-reconciliation-edit {border:0;background:none;color:#17694c;cursor:pointer;font:inherit;padding:5px 0;text-align:left;text-decoration:underline;text-underline-offset:3px}
-+.operator-reconciliation-date small {display:block;color:#58645d;font-size:12px;margin-top:6px;text-decoration:none}
++.operator-reconciliation-date,.operator-reconciliation-edit,.reconciliation-cell-edit {border:0;background:none;color:#17694c;cursor:pointer;font:inherit;padding:4px 0;min-height:28px;text-align:left;text-decoration:underline;text-underline-offset:3px}
++.operator-reconciliation-date {white-space:nowrap}
++.operator-reconciliation-table .reconciliation-cell-edit {width:100%;text-align:right;color:inherit;text-decoration-style:dotted}
++.operator-reconciliation :is(button,input):focus-visible {outline:2px solid #226b52;outline-offset:2px}
++.operator-reconciliation-table button:disabled {cursor:default;opacity:.55}
++.operator-reconciliation-table .is-editing {background:#f7faf8}
++.operator-reconciliation-table .reconciliation-report-cell input {box-sizing:border-box;width:100%;min-width:0;min-height:32px;height:32px;padding:4px 6px;font-size:13px;text-align:right;border:1px solid #81998a;border-radius:7px;background:white;color:#263d30}
++.reconciliation-inline-actions {display:flex;justify-content:flex-end;gap:4px}
++.reconciliation-inline-actions button {display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:32px;padding:5px;border:1px solid #cdd9d1;border-radius:7px;cursor:pointer;font:inherit;font-size:11px;line-height:1.2}
++.reconciliation-inline-actions svg {flex-shrink:0}
++.reconciliation-save {color:#185b36;background:#e3f3e9}
++.reconciliation-cancel {color:#43524a;background:white;min-width:30px}
++.reconciliation-row-actions form {margin:0}
++.reconciliation-row-actions p {white-space:normal;font-size:12px;line-height:1.4;color:#9a2424;margin:8px 0 0}
 +.operator-reconciliation-dialog {width:min(680px,calc(100vw - 24px));max-width:680px}
 +.operator-reconciliation-dialog .operator-reconciliation-card {padding:0;border:0;border-radius:0}
 +.operator-reconciliation-card.is-matched .operator-reconciliation-delta {background:#e3f3e9;color:#185b36}
 +.operator-reconciliation-card.is-different .operator-reconciliation-delta {background:#fde8e8;color:#9a2424}
 +.operator-reconciliation-card:not(.is-matched):not(.is-different) .operator-reconciliation-delta {background:transparent}
-+@media(max-width:600px) {.operator-reconciliation-services>button {padding:10px 18px}.operator-reconciliation-table th,.operator-reconciliation-table td {padding:10px 12px}.operator-reconciliation-table {min-width:780px}.operator-reconciliation-heading {gap:12px}}
-+
-+div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true]:hover {border-color:currentColor;box-shadow:0 2px 6px #0002}
-+.operator-reconciliation {grid-template-columns:minmax(0,1fr)}
-+.operator-reconciliation-heading>*,.operator-reconciliation-scroll {min-width:0}
-+.operator-reconciliation-heading input {box-sizing:border-box;min-width:0;max-width:100%;width:100%}
++/* Reflow the same cells and editor into day cards, keeping values and drafts intact. */
++@container reconciliation (max-width:760px) {
++  .operator-reconciliation-scroll {border:0;background:transparent;border-radius:0;overflow:visible}
++  .operator-reconciliation-table {display:block;width:100%;min-width:0}
++  .operator-reconciliation-table thead {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
++  .operator-reconciliation-table tbody {display:grid;gap:12px}
++  .operator-reconciliation-table tbody tr {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);padding:10px 14px;border:1px solid var(--border,#dce3df);border-radius:16px;background:var(--surface,#fff);min-width:0}
++  .operator-reconciliation-table tbody th {grid-column:1/-1;border:0;padding:0 0 6px;height:auto;background:none}
++  .operator-reconciliation-table tbody td {display:block;min-width:0;height:auto;padding:7px 0;border:0;text-align:left}
++  .operator-reconciliation-table tbody td:nth-child(odd) {text-align:right;padding-left:8px}
++  .operator-reconciliation-table tbody td[data-label]::before {content:attr(data-label);display:block;margin-bottom:4px;font-size:11px;font-weight:400;line-height:1.3;color:#58645d}
++  .operator-reconciliation-table tbody td.reconciliation-report-cell {border-top:1px solid #e4e9e6}
++  .operator-reconciliation-table .reconciliation-cell-edit {text-align:inherit;min-height:32px;padding:0}
++  .operator-reconciliation-table .reconciliation-difference {padding:7px 8px;border-radius:7px 0 0 7px}
++  .operator-reconciliation-table .reconciliation-difference:nth-child(odd) {border-radius:0 7px 7px 0}
++  .operator-reconciliation-table .reconciliation-row-actions {grid-column:1/-1;padding:5px 0 0;text-align:right}
++  .operator-reconciliation-date {font-weight:600;font-size:15px;min-height:36px}
++  .operator-reconciliation-edit {min-height:36px;padding:4px 8px}
++  .operator-reconciliation-table .reconciliation-report-cell input {height:40px;font-size:16px;text-align:inherit}
++  .reconciliation-inline-actions button {min-height:40px;font-size:12px;padding:8px 12px}
++  .reconciliation-cancel {min-width:40px}
++  .operator-reconciliation-table .is-empty-day {grid-template-columns:minmax(0,1fr) auto;align-items:center;padding-block:6px}
++  .operator-reconciliation-table .is-empty-day th {grid-column:1;padding:0}
++  .operator-reconciliation-table .is-empty-day td[data-label] {display:none}
++  .operator-reconciliation-table .is-empty-day .reconciliation-row-actions {grid-column:2;padding:0}
++  .operator-reconciliation-heading {gap:12px}
++}
 --- /dev/null
 +++ b/web/src/operator-reconciliation.ts
 @@ -0,0 +1,18 @@
