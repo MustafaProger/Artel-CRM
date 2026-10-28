@@ -1,0 +1,472 @@
+diff --git a/scripts/check-task-request-dates.mjs b/scripts/check-task-request-dates.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/check-task-request-dates.mjs
+@@ -0,0 +1,85 @@
++import AxeBuilder from '@axe-core/playwright';
++import { startOperatorQaServer } from './qa-operator-runtime.mjs';
++// Synthetic authenticated CRM + real Leaflet, with every OSM tile fulfilled locally. No public tile traffic.
++import assert from 'node:assert/strict';
++import { randomUUID } from 'node:crypto';
++import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { chromium, webkit, expect } from '@playwright/test';
++import { OperationsStore } from '../server/operations-store.ts';
++import { loadSnapshot } from '../server/local-api.ts';
++import { SabyClient, sabyConfigFromEnv } from '../server/saby-client.ts';
++import { writeTripsQaSnapshot } from './qa-trips-runtime.mjs';
++import { authenticateContext } from './qa-auth.mjs';
++
++const root = resolve(import.meta.dirname, '..'), output = resolve(root, '../ui', process.env.ARTEL_OPERATOR_QA_BUILT === '1' ? 'built' : 'source');
++const temporary = await mkdtemp(resolve(tmpdir(), 'artel-requests-map-'));
++const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'operations');
++await mkdir(output, { recursive: true }); await writeTripsQaSnapshot(snapshotDirectory);
++const snapshot = await loadSnapshot(snapshotDirectory), store = new OperationsStore(operationsDirectory);
++const company = (id, name, role = 'customer') => ({ id, name, roles: [role], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] });
++const maliciousName = 'QA <img src=x onerror="window.__xss=1"> & компания';
++await store.mutate(snapshot.provenance.sourceSha256, data => {
++  data.sourceOperationsCleared = true; data.shipments = {}; data.paymentAllocations = [];
++  data.companies = [company('supplier', 'QA Поставщик', 'supplier'), ...Array.from({ length: 9 }, (_, index) => company(`customer-${index + 1}`, index === 8 ? maliciousName : `QA Ромашка ${index + 1}`))];
++  data.directories = {
++    fleetSeedApplied: true, managers: [{ id: 'manager', name: 'QA Менеджер' }],
++    products: [{ id: 'product', name: 'QA ДТ', transportProductKind: 'diesel', cargoPackaging: 'bulk' }],
++    paymentForms: [{ id: 'payment', name: 'б/нал' }],
++    drivers: [{ id: 'driver', name: 'QA Водитель', vehicleId: 'vehicle' }],
++    vehicles: [{ id: 'vehicle', plate: 'Т000ЕЕ00', capacityLitres: '20000' }],
++    oilDepots: [{ id: 'depot', name: 'QA Нефтебаза', address: 'Синтетический склад, 1', ownerCompanyId: 'supplier', loadingActorCompanyId: 'supplier', infrastructureOwnerCompanyId: 'supplier' }],
++    addresses: Array.from({ length: 9 }, (_, index) => {
++      const number = index + 1;
++      return { id: `address-${number}`, companyId: `customer-${number}`, kind: 'delivery', name: `QA База ${number}`, address: number === 6 ? 'Синтетический точный адрес' : number === 7 ? 'Синтетический неоднозначный адрес' : number === 8 ? 'Синтетический неизвестный адрес' : number === 9 ? 'Синтетическая улица <svg onload="window.__xss=2">, 9' : `Синтетическая улица, ${number}`, ...(number <= 5 || number === 9 ? { latitude: number === 5 ? '55.71' : String(55.7 + number / 100), longitude: number === 5 ? '37.61' : String(37.6 + number / 100) } : {}) };
++    }),
++    customerManagers: Array.from({ length: 9 }, (_, index) => ({ companyId: `customer-${index + 1}`, managerId: 'manager' })), defaults: { profit: 'template-payment-form' }, duplicates: [],
++  };
++  return { changed: true, result: null };
++});
++const report={passed:false,synthetic:true,checks:[],axe:[],errors:[],externalRequests:[]};
++const check=n=>{report.checks.push(n);console.log('PASS',n)};
++let runtime;
++try {
++ const saby=new SabyClient(sabyConfigFromEnv({}),async()=>{throw new Error('External call forbidden')});
++ runtime=await startOperatorQaServer({root,snapshotDirectory,operationsDirectory,sabyClient:saby});
++ const {cookie}=await runtime.bootstrap();
++ const api=async(path,method='GET',body)=>{const response=await fetch(runtime.base+path,{method,headers:{Cookie:cookie,Origin:runtime.base,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});const result=await response.json();assert.ok(response.ok,JSON.stringify(result));return result};
++ for(const [i,executionDate] of ['2026-10-30','2026-10-29',null,'2026-10-28','2026-10-27'].entries())await api('/api/trip-requests','POST',{companyId:`customer-${i+1}`,addressId:`address-${i+1}`,quantityLitres:'1000',executionDate,idempotencyKey:randomUUID()});
++ const task=(await api('/api/work/tasks','POST',{requestId:randomUUID(),title:'Проверить документы',description:'Синтетика',dueDate:'2026-10-27',reminderAt:'2026-10-28T09:00:00Z'})).entry;
++ for(const [engine,launcher] of [['chromium',chromium],['webkit',webkit]]){
++  const browser=await launcher.launch();
++  try{
++   const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block',timezoneId:'America/Los_Angeles'});await authenticateContext(context,runtime.base,cookie);
++   await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.origin===runtime.base)return route.continue();if(u.hostname.endsWith('openstreetmap.org'))return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#edf2e8"/></svg>'});report.externalRequests.push(u.origin);return route.abort()});
++   const page=await context.newPage();page.on('pageerror',e=>report.errors.push(e.message));await page.clock.install({time:new Date('2026-10-28T20:59:00Z')});await page.goto(runtime.base+'/#work');
++   const checkbox=page.getByRole('checkbox',{name:'Выполнена: Проверить документы',exact:true});await expect(checkbox).not.toBeChecked();await checkbox.focus();await checkbox.press('Space');await expect(checkbox).toBeChecked();await expect(page.getByRole('dialog')).toHaveCount(0);
++   let saved=(await api('/api/work')).work.tasks.find(r=>r.id===task.id);assert.equal(saved.status,'done');assert.equal(saved.dueDate,'2026-10-27');
++   await checkbox.click();await expect(checkbox).not.toBeChecked();
++   check(engine+': checkbox keyboard completion/reopen persisted; separate from editor');
++   await page.route('**/api/work/tasks/*',route=>route.request().method()==='PATCH'?route.fulfill({status:409,json:{error:'QA: задача изменена'}}):route.continue());
++   await checkbox.click();await expect(page.getByRole('alert')).toContainText('QA: задача изменена');await expect(checkbox).not.toBeChecked();await page.unroute('**/api/work/tasks/*');
++   await page.getByRole('button',{name:'Задача: Проверить документы',exact:true}).click();await expect(page.getByLabel('Срок задачи',{exact:true})).toHaveCount(0);await expect(page.getByLabel('Напоминание',{exact:true})).toBeVisible();
++   await page.getByLabel('Описание',{exact:true}).fill('Изменено без срока');await page.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
++   saved=(await api('/api/work')).work.tasks.find(r=>r.id===task.id);assert.equal(saved.dueDate,'2026-10-27');
++   await page.getByRole('button',{name:'Календарь',exact:true}).click();await expect(page.locator('.work-calendar-event')).toHaveCount(1);await expect(page.getByText('Срок задачи',{exact:true})).toHaveCount(0);await page.getByRole('button',{name:'Задачи',exact:true}).click();
++   check(engine+': conflict shown, deadline hidden/preserved, reminder calendar retained');
++   const widths=async(view,selector)=>{for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));const a=await new AxeBuilder({page}).include(selector).analyze();report.axe.push({engine,width,view,violations:a.violations});assert.equal(a.violations.length,0);await page.screenshot({path:resolve(output,`${engine}-${view}-${width}.png`)});check(`${engine}: ${view} ${width} layout/axe`)}};
++   await widths('work','.work-page');
++   await page.goto(runtime.base+'/#trips');await expect(page.locator('.trip-request-card')).toHaveCount(5);assert.deepEqual(await page.locator('.trip-request-card h2').allTextContents(),[5,4,2,1,3].map(n=>`QA Ромашка ${n}`));
++   const edit=()=>page.getByRole('button',{name:'Изменить заявку: QA Ромашка 4, QA База 4',exact:true}).click();const date=page.getByLabel('Дата выполнения',{exact:true});const save=async()=>{await page.getByRole('button',{name:'Сохранить заявку',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0)};
++   await edit();await expect(date).toHaveValue('2026-10-28');await date.fill('2026-10-26');await save();await expect(page.locator('.trip-request-card h2').first()).toHaveText('QA Ромашка 4');
++   await edit();await expect(date).toHaveValue('2026-10-26');await date.fill('2026-10-28');await save();
++   await page.getByRole('button',{name:'Новая заявка',exact:true}).click();await expect(date).toHaveValue('2026-10-28');await page.getByRole('button',{name:'Отмена',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
++   check(engine+': saved date roundtrip/reorder; undated last; new date Moscow today');await widths('requests','.trip-requests-panel');
++   await page.getByRole('button',{name:'Карта',exact:true}).click();await expect(page.locator('.trip-map-summary')).toContainText('На карте 2 из 2 заявок');
++   const marker=n=>page.locator('.trip-map-marker').and(page.getByRole('button',{name:new RegExp(`QA Ромашка ${n}, Синтетическая улица`)}));
++   await expect(marker(4)).toHaveCount(1);await expect(marker(2)).toHaveCount(1);for(const n of [1,3,5])await expect(marker(n)).toHaveCount(0);
++   await page.clock.fastForward(90000);await expect(marker(4)).toHaveCount(0);await expect(marker(1)).toHaveCount(1);await expect(marker(2)).toHaveCount(1);
++   check(engine+': map exact today/tomorrow and Moscow midnight across browser timezone');await context.close();
++  }finally{await browser.close()}
++ }
++ await runtime.replaceMiddleware();assert.equal((await api('/api/trip-requests')).requests.find(r=>r.companyId==='customer-4').executionDate,'2026-10-28');assert.equal((await api('/api/work')).work.tasks.find(r=>r.id===task.id).status,'todo');check('runtime restart persists dates and task');
++ assert.deepEqual(report.errors,[]);assert.deepEqual(report.externalRequests,[]);report.passed=true;
++}finally{await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await runtime?.server.close();await rm(temporary,{recursive:true,force:true,maxRetries:5,retryDelay:100})}
+diff --git a/server/trip-requests.ts b/server/trip-requests.ts
+--- a/server/trip-requests.ts
++++ b/server/trip-requests.ts
+@@ -5,6 +5,7 @@
+ import type { TripRequest } from '../web/src/trip-request-model';
+ import type { OperationsData } from './operations-store';
+ import { tripRequestExplicitCoordinates, type TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
++import { compareRequestDates, validRequestDate } from '../web/src/trip-request-schedule';
+ import { ApiError } from './api-error';
+ 
+ const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+@@ -17,6 +18,7 @@
+       if (!object(row) || row.id !== id || !id.startsWith('trip-request-') || !Number.isSafeInteger(row.version) || Number(row.version) < 1) throw new Error('Invalid trip request');
+       for (const key of ['companyId', 'addressId', 'companyName', 'addressName', 'address', 'createdAt', 'updatedAt']) if (typeof row[key] !== 'string' || !row[key]) throw new Error('Invalid trip request field');
+       if (typeof row.comment !== 'string' || row.comment.length > 4000 || typeof row.quantityLitres !== 'string' || !/^\d+(?:\.\d{1,6})?$/.test(row.quantityLitres) || !new Decimal(row.quantityLitres).gt(0)) throw new Error('Invalid trip request quantity');
++      if (row.executionDate !== undefined && row.executionDate !== null && !validRequestDate(row.executionDate)) throw new Error('Invalid trip request execution date');
+       if (row.salePricePerLitre !== undefined && row.salePricePerLitre !== null && (typeof row.salePricePerLitre !== 'string' || row.salePricePerLitre.length > 40 || !/^\d+(?:\.\d{1,6})?$/.test(row.salePricePerLitre) || !new Decimal(row.salePricePerLitre).gt(0))) throw new Error('Invalid trip request price');
+       for (const key of ['ownerUserId', 'managerId', 'mapUrl', 'latitude', 'longitude', 'tripId', 'shipmentId']) if (row[key] !== null && typeof row[key] !== 'string') throw new Error('Invalid trip request reference');
+       if (row.locationSnapshot !== undefined) {
+@@ -53,7 +55,7 @@
+ }
+ 
+ export function listTripRequests(data: OperationsData, snapshot: Snapshot, actor: AccountUser | null) {
+-  return Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && canAccessTripRequest(actor, snapshot, row)).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
++  return Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && canAccessTripRequest(actor, snapshot, row)).sort(compareRequestDates);
+ }
+ 
+ function quantity(value: unknown) {
+@@ -93,8 +95,10 @@
+ 
+ /** Run inside the same operations mutation as authorization. */
+ export function saveTripRequest(data: OperationsData, snapshot: Snapshot, actor: AccountUser | null, body: Record<string, unknown>, id?: string, knownLocation?: TripRequestLocationResult) {
+-  const allowed = id ? ['version', 'quantityLitres', 'salePricePerLitre', 'comment', 'address', 'latitude', 'longitude'] : ['companyId', 'addressId', 'address', 'quantityLitres', 'salePricePerLitre', 'comment', 'idempotencyKey', 'latitude', 'longitude'];
++  const allowed = id ? ['version', 'quantityLitres', 'salePricePerLitre', 'executionDate', 'comment', 'address', 'latitude', 'longitude'] : ['companyId', 'addressId', 'address', 'quantityLitres', 'salePricePerLitre', 'executionDate', 'comment', 'idempotencyKey', 'latitude', 'longitude'];
+   if (Object.keys(body).some(key => !allowed.includes(key))) throw new ApiError(400, 'В заявке есть неизвестные параметры.');
++  if (body.executionDate !== undefined && body.executionDate !== null && !validRequestDate(body.executionDate)) throw new ApiError(400, 'Укажите корректную дату выполнения заявки.');
++  const executionDate = body.executionDate as string | null | undefined;
+   const litres = quantity(body.quantityLitres);
+   const price = pricePerLitre(body.salePricePerLitre);
+   const previous = id ? requireTripRequest(data, snapshot, actor, id) : undefined;
+@@ -105,7 +109,7 @@
+   const address = typeof body.address === 'string' ? body.address.trim().replace(/\s+/g, ' ') : previous?.address;
+   const changedAddress = previous && address !== previous.address;
+   if (previous) {
+-    const request = { ...previous, ...(Object.hasOwn(body, 'salePricePerLitre') ? { salePricePerLitre: price } : {}), ...(changedAddress ? { address: address!, latitude: null, longitude: null, mapUrl: null, locationSnapshot: undefined } : {}), ...(point ? { ...point, locationSnapshot: undefined } : {}), quantityLitres: litres, comment: note, version: previous.version + 1, updatedAt: new Date().toISOString() };
++    const request = { ...previous, ...(executionDate !== undefined ? { executionDate } : {}), ...(Object.hasOwn(body, 'salePricePerLitre') ? { salePricePerLitre: price } : {}), ...(changedAddress ? { address: address!, latitude: null, longitude: null, mapUrl: null, locationSnapshot: undefined } : {}), ...(point ? { ...point, locationSnapshot: undefined } : {}), quantityLitres: litres, comment: note, version: previous.version + 1, updatedAt: new Date().toISOString() };
+     data.tripRequests![request.id] = request;
+     return { request, created: false, changed: true };
+   }
+@@ -113,7 +117,7 @@
+   const key = body.idempotencyKey;
+   if (key !== undefined && (typeof key !== 'string' || !uuid.test(key))) throw new ApiError(400, 'Некорректный ключ сохранения заявки.');
+   // Preserve legacy replay keys when optional price/address/point are absent.
+-  const fingerprint = createHash('sha256').update(JSON.stringify([body.companyId, body.addressId, litres, note, ...(point ? [point.latitude, point.longitude] : []), ...(address === undefined ? [] : ['address', address]), ...(price === null ? [] : ['salePricePerLitre', price])])).digest('hex');
++  const fingerprint = createHash('sha256').update(JSON.stringify([body.companyId, body.addressId, litres, note, ...(point ? [point.latitude, point.longitude] : []), ...(address === undefined ? [] : ['address', address]), ...(price === null ? [] : ['salePricePerLitre', price]), ...(executionDate == null ? [] : ['executionDate', executionDate])])).digest('hex');
+   const replay = typeof key === 'string' ? data.tripRequestCreates?.[key] : undefined;
+   if (replay) {
+     if (replay.actorId !== (actor?.id ?? null) || replay.fingerprint !== fingerprint) throw new ApiError(409, 'Этот ключ уже использован для другой заявки.');
+@@ -127,7 +131,7 @@
+   const directoryPoint = samePlaceAddress ? { mapUrl: place.mapUrl || null, latitude: place.latitude || null, longitude: place.longitude || null } : { mapUrl: null, latitude: null, longitude: null };
+   const automaticPoint = !point && !tripRequestExplicitCoordinates(directoryPoint) && !directoryPoint.latitude && !directoryPoint.longitude && knownLocation?.status === 'found' ? { latitude: String(knownLocation.latitude), longitude: String(knownLocation.longitude), locationSnapshot: structuredClone(knownLocation) } : {};
+   const now = new Date().toISOString();
+-  const request: TripRequest = { id: `trip-request-${randomUUID()}`, version: 1, companyId: company.id, addressId: place.id, quantityLitres: litres, ...(price === null ? {} : { salePricePerLitre: price }), comment: note, ownerUserId: actor?.id ?? null, managerId: actor?.managerId ?? snapshot.directories?.customerManagers?.find(row => row.companyId === company.id)?.managerId ?? null, companyName: company.name, addressName: place.name, address: address ?? (place.address || place.name), ...directoryPoint, ...automaticPoint, ...point, status: 'active', createdAt: now, updatedAt: now, tripId: null, shipmentId: null };
++  const request: TripRequest = { id: `trip-request-${randomUUID()}`, version: 1, companyId: company.id, addressId: place.id, quantityLitres: litres, ...(executionDate == null ? {} : { executionDate }), ...(price === null ? {} : { salePricePerLitre: price }), comment: note, ownerUserId: actor?.id ?? null, managerId: actor?.managerId ?? snapshot.directories?.customerManagers?.find(row => row.companyId === company.id)?.managerId ?? null, companyName: company.name, addressName: place.name, address: address ?? (place.address || place.name), ...directoryPoint, ...automaticPoint, ...point, status: 'active', createdAt: now, updatedAt: now, tripId: null, shipmentId: null };
+   (data.tripRequests ??= {})[request.id] = request;
+   if (typeof key === 'string') (data.tripRequestCreates ??= {})[key] = { requestId: request.id, actorId: actor?.id ?? null, fingerprint };
+   return { request, created: true, changed: true };
+diff --git a/tests/api-trip-requests.test.ts b/tests/api-trip-requests.test.ts
+--- a/tests/api-trip-requests.test.ts
++++ b/tests/api-trip-requests.test.ts
+@@ -688,3 +688,32 @@
+     assert.equal((await f.request('/api/shipment-trips', 'POST', body, f.one.cookie)).status, 201);
+   } finally { await f.close(); }
+ });
++
++test('execution dates persist, sort earliest first, validate and protect retries and versions', async () => {
++  const f = await fixture();
++  try {
++    const legacy = await f.create();
++    const body = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', executionDate: '2026-10-29', idempotencyKey: randomUUID() };
++    const created = await f.request('/api/trip-requests', 'POST', body, f.one.cookie);
++    assert.equal(created.status, 201); const dated = created.body.request;
++    assert.equal(dated.executionDate, body.executionDate);
++    const repeated = await f.request('/api/trip-requests', 'POST', body, f.one.cookie);
++    assert.equal(repeated.body.request.id, dated.id);
++    assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: '2026-10-30' }, f.one.cookie)).status, 409);
++    for (const date of ['2026-02-30', '2026-13-01', '2026-1-01', '0000-01-01', 1, {}, '2026-10-29T12:00:00Z']) {
++      assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: date, idempotencyKey: randomUUID() }, f.one.cookie)).status, 400);
++    }
++    const updated = await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-28' }, f.two.cookie);
++    assert.equal(updated.status, 200); assert.equal(updated.body.request.executionDate, '2026-10-28');
++    assert.equal((await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-27' }, f.one.cookie)).status, 409);
++    const undated = await f.create(2);
++    assert.deepEqual((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.map((r: TripRequest) => r.id), [legacy.id, dated.id, undated.id]);
++    const preserved = await f.request(`/api/trip-requests/${dated.id}`, 'PATCH', { version: dated.version, quantityLitres: '2000' }, f.one.cookie);
++    assert.equal(preserved.body.request.executionDate, body.executionDate);
++    const cleared = await f.request(`/api/trip-requests/${dated.id}`, 'PATCH', { version: preserved.body.request.version, quantityLitres: '2000', executionDate: null }, f.one.cookie);
++    assert.equal(cleared.body.request.executionDate, null);
++    const disk = await f.store.read(f.source);
++    assert.equal(disk.tripRequests?.[legacy.id].executionDate, '2026-10-28');
++    assert.equal(disk.tripRequests?.[dated.id].executionDate, null);
++  } finally { await f.close(); }
++});
+diff --git a/tests/trip-request-schedule.test.ts b/tests/trip-request-schedule.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/trip-request-schedule.test.ts
+@@ -0,0 +1,18 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { requestMapDays, requestIsOnMap, validRequestDate } from '../web/src/trip-request-schedule';
++
++test('map uses Moscow calendar days across midnight, month, year and leap day', () => {
++  for (const [instant, expected] of [
++    ['2026-10-28T20:59:59Z', ['2026-10-28', '2026-10-29']],
++    ['2026-10-28T21:00:00Z', ['2026-10-29', '2026-10-30']],
++    ['2026-12-31T12:00:00Z', ['2026-12-31', '2027-01-01']],
++    ['2028-02-28T12:00:00Z', ['2028-02-28', '2028-02-29']],
++  ] as const) assert.deepEqual(requestMapDays(new Date(instant)), expected);
++  const now = new Date('2026-10-28T12:00:00Z');
++  for (const executionDate of ['2026-10-28', '2026-10-29']) assert.equal(requestIsOnMap({ status: 'active', executionDate }, now), true);
++  for (const executionDate of [undefined, null, '', '2026-10-27', '2026-10-30']) assert.equal(requestIsOnMap({ status: 'active', executionDate }, now), false);
++  for (const status of ['consumed', 'cancelled'] as const) assert.equal(requestIsOnMap({ status, executionDate: '2026-10-28' }, now), false);
++  assert.equal(validRequestDate('2028-02-29'), true);
++  assert.equal(validRequestDate('2026-02-29'), false);
++});
+diff --git a/web/src/TripRequestEditor.tsx b/web/src/TripRequestEditor.tsx
+--- a/web/src/TripRequestEditor.tsx
++++ b/web/src/TripRequestEditor.tsx
+@@ -4,6 +4,7 @@
+ import DirectorySelect from './DirectorySelect'
+ import DeliveryPointPicker from './DeliveryPointPicker'
+ import type { Company, Directories } from './model'
++import { requestToday, validRequestDate } from './trip-request-schedule'
+ import type { TripRequest } from './trip-request-model'
+ import { getDeliveryPlaceDisplay } from './trip-request-display'
+ import { tripRequestExplicitCoordinates, tripRequestMapCoordinates } from './trip-request-map-coordinates'
+@@ -33,6 +34,7 @@
+   const [companyId, setCompanyId] = useState(request?.companyId ?? ''), [addressId, setAddressId] = useState(request?.addressId ?? '')
+   const [quantityLitres, setQuantityLitres] = useState(request?.quantityLitres ?? ''), [comment, setComment] = useState(request?.comment ?? '')
+   const [salePricePerLitre, setSalePricePerLitre] = useState(request?.salePricePerLitre ?? '')
++  const [executionDate, setExecutionDate] = useState(request ? request.executionDate ?? '' : requestToday())
+   const [savedRequest, setSavedRequest] = useState(request)
+   const [deliveryAddress, setDeliveryAddress] = useState(request?.address ?? '')
+   const [point, setPoint] = useState<{ latitude: string; longitude: string } | null>(null)
+@@ -45,7 +47,7 @@
+   const selectedAddressText = selectedAddress?.address || selectedAddress?.name || ''
+   const requestPlace = request ? getDeliveryPlaceDisplay(request.addressName, request.address) : null
+   const addressChanged = normalizeAddress(deliveryAddress) !== (savedRequest?.address ?? selectedAddressText)
+-  const dirty = companyId !== (savedRequest?.companyId ?? '') || addressId !== (savedRequest?.addressId ?? '') || quantityLitres !== (savedRequest?.quantityLitres ?? '') || salePricePerLitre !== (savedRequest?.salePricePerLitre ?? '') || comment !== (savedRequest?.comment ?? '') || point !== null || addressChanged
++  const dirty = executionDate !== (savedRequest ? savedRequest.executionDate ?? '' : requestToday()) || companyId !== (savedRequest?.companyId ?? '') || addressId !== (savedRequest?.addressId ?? '') || quantityLitres !== (savedRequest?.quantityLitres ?? '') || salePricePerLitre !== (savedRequest?.salePricePerLitre ?? '') || comment !== (savedRequest?.comment ?? '') || point !== null || addressChanged
+   const inheritedPoint = addressChanged ? null : savedRequest ? tripRequestMapCoordinates(savedRequest, addresses) : selectedAddress ? tripRequestExplicitCoordinates(selectedAddress) : null
+   const geocodeTarget = addressChanged ? null : savedRequest ? savedRequest.status === 'active' ? requestLocationTarget(savedRequest) : null : selectedAddress ? directoryLocationTarget(selectedAddress) : null
+   const { states: locations, retry: retryLocation } = useTripRequestLocations(!point && !inheritedPoint && geocodeTarget ? [geocodeTarget] : [])
+@@ -69,6 +71,7 @@
+     if (busy.current || unavailable || latestRequest) return
+     let body = retryBody.current
+     if (!body) {
++      if (executionDate && !validRequestDate(executionDate)) { setError('Укажите корректную дату выполнения заявки.'); return }
+       let litres: string
+       try {
+         const value = quantityLitres.replace(/\s/g, '').replace(',', '.')
+@@ -85,7 +88,7 @@
+       }
+       if (!companyId || !addressId || !request && !selectedAddressText.trim()) { setError('Выберите компанию и место доставки с заполненным адресом из справочника.'); return }
+       if (!normalizeAddress(deliveryAddress)) { setError('Укажите адрес доставки.'); return }
+-      const payload = request ? { version, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, comment: comment.trim(), ...point } : { idempotencyKey: idempotencyKey.current, companyId, addressId, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, comment: comment.trim(), ...point }
++      const payload = request ? { version, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, executionDate: executionDate || null, comment: comment.trim(), ...point } : { idempotencyKey: idempotencyKey.current, companyId, addressId, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, executionDate: executionDate || null, comment: comment.trim(), ...point }
+       body = JSON.stringify(payload)
+     }
+     const submitted = JSON.parse(body) as { quantityLitres: string; salePricePerLitre: string | null; comment: string; address?: string; latitude?: string; longitude?: string }
+@@ -118,7 +121,7 @@
+       <div className="shipment-editor-body">
+         <p className="shipment-editor-note">{request ? 'Уточните адрес доставки, количество литров, цену для клиента или комментарий.' : 'Выберите компанию и одну из её площадок. Литры, цена для клиента и комментарий будут перенесены в рейс.'}</p>
+         {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
+-        {latestRequest && <button type="button" className="button" disabled={saving} onClick={() => { setVersion(latestRequest.version); setQuantityLitres(latestRequest.quantityLitres); setSalePricePerLitre(latestRequest.salePricePerLitre ?? ''); setComment(latestRequest.comment); setSavedRequest(latestRequest); setDeliveryAddress(latestRequest.address); setPoint(null); setLatestRequest(null); setError(''); setDiscard(false) }}>Загрузить актуальную заявку</button>}
++        {latestRequest && <button type="button" className="button" disabled={saving} onClick={() => { setVersion(latestRequest.version); setExecutionDate(latestRequest.executionDate ?? ''); setQuantityLitres(latestRequest.quantityLitres); setSalePricePerLitre(latestRequest.salePricePerLitre ?? ''); setComment(latestRequest.comment); setSavedRequest(latestRequest); setDeliveryAddress(latestRequest.address); setPoint(null); setLatestRequest(null); setError(''); setDiscard(false) }}>Загрузить актуальную заявку</button>}
+         {unavailable && <p className="shipment-calculation-warning" role="status">Заявка уже удалена или включена в рейс. Закройте форму, чтобы обновить список.</p>}
+         {uncertain && <p className="shipment-calculation-warning" role="status">Ответ пока не подтверждён. Повторное сохранение проверит тот же запрос.</p>}
+         <div className="trip-request-form">
+@@ -130,6 +133,7 @@
+           {addressChanged && <p className="trip-request-geocode-status" role="status">Найдём уточнённый адрес после сохранения.</p>}
+           {automaticPoint && <div className="trip-request-geocode-status" role="status"><span>{locationStatusText(automaticPoint)}</span>{automaticPoint.status === 'unavailable' && geocodeTarget && <button type="button" className="button" disabled={disabled} onClick={() => retryLocation(geocodeTarget)}>Повторить поиск адреса</button>}</div>}
+           {(request || selectedAddress) && <DeliveryPointPicker key={`${addressId}-${version}-${addressChanged ? 'changed' : 'saved'}`} latitude={shownPoint?.latitude} longitude={shownPoint?.longitude} mapUrl={point || addressChanged ? null : savedRequest ? savedRequest.mapUrl : selectedAddress?.mapUrl} disabled={disabled} onChange={(latitude, longitude) => { setPoint({ latitude, longitude }); setError(''); setDiscard(false) }}/>} 
++          <label className="shipment-field"><span>Дата выполнения</span><input type="date" min="0001-01-01" max="9999-12-31" value={executionDate} disabled={disabled} onChange={event => { setExecutionDate(event.target.value); setError(''); setDiscard(false) }}/></label>
+           <label className="shipment-field"><span>Количество литров, л *</span><input inputMode="decimal" value={quantityLitres} disabled={disabled} required onChange={event => { setQuantityLitres(event.target.value); setError(''); setDiscard(false) }}/></label>
+           <label className="shipment-field"><span>Цена за литр для клиента, ₽</span><input aria-label="Цена за литр для клиента, ₽" inputMode="decimal" maxLength={40} value={salePricePerLitre} disabled={disabled} onChange={event => { setSalePricePerLitre(event.target.value); setError(''); setDiscard(false) }}/><small>Необязательно. В рейсе цену можно изменить.</small></label>
+           <label className="shipment-field"><span>Комментарий</span><textarea rows={3} maxLength={4000} value={comment} disabled={disabled} onChange={event => { setComment(event.target.value); setError(''); setDiscard(false) }}/></label>
+diff --git a/web/src/TripRequestsMap.tsx b/web/src/TripRequestsMap.tsx
+--- a/web/src/TripRequestsMap.tsx
++++ b/web/src/TripRequestsMap.tsx
+@@ -13,6 +13,7 @@
+ import { mapCardPosition, requestFitView, requestOverviewBounds, type MapPoint } from './trip-map-view'
+ import { locationStatusText, oilDepotLocationTarget, requestLocationTarget, useTripRequestLocations, type LocationState } from './useTripRequestLocations'
+ import { groupRequestsByLocation, requestVolumeBand, requestVolumeBands } from './trip-map-points'
++import { requestIsOnMap, requestDateLabel, requestToday } from './trip-request-schedule'
+ import './trip-requests-map.css'
+ 
+ type LocatedRequest = { request: TripRequest; coordinates: MapPoint | null; automatic?: LocationState }
+@@ -27,8 +28,15 @@
+ export default function TripRequestsMap({ requests, addresses = noAddresses, oilDepots = noDepots, onEditRequest }: {
+   requests: readonly TripRequest[]; addresses?: readonly ShipmentAddress[]; oilDepots?: readonly OilDepot[]; onEditRequest?: (request: TripRequest) => void
+ }) {
+-  const active = useMemo(() => requests.filter(request => request.status === 'active'), [requests])
+-  return active.length || oilDepots.length ? <ActiveRequestsMap requests={active} addresses={addresses} oilDepots={oilDepots} onEditRequest={onEditRequest} /> : <div className="trip-map-empty"><MapPin size={28} aria-hidden="true" /><strong>На карте пока нет заявок и нефтебаз</strong><p>Создайте заявку или добавьте нефтебазу в справочник.</p></div>
++  const [today, setToday] = useState(requestToday)
++  useEffect(() => {
++    const update = () => setToday(requestToday())
++    const timer = window.setInterval(update, 30000)
++    document.addEventListener('visibilitychange', update)
++    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', update) }
++  }, [])
++  const active = useMemo(() => requests.filter(request => requestIsOnMap(request, new Date(`${today}T12:00:00+03:00`))), [requests, today])
++  return active.length || oilDepots.length ? <ActiveRequestsMap requests={active} addresses={addresses} oilDepots={oilDepots} onEditRequest={onEditRequest} /> : <div className="trip-map-empty"><MapPin size={28} aria-hidden="true" /><strong>Нет заявок на сегодня и завтра</strong><p>Укажите дату выполнения заявки. На карте показаны сегодня и завтра по московскому времени.</p></div>
+ }
+ 
+ function ActiveRequestsMap({ requests, addresses, oilDepots, onEditRequest }: {
+@@ -185,7 +193,7 @@
+     }
+   }
+   return <section className="trip-requests-map" aria-label="Карта заявок">
+-    <div className="trip-map-toolbar"><div className="trip-map-summary" aria-live="polite"><strong>{requests.length ? `На карте ${located} из ${requests.length} заявок` : 'Активных заявок нет'}</strong>{searching > 0 ? <span>Ищем адреса: {searching}</span> : located < requests.length ? <span>Адресов без точки: {requests.length - located}</span> : requests.length > 0 && <span>Все активные заявки</span>}{oilDepots.length > 0 && <span>Нефтебаз на карте: {locatedDepots} из {oilDepots.length}{searchingDepots > 0 ? ` · ищем адреса: ${searchingDepots}` : ''}</span>}</div><button type="button" className="button trip-map-show-all" disabled={!map || allPoints.length === 0} onClick={showAll}><Maximize size={17} aria-hidden="true" />Показать все</button></div>
++    <div className="trip-map-toolbar"><div className="trip-map-summary" aria-live="polite"><strong>{requests.length ? `На карте ${located} из ${requests.length} заявок` : 'Нет заявок на сегодня и завтра'}</strong>{searching > 0 ? <span>Ищем адреса: {searching}</span> : located < requests.length ? <span>Адресов без точки: {requests.length - located}</span> : requests.length > 0 && <span>Сегодня и завтра · МСК</span>}{oilDepots.length > 0 && <span>Нефтебаз на карте: {locatedDepots} из {oilDepots.length}{searchingDepots > 0 ? ` · ищем адреса: ${searchingDepots}` : ''}</span>}</div><button type="button" className="button trip-map-show-all" disabled={!map || allPoints.length === 0} onClick={showAll}><Maximize size={17} aria-hidden="true" />Показать все</button></div>
+     <ul className="trip-map-legend" aria-label="Цвет точки по сумме литров в заявках">{requestVolumeBands.map(band => <li key={band.id}><span className="trip-map-swatch" data-volume-band={band.id} aria-hidden="true"/>{band.label}</li>)}<li><span className="trip-map-swatch is-depot" aria-hidden="true"/>Нефтебаза</li></ul>
+     {(tileError || mapError) && <div className="trip-map-load-error" role="status"><span>{mapError ? 'Не удалось открыть карту.' : 'Не удалось загрузить изображение карты. Точки заявок и список доступны.'}</span><button type="button" className="button" onClick={() => setRetry(value => value + 1)}><RotateCcw size={16} />Повторить</button></div>}
+     <div ref={surface} className={`trip-map-surface${mapError ? ' trip-map-unavailable' : ''}`}>
+@@ -193,7 +201,7 @@
+       {mapError && <div className="trip-map-overlay"><MapPin size={32} aria-hidden="true" /><strong>Карта временно недоступна</strong><p>Площадки и ссылки на карту доступны в списке ниже.</p></div>}
+       {loadingTiles && !mapError && <span className="trip-map-loading" role="status">Загружаем карту…</span>}
+       {outside && <button type="button" className="trip-map-outside" onClick={showAll}>Есть точки вне обзора · Показать все</button>}
+-      {openGroup && map && <MapDetails coordinates={openGroup.coordinates} heading={openGroup.requests.length > 1 ? `Заявок: ${openGroup.requests.length} · Всего ${volume(openGroup.totalLitres)}` : 'Точка доставки'} label="Информация о точке доставки" map={map} revision={viewRevision} pinned={!!card?.pinned} onClose={closeCard} onEnter={cancelHide} onLeave={hideCard}>{openGroup.requests.map(request => <article className="trip-map-balloon" key={request.id}><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span><b>{volume(request.quantityLitres)}</b>{request.comment.trim() && <div className="trip-map-card-comment"><small>Комментарий</small><p>{request.comment}</p></div>}</article>)}</MapDetails>}
++      {openGroup && map && <MapDetails coordinates={openGroup.coordinates} heading={openGroup.requests.length > 1 ? `Заявок: ${openGroup.requests.length} · Всего ${volume(openGroup.totalLitres)}` : 'Точка доставки'} label="Информация о точке доставки" map={map} revision={viewRevision} pinned={!!card?.pinned} onClose={closeCard} onEnter={cancelHide} onLeave={hideCard}>{openGroup.requests.map(request => <article className="trip-map-balloon" key={request.id}><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span><b>{volume(request.quantityLitres)}</b><span>Дата выполнения: {requestDateLabel(request.executionDate)}</span>{request.comment.trim() && <div className="trip-map-card-comment"><small>Комментарий</small><p>{request.comment}</p></div>}</article>)}</MapDetails>}
+       {openDepot?.coordinates && map && <MapDetails coordinates={openDepot.coordinates} heading="Нефтебаза" label="Информация о нефтебазе" map={map} revision={viewRevision} pinned={!!card?.pinned} onClose={closeCard} onEnter={cancelHide} onLeave={hideCard}><article className="trip-map-balloon"><strong>{openDepot.depot.name}</strong><span>{openDepot.depot.address || 'Адрес не указан'}</span>{openDepot.automatic?.status === 'found' && <span>{openDepot.automatic.accuracy === 'street' ? 'По адресу найдена улица — точку можно уточнить в справочнике' : 'Найдено по адресу'}</span>}</article></MapDetails>}
+     </div>
+     <ul className="trip-map-list" aria-label="Площадки заявок">
+@@ -201,7 +209,7 @@
+         const { request, coordinates, automatic } = item
+         const link = mapLink({ mapUrl: automatic?.status === 'found' ? null : request.mapUrl, address: request.address, ...(coordinates ? { latitude: coordinates[0], longitude: coordinates[1] } : {}) })
+         const action = coordinates ? automatic?.status === 'found' ? 'Уточнить точку' : 'Изменить точку' : 'Уточнить адрес'
+-        const content = <><span className="trip-map-list-icon"><MapPin size={18} aria-hidden="true" /></span><span className="trip-map-list-info"><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span>{automatic && <small className={`trip-map-geocode-status ${automatic.status}`} role="status">{locationStatusText(automatic)}</small>}</span><b>{volume(request.quantityLitres)}</b></>
++        const content = <><span className="trip-map-list-icon"><MapPin size={18} aria-hidden="true" /></span><span className="trip-map-list-info"><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span>{automatic && <small className={`trip-map-geocode-status ${automatic.status}`} role="status">{locationStatusText(automatic)}</small>}</span><b>{volume(request.quantityLitres)}</b><span>Дата выполнения: {requestDateLabel(request.executionDate)}</span></>
+         return <li key={request.id}>{coordinates && map ? <button type="button" className="trip-map-list-location" onClick={() => focusRequest(item)} aria-label={`${request.companyName}, ${request.address || request.addressName}, ${volume(request.quantityLitres)}. Показать на карте`}>{content}</button> : <div className="trip-map-list-static">{content}</div>}<div className="trip-map-list-actions">{automatic?.status === 'unavailable' && <button type="button" className="trip-map-edit-point" onClick={() => retryLocation(requestLocationTarget(request))}>Повторить поиск адреса</button>}{onEditRequest && <button type="button" className="trip-map-edit-point" onClick={() => onEditRequest(request)} aria-label={`${action}: ${request.companyName}`}>{action}</button>}{link && <a className="trip-map-external-link" href={link.href} target="_blank" rel="noreferrer" aria-label={`${link.label}: ${request.companyName}, ${request.address || request.addressName}`}>{link.label}<ArrowUpRight size={15} aria-hidden="true" /></a>}</div></li>
+       })}
+     </ul>
+diff --git a/web/src/TripRequestsPanel.tsx b/web/src/TripRequestsPanel.tsx
+--- a/web/src/TripRequestsPanel.tsx
++++ b/web/src/TripRequestsPanel.tsx
+@@ -1,6 +1,7 @@
+ import { useRef, useState } from 'react'
+ import { ArrowUpRight, ClipboardList, LoaderCircle, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+ import type { Company, Directories } from './model'
++import { compareRequestDates, requestDateLabel } from './trip-request-schedule'
+ import type { TripRequest } from './trip-request-model'
+ import { getDeliveryPlaceDisplay } from './trip-request-display'
+ import TripRequestEditor from './TripRequestEditor'
+@@ -16,7 +17,7 @@
+ }) {
+   const [query, setQuery] = useState(''), [editor, setEditor] = useState<{ request?: TripRequest } | null>(null), [deleting, setDeleting] = useState<TripRequest | null>(null)
+   const [notice, setNotice] = useState('')
+-  const visible = requests.filter(request => [request.companyName, request.addressName, request.address, request.comment].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
++  const visible = requests.filter(request => [request.companyName, request.addressName, request.address, request.comment].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareRequestDates)
+   return <section className="trip-requests-panel" aria-label="Заявки на доставку">
+     <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск заявки" placeholder="Компания, адрес, комментарий…" value={query} onChange={event => setQuery(event.target.value)}/></label><button type="button" className="button primary mobile-icon-action" aria-label="Новая заявка" title="Новая заявка" onClick={() => setEditor({})}><Plus size={17}/><span className="mobile-action-label">Новая заявка</span></button></div>
+     {notice && <p className="directory-notice" role="status">{notice}</p>}
+@@ -31,6 +32,7 @@
+           <header><div><h2>{request.companyName}</h2></div><strong className="trip-request-litres">{number(request.quantityLitres)} л</strong></header>
+           <p className="trip-request-price"><span>Цена для клиента</span>{request.salePricePerLitre ? <strong>{number(request.salePricePerLitre, 6)} ₽/л</strong> : <span>Цена не указана</span>}</p>
+           <dl className="trip-request-location">
++            <div><dt>Дата выполнения</dt><dd>{requestDateLabel(request.executionDate)}</dd></div>
+             {place.name && <div><dt>Площадка</dt><dd>{place.name}</dd></div>}
+             <div><dt>Адрес доставки</dt><dd>{place.address}</dd></div>
+           </dl>
+diff --git a/web/src/WorkPage.tsx b/web/src/WorkPage.tsx
+--- a/web/src/WorkPage.tsx
++++ b/web/src/WorkPage.tsx
+@@ -60,6 +60,22 @@
+     params.delete('workId'); params.delete('workKind');
+     history.replaceState(null, '', `${location.pathname}${params.size ? `?${params}` : ''}#work`);
+   }, [data]);
++  const completing = useRef(new Set<string>());
++  const [pendingTasks, setPendingTasks] = useState<string[]>([]);
++  const toggleTask = async (task: WorkTask) => {
++    if (completing.current.has(task.id)) return;
++    completing.current.add(task.id); setPendingTasks([...completing.current]); setError('');
++    try {
++      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status: task.status === 'done' ? 'todo' : 'done' }), signal: AbortSignal.timeout(20000) });
++      const result = await response.json();
++      if (!response.ok) throw new Error(result.error || 'Не удалось изменить задачу.');
++      request.current?.abort();
++      if (active.current) { setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id ? result.entry : row) } } : previous); setNotice(task.status === 'done' ? 'Задача возвращена в работу.' : 'Задача выполнена.'); }
++      await refresh();
++    } catch (reason) {
++      if (active.current) setError(reason instanceof Error ? reason.message : 'Не удалось изменить задачу. Обновите список.');
++    } finally { completing.current.delete(task.id); if (active.current) setPendingTasks([...completing.current]); }
++  };
+   const userName = (id: string) => [...(data?.users ?? []), ...(data?.historicalUsers ?? [])].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
+   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
+   const isManager = !!data && isScopedEmployee(data.currentUser);
+@@ -67,7 +83,6 @@
+   const today = localDay(new Date());
+   const events: CalendarEvent[] = [];
+   for (const task of (work?.tasks ?? []).filter(task => !task.archivedAt)) {
+-    if (task.dueDate) events.push({ id: `${task.id}-due`, day: task.dueDate, title: task.title, reminder: false, editor: { kind: 'tasks', entry: task } });
+     if (task.reminderAt) events.push({ id: `${task.id}-reminder`, day: localDay(new Date(task.reminderAt)), title: task.title, reminder: true, editor: { kind: 'tasks', entry: task } });
+   }
+   for (const row of work?.companyRecords ?? []) if (row.reminderAt && !row.archivedAt) events.push({ id: row.id, day: localDay(new Date(row.reminderAt)), title: companyName(row.companyId), reminder: true, editor: { kind: 'companies', entry: row } });
+@@ -91,7 +106,7 @@
+     {data && <>
+       <div className="work-layout">
+         <section className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
+-          {view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header><div className="work-company-list">{records.map(item => { const row = item.entry as WorkTask | WorkCompanyRecord; const task = 'title' in row ? row : null; return <button key={row.id} className={task ? 'work-card' : 'work-company-row'} onClick={() => setEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}><span><strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong><p>{companyName(row.companyId) || 'Без компании'}</p>{task?.description && <p>{task.description}</p>}<small>{userName(row.assigneeId)} · Комментариев: {row.comments?.length ?? 0} · Файлов: {row.attachments?.length ?? 0}</small></span><span className="work-card-footer">{task && <small>{workStatuses.find(status => status.id === task.status)?.name}</small>}{task?.dueDate && <small className={task.dueDate < today && task.status !== 'done' ? 'work-overdue' : ''}><CalendarDays size={13}/>{dateLabel(task.dueDate)}</small>}{row.reminderAt && <small><Bell size={13}/>{dateLabel(row.reminderAt)}</small>}</span></button>; })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><CalendarDays size={14}/>Срок задачи <Bell size={14}/>Напоминание · время вашего устройства</p></section>}
++          {view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header><div className="work-company-list">{records.map(item => { const row = item.entry as WorkTask | WorkCompanyRecord; const task = 'title' in row ? row : null; return <div key={row.id} className={task ? 'work-task-row' : 'work-record-row'}>{task && <label className="work-task-check" title={task.status === 'done' ? 'Вернуть в работу' : 'Выполнить задачу'}><input type="checkbox" aria-label={`Выполнена: ${task.title}`} checked={task.status === 'done'} disabled={pendingTasks.includes(task.id) || !!task.archivedAt} onChange={() => void toggleTask(task)}/></label>}<button className={task ? 'work-card' : 'work-company-row'} onClick={() => setEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}><span><strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong><p>{companyName(row.companyId) || 'Без компании'}</p>{task?.description && <p>{task.description}</p>}<small>{userName(row.assigneeId)} · Комментариев: {row.comments?.length ?? 0} · Файлов: {row.attachments?.length ?? 0}</small></span><span className="work-card-footer">{task && <small>{workStatuses.find(status => status.id === task.status)?.name}</small>}{row.reminderAt && <small><Bell size={13}/>{dateLabel(row.reminderAt)}</small>}</span></button></div>; })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><Bell size={14}/>Напоминание · время вашего устройства</p></section>}
+ 
+         </section>
+         <aside className="work-side" aria-label="Заметки">
+@@ -139,7 +154,7 @@
+           ? task?.reminderAt ?? null
+           : fields.reminderAt ? new Date(fields.reminderAt).toISOString() : null;
+         const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
+-        body = { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived: nextArchived ?? archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, dueDate: fields.dueDate || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
++        body = { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived: nextArchived ?? archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
+       }
+       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+       const result = await response.json();
+@@ -160,7 +175,7 @@
+ 
+       {editor.kind === 'companies' && input('Текущий вопрос', 'question', { required: true, multiline: true })}
+       <div className="work-field-grid"><label className="work-field"><span>Исполнитель *</span><select aria-label="Исполнитель" value={fields.assigneeId} required disabled={saving || !entry && isScopedEmployee(actor)} onChange={event => update('assigneeId', event.target.value)}>{!users.some(user => user.id === fields.assigneeId) && <option value={fields.assigneeId} disabled>{userName(fields.assigneeId)} · доступ отключён</option>}{users.map(user => <option value={user.id} key={user.id}>{user.name}{user.id === actor.id ? ' (я)' : ''}</option>)}</select></label>{editor.kind === 'tasks' && <label className="work-field"><span>Состояние</span><select aria-label="Состояние задачи" value={fields.status} disabled={saving} onChange={event => update('status', event.target.value)}>{workStatuses.map(status => <option key={status.id} value={status.id}>{status.name}</option>)}</select></label>}
+-        {editor.kind === 'tasks' && input('Срок задачи', 'dueDate', { type: 'date' })}{editor.kind !== 'notes' && input('Напоминание', 'reminderAt', { type: 'datetime-local' })}
++        {editor.kind !== 'notes' && input('Напоминание', 'reminderAt', { type: 'datetime-local' })}
+       </div>
+       {isScopedEmployee(actor) && <p className="work-hint">{entry ? 'После передачи запись появится у выбранного сотрудника и исчезнет из ваших назначений.' : 'Новая запись назначается вам. После сохранения её можно передать сотруднику.'}</p>}
+       {editor.kind !== 'notes' && <p className="work-hint">При включённых уведомлениях напоминание придёт исполнителю на устройство. Укажите время в часовом поясе вашего устройства.</p>}
+diff --git a/web/src/trip-request-model.ts b/web/src/trip-request-model.ts
+--- a/web/src/trip-request-model.ts
++++ b/web/src/trip-request-model.ts
+@@ -9,6 +9,8 @@
+   quantityLitres: string;
+   /** Optional client price; copied into a trip without updating the source request. */
+   salePricePerLitre?: string | null;
++  /** Planned delivery day in Europe/Moscow; older requests can be undated. */
++  executionDate?: string | null;
+   comment: string;
+   ownerUserId: string | null;
+   managerId: string | null;
+diff --git a/web/src/trip-request-schedule.ts b/web/src/trip-request-schedule.ts
+new file mode 100644
+--- /dev/null
++++ b/web/src/trip-request-schedule.ts
+@@ -0,0 +1,23 @@
++import type { TripRequest } from './trip-request-model';
++
++export function validRequestDate(value: unknown): value is string {
++  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value < '0001-01-01') return false;
++  const time = new Date(`${value}T00:00:00Z`);
++  return Number.isFinite(time.getTime()) && time.toISOString().slice(0, 10) === value;
++}
++
++const moscowDay = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' });
++export const requestToday = (now = new Date()) => moscowDay.format(now);
++export function requestMapDays(now = new Date()) {
++  const today = requestToday(now);
++  const next = new Date(`${today}T12:00:00Z`);
++  next.setUTCDate(next.getUTCDate() + 1);
++  return [today, next.toISOString().slice(0, 10)];
++}
++export function requestIsOnMap(request: Pick<TripRequest, 'status' | 'executionDate'>, now = new Date()) {
++  return request.status === 'active' && !!request.executionDate && requestMapDays(now).includes(request.executionDate);
++}
++export function compareRequestDates(a: TripRequest, b: TripRequest) {
++  return (a.executionDate || '9999-99-99').localeCompare(b.executionDate || '9999-99-99') || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id);
++}
++export const requestDateLabel = (value?: string | null) => value ? value.split('-').reverse().join('.') : 'Не указана';
+diff --git a/web/src/work.css b/web/src/work.css
+--- a/web/src/work.css
++++ b/web/src/work.css
+@@ -6,3 +6,5 @@
+ 
+ .work-editor-footer .button.work-delete { color: #fff; background: #b42318; border-color: #b42318; }
+ .work-editor-footer .button.work-delete:hover { background: #912018; border-color: #912018; }
++
++.work-task-row{display:flex;align-items:flex-start;gap:4px;min-width:0}.work-task-row>.work-card{flex:1;min-width:0}.work-record-row{min-width:0}.work-task-check{display:flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;min-height:44px;cursor:pointer}.work-task-check input{width:20px;height:20px;margin:0;accent-color:var(--color-primary,#3671c9);cursor:pointer}.work-task-check:has(:focus-visible){outline:2px solid var(--color-primary,#3671c9);outline-offset:1px;border-radius:7px}.work-task-check:has(:disabled){cursor:default;opacity:.6}
