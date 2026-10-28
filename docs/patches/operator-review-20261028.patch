@@ -182,7 +182,7 @@
 + await filters.getByRole('button',{name:'Роснефть',exact:true}).click();
 + await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('34 650,00');
 + await expect(table.locator(`tr[data-date="${today}"] .is-matched`)).toHaveCount(2);
-+ assert.equal(await filters.getByRole('button',{name:'Роснефть',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(237, 241, 238)');
++ assert.equal(await filters.getByRole('button',{name:'Роснефть',exact:true}).evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(48, 54, 61)');
 + assert.equal(await filters.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
 + await filters.getByRole('button',{name:'Лукойл',exact:true}).click();await expect(table.locator(`tr[data-date="${today}"] .is-different`)).toHaveCount(2);
 + await expect(table.locator(`tr[data-date="${today}"]`)).toContainText('150,00');
@@ -750,7 +750,7 @@
            {!fuel && (catalog.cases ?? []).some(entry => entry.status === 'open') && <div className="operator-full operator-carryover-picker">
 --- /dev/null
 +++ b/web/src/OperatorReconciliation.tsx
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,130 @@
 +import { Fragment, useEffect, useRef, useState } from 'react'
 +import type { CSSProperties, FormEvent } from 'react'
 +import Decimal from 'decimal.js'
@@ -787,9 +787,7 @@
 +    <div className="operator-reconciliation-heading"><div><h2>Сверки</h2><p>Итоги CRM и отчёты оператора по дням.</p></div><label>Месяц<input type="month" aria-label="Месяц сверки" disabled={!!editingDate} required value={month} onChange={event => {if(event.target.value) {setMonth(event.target.value);setNotice('')}}}/></label></div>
 +    <ScrollableSegments className="operator-reconciliation-services" label="Сервисы сверки" value={activeService}>
 +      {services.map(service => {
-+        const configured = workspace.services.find(item => item.id === service.id)?.backgroundColor ?? operatorServiceBackground(service.name, service.id)
-+        // Keep dark catalogue colors readable as light tints in this filter only.
-+        const color = operatorServiceInk(configured) === '#ffffff' ? '#edf1ee' : configured
++        const color = workspace.services.find(item => item.id === service.id)?.backgroundColor ?? operatorServiceBackground(service.name, service.id)
 +        return <button type="button" key={service.id} aria-disabled={!!editingDate} title={editingDate ? 'Сохраните отчёт или отмените ввод' : undefined} aria-pressed={activeService === service.id} onClick={() => {if (!editingDate) {setServiceId(service.id);setNotice('')}}} style={{'--service-fill': color, '--service-ink': operatorServiceInk(color), backgroundColor: color, color: operatorServiceInk(color)} as CSSProperties}>{service.name}</button>
 +      })}
 +    </ScrollableSegments>
