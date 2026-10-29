@@ -42,11 +42,20 @@ self.addEventListener('notificationclick', event => {
     let url = new URL('/#work', self.location.origin);
     try {
       const target = new URL(event.notification.data?.url, self.location.origin);
-      if (target.origin === self.location.origin && target.pathname === '/') url = target;
+      if (target.origin === self.location.origin && (target.pathname === '/' || target.pathname === '/invoices/' && target.hash === '#invoices')) url = target;
     } catch { /* Fall back to the work page. */ }
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const client = windows.find(window => new URL(window.url).origin === self.location.origin);
-    if (client) { await client.navigate(url.href); return client.focus(); }
+    const client = windows.find(window => {
+      const current = new URL(window.url);
+      return current.origin === self.location.origin && (url.hash !== '#invoices' || current.pathname === '/' || /^\/invoices(?:\/|$)/.test(current.pathname));
+    });
+    if (client) {
+      if (url.hash === '#invoices') {
+        client.postMessage({ type: 'artel-open-invoices', jobId: url.searchParams.get('invoiceJob') });
+        return client.focus();
+      }
+      await client.navigate(url.href); return client.focus();
+    }
     return self.clients.openWindow(url.href);
   })());
 });

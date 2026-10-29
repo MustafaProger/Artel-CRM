@@ -246,3 +246,56 @@ test('Sber rechecks a concurrent retry delay or permanent stop after acquiring i
     } finally { await f.close(); }
   }
 });
+
+test('idle scheduler plans all connections from one fresh read without changing the store', async () => {
+  const f = await fixture();
+  try {
+    const initial = await f.store.read(f.source);
+    const read = f.store.read.bind(f.store); let reads = 0;
+    f.store.read = async source => { reads++; return read(source); };
+    const blocked = async () => { assert.fail('not due: provider must not run'); };
+    const result = await dispatchBanks(f.store, f.source, f.env, blocked, blocked, f.now - 1);
+    assert.equal(reads, 1);
+    assert.equal(result.pending, false);
+    assert.deepEqual(await read(f.source), initial);
+    await dispatchBanks(f.store, f.source, { ...f.env, ARTEL_BANK_SYNC_ENABLED: 'false' }, blocked, blocked);
+    assert.equal(reads, 1, 'disabled scheduler reads nothing');
+  } finally { await f.close(); }
+});
+
+test('a planning view never bypasses a lease acquired before the fresh bank claim', async () => {
+  const f = await fixture(); let calls = 0;
+  try {
+    const read = f.store.read.bind(f.store); let first = true;
+    f.store.read = async source => {
+      const view = await read(source);
+      if (first) {
+        first = false;
+        await f.store.mutate(source, data => {
+          const until = Date.now() + 60_000;
+          data.banking!.connections['tbank-nk-artel'].lease = { id: 'competing-owner', until };
+          data.sber!.lease = { id: 'competing-owner', until };
+          return { result: null, changed: true };
+        });
+      }
+      return view;
+    };
+    await dispatchBanks(f.store, f.source, f.env, async () => { calls++; return { operations: [] }; }, async (...args) => { calls++; return sberEmpty(...args); }, f.now);
+    assert.equal(calls, 0);
+    const current = await read(f.source);
+    assert.equal(current.banking!.connections['tbank-nk-artel'].lease!.id, 'competing-owner');
+    assert.equal(current.sber!.lease!.id, 'competing-owner');
+  } finally { await f.close(); }
+});
+
+test('failed shared planning read retains per-connection failure results', async () => {
+  let reads = 0;
+  const store = {
+    read: async () => { reads++; throw new Error('unreadable fixture'); },
+    mutate: async () => { throw new Error('must not mutate'); },
+  };
+  const result = await dispatchBanks(store, 'unused-source', { ARTEL_BANK_SYNC_ENABLED: 'true' });
+  assert.equal(reads, 1);
+  assert.equal(result.failed, true);
+  assert.deepEqual(result.connections.map(row => row.failed), [true, true, true]);
+});

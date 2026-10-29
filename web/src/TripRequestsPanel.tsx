@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
-import { ArrowUpRight, ClipboardList, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ArrowUpRight, ClipboardList, LoaderCircle, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { Company, Directories } from './model'
+import { compareRequestDates, requestDateLabel } from './trip-request-schedule'
 import type { TripRequest } from './trip-request-model'
 import { getDeliveryPlaceDisplay } from './trip-request-display'
 import TripRequestEditor from './TripRequestEditor'
@@ -16,9 +17,9 @@ export default function TripRequestsPanel({ requests, loading, error, companies,
 }) {
   const [query, setQuery] = useState(''), [editor, setEditor] = useState<{ request?: TripRequest } | null>(null), [deleting, setDeleting] = useState<TripRequest | null>(null)
   const [notice, setNotice] = useState('')
-  const visible = requests.filter(request => [request.companyName, request.addressName, request.address, request.comment].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
+  const visible = requests.filter(request => [request.companyName, request.addressName, request.address, request.comment].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareRequestDates)
   return <section className="trip-requests-panel" aria-label="Заявки на доставку">
-    <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск заявки" placeholder="Компания, адрес, комментарий…" value={query} onChange={event => setQuery(event.target.value)}/></label><button type="button" className="icon-button" aria-label="Обновить заявки" title="Обновить заявки" disabled={loading} onClick={onReload}><RefreshCw size={17}/></button><button type="button" className="button primary mobile-icon-action" aria-label="Новая заявка" title="Новая заявка" onClick={() => setEditor({})}><Plus size={17}/><span className="mobile-action-label">Новая заявка</span></button></div>
+    <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск заявки" placeholder="Компания, адрес, комментарий…" value={query} onChange={event => setQuery(event.target.value)}/></label><button type="button" className="button primary mobile-icon-action" aria-label="Новая заявка" title="Новая заявка" onClick={() => setEditor({})}><Plus size={17}/><span className="mobile-action-label">Новая заявка</span></button></div>
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={onReload}>Повторить загрузку</button></div>}
     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : <>
@@ -31,6 +32,7 @@ export default function TripRequestsPanel({ requests, loading, error, companies,
           <header><div><h2>{request.companyName}</h2></div><strong className="trip-request-litres">{number(request.quantityLitres)} л</strong></header>
           <p className="trip-request-price"><span>Цена для клиента</span>{request.salePricePerLitre ? <strong>{number(request.salePricePerLitre, 6)} ₽/л</strong> : <span>Цена не указана</span>}</p>
           <dl className="trip-request-location">
+            <div><dt>Дата выполнения</dt><dd>{requestDateLabel(request.executionDate)}</dd></div>
             {place.name && <div><dt>Площадка</dt><dd>{place.name}</dd></div>}
             <div><dt>Адрес доставки</dt><dd>{place.address}</dd></div>
           </dl>

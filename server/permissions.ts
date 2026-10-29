@@ -16,7 +16,8 @@ export function apiSection(path: string): SectionId | null {
   if (/^\/api\/shipment-trips(\/|$)/.test(path)) return null;
   if (/^\/api\/shipments(\/|$)/.test(path)) return 'shipments';
   if (/^\/api\/(directories|companies)(\/|$)/.test(path)) return 'directories';
-  if (/^\/api\/(work|push)(\/|$)/.test(path)) return 'work';
+  if (/^\/api\/work(\/|$)/.test(path)) return 'work';
+  if (/^\/api\/invoices(\/|$)/.test(path)) return 'invoices';
   if (/^\/api\/china(\/|$)/.test(path)) return 'china';
   if (/^\/api\/banking(\/|$)/.test(path)) return 'payments';
   for (const section of ['overview', 'stock', 'operator', 'payroll'] as const) if (path === `/api/${section}` || path.startsWith(`/api/${section}/`)) return section;

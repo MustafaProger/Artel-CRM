@@ -240,3 +240,40 @@ test('Work selects only active clients/suppliers, preserves old references and d
     assert.equal((await f.bob('/api/work')).body.companies.some((c: {id: string}) => c.id === 'scope-client'), false);
   } finally { await f.close(); }
 });
+
+test('lean Work projection exactly preserves visible company choices, scope and mutations', async () => {
+  const { currentWorkSnapshot } = await import('../server/shipment-operations');
+  const { scopeSnapshot } = await import('../server/auth-scope');
+  const { workCompanyIds, mutateWork } = await import('../server/work-operations');
+  const f = await setup();
+  try {
+    await f.director('/api/work/tasks', 'POST', { title: 'Parity task', assigneeId: f.users[1].id, companyId: f.snapshot.companies[0].id });
+    const data = await f.store.read(base.provenance.sourceSha256);
+    const before = JSON.stringify(data);
+    for (const actor of [f.users[0], ...f.users.slice(1), { ...f.users[1], managerId: 'missing-manager' }, { ...f.users[0], role: 'admin' as const }]) {
+      const ids = workCompanyIds(data, actor);
+      const slow = scopeSnapshot(currentSnapshot(base, data), actor, 'work', ids);
+      const fast = scopeSnapshot(currentWorkSnapshot(base, data), actor, 'work', ids);
+      for (const filter of ['', 'mine', f.users[1].id]) {
+        const params = new URLSearchParams(filter ? { assigneeId: filter } : {});
+        assert.deepEqual(readWork(data, fast, params, actor, f.users), readWork(data, slow, params, actor, f.users));
+      }
+      const task = data.work!.tasks[0];
+      for (const body of [{ version: task.version, status: 'done' }, { version: task.version - 1, status: 'todo' }, { version: task.version, companyId: 'missing-company' }]) {
+        const evaluate = (snapshot: Snapshot) => {
+          try {
+            const result = mutateWork(structuredClone(data), snapshot, 'tasks', body, task.id, 'PATCH', actor, f.users);
+            if (result.entry) result.entry.updatedAt = 'ignored-clock';
+            return result;
+          } catch (e) { return { status: (e as {status:number}).status, message: (e as Error).message }; }
+        };
+        assert.deepEqual(evaluate(fast), evaluate(slow));
+      }
+    }
+    assert.equal(JSON.stringify(data), before);
+    const measure = (fn: () => unknown) => { const values = []; for (let i=0;i<21;i++) { const start=performance.now(); fn(); if(i)values.push(performance.now()-start); } values.sort((a,b)=>a-b); return { medianMs: values[10], p95Ms: values[18] }; };
+    const slow = measure(()=>scopeSnapshot(currentSnapshot(base,data),f.users[0],'work'));
+    const fast = measure(()=>scopeSnapshot(currentWorkSnapshot(base,data),f.users[0],'work'));
+    console.log('WORK_PROJECTION_BENCH', JSON.stringify({ slow, fast, equal:true, sourceShipments:base.shipments.length, isolated:true }));
+  } finally { await f.close(); }
+});

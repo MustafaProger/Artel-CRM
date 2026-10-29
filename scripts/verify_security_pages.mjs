@@ -55,7 +55,7 @@ globalThis.fetch = (input, init) => {
 };
 const denied = async () => { throw new Error('Provider forbidden in synthetic security QA'); };
 let runtime, browser;
-const selectors = { overview: '.overview-page', work: '.work-page', shipments: '.shipments-workspace', trips: '.trips-page', payments: '.banking-page', 'cabinet-balances': '.cabinet-page', china: '.china-page', invoices: '.invoice-workspace', operator: '.operator-workspace', accounts: '.account-management', directories: '.directories-page' };
+const selectors = { documents: '.document-archive', overview: '.overview-page', work: '.work-page', shipments: '.shipments-workspace', trips: '.trips-page', payments: '.banking-page', 'cabinet-balances': '.cabinet-page', china: '.china-page', invoices: '.invoice-workspace', operator: '.operator-workspace', accounts: '.account-management', directories: '.directories-page' };
 const invoiceFixture = {
   integration: { status: 'read_only', message: 'Синтетический обработчик счетов', checkedAt: '2026-10-28T12:00:00Z' },
   invoiceProfiles: [], invoiceCreation: { mode: 'live', connections: [] }, canPrepare: false,

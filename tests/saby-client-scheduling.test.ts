@@ -156,11 +156,11 @@ test('a separate carrier account inherits the shared request capacity for authen
   assert.equal(fetches, 2); assert.equal(budgets, fetches);
 });
 
-test('HTTP rejection cancels its response body before returning request capacity', async () => {
+test('stalled HTTP rejection body is bounded and cancelled before returning request capacity', async () => {
   for (const status of [401, 403, 500]) {
     let cancelled = false, released = false;
     const run = async <T>(action: () => Promise<T>) => { try { return await action(); } finally { assert.equal(cancelled, true); released = true; } };
-    const client = new SabyClient(integrationConfig(), async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status }), undefined, run);
+    const client = new SabyClient({ ...integrationConfig(), timeoutMs: 20 }, async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status }), undefined, run);
     await assert.rejects(client.call('СБИС.ПрочитатьДокумент', {}));
     assert.equal(released, true);
   }

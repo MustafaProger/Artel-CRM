@@ -16,6 +16,7 @@ import { readTripNumbers, reserveTripNumber } from './trip-numbering';
 import type { AccountUser } from '../web/src/auth-model';
 import type { TripRequest } from '../web/src/trip-request-model';
 import { requireTripRequest } from './trip-requests';
+import { hasTripTransportHistory, TRIP_DOCUMENT_POLICY_VERSION } from './trip-document-mode';
 
 const sharedFields = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'quantity_gross_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs', 'trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order'] as const;
 const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
@@ -48,10 +49,11 @@ function inputFields(value: unknown, keys: readonly string[]): Record<string, st
   return fields;
 }
 
-export function getShipmentTrip(snapshot: Snapshot, id: string, numbers?: Record<string, number>): ShipmentTrip {
+export function getShipmentTrip(snapshot: Pick<Snapshot, 'shipments'>, id: string, numbers?: Record<string, number>): ShipmentTrip {
   const rows = snapshot.shipments.filter(row => row.fields.trip_id === id).sort((a, b) => Number(a.fields.trip_delivery_order ?? 0) - Number(b.fields.trip_delivery_order ?? 0));
   if (!rows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
   const fields = pick(rows[0].fields, [...sharedFields, ...sharedSnapshots]);
+  if (rows[0].fields.trip_document_policy != null) fields.trip_document_policy = rows[0].fields.trip_document_policy;
   fields.quantity_tonnes = rows[0].fields.trip_total_tonnes;
   fields.additional_costs = rows[0].fields.trip_additional_costs;
   return {
@@ -79,7 +81,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   const id = existingId ?? `shipment-trip-${randomUUID()}`;
   const previousRows = existingId ? snapshot.shipments.filter(row => row.fields.trip_id === id) : [];
   if (existingId && !previousRows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
-  if (existingId && hasSabyDocuments(data, existingId)) throw new ApiError(409, 'Рейс уже передаётся или сохранён в Saby. Изменение отправленных данных требует отдельной сверки документа.');
+  if (existingId && (hasSabyDocuments(data, existingId) || previousRows[0]?.fields.trip_document_policy && hasTripTransportHistory(data, existingId))) throw new ApiError(409, 'Рейс уже передаётся или сохранён в Saby. Изменение отправленных данных требует отдельной сверки документа.');
   if (existingId) checkTripVersions(body.versions, previousRows);
   if (existingId && data.driverTripProgress?.[existingId]?.arrivedAt) throw new ApiError(409, 'Водитель уже зафиксировал прибытие. Состав рейса и факты защищены от изменения.');
   const cleanSnapshots = (raw: unknown, keys: readonly string[], previous?: Shipment) => {
@@ -91,10 +93,16 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     }
     return copy;
   };
-  const fields = inputFields(cleanSnapshots(body.fields, sharedSnapshots, previousRows[0]), [...sharedFields, 'loading_at']);
+  const sharedInput = cleanSnapshots(body.fields, sharedSnapshots, previousRows[0]);
+  if (object(sharedInput) && Object.hasOwn(sharedInput, 'trip_document_policy')) {
+    if (!previousRows.length || sharedInput.trip_document_policy !== previousRows[0].fields.trip_document_policy || !previousRows[0].fields.trip_document_policy) throw new ApiError(400, 'Режим документов назначается сервером при создании рейса и не изменяется.');
+    delete sharedInput.trip_document_policy;
+  }
+  const fields = inputFields(sharedInput, [...sharedFields, 'loading_at']);
   const flowVersion = fields.trip_flow_version ?? previousRows[0]?.fields.trip_flow_version ?? null;
   if (flowVersion !== null && flowVersion !== 'driver-v1' || previousRows.length && flowVersion !== (previousRows[0].fields.trip_flow_version ?? null)) throw new ApiError(400, 'Сценарий существующего рейса изменять нельзя.');
   const driverFlow = flowVersion === 'driver-v1';
+  const documentPolicy = previousRows.length ? previousRows[0].fields.trip_document_policy : driverFlow ? TRIP_DOCUMENT_POLICY_VERSION : undefined;
   if (driverFlow) {
     for (const key of ['quantity_tonnes', 'quantity_gross_tonnes', 'loading_actual_at']) if (fields[key] != null) throw new ApiError(400, 'Массу и фактические события сохраняет назначенный водитель.');
     fields.trip_flow_version = flowVersion;
@@ -209,6 +217,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     delete input.trip_flow_version;
     const result = prepareShipmentFields(input, customer.previous, snapshot, { historicalCarrierId: previousRows[0]?.fields.carrier_id, allowMissingMass: driverFlow });
     if (driverFlow) result.trip_flow_version = 'driver-v1';
+    if (documentPolicy !== undefined) result.trip_document_policy = documentPolicy;
     if (customer.sourceRequest) {
       result.source_request_id = customer.sourceRequest.id;
       result.customer_name = customer.sourceRequest.companyName;
@@ -232,6 +241,12 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     return { previous: customer.previous, fields: result, sourceRequest: customer.sourceRequest };
   });
   const now = new Date().toISOString();
+  // New direct trips have no separate loading party. Do not reinterpret saved
+  // trips, frozen titles, or earlier departure authorizations on edits/replays.
+  if (!previousRows.length && driverFlow && fields.organization_id === 'nk-artel') {
+    data.etrn ??= { trips: {} };
+    data.etrn.trips[id] = { deliveries: {}, updatedAt: now, loadingActorMode: 'sender' };
+  }
   reserveTripNumber(snapshot, data, id);
   const shipmentIds: string[] = [];
   for (const row of prepared) {
@@ -252,6 +267,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
 
 /** Remove the whole truck under the same lock and full customer-version guard as editing. */
 export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, id: string): { deleted: true; id: string; deletedCount: number } {
+  if (data.tripExecutions?.[id]) throw new ApiError(409, 'Рейс содержит подтверждённые доставки. Удаление запрещено.');
   if (hasSabyDocuments(data, id)) throw new ApiError(409, 'Рейс связан с документами Saby. Удаление запрещено до сверки документов.');
   if (Object.keys(body).some(key => key !== 'versions')) throw new ApiError(400, 'В запросе удаления есть неизвестные параметры.');
   const rows = currentSnapshot(base, data, false).shipments.filter(row => row.fields.trip_id === id);

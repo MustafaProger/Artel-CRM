@@ -1,12 +1,23 @@
 import { etrnTrip, requireEtrnDelivery } from './trip-etrn-scope';
 import Decimal from 'decimal.js';
 import type { ShipmentTrip, Snapshot } from '../web/src/model';
-import type { EtrnDocumentBasis, EtrnLoadingParty, EtrnName, EtrnParty, SabyConsignmentProfile } from '../web/src/etrn-model';
+import type { EtrnCarrierResponsible, EtrnDocumentBasis, EtrnLoadingDetails, EtrnLoadingDocumentBasis, EtrnLoadingParty, EtrnLoadingWorker, EtrnName, EtrnParty, SabyConsignmentProfile } from '../web/src/etrn-model';
 import { SabyError, sabyObject, type SabyObject, type SabyOrganization } from './saby-client';
 import { encodeWindows1251 } from './saby-transport-order';
+import { exactSabyVolume, formatSabyVolume, sabyVolumeRoundedToZero, SABY_VOLUME_ROUNDING_VERSION, type SabyVolumeRoundingVersion } from './saby-volume';
 
 export type { SabyConsignmentProfile } from '../web/src/etrn-model';
+/** New attempts leave the operator-issued GIS UID to Saby Prepare. Historical artifacts stay byte-for-byte stable. */
+export interface SabyConsignmentTitleOptions { senderTitleVersion?: 2; draftWithoutNumber?: true }
 export interface SabyConsignmentSnapshot {
+  volumeRoundingVersion?: SabyVolumeRoundingVersion;
+  /** Explicit direct title without an order relationship. Historical snapshots keep their original semantics. */
+  documentMode?: 'nk-direct-v1';
+  /** Conditional loading FLC for new direct attempts. Absence preserves historical title bytes. */
+  loadingDetailsVersion?: 1;
+  /** Frozen independently from the legacy loading format. */
+  carrierResponsibleVersion?: 1;
+  loadingActorMode?: 'sender';
   documentType: 'ConsignmentNote'; formatVersion: '5.01';
   tripId: string; shipmentId: string; version: number;
   fields: Record<string, string | null>;
@@ -34,9 +45,24 @@ function entrepreneurName(value: string): EtrnName | undefined {
 function basis(value: unknown): EtrnDocumentBasis {
   return { ...strings(value, ['name', 'number', 'date']), issuerInns: Array.isArray(object(value).issuerInns) ? (object(value).issuerInns as unknown[]).map(str) : [] };
 }
+function loadingBasis(value: unknown): EtrnLoadingDocumentBasis {
+  const row = object(value);
+  return { ...basis(row), ...(row.documentId !== undefined ? { documentId: str(row.documentId) } : {}), ...(row.additionalInfo !== undefined ? { additionalInfo: str(row.additionalInfo) } : {}) };
+}
+function loadingWorker(value: unknown): EtrnLoadingWorker {
+  const row = object(value);
+  return { ...person(row), position: str(row.position), authority: row.authority === 'job_duties' || row.authority === 'document' ? row.authority : '',
+    ...(sabyObject(row.authorityDocument) ? { authorityDocument: loadingBasis(row.authorityDocument) } : {}), ...(row.additionalInfo !== undefined ? { additionalInfo: str(row.additionalInfo) } : {}) };
+}
+/** Shared by explicit trip input and profile editing; absent authority stays unconfirmed. */
+export function readEtrnLoadingDetails(value: unknown): EtrnLoadingDetails {
+  const row = object(value);
+  return { basis: loadingBasis(row.basis), worker: loadingWorker(row.worker) };
+}
 function loadingParty(value: unknown): EtrnLoadingParty {
   const row = object(value);
-  return { sameAsConsignor: typeof row.sameAsConsignor === 'boolean' ? row.sameAsConsignor : null, party: party(row.party) };
+  return { sameAsConsignor: typeof row.sameAsConsignor === 'boolean' ? row.sameAsConsignor : null, party: party(row.party),
+    ...(sabyObject(row.basis) ? { basis: loadingBasis(row.basis) } : {}), ...(sabyObject(row.worker) ? { worker: loadingWorker(row.worker) } : {}) };
 }
 /** Closed-field normalization accepts partial drafts and never copies signatures or arbitrary XML. */
 export function readSabyConsignmentProfile(raw: unknown): SabyConsignmentProfile {
@@ -46,6 +72,7 @@ export function readSabyConsignmentProfile(raw: unknown): SabyConsignmentProfile
   return {
     confirmed: value.confirmed === true,
     consignorPhone: str(value.consignorPhone), carrierPhone: str(value.carrierPhone),
+    ...(sabyObject(value.carrierResponsible) ? { carrierResponsible: { ...person(value.carrierResponsible), phone: str(value.carrierResponsible.phone) } } : {}),
     consignorIsForwarder: str(value.consignorIsForwarder),
     ...(sabyObject(value.transportCustomer) ? { transportCustomer: party(value.transportCustomer) } : {}),
     ...(sabyObject(value.transportCustomerContract) ? { transportCustomerContract: basis(value.transportCustomerContract) } : {}),
@@ -93,7 +120,7 @@ export function buildSabyConsignmentSnapshot(source: Snapshot, trip: ShipmentTri
     if (validDecimal(vehicle?.capacityLitres, 17, 3, true)) profile.vehicle.capacityCubicMetres = new Decimal(vehicle!.capacityLitres!).div(1000).toFixed();
   }
   return structuredClone({
-    documentType: 'ConsignmentNote', formatVersion: '5.01', tripId: trip.id, shipmentId, version: delivery.version,
+    documentType: 'ConsignmentNote', formatVersion: '5.01', volumeRoundingVersion: SABY_VOLUME_ROUNDING_VERSION, tripId: trip.id, shipmentId, version: delivery.version,
     fields: Object.fromEntries([...copyFields, ...(trip.fields.trip_flow_version === 'driver-v1' ? ['trip_flow_version', 'quantity_tonnes', 'quantity_gross_tonnes'] : [])].map(key => [key, fields[key] ?? null])), calculatedMassTonnes: row?.fields.quantity_tonnes ?? null,
     tripTotalMassTonnes: trip.fields.quantity_tonnes ?? null,
     tripTotalLitres: trip.customers.every(item => validDecimal(item.fields.quantity_litres, 17, 3, true)) ? trip.customers.reduce((sum, item) => sum.plus(item.fields.quantity_litres!), new Decimal(0)).toFixed() : null,
@@ -124,6 +151,28 @@ const validName = (value: EtrnName) => text(value.surname, 60) && text(value.nam
 const validParty = (value: SabyOrganization | EtrnParty) => text(value.name) && text(value.address) && text(value.phone, 255) &&
   (/^\d{10}$/.test(value.inn) ? /^\d{9}$/.test(value.kpp) : /^\d{12}$/.test(value.inn) && !value.kpp && 'person' in value && !!value.person && validName(value.person));
 const validBasis = (value?: EtrnDocumentBasis) => !!value && text(value.name, 255) && text(value.number, 255) && day(value.date) && value.issuerInns.length > 0 && value.issuerInns.every(inn => /^\d{10}(?:\d{2})?$/.test(inn));
+const validLoadingBasis = (value?: EtrnLoadingDocumentBasis) => !!value && Array.isArray(value.issuerInns) && value.issuerInns.length > 0 && value.issuerInns.every(inn => /^\d{10}(?:\d{2})?$/.test(inn)) &&
+  (value.documentId ? text(value.documentId, 255) && !value.name && !value.number && !value.date : text(value.name, 255) && text(value.number, 255) && day(value.date)) && (!value.additionalInfo || text(value.additionalInfo, 2000));
+const validLoadingWorker = (value?: EtrnLoadingWorker) => !!value && validName(value) && text(value.position, 128) && (!value.additionalInfo || text(value.additionalInfo, 255)) &&
+  (value.authority === 'job_duties' ? value.authorityDocument === undefined : value.authority === 'document' && validLoadingBasis(value.authorityDocument));
+export function sabyLoadingDetailsBlockers(details: Partial<EtrnLoadingDetails>): string[] {
+  return [
+    ...(!validLoadingBasis(details.basis) ? ['Для отдельного лица погрузки укажите основание погрузки: идентификатор документа либо наименование, номер и дату, а также ИНН составителей.'] : []),
+    ...(!validLoadingWorker(details.worker) ? ['Для отдельного лица погрузки укажите ФИО и должность работника, затем подтвердите должностные обязанности либо документ о его полномочиях.'] : []),
+  ];
+}
+/** XSD marks these nodes optional; FLC requires all three when the loading company differs from the sender. */
+export function sabyLoadingPartyBlockers(role: EtrnLoadingParty, sender: SabyOrganization): string[] {
+  const errors: string[] = [];
+  if (role.sameAsConsignor !== true && role.sameAsConsignor !== false) errors.push('Подтвердите, совпадает ли лицо, осуществляющее погрузку, с грузоотправителем.');
+  if (role.sameAsConsignor === false) {
+    if (!validParty(role.party)) errors.push('Укажите подтверждённые реквизиты лица, осуществляющего погрузку.');
+    if (role.party.inn === sender.inn && role.party.kpp === sender.kpp) errors.push('Лицо, осуществляющее погрузку, совпадает с грузоотправителем: подтвердите соответствующий признак.');
+    errors.push(...sabyLoadingDetailsBlockers(role));
+  }
+  if (role.sameAsConsignor === true && (role.basis !== undefined || role.worker !== undefined)) errors.push('Основание и работник отдельного лица погрузки не применяются при совпадении с грузоотправителем.');
+  return errors;
+}
 const uuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 /** Runtime format and business preconditions. A pass does not establish signing authority. */
 export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, options: { stage?: 'preparation' | 'driver_draft' | 'complete' } = {}): string[] {
@@ -142,11 +191,15 @@ export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, optio
   if (p.consignorIsForwarder === '1' && (!p.transportCustomer || !validParty(p.transportCustomer))) result.push('Для экспедитора укажите подтверждённого заказчика перевозки.');
   if (p.consignorIsForwarder === '1' && !validBasis(p.transportCustomerContract)) result.push('Для экспедитора укажите реквизиты договора оказания услуг по перевозке с заказчиком.');
   if ((!preparing && !text(p.order.number)) || !day(p.order.date)) result.push('Укажите номер и дату заказа (заявки), являющегося основанием этой перевозки.');
+  if (snapshot.documentMode === 'nk-direct-v1') {
+    if (snapshot.customerOrganization.inn !== snapshot.carrierOrganization.inn || snapshot.customerOrganization.kpp !== snapshot.carrierOrganization.kpp || snapshot.fields.organization_id !== 'nk-artel') result.push('Прямая ЭТрН должна содержать НК АРТЭЛЬ в ролях грузоотправителя и перевозчика.');
+    if (p.order.number !== 'Без номера' || p.order.date !== snapshot.fields.date) result.push('Для прямой ЭТрН без заявки укажите «Без номера» и дату транспортной накладной.');
+  }
   if (day(p.order.date) && day(snapshot.fields.date) && p.order.date > snapshot.fields.date) result.push('Дата заказа не может быть позже даты перевозки.');
   if (!text(snapshot.fields.loading_address) || !text(snapshot.fields.unloading_address)) result.push('Укажите фактические площадки погрузки и доставки в рейсе; юридические адреса их не заменяют.');
   if (!moscowTime(snapshot.fields.loading_planned_at)) result.push('Укажите плановые дату и время подачи машины в рейсе (Москва).');
   if (snapshot.fields.unloading_planned_at && !moscowTime(snapshot.fields.unloading_planned_at)) result.push('Проверьте плановые дату и время доставки.');
-  if (!preparing && (!moscowTime(p.loading.arrivedAt) || !moscowTime(p.loading.departedAt)) || preparing && ((p.loading.arrivedAt && !moscowTime(p.loading.arrivedAt)) || (p.loading.departedAt && !moscowTime(p.loading.departedAt)))) result.push('Укажите отдельные фактические время прибытия и время убытия с погрузки (Москва); подтверждение заявки перевозчиком эти события не устанавливает.');
+  if (!preparing && (!moscowTime(p.loading.arrivedAt) || !moscowTime(p.loading.departedAt)) || preparing && ((p.loading.arrivedAt && !moscowTime(p.loading.arrivedAt)) || (p.loading.departedAt && !moscowTime(p.loading.departedAt)))) result.push(snapshot.documentMode === 'nk-direct-v1' ? 'Для прямой ЭТрН требуются сохранённые водителем фактические время прибытия и время убытия с погрузки (Москва).' : 'Укажите отдельные фактические время прибытия и время убытия с погрузки (Москва); подтверждение заявки перевозчиком эти события не устанавливает.');
   if (moscowTime(p.loading.arrivedAt) && moscowTime(p.loading.departedAt) && p.loading.departedAt < p.loading.arrivedAt) result.push('Убытие с погрузки не может предшествовать прибытию.');
   for (const kind of ['loading', 'unloading']) {
     const lat = snapshot.fields[`${kind}_latitude`]; const lon = snapshot.fields[`${kind}_longitude`];
@@ -163,11 +216,19 @@ export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, optio
   if (!text(p.vehicle.type)) result.push('В карточке автомобиля заполните тип транспортного средства.');
   if (!text(p.vehicle.brand)) result.push('В карточке автомобиля заполните марку.');
   if (!validDecimal(p.vehicle.payloadTonnes, 5, 2, true)) result.push('В карточке автомобиля заполните грузоподъёмность в т по документам. Максимальная масса не заменяет грузоподъёмность.');
-  if (!validDecimal(p.vehicle.capacityCubicMetres, 4, 2, true)) result.push('В карточке автомобиля заполните вместимость цистерны; для ЭТрН требуется точное значение в м³ до двух знаков.');
+  const capacity = snapshot.volumeRoundingVersion === SABY_VOLUME_ROUNDING_VERSION
+    ? formatSabyVolume(p.vehicle.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion) : p.vehicle.capacityCubicMetres;
+  const exactCapacity = exactSabyVolume(p.vehicle.capacityCubicMetres, 'cubic-metres');
+  if (!validDecimal(capacity, 4, 2, true)) result.push(sabyVolumeRoundedToZero(p.vehicle.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion)
+    ? 'Вместимость цистерны после округления до 2 знаков м³ равна нулю. Проверьте общую вместимость в литрах.'
+    : 'В карточке автомобиля проверьте общую вместимость цистерны в литрах; формат ЭТрН — м³ до 2 знаков, не более 4 цифр. Секции необязательны.');
   if (!['1', '2', '3', '4', '5'].includes(p.vehicle.ownershipType)) result.push('Подтвердите тип владения машиной.');
   if ((['3', '4', '5'].includes(p.vehicle.ownershipType) || p.vehicle.ownershipDocument) && !validBasis(p.vehicle.ownershipDocument)) result.push('Заполните документ основания владения ТС: название, номер, дата и ИНН составителей.');
-  const volume = amount(snapshot.fields.quantity_litres ?? '', 0.001); const mass = amount(p.deliveryMassTonnes, 1000);
-  if (!validDecimal(volume, 17, 3, true)) result.push('Объём выбранной доставки должен быть положительным и представляться в м³ с точностью до 3 знаков.');
+  const exactVolume = amount(snapshot.fields.quantity_litres ?? '', 0.001);
+  const volume = formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 3, snapshot.volumeRoundingVersion); const mass = amount(p.deliveryMassTonnes, 1000);
+  if (!validDecimal(snapshot.fields.quantity_litres, 20, 9, true) || !validDecimal(volume, 17, 3, true)) result.push(sabyVolumeRoundedToZero(snapshot.fields.quantity_litres, 'litres', 3, snapshot.volumeRoundingVersion)
+    ? 'Объём доставки после округления до 3 знаков м³ равен нулю. Проверьте исходные литры: такой объём нельзя передать в Saby.'
+    : 'Объём выбранной доставки должен быть положительным и соответствовать формату м³ (до 3 знаков, не более 17 цифр).');
   if ((!driverDraft || p.deliveryMassTonnes) && !validDecimal(mass, 17, 3, true)) result.push('Проверьте массу именно выбранной доставки в т (точность до 6 знаков).');
   const plannedGross = amount(p.plannedGrossMassTonnes ?? (p.plannedMassKind === 'net' ? '' : p.deliveryMassTonnes), 1000);
   if ((!driverDraft || p.plannedGrossMassTonnes) && !validDecimal(plannedGross, 17, 3, true)) result.push('Заполните корректную плановую массу груза доставки для ЭТрН.');
@@ -178,9 +239,9 @@ export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, optio
   if ((!preparing || p.loading.grossMassTonnes) && !validDecimal(actualMass, 17, 3, true)) result.push('Подтвердите фактическую массу брутто при погрузке отдельно от расчётного распределения тоннажа рейса.');
   if ((!preparing || p.loading.massMethod) && !['01', '02', '03'].includes(actualMassMethod)) result.push('Подтвердите способ определения фактической массы при погрузке; расчётная доля не означает взвешивание.');
   if (validDecimal(actualMass, 17, 3, true) && validDecimal(p.vehicle.payloadTonnes, 5, 2, true) && new Decimal(actualMass).div(1000).gt(p.vehicle.payloadTonnes)) result.push('Фактическая масса брутто доставки превышает подтверждённую грузоподъёмность ТС.');
-  if (validDecimal(volume, 17, 3, true) && validDecimal(p.vehicle.capacityCubicMetres, 4, 2, true) && new Decimal(volume).gt(p.vehicle.capacityCubicMetres)) result.push('Объём доставки превышает подтверждённую вместимость ТС.');
+  if (validDecimal(exactVolume, 20, 9, true) && validDecimal(capacity, 4, 2, true) && new Decimal(exactVolume).gt(exactCapacity!)) result.push('Объём доставки превышает подтверждённую вместимость ТС.');
   if (validDecimal(mass, 17, 3, true) && validDecimal(p.vehicle.payloadTonnes, 5, 2, true) && new Decimal(p.deliveryMassTonnes).gt(p.vehicle.payloadTonnes)) result.push('Масса доставки превышает подтверждённую грузоподъёмность ТС.');
-  if (validDecimal(snapshot.tripTotalLitres, 20, 3, true) && validDecimal(p.vehicle.capacityCubicMetres, 4, 2, true) && new Decimal(snapshot.tripTotalLitres).div(1000).gt(p.vehicle.capacityCubicMetres)) result.push('Общий объём доставок рейса превышает подтверждённую вместимость ТС.');
+  if (validDecimal(snapshot.tripTotalLitres, 20, 3, true) && validDecimal(capacity, 4, 2, true) && new Decimal(snapshot.tripTotalLitres).div(1000).gt(exactCapacity!)) result.push('Общий объём доставок рейса превышает подтверждённую вместимость ТС.');
   if (validDecimal(snapshot.tripTotalMassTonnes, 20, 9, true) && validDecimal(p.vehicle.payloadTonnes, 5, 2, true) && new Decimal(snapshot.tripTotalMassTonnes).gt(p.vehicle.payloadTonnes)) result.push('Общая масса рейса превышает подтверждённую грузоподъёмность ТС.');
   const c = p.cargo;
   if (![c.name, c.condition, c.packingMethod, c.marking].every(value => text(value)) || !/^[\wА-Яа-я]{2}$/.test(c.packagingCode) || !/^\d{1,4}$/.test(c.packageCount) || p.massSource !== 'calculated' && !['01', '02', '03'].includes(c.massMethod)) result.push('Заполните транспортное наименование, состояние, упаковку, код тары (2 символа), маркировку, число мест и метод определения массы.');
@@ -191,6 +252,11 @@ export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, optio
   for (const [label, role] of [['лицо, осуществляющее погрузку', p.loadingActor], ['владельца инфраструктуры погрузки', p.infrastructureOwner]] as const) {
     if (role.sameAsConsignor !== true && !validParty(role.party)) result.push(`В справочнике нефтебаз заполните ${label}: выберите компанию и заполните её реквизиты.`);
   }
+  if (snapshot.loadingDetailsVersion !== undefined && snapshot.loadingDetailsVersion !== 1) result.push('Версия сведений о лице погрузки не поддерживается.');
+  if (snapshot.loadingDetailsVersion === 1) result.push(...sabyLoadingPartyBlockers(p.loadingActor, snapshot.customerOrganization));
+  if (snapshot.loadingActorMode !== undefined && (snapshot.documentMode !== 'nk-direct-v1' || snapshot.loadingActorMode !== 'sender' || p.loadingActor.sameAsConsignor !== true)) result.push('Проверьте подтверждённое лицо погрузки прямой ЭТрН.');
+  if (snapshot.carrierResponsibleVersion !== undefined && (snapshot.carrierResponsibleVersion !== 1 || snapshot.documentMode !== 'nk-direct-v1')) result.push('Версия контактных сведений перевозчика не поддерживается.');
+  if (snapshot.carrierResponsibleVersion === 1 && p.carrierResponsible && (!validName(p.carrierResponsible) || !/^\+\d{11,15}$/.test(p.carrierResponsible.phone))) result.push('Проверьте ФИО и телефон ответственного перевозчика в серверных настройках.');
   if (!validName(p.signer) || !text(p.signer.position, 128) || !['1', '2', '3', '4', '5', '6'].includes(p.signer.status)) result.push('Заполните ФИО, должность и основание полномочий подписанта.');
   const poa = p.signer.powerOfAttorney;
   if (['2', '5'].includes(p.signer.status) && (!poa || !day(poa.date) || !text(poa.id, 255) || poa.number && !text(poa.number, 100))) result.push('Для подписи по электронной доверенности укажите дату и идентификатор файла доверенности; это не заменяет проверку полномочий в Saby.');
@@ -204,11 +270,13 @@ const tag = (name: string, values: Record<string, string | null | undefined> = {
   return content === undefined ? `<${name}${attrs}/>` : `<${name}${attrs}>${content}</${name}>`;
 };
 const address = (value: string) => tag('Адрес', {}, tag('АдрИнф', { КодСтр: '643', АдрТекст: value }));
-function organization(value: SabyOrganization | EtrnParty): string {
+function organization(value: SabyOrganization | EtrnParty, responsible?: EtrnCarrierResponsible): string {
   const identity = /^\d{12}$/.test(value.inn) && 'person' in value && value.person
     ? tag('СвИП', { ИННФЛ: value.inn }, nameXml(value.person))
     : tag('СвЮЛУч', { ИННЮЛ: value.inn, КПП: value.kpp, НаимОрг: value.name });
-  return tag('ИдСв', {}, identity) + address(value.address) + tag('Контакт', {}, tag('Тлф', {}, escape(value.phone!)));
+  const phones = [...new Set([value.phone!, ...(responsible ? [responsible.phone] : [])])].map(phone => tag('Тлф', {}, escape(phone))).join('');
+  const contact = responsible ? tag('ИнКонт', {}, escape(`Ответственный за перевозку: ${[responsible.surname, responsible.name, responsible.patronymic].filter(Boolean).join(' ')}`)) : '';
+  return tag('ИдСв', {}, identity) + address(value.address) + tag('Контакт', {}, phones + contact);
 }
 const nameXml = (value: EtrnName) => tag('ФИО', { Фамилия: value.surname, Имя: value.name, Отчество: value.patronymic });
 function location(snapshot: SabyConsignmentSnapshot, kind: 'loading' | 'unloading'): string {
@@ -218,18 +286,37 @@ function location(snapshot: SabyConsignmentSnapshot, kind: 'loading' | 'unloadin
 function documentBasis(value: EtrnDocumentBasis, element = 'ОснАрЛиз'): string {
   return tag(element, { НаимДок: value.name, НомерДок: value.number, ДатаДок: ruDay(value.date) }, value.issuerInns.map(inn => tag('ИдРекСост', {}, tag(inn.length === 12 ? 'ИННФЛ' : 'ИННЮЛ', {}, inn))).join(''));
 }
-function loadingRole(name: 'СвЛицПогрГр' | 'ВладИнфр', role: EtrnLoadingParty, senderInn: string): string {
-  return tag(name, { [name === 'СвЛицПогрГр' ? 'СовпГОП' : 'СовпГОВ']: role.sameAsConsignor ? '1' : '2' }, role.sameAsConsignor ? tag('ИдентРекГО', {}, tag('ИННЮЛ', {}, senderInn)) : tag(name === 'СвЛицПогрГр' ? 'РекЛицПогрГр' : 'РекВладИнф', {}, organization(role.party)));
+function loadingDocument(value: EtrnLoadingDocumentBasis, element: 'ОснПогрГр' | 'ОПИное'): string {
+  return tag(element, { ...(value.documentId ? { ИдДок: value.documentId } : { НаимДок: value.name, НомерДок: value.number, ДатаДок: ruDay(value.date) }), ДопСведДок: value.additionalInfo }, value.issuerInns.map(inn => tag('ИдРекСост', {}, tag(inn.length === 12 ? 'ИННФЛ' : 'ИННЮЛ', {}, inn))).join(''));
+}
+function loadingRole(name: 'СвЛицПогрГр' | 'ВладИнфр', role: EtrnLoadingParty, senderInn: string, complete = false): string {
+  const worker = role.worker;
+  const details = complete && name === 'СвЛицПогрГр' && role.sameAsConsignor === false
+    ? loadingDocument(role.basis!, 'ОснПогрГр') + tag('РабЛицПогрГр', { Должность: worker!.position, ИныеСвед: worker!.additionalInfo }, (worker!.authority === 'job_duties' ? tag('ОДолжОб', {}, 'Должностные обязанности') : loadingDocument(worker!.authorityDocument!, 'ОПИное')) + nameXml(worker!)) : '';
+  return tag(name, { [name === 'СвЛицПогрГр' ? 'СовпГОП' : 'СовпГОВ']: role.sameAsConsignor ? '1' : '2' }, role.sameAsConsignor ? tag('ИдентРекГО', {}, tag('ИННЮЛ', {}, senderInn)) : tag(name === 'СвЛицПогрГр' ? 'РекЛицПогрГр' : 'РекВладИнф', {}, organization(role.party)) + details);
+}
+/** FNS table 5.3 prescribes this operation text for the sender's title. */
+export const CONSIGNMENT_SENDER_OPERATION = 'Лицом, осуществляющим погрузку груза, при указанных обстоятельствах передан водителю груз с указанными характеристиками';
+function packingGroupCode(value: string): string {
+  const labels: Record<string, string> = {
+    'I. Вещество с высокой степенью опасности': 'I',
+    'II. Вещество со средней степенью опасности': 'II',
+    'III. Вещество с низкой степенью опасности': 'III',
+  };
+  const code = labels[value] ?? value;
+  if (!['I', 'II', 'III', '-'].includes(code)) throw new SabyError('validation', 'Не подтверждён код группы упаковки ДОПОГ для ЭТрН.');
+  return code;
 }
 /** Stable unsigned sender title. Generated artifacts are never signatures or GIS receipts. */
-export function serializeSabyConsignmentNote(snapshot: SabyConsignmentSnapshot, attemptId: string, createdAt: string, documentNumber?: string): { xml: Buffer; name: string; number: string; uid: string } {
+export function serializeSabyConsignmentNote(snapshot: SabyConsignmentSnapshot, attemptId: string, createdAt: string, documentNumber?: string, options: SabyConsignmentTitleOptions = {}): { xml: Buffer; name: string; number: string; uid: string } {
   const blockers = sabyConsignmentBlockers(snapshot);
   if (blockers.length) throw new SabyError('validation', blockers.join(' '));
   if (!uuid(attemptId) || !Number.isFinite(Date.parse(createdAt))) throw new SabyError('validation', 'Некорректный идентификатор или время формирования ЭТрН.');
-  if (documentNumber !== undefined && !text(documentNumber)) throw new SabyError('validation', 'Saby не подтвердил номер ЭТрН.');
+  if (options.draftWithoutNumber && (options.senderTitleVersion !== 2 || documentNumber !== undefined || snapshot.documentMode !== 'nk-direct-v1' && (!snapshot.profile.order.number || !snapshot.profile.order.date))) throw new SabyError('validation', 'Автонумерация требует нового полного титула ЭТрН и подтверждённой заявки либо прямого режима.');
+  if (!options.draftWithoutNumber && (options.senderTitleVersion === 2 || documentNumber !== undefined) && !text(documentNumber)) throw new SabyError('validation', 'Saby не подтвердил номер ЭТрН.');
   const p = snapshot.profile; const c = p.cargo; const v = p.vehicle;
   const timestamp = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'medium' }).format(new Date(createdAt));
-  const [createdDate, createdTime] = timestamp.split(' '); const number = documentNumber ?? `CRM-${attemptId}`;
+  const [createdDate, createdTime] = timestamp.split(' '); const number = options.draftWithoutNumber ? '' : documentNumber ?? `CRM-${attemptId}`;
   // Saby fills absent participant IDs and the final filename at PrepareAction, before signing.
   const fileId = `ON_TRNACLGROT_${p.recipient.edoId || '0'}_${snapshot.carrierOrganization.edoId || '0'}_${snapshot.customerOrganization.edoId || '0'}_0_${createdDate.replaceAll('-', '')}_${attemptId}`;
   const mass = amount(p.deliveryMassTonnes, 1000);
@@ -237,29 +324,29 @@ export function serializeSabyConsignmentNote(snapshot: SabyConsignmentSnapshot, 
   const separateFacts = p.massSource === 'calculated' || p.plannedMassKind === 'net';
   const actualMass = amount(p.loading.grossMassTonnes ?? (separateFacts ? '' : p.deliveryMassTonnes), 1000);
   const actualMassMethod = p.loading.massMethod ?? (separateFacts ? '' : c.massMethod);
-  const cargo = tag('СвГруз', {}, tag('ОпГруз', { НаимГруз: c.name, СостГруз: c.condition, СпУпак: c.packingMethod, ВидТар: c.packagingCode, Объем: amount(snapshot.fields.quantity_litres!, 0.001), КолМестГр: c.packageCount },
+  const cargo = tag('СвГруз', {}, tag('ОпГруз', { НаимГруз: c.name, СостГруз: c.condition, СпУпак: c.packingMethod, ВидТар: c.packagingCode, Объем: formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 3, snapshot.volumeRoundingVersion), КолМестГр: c.packageCount },
     tag('Марк', {}, escape(c.marking)) + (c.dimensions ? tag('Габар', { ВысЗнач: c.dimensions.heightMetres, ДлЗнач: c.dimensions.lengthMetres, ШирЗнач: c.dimensions.widthMetres }) : '') +
-    (c.dangerousGoods ? tag('СвОпГруз', { НомООН: c.dangerousGoods.unNumber, НадОтгНаим: c.dangerousGoods.shippingName, Клас: c.dangerousGoods.class, КласКод: c.dangerousGoods.classificationCode, ГрУп: c.dangerousGoods.packingGroup, ЗнОп: c.dangerousGoods.hazardSign, КодОгрЧерТун: c.dangerousGoods.tunnelCode }) : '') + tag('ПлМасГруз', { МасНетЗнач: p.plannedMassKind === 'net' ? mass : undefined, МасБрутЗнач: plannedGross })));
+    (c.dangerousGoods ? tag('СвОпГруз', { НомООН: c.dangerousGoods.unNumber, НадОтгНаим: c.dangerousGoods.shippingName, Клас: c.dangerousGoods.class, КласКод: c.dangerousGoods.classificationCode, ГрУп: options.senderTitleVersion === 2 ? packingGroupCode(c.dangerousGoods.packingGroup) : c.dangerousGoods.packingGroup, ЗнОп: c.dangerousGoods.hazardSign, КодОгрЧерТун: c.dangerousGoods.tunnelCode }) : '') + tag('ПлМасГруз', { МасНетЗнач: p.plannedMassKind === 'net' ? mass : undefined, МасБрутЗнач: plannedGross })));
   const instructions = tag('УказГО', { УкНормПрвз: p.instructions.regulatory, ЗапрПерегруз: p.instructions.transshipmentForbidden, ДатВрДостГр: moscowTime(snapshot.fields.unloading_planned_at), НалКоорТочВрДост: snapshot.fields.unloading_planned_at ? '1' : null }, tag('СвПА', { ЛицоПА: p.instructions.redirectionParty, СпосПерУкПА: p.instructions.redirectionMethod }, tag('КонтПА', {}, tag('Тлф', {}, escape(p.instructions.redirectionPhone)))));
   const driver = tag('СвВодит', { ИННФЛ: snapshot.driver.inn, СерВУ: snapshot.driver.licenseSeries, НомВУ: snapshot.driver.licenseNumber, ДатаВыдВУ: snapshot.driver.licenseIssuedAt ? ruDay(snapshot.driver.licenseIssuedAt) : null }, tag('Тлф', {}, escape(snapshot.driver.phone)) + nameXml(p.driver));
-  const vehicle = tag('СвТС', {}, tag('ТС', { РегНомер: snapshot.vehicle.plate, НомерВИН: snapshot.vehicle.vin, НомСТС: snapshot.vehicle.stsNumber, ТипВлад: v.ownershipType }, tag('ПарТС', { Тип: v.type, Марка: v.brand, Грузопод: v.payloadTonnes, Вместим: v.capacityCubicMetres }) + (v.ownershipDocument ? documentBasis(v.ownershipDocument) : '')));
-  const loading = tag('СвПогруз', { ЗаявПогр: moscowTime(snapshot.fields.loading_planned_at), НалКоорТочВрЗаяв: '1', ФДатВрПриб: moscowTime(p.loading.arrivedAt), НалКоорТочВрФПогр: '1', ФДатВрУбыт: moscowTime(p.loading.departedAt), НалКоорТочВрФУбыт: '1', МасБрутОтгр: actualMass, МетОпрМасс: actualMassMethod, КолМестПрием: c.packageCount }, tag('ФАдресПогр', {}, location(snapshot, 'loading')) + loadingRole('СвЛицПогрГр', p.loadingActor, snapshot.customerOrganization.inn) + loadingRole('ВладИнфр', p.infrastructureOwner, snapshot.customerOrganization.inn));
-  const content = tag('СодИнфГО', { УИД_ТрН: attemptId, СодОпер: 'Составление транспортной накладной грузоотправителем', НомерТрН: number, ДатаТрН: ruDay(snapshot.fields.date!), НомЗак: p.order.number, ДатаЗак: ruDay(p.order.date) }, tag('СвГО', { ГОЭксп: p.consignorIsForwarder }, tag('РекИдентГО', {}, organization(snapshot.customerOrganization))) +
+  const vehicle = tag('СвТС', {}, tag('ТС', { РегНомер: snapshot.vehicle.plate, НомерВИН: snapshot.vehicle.vin, НомСТС: snapshot.vehicle.stsNumber, ТипВлад: v.ownershipType }, tag('ПарТС', { Тип: v.type, Марка: v.brand, Грузопод: v.payloadTonnes, Вместим: snapshot.volumeRoundingVersion === SABY_VOLUME_ROUNDING_VERSION ? formatSabyVolume(v.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion) : v.capacityCubicMetres }) + (v.ownershipDocument ? documentBasis(v.ownershipDocument) : '')));
+  const loading = tag('СвПогруз', { ЗаявПогр: moscowTime(snapshot.fields.loading_planned_at), НалКоорТочВрЗаяв: '1', ФДатВрПриб: moscowTime(p.loading.arrivedAt), НалКоорТочВрФПогр: '1', ФДатВрУбыт: moscowTime(p.loading.departedAt), НалКоорТочВрФУбыт: '1', МасБрутОтгр: actualMass, МетОпрМасс: actualMassMethod, КолМестПрием: c.packageCount }, tag('ФАдресПогр', {}, location(snapshot, 'loading')) + loadingRole('СвЛицПогрГр', p.loadingActor, snapshot.customerOrganization.inn, snapshot.loadingDetailsVersion === 1) + loadingRole('ВладИнфр', p.infrastructureOwner, snapshot.customerOrganization.inn));
+  const content = tag('СодИнфГО', { УИД_ТрН: options.senderTitleVersion === 2 ? undefined : attemptId, СодОпер: options.senderTitleVersion === 2 ? CONSIGNMENT_SENDER_OPERATION : 'Составление транспортной накладной грузоотправителем', НомерТрН: options.draftWithoutNumber ? undefined : number, ДатаТрН: ruDay(snapshot.fields.date!), НомЗак: p.order.number, ДатаЗак: ruDay(p.order.date) }, tag('СвГО', { ГОЭксп: p.consignorIsForwarder }, tag('РекИдентГО', {}, organization(snapshot.customerOrganization))) +
     (p.consignorIsForwarder === '1' ? tag('СвЗак', {}, tag('РекИдентЗак', {}, organization(p.transportCustomer!)) + documentBasis(p.transportCustomerContract!, 'ДогУслПер')) : '') +
-    tag('СвГП', {}, tag('РекИдентГП', {}, organization(p.recipient)) + tag('АдресДостГр', {}, location(snapshot, 'unloading'))) + cargo + instructions + tag('СвПер', {}, organization(snapshot.carrierOrganization)) + driver + vehicle + loading + tag('ИнфПол', {}, tag('ТекстИнф', { Идентиф: 'Рейс CRM', Значение: snapshot.tripId }) + tag('ТекстИнф', { Идентиф: 'Доставка CRM', Значение: snapshot.shipmentId })));
+    tag('СвГП', {}, tag('РекИдентГП', {}, organization(p.recipient)) + tag('АдресДостГр', {}, location(snapshot, 'unloading'))) + cargo + instructions + tag('СвПер', {}, organization(snapshot.carrierOrganization, snapshot.carrierResponsibleVersion === 1 ? p.carrierResponsible : undefined)) + driver + vehicle + loading + tag('ИнфПол', {}, tag('ТекстИнф', { Идентиф: 'Рейс CRM', Значение: snapshot.tripId }) + tag('ТекстИнф', { Идентиф: 'Доставка CRM', Значение: snapshot.shipmentId })));
   const poa = p.signer.powerOfAttorney;
   const signer = tag('Подписант', { СтатПодп: p.signer.status, Должн: p.signer.position }, nameXml(p.signer) + (poa ? tag('СвДовер', { ДатаДовер: ruDay(poa.date), НомерДовер: poa.number, ИдентДовер: poa.id }) : ''));
-  const xml = '<?xml version="1.0" encoding="windows-1251"?>' + tag('Файл', { ИдФайл: fileId, ВерсПрог: 'Artel-CRM', ВерсФорм: '5.01' }, tag('Документ', { КНД: '1110339', ПоФактХЖ: 'Транспортная накладная (информация грузоотправителя)', ДатИнфГО: ruDay(createdDate), ВрИнфГО: createdTime }, content + signer));
-  return { xml: encodeWindows1251(xml), name: `${fileId}.xml`, number, uid: attemptId };
+  const xml = '<?xml version="1.0" encoding="windows-1251"?>' + tag('Файл', { ИдФайл: fileId, ВерсПрог: 'Artel-CRM', ВерсФорм: '5.01' }, tag('Документ', { КНД: '1110339', ПоФактХЖ: options.senderTitleVersion === 2 ? 'Транспортная накладная, информация грузоотправителя' : 'Транспортная накладная (информация грузоотправителя)', ДатИнфГО: ruDay(createdDate), ВрИнфГО: createdTime }, content + signer));
+  return { xml: encodeWindows1251(xml), name: `${fileId}.xml`, number, uid: options.senderTitleVersion === 2 ? '' : attemptId };
 }
-export function buildSabyConsignmentDocument(snapshot: SabyConsignmentSnapshot, marker: string, attemptId: string, createdAt: string, documentNumber?: string): SabyObject {
-  const { xml, number } = serializeSabyConsignmentNote(snapshot, attemptId, createdAt, documentNumber);
+export function buildSabyConsignmentDocument(snapshot: SabyConsignmentSnapshot, marker: string, attemptId: string, createdAt: string, documentNumber?: string, options: SabyConsignmentTitleOptions = {}): SabyObject {
+  const { xml, number, name } = serializeSabyConsignmentNote(snapshot, attemptId, createdAt, documentNumber, options);
   const requisites = (value: SabyOrganization | EtrnParty) => ({ ...(value.edoId ? { Идентификатор: value.edoId } : {}),
     ...(/^\d{12}$/.test(value.inn) && 'person' in value && value.person
       ? { СвФЛ: { ИНН: value.inn, Фамилия: value.person.surname, Имя: value.person.name, Отчество: value.person.patronymic, ЧастноеЛицо: 'Нет' } }
       : { СвЮЛ: { ИНН: value.inn, КПП: value.kpp, Название: value.name } }) });
-  return { Тип: 'ConsignmentNote', Регламент: { Название: 'Транспортная накладная' }, Номер: number, Дата: ruDay(snapshot.fields.date!), Примечание: marker,
+  return { Тип: 'ConsignmentNote', Регламент: { Название: 'Транспортная накладная' }, ...(options.draftWithoutNumber ? {} : { Номер: number }), Дата: ruDay(snapshot.fields.date!), Примечание: marker,
     НашаОрганизация: requisites(snapshot.customerOrganization), Грузоотправитель: requisites(snapshot.customerOrganization), Грузополучатель: requisites(snapshot.profile.recipient), ТранспортнаяКомпания: requisites(snapshot.carrierOrganization),
-    Вложение: [{ Файл: { ДвоичныеДанные: xml.toString('base64') } }],
+    Вложение: [{ Файл: { ...(options.senderTitleVersion === 2 ? { Имя: name } : {}), ДвоичныеДанные: xml.toString('base64') } }],
   };
 }

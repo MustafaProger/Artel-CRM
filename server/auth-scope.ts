@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import { hasSection, type AccountUser } from '../web/src/auth-model';
+import { hasSection, hasDirectoryGrant, type AccountUser } from '../web/src/auth-model';
 import type { Company, Shipment, Snapshot } from '../web/src/model';
 import { canManage } from './auth';
 import { ApiError } from './api-error';
@@ -7,7 +7,7 @@ import { shipmentOwnership } from './shipment-ownership';
 import { SHIPMENT_DECIMAL_PRECISION } from '../web/src/shipment-calculations';
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 
-export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
+export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Pick<Snapshot, 'directories'>) {
   if (actor.role === 'driver') return false;
   if (canManage(actor)) return true;
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId) || shipmentOwnership(snapshot, row).employeeId !== actor.managerId) return false;
@@ -29,17 +29,17 @@ export function ownCustomerIds(snapshot: Snapshot, actor: AccountUser): Set<stri
 export function requireOwnedShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
   if (!ownsShipment(actor, row, snapshot)) throw new ApiError(404, 'Отгрузка не найдена.');
 }
-export function requireWholeTrip(actor: AccountUser, snapshot: Snapshot, id: string) {
+export function requireWholeTrip(actor: AccountUser, snapshot: Pick<Snapshot, 'shipments' | 'directories'>, id: string) {
   const rows = snapshot.shipments.filter(row => row.fields.trip_id === id);
   if (!rows.length || !rows.some(row => ownsShipment(actor, row, snapshot))) throw new ApiError(404, 'Отгрузка машины не найдена.');
   if (rows.some(row => !ownsShipment(actor, row, snapshot))) throw new ApiError(403, 'Общий рейс доступен для изменения только администратору. Ваши строки доступны в списке отгрузок.');
 }
 const companyLookup = (company: Company): Company => ({ id: company.id, name: company.name, roles: company.roles, directoryArchived: company.directoryArchived, shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] });
-export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work', workCompanyIds: string[] = []): Snapshot {
+export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work' | 'directories', workCompanyIds: string[] = []): Snapshot {
   if (actor.role === 'driver') throw new ApiError(403, 'Водителю доступен только кабинет рейсов.');
-  if (canManage(actor) && !context) return snapshot;
+  if (canManage(actor) && context !== 'work') return snapshot;
   const shipmentAccess = !context && (hasSection(actor, 'shipments') || hasSection(actor, 'trips'));
-  const directoryAccess = !context && hasSection(actor, 'directories');
+  const directoryAccess = context !== 'work' && hasSection(actor, 'directories');
   const shipments = shipmentAccess ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).map(row => {
     const mixed = row.fields.trip_id && snapshot.shipments.some(other => other.fields.trip_id === row.fields.trip_id && !ownsShipment(actor, other, snapshot));
     return mixed ? { ...row, tripReadOnly: true, fields: { ...row.fields, trip_total_tonnes: null, trip_additional_costs: null } } : row;
@@ -47,12 +47,14 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   const ids = new Set(shipments.map(row => row.id));
   const customerIds = ownCustomerIds(snapshot, actor);
   const requestCustomerIds = new Set(shipments.filter(row => row.fields.source_request_id).map(row => row.customerId));
+  const directoryCompanyIds = new Set((snapshot.directories?.oilDepots ?? []).filter(() => directoryAccess && hasDirectoryGrant(actor, 'oilDepots')).flatMap(row => [row.ownerCompanyId, row.loadingActorCompanyId, row.infrastructureOwnerCompanyId]));
+  const sharedCompany = (company: Company) => directoryAccess && (company.roles.includes('supplier') && hasDirectoryGrant(actor, 'suppliers') || company.roles.includes('other') && hasDirectoryGrant(actor, 'oilDepots') || company.roles.includes('carrier') && (hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))); 
   // Shared company lookup is operational input, never a back door to directory details or records.
   const companies = (directoryAccess || shipmentAccess || hasSection(actor, 'work') ? snapshot.companies : [])
-    .filter(company => canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || company.roles.some(role => role === 'supplier' || role === 'carrier'))
+    .filter(company => sharedCompany(company) || directoryCompanyIds.has(company.id) || canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || context !== 'directories' && company.roles.some(role => role === 'supplier' || role === 'carrier'))
     .map(company => ({
-    ...(directoryAccess && (canManage(actor) || customerIds.has(company.id)) ? company : companyLookup(company)),
-    roles: canManage(actor) || customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'supplier' || role === 'carrier' || role === 'customer' && requestCustomerIds.has(company.id)),
+    ...(directoryAccess && (customerIds.has(company.id) || sharedCompany(company)) ? company : companyLookup(company)),
+    roles: company.roles.filter(role => role === 'customer' ? customerIds.has(company.id) || requestCustomerIds.has(company.id) : role === 'supplier' ? context !== 'directories' || hasDirectoryGrant(actor, 'suppliers') : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots') : role === 'carrier' && (context !== 'directories' || hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))),
     shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: [], managerLabels: [], flags: [],
   }));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };
@@ -61,15 +63,17 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   const catalog = snapshot.directories;
   const directories = catalog && (directoryAccess || shipmentAccess) ? {
     ...catalog,
-    ...(directoryAccess ? {} : {
-      vehicles: catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres }) => ({ id, plate, name, capacityLitres, compartmentsLitres })),
-      drivers: catalog.drivers.map(({ id, name, vehicleId }) => ({ id, name, vehicleId })),
-      deletedEntries: undefined,
-    }),
-    managers: canManage(actor) ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
-    deletedEntries: canManage(actor) ? catalog.deletedEntries : undefined,
-    customerManagers: canManage(actor) ? catalog.customerManagers : catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
-    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || canManage(actor) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
+    vehicles: directoryAccess && hasDirectoryGrant(actor, 'vehicles') ? catalog.vehicles : shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres }) => ({ id, plate, name, capacityLitres, compartmentsLitres })) : [],
+    drivers: directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.drivers : shipmentAccess ? catalog.drivers.map(({ id, name, vehicleId }) => ({ id, name, vehicleId })) : [],
+    products: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'products') ? catalog.products : [],
+    paymentForms: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'paymentForms') ? catalog.paymentForms : [],
+    oilDepots: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'oilDepots') ? catalog.oilDepots : [],
+    operatorServices: directoryAccess && hasDirectoryGrant(actor, 'operatorServices') ? catalog.operatorServices : [],
+    operatorGroups: directoryAccess && hasDirectoryGrant(actor, 'operatorServices') ? catalog.operatorGroups : [],
+    managers: directoryAccess && hasDirectoryGrant(actor, 'managers') ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
+    deletedEntries: undefined,
+    customerManagers: catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
+    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (customerIds.has(address.companyId) || snapshot.companies.some(company => company.id === address.companyId && sharedCompany(company)) || shipmentAccess) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
     assignedCustomerIds: [...customerIds],
     currentEmployeeId: actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
     duplicates: [],

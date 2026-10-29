@@ -8,9 +8,12 @@ import type { SberRequest } from './sber-client';
 /** One page per connected bank; failures and retry delays never block the other bank. */
 export async function dispatchBanks(store: OperationsStorage, source: string, env: Record<string, string | undefined> = process.env, bankRequest?: BankRequest, sberRequest?: SberRequest, now = Date.now()) {
   if (env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false, failed: false, connections: [] };
+  // One fresh planning view for this tick. Claims, tokens and publication still
+  // use their own fresh transactions before any provider action.
+  const initial = store.read(source);
   const results = await Promise.allSettled([
-    new BankingService(store, source, env, bankRequest).dispatch(now),
-    ...Object.values(sberConnections).map(connection => new SberService(store, source, env, sberRequest, connection).dispatch(now)),
+    new BankingService(store, source, env, bankRequest).dispatch(now, initial),
+    ...Object.values(sberConnections).map(connection => new SberService(store, source, env, sberRequest, connection).dispatch(now, initial)),
   ]);
   const connections = results.map((result, index) => ({
     id: ['tbank-nk-artel', ...Object.keys(sberConnections)][index],

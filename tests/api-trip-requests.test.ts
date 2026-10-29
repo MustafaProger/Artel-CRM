@@ -688,3 +688,32 @@ test('trip inherits request price and permits independent litre/price overrides 
     assert.equal((await f.request('/api/shipment-trips', 'POST', body, f.one.cookie)).status, 201);
   } finally { await f.close(); }
 });
+
+test('execution dates persist, sort earliest first, validate and protect retries and versions', async () => {
+  const f = await fixture();
+  try {
+    const legacy = await f.create();
+    const body = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', executionDate: '2026-10-29', idempotencyKey: randomUUID() };
+    const created = await f.request('/api/trip-requests', 'POST', body, f.one.cookie);
+    assert.equal(created.status, 201); const dated = created.body.request;
+    assert.equal(dated.executionDate, body.executionDate);
+    const repeated = await f.request('/api/trip-requests', 'POST', body, f.one.cookie);
+    assert.equal(repeated.body.request.id, dated.id);
+    assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: '2026-10-30' }, f.one.cookie)).status, 409);
+    for (const date of ['2026-02-30', '2026-13-01', '2026-1-01', '0000-01-01', 1, {}, '2026-10-29T12:00:00Z']) {
+      assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: date, idempotencyKey: randomUUID() }, f.one.cookie)).status, 400);
+    }
+    const updated = await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-28' }, f.two.cookie);
+    assert.equal(updated.status, 200); assert.equal(updated.body.request.executionDate, '2026-10-28');
+    assert.equal((await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-27' }, f.one.cookie)).status, 409);
+    const undated = await f.create(2);
+    assert.deepEqual((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.map((r: TripRequest) => r.id), [legacy.id, dated.id, undated.id]);
+    const preserved = await f.request(`/api/trip-requests/${dated.id}`, 'PATCH', { version: dated.version, quantityLitres: '2000' }, f.one.cookie);
+    assert.equal(preserved.body.request.executionDate, body.executionDate);
+    const cleared = await f.request(`/api/trip-requests/${dated.id}`, 'PATCH', { version: preserved.body.request.version, quantityLitres: '2000', executionDate: null }, f.one.cookie);
+    assert.equal(cleared.body.request.executionDate, null);
+    const disk = await f.store.read(f.source);
+    assert.equal(disk.tripRequests?.[legacy.id].executionDate, '2026-10-28');
+    assert.equal(disk.tripRequests?.[dated.id].executionDate, null);
+  } finally { await f.close(); }
+});

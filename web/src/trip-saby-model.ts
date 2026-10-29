@@ -60,9 +60,12 @@ export interface TripSabySigningStartRequest {
   confirmed: true;
 }
 export interface TripSabyAutomationCapability { enabled: boolean; message?: string }
-export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean }
+export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean; mode?: 'after_driver_departure' }
 export interface TripSabyResponse {
   notRequired?: boolean;
+  documentMode?: 'nk_direct_etrn';
+  parties?: { sender: string; carrier: string };
+  previousExchanges?: { at: string; documents: { number: string | null; url: string | null; status: string | null }[] }[];
   status: 'not_sent' | 'sent' | 'error';
   phase: 'preparation' | 'submitting' | 'awaiting_driver' | 'unknown' | 'awaiting_carrier' | 'awaiting_loading' | 'creating_etrn' | 'sending_etrn' | 'completed' | 'error';
   ready: boolean;
@@ -71,7 +74,7 @@ export interface TripSabyResponse {
   updatedAt: string | null;
   lastError: string | null;
   order: TripSabyOrderSummary | null;
-  deliveries: { shipmentId: string; id: string | null; status: 'not_sent' | 'pending' | 'unknown' | 'draft' | 'error'; lastError: string | null }[];
+  deliveries: { shipmentId: string; id: string | null; status: 'not_sent' | 'pending' | 'unknown' | 'draft' | 'error'; lastError: string | null; dispatch?: { sender: TripSabySigningStep; carrier: TripSabySigningStep; completedAt: string | null; recipientAcceptedAt?: string | null } }[];
   carrierConfirmed: boolean;
   lastCheckedAt: string | null;
   lastCheckAttemptAt: string | null;

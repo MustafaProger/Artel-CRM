@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { ApiError } from '../server/api-error';
+import type { OperationsData, OperationsStorage } from '../server/operations-store';
 import { createTripSabyScheduler, dispatchTripSaby, SABY_COMPLETED_REFRESH_MS, SABY_WORKFLOW_TICK_MS } from '../server/trip-saby-scheduler';
 import { getTripSabyWorkflow, runTripSabyWorkflow } from '../server/trip-saby-workflow';
 import { exchangePreparedEtrn, saveTripLoadingFacts } from '../server/etrn-service';
@@ -214,5 +216,95 @@ test('monitoring status reflects runtime switch and revoked rights; terminal fai
     const calls = f.api.calls.length; await f.tick(); assert.equal(f.api.calls.length, calls);
     await f.store.mutate(f.source, data => { data.tripSaby!.trips[f.tripId].phase = 'awaiting_carrier'; data.accounts!.users[1].active = false; return { result: null, changed: true }; });
     assert.equal((await response(true)).monitoring.enabled, false); await f.tick(); assert.equal(f.api.calls.length, calls);
+  } finally { await f.close(); }
+});
+
+async function completedFixture() {
+  const f = await fixture();
+  await f.start(); f.api.accept(); await f.tick();
+  await saveTripLoadingFacts(f.context, f.facts(), 'initiator'); await f.tick();
+  return f;
+}
+
+async function selectedPass(f: Awaited<ReturnType<typeof fixture>>, data: OperationsData, now: number, carrierWaitingOnly = false) {
+  let reads = 0, mutations = 0, requests = 0;
+  const store: OperationsStorage = {
+    read: async () => { reads++; return structuredClone(data); },
+    mutate: async () => { mutations++; throw new ApiError(409, 'Synthetic claim boundary'); },
+  };
+  const scheduler = createTripSabyScheduler({ ...f, store, config: integrationConfig(), enabled: true, now,
+    send: async () => { requests++; throw new Error('No provider request allowed in selection test'); } });
+  try { await scheduler.tick(carrierWaitingOnly); await scheduler.drain(); }
+  finally { await scheduler.stop(); }
+  assert.equal(requests, 0);
+  return { selected: reads > 1, reads, mutations };
+}
+
+test('completed ordinary workflow stays idle until the exact oldest delivery deadline', async () => {
+  const f = await completedFixture();
+  try {
+    const data = await f.store.read(f.source), record = data.tripSaby!.trips[f.tripId];
+    const updated = Date.now();
+    for (const [index, row] of record.deliveries.entries()) data.etrn!.trips[f.tripId].deliveries[row.shipmentId].document!.updatedAt = new Date(updated + index * 5_000).toISOString();
+    for (const delta of [-1, 0, 1]) {
+      const pass = await selectedPass(f, data, updated + SABY_COMPLETED_REFRESH_MS + delta);
+      assert.equal(pass.selected, delta >= 0, `deadline delta ${delta}`);
+      if (delta < 0) assert.equal(pass.reads, 1);
+    }
+    const idleStore: OperationsStorage = { read: async () => structuredClone(data), mutate: async () => { throw new Error('idle dispatch must not mutate'); } };
+    const idle = await dispatchTripSaby({ ...f, store: idleStore, config: integrationConfig(), enabled: true, now: updated });
+    assert.deepEqual(idle, { continued: 0, refreshed: 0, denied: 0, failed: 0 });
+    const absent = structuredClone(data);
+    for (const row of record.deliveries) delete absent.etrn!.trips[f.tripId].deliveries[row.shipmentId].document;
+    assert.equal((await selectedPass(f, absent, updated + 120_000)).reads, 1, 'no remote delivery IDs means no scheduled refresh');
+  } finally { await f.close(); }
+});
+
+test('selection preserves submission leases, queued autostart and unfinished driver completion', async () => {
+  const f = await completedFixture();
+  try {
+    const original = await f.store.read(f.source), now = Date.now();
+    for (const delta of [-1, 0, 1]) {
+      const data = structuredClone(original), record = data.tripSaby!.trips[f.tripId];
+      record.phase = 'submitting'; record.leaseId = 'synthetic-lease'; record.leaseUntil = new Date(now + delta).toISOString();
+      assert.equal((await selectedPass(f, data, now)).selected, delta <= 0, `lease expiry delta ${delta}`);
+    }
+    const queued = structuredClone(original), queue = queued.tripSaby!.trips[f.tripId];
+    queue.phase = 'submitting'; queue.leaseId = null; queue.leaseUntil = null; queue.reservationAttempted = false; queue.uploadAttempted = false; queue.order.id = null;
+    queue.autoAuthorization = { requestId: 'synthetic-auto', requestedBy: 'initiator', requestedAt: new Date(now).toISOString(), policyId: 'synthetic', policyHash: 'a'.repeat(64), mode: 'deferred', selection: { sender: 'a'.repeat(40), carrier: 'b'.repeat(40) } };
+    assert.equal((await selectedPass(f, queued, now)).selected, true);
+    const driver = structuredClone(original), record = driver.tripSaby!.trips[f.tripId];
+    record.driverFlow = { state: 'ready', processingAllowanceHours: 10 }; delete record.stage6CompletedAt;
+    for (const row of record.deliveries) driver.etrn!.trips[f.tripId].deliveries[row.shipmentId].document!.updatedAt = new Date(now).toISOString();
+    assert.equal((await selectedPass(f, driver, now)).selected, true, 'completed exchange may still have a queued departure');
+    record.stage6CompletedAt = new Date(now).toISOString();
+    assert.equal((await selectedPass(f, driver, now)).reads, 1);
+  } finally { await f.close(); }
+});
+
+test('fast carrier selection preserves 15 second and 10 minute boundaries', async () => {
+  const f = await fixture();
+  try {
+    await f.start(); const data = await f.store.read(f.source), record = data.tripSaby!.trips[f.tripId], start = Date.now();
+    record.phase = 'awaiting_carrier'; record.order.remoteStateCode = '4'; record.lastCheckAttemptAt = new Date(start).toISOString();
+    record.carrierFill = { requestedAt: new Date(start).toISOString(), state: 'waiting', blockers: [], driverSaved: false, vehicleSaved: false, checkedAt: null };
+    for (const elapsed of [14_999, 15_000, 599_999, 600_000]) {
+      assert.equal((await selectedPass(f, data, start + elapsed, true)).selected, elapsed >= 15_000 && elapsed < 600_000, `elapsed ${elapsed}`);
+    }
+    assert.equal((await selectedPass(f, data, start + 600_000)).selected, true, 'ordinary polling continues after fast polling expires');
+  } finally { await f.close(); }
+});
+
+test('fresh dispatch rechecks data after scan before any provider request', async () => {
+  const f = await fixture();
+  try {
+    await f.start(); const data = await f.store.read(f.source); let reads = 0, sends = 0;
+    const store: OperationsStorage = {
+      read: async () => { reads++; const copy = structuredClone(data); if (reads >= 2) copy.accounts!.users[1].active = false; return copy; },
+      mutate: async () => { throw new Error('Revoked actor must not mutate'); },
+    };
+    const scheduler = createTripSabyScheduler({ ...f, store, config: integrationConfig(), enabled: true, send: async () => { sends++; throw new Error('Revoked actor must not send'); } });
+    try { await scheduler.tick(); await scheduler.drain(); assert.ok(reads >= 3); assert.equal(sends, 0); }
+    finally { await scheduler.stop(); }
   } finally { await f.close(); }
 });

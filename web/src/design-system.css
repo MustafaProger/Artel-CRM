@@ -56,12 +56,12 @@ div.scrollable-segments[class] > button {
 /* Solid surfaces, a single radius and restrained depth across sections. */
 :is(.overview-card, .trip-card, .directory-list, .account-panel, .bank-ledger,
   .team-stats, .team-role-list, .team-role-detail, .team-source-panel,
-  .china-page, .archive-ledger, .bank-card, .work-toolbar, .work-lane,
+  .china-page, .archive-ledger, .bank-card, .invoice-tab-panel, .work-lane,
   .work-calendar, .work-column, .work-note).panel,
 :is(.overview-card, .trip-card, .directory-list, .account-panel, .bank-ledger,
   .team-stats, .team-role-list, .team-role-detail, .team-source-panel,
   .china-page, .archive-ledger, .bank-card),
-.work-page :is(.panel, .work-toolbar, .work-lane, .work-calendar, .work-column, .work-note) {
+.work-page :is(.panel, .work-lane, .work-calendar, .work-column, .work-note) {
   border-radius: var(--ui-card-radius);
   border-color: var(--border);
   box-shadow: var(--ui-card-shadow);
@@ -76,7 +76,7 @@ div.scrollable-segments[class] > button {
   line-height: 1.2;
   letter-spacing: -.025em;
 }
-:is(.overview-card-heading, .work-section-heading, .account-section-heading) :is(h2, h3) {
+:is(.overview-card-heading, .work-section-heading, .account-section-heading, .invoice-tab-panel) :is(h2, h3) {
   font-size: 17px;
   font-weight: 600;
   line-height: 1.35;
@@ -109,7 +109,7 @@ div.scrollable-segments[class] > button {
   box-shadow: none;
 }
 :is(.directory-toolbar, .trips-toolbar, .overview-search, .team-search, .bank-search, .table-search) input:not(:where(.shipment-grid *, table *)) { font-size: var(--ui-field-font); }
-/* The wrapper's existing border indicates focus, including keyboard focus. */
+/* The wrapper owns the focus ring, including keyboard focus. */
 .app-shell :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search):not(:where(table *)) > input:focus-visible { outline: 0; box-shadow: none; }
 
 /* Multiline text keeps usable corners; single-line fields share the search capsule.
@@ -195,7 +195,7 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
 }
 
 /* Paired actions share both dimensions; labels never change the hit area. */
-:is(.bank-heading-actions, .work-toolbar-actions) {
+.bank-heading-actions {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
@@ -203,24 +203,14 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   gap: 8px;
   max-width: 100%;
 }
-.work-toolbar-actions { margin-left: auto; }
-.work-toolbar-actions .work-refresh { margin-left: 0; }
-.work-toolbar-actions .work-refresh span { display: inline; }
-:is(.bank-heading-actions, .work-toolbar-actions) .button { width: 100%; white-space: nowrap; }
+.bank-heading-actions .button { width: 100%; white-space: nowrap; }
 :is(.app-shell, .driver-shell, .auth-shell) .button > svg:not(:where(.shipment-grid *)) { width: 18px; height: 18px; flex-shrink: 0; }
 @media (max-width: 540px) {
-  :is(.bank-heading-actions, .work-toolbar-actions) { width: 100%; }
-  :is(.app-shell, .driver-shell) :is(.bank-heading-actions, .work-toolbar-actions) .button.button { padding-inline: 10px; }
-}
-@media (max-width: 650px) {
-  .work-page .work-toolbar { grid-template-columns: minmax(0, 1fr); }
-  .work-page .work-toolbar-actions { grid-column: 1 / -1; width: 100%; min-width: 0; }
-  .work-page .work-toolbar-actions .button { min-width: 0; white-space: normal; }
-  .work-page .work-toolbar .work-refresh { width: 100%; padding: 10px; }
+  .bank-heading-actions { width: 100%; }
+  :is(.app-shell, .driver-shell) .bank-heading-actions .button.button { padding-inline: 10px; }
 }
 @media (max-width: 380px) {
   .bank-heading-actions { grid-auto-flow: row; grid-template-columns: 1fr; }
-  .app-shell .work-toolbar-actions .button.button { padding-inline: 8px; font-size: 13px; gap: 6px; white-space: nowrap; }
 }
 
 /* A single capsule shape for every search surface, including editors and driver UI.
@@ -309,25 +299,6 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   }
   .app-shell .mobile-icon-action > .mobile-action-label { display: none; }
   .app-shell .mobile-icon-action > svg { width: 20px; height: 20px; }
-  .work-page .work-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 12px 8px;
-  }
-  .work-page .work-views.scrollable-segments { grid-column: 1 / -1; }
-  .work-page .work-toolbar > :is(.filter-select, .work-filter-caption) {
-    grid-column: 1;
-    min-width: 0;
-    max-width: none;
-    width: 100%;
-  }
-  .work-page .work-toolbar-actions {
-    grid-column: 2;
-    width: auto;
-    min-width: 0;
-    margin: 0;
-    grid-auto-columns: var(--ui-control-size);
-  }
   .work-page .work-side { grid-template-columns: minmax(0, 1fr); }
   .work-page .work-reminders { order: 1; }
 }
@@ -347,39 +318,43 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   max-width: none;
   margin: 0;
 }
-.work-page .work-view-toolbar { display: flex; min-width: 0; }
-.work-page .work-view-toolbar .work-views { min-width: 0; max-width: 100%; }
-.work-page .work-action-toolbar {
-  display: flex;
-  flex-wrap: nowrap;
+/* Page actions sit alongside their sections; only the actual work filter wraps. */
+.work-page .work-view-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(120px, 1fr) auto;
   align-items: center;
-  gap: 24px;
+  gap: 12px;
+  min-width: 0;
 }
+.work-page .work-view-toolbar .work-views { grid-column: 1; grid-row: 1; min-width: 0; max-width: 100%; }
 .work-page .work-assignee {
   display: flex;
-  flex: 1 1 200px;
-  flex-direction: column;
-  gap: 6px;
   min-width: 0;
+  width: 100%;
   max-width: 280px;
 }
 .work-page .work-assignee > :is(.filter-select, .work-filter-caption) {
-  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
   height: var(--ui-control-size);
   min-width: 0;
   max-width: none;
   width: 100%;
 }
-.work-page .work-action-toolbar .work-toolbar-actions {
+.work-page .work-assignee > .filter-select { overflow: hidden; text-overflow: ellipsis; }
+.work-page .work-toolbar-actions, .invoice-workspace .invoice-toolbar {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   width: auto;
+  min-width: 0;
   flex: 0 0 auto;
   margin: 0 0 0 auto;
 }
-.work-page .work-toolbar-actions .button { width: auto; white-space: nowrap; }
-.work-page .work-toolbar-actions .button.driver-notification-button {
+.work-page .work-toolbar-actions .button, .invoice-workspace .invoice-toolbar .button { width: auto; white-space: nowrap; }
+.work-page .work-toolbar-actions .work-refresh { margin-left: 0; }
+.work-page .work-toolbar-actions .button.driver-notification-button, .invoice-workspace .invoice-toolbar .button.driver-notification-button {
   position: relative;
   width: auto;
   height: var(--ui-control-size);
@@ -398,11 +373,14 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   font-size: 10px;
   line-height: 16px;
 }
-@media (max-width: 988px) {
-  .work-page .work-action-toolbar { gap: 8px; padding: 12px; }
-  .work-page .work-assignee { flex: 1 1 0; max-width: none; }
-  .work-page .work-action-toolbar .work-toolbar-actions { gap: 8px; }
-  .app-shell .work-page .work-toolbar-actions .button.mobile-icon-action {
+@media (max-width: 1100px) {
+  .work-page .work-view-toolbar { grid-template-columns: minmax(0, 1fr) auto; gap: 12px 8px; }
+  .work-page .work-view-toolbar .work-views { grid-column: 1 / -1; grid-row: 1; }
+  .work-page .work-assignee { grid-column: 1; grid-row: 2; max-width: none; }
+  .work-page .work-toolbar-actions { grid-column: 2; grid-row: 2; }
+  .app-shell .work-page .work-toolbar-actions .button.mobile-icon-action,
+  .app-shell .invoice-workspace .invoice-toolbar .button.mobile-icon-action,
+  .app-shell .operator-workspace .operator-toolbar .button.mobile-icon-action {
     flex: 0 0 var(--ui-control-size);
     width: var(--ui-control-size);
     min-width: var(--ui-control-size);
@@ -411,8 +389,12 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
     gap: 0;
     border-radius: 50%;
   }
-  .app-shell .work-page .work-toolbar-actions .mobile-action-label { display: none; }
-  .app-shell .work-page .work-toolbar-actions .mobile-icon-action > svg { width: 20px; height: 20px; }
+  .app-shell .work-page .work-toolbar-actions .mobile-action-label,
+  .app-shell .invoice-workspace .invoice-toolbar .mobile-action-label,
+  .app-shell .operator-workspace .operator-toolbar .mobile-action-label { display: none; }
+  .app-shell .work-page .work-toolbar-actions .mobile-icon-action > svg,
+  .app-shell .invoice-workspace .invoice-toolbar .mobile-icon-action > svg,
+  .app-shell .operator-workspace .operator-toolbar .mobile-icon-action > svg { width: 20px; height: 20px; }
 }
 
 /* Focus recolours the existing border only, in both directions. Search and
@@ -443,3 +425,9 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
 :is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog) input:is([type="checkbox"], [type="radio"]):not(:where(.shipment-grid *, table *)):focus {
   outline-color: var(--accent);
 }
+
+/* A shared vertical rhythm around page actions, including wrapped mobile rows. */
+.app-shell { --page-action-gap: 16px; }
+.app-shell main > .page-heading { margin-bottom: var(--page-action-gap); }
+.app-shell :is(.operator-workspace, .operator-topbar, .operator-controls, .work-page, .work-view-toolbar, .trips-page, .invoice-workspace, .invoice-topbar) { row-gap: var(--page-action-gap); }
+.app-shell :is(.search-add-toolbar, .operator-toolbar, .work-toolbar-actions, .invoice-toolbar) { align-items: center; }

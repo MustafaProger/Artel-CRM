@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { cabinetProviders, type CabinetAccount, type CabinetConnection, type CabinetProvider, type CabinetResponse } from '../web/src/cabinet-model';
 import { GloProClient, GloProError } from './glopro-client';
 import { FuelCabinetClient, FuelCabinetError, normalizeCabinetOrganization } from './fuel-cabinet-client';
+import { readYandexBrowserBalance } from './yandex-browser-balance';
 import { ApiError } from './api-error';
 import { requireUser } from './auth';
 import { requireSection } from './permissions';
@@ -129,6 +130,8 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     try { encryptionKey(env); ready = true; } catch { /* Read-only page remains available before setup. */ }
     const data = initial;
     const result: CabinetResponse = { connections: Object.values(data.cabinets?.connections ?? {}).map(publicConnection), credentialStorageReady: ready };
+    const yandex = await readYandexBrowserBalance(env.ARTEL_YANDEX_BALANCE_FILE);
+    if (yandex) result.connections.push(yandex);
     return send(200, result);
   }
   if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');

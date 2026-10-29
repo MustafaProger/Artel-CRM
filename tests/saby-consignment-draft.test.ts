@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { syntheticEtrnFixture } from './helpers/etrn-fixture';
-import { fillConsignmentDraft, hasExactConsignmentOrderLink, verifyConsignmentDraftUpdate, verifyDraftRequestedFields } from '../server/saby-consignment-draft';
+import { allocateNativeConsignmentDraft, fillConsignmentDraft, hasExactConsignmentOrderLink, verifyConsignmentDraftUpdate, verifyDraftRequestedFields } from '../server/saby-consignment-draft';
 import { serializeSabyConsignmentNote } from '../server/saby-consignment-note';
 import { parseXml, type XmlNode } from '../server/saby-order-evidence';
 import { serializeXml } from '../server/saby-carrier-details';
@@ -222,4 +222,79 @@ test('native note identity requires exact reciprocal source links; number-only d
     (n: SabyObject, _o: SabyObject) => { n.Удален = 'Да'; },
     (_n: SabyObject, o: SabyObject) => { o.ЧастичныеДанные = 'Да'; },
   ]) { const pair = linked(); mutate(pair.note, pair.order); assert.equal(hasExactConsignmentOrderLink(pair.note, pair.order), false); }
+});
+
+test('fills omitted native loading coordinates only after proving the exact physical address', () => {
+  const f = fixture();
+  f.snapshot.fields.loading_latitude = '55.123456'; f.snapshot.fields.loading_longitude = '37.123456';
+  const loading = child(content(f.root), 'СвПогруз'), location = child(loading, 'ФАдресПогр');
+  location.children = location.children.filter(x => typeof x === 'string' || x.name !== 'Коорд');
+  const filled = fillConsignmentDraft(bytes(f.root), f.snapshot, f.number);
+  assert.deepEqual(child(child(child(content(parseXml(filled.bytes)), 'СвПогруз'), 'ФАдресПогр'), 'Коорд').attributes, { Широта: '55.123456', Долгота: '37.123456' });
+  verifyDraftRequestedFields(filled.bytes, f.snapshot, f.number);
+  assert.equal(fillConsignmentDraft(filled.bytes, f.snapshot, f.number).changed, false);
+  const conflict = structuredClone(f.root);
+  child(child(content(conflict), 'СвПогруз'), 'ФАдресПогр').children.unshift(node('Коорд', { Широта: '56', Долгота: '37.123456' }));
+  rejects(() => fillConsignmentDraft(bytes(conflict), f.snapshot, f.number));
+  child(location, 'АдресИнф').attributes.АдрТекст = 'Другой адрес';
+  rejects(() => fillConsignmentDraft(bytes(f.root), f.snapshot, f.number));
+});
+
+test('native order allocation proves every cargo and restores only frozen delivery business data', async () => {
+  const { allocateNativeConsignmentDraft } = await import('../server/saby-consignment-draft');
+  const f = fixture(), second = structuredClone(f.snapshot); second.shipmentId += '-second';
+  second.fields.quantity_litres = '1000'; second.profile.loading.grossMassTonnes = '1'; second.profile.deliveryMassTonnes = '1'; second.profile.plannedGrossMassTonnes = '1';
+  const expectedSecond = content(parseXml(serializeSabyConsignmentNote(second, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '2025-04-01T09:20:30.000Z', f.number).xml));
+  child(content(f.root), 'СвГруз').children.push(structuredClone(child(child(expectedSecond, 'СвГруз'), 'ОпГруз')));
+  const result = allocateNativeConsignmentDraft(bytes(f.root), [f.snapshot, second], f.number);
+  assert.equal(children(child(content(parseXml(result.bytes)), 'СвГруз'), 'ОпГруз').length, 1);
+  verifyDraftRequestedFields(result.bytes, f.snapshot, f.number);
+  rejects(() => allocateNativeConsignmentDraft(bytes(f.root), [second, f.snapshot], f.number));
+  rejects(() => allocateNativeConsignmentDraft(bytes(f.root), [f.snapshot], f.number));
+  const broken = structuredClone(f.root);
+  children(child(content(broken), 'СвГруз'), 'ОпГруз')[1].attributes.Объем = '2';
+  rejects(() => allocateNativeConsignmentDraft(bytes(broken), [f.snapshot, second], f.number));
+});
+
+
+test('native volume rounding is restored from the frozen litres before read-back and signing', () => {
+  for (const [litres, rounded, exact] of [['5118', '5.12', '5.118'], ['5112', '5.11', '5.112'], ['5115', '5.12', '5.115'], ['5114.5', '5.11', '5.115']]) {
+    const f = fixture(); f.snapshot.fields.quantity_litres = litres; f.snapshot.volumeRoundingVersion = 'fns-5.01-v1';
+    const cargo = child(child(content(f.root), 'СвГруз'), 'ОпГруз'); cargo.attributes.Объем = rounded;
+    const original = bytes(f.root);
+    rejects(() => verifyDraftRequestedFields(original, f.snapshot, f.number));
+    for (const filled of [fillConsignmentDraft(original, f.snapshot, f.number), allocateNativeConsignmentDraft(original, [f.snapshot], f.number)]) {
+      assert.equal(child(child(content(parseXml(filled.bytes)), 'СвГруз'), 'ОпГруз').attributes.Объем, exact);
+      assert.equal(filled.beforeHash, sha(original));
+      verifyDraftRequestedFields(filled.bytes, f.snapshot, f.number);
+      const reverted = parseXml(filled.bytes); child(child(content(reverted), 'СвГруз'), 'ОпГруз').attributes.Объем = rounded;
+      rejects(() => verifyDraftRequestedFields(bytes(reverted), f.snapshot, f.number));
+      rejects(() => verifyConsignmentDraftUpdate(bytes(reverted), filled.bytes));
+    }
+    const filled = fillConsignmentDraft(original, f.snapshot, f.number), restored = parseXml(filled.bytes);
+    child(child(content(restored), 'СвГруз'), 'ОпГруз').attributes.Объем = rounded;
+    assert.deepEqual(omitRequested(restored), omitRequested(f.root));
+    assert.equal(fillConsignmentDraft(filled.bytes, f.snapshot, f.number).changed, false);
+  }
+});
+
+test('native rounding never accepts arbitrary volume differences or mismatched frozen anchors', () => {
+  for (const volume of ['5.11', '5.119', '5.1201', '5.1', '0', '-5.12']) {
+    const f = fixture(); f.snapshot.fields.quantity_litres = '5118'; f.snapshot.volumeRoundingVersion = 'fns-5.01-v1';
+    child(child(content(f.root), 'СвГруз'), 'ОпГруз').attributes.Объем = volume;
+    rejects(() => fillConsignmentDraft(bytes(f.root), f.snapshot, f.number));
+    rejects(() => allocateNativeConsignmentDraft(bytes(f.root), [f.snapshot], f.number));
+  }
+  const f = fixture(); f.snapshot.fields.quantity_litres = '5118'; f.snapshot.volumeRoundingVersion = 'fns-5.01-v1';
+  const cargo = child(child(content(f.root), 'СвГруз'), 'ОпГруз'); cargo.attributes.Объем = '5.12';
+  child(cargo, 'ПлМасГруз').attributes.МасБрутЗнач = '14691';
+  rejects(() => fillConsignmentDraft(bytes(f.root), f.snapshot, f.number));
+  rejects(() => allocateNativeConsignmentDraft(bytes(f.root), [f.snapshot], f.number));
+});
+
+ test('unversioned historical snapshots never gain rounded native-volume permission', () => {
+  const f = fixture(); f.snapshot.fields.quantity_litres = '5118'; delete f.snapshot.volumeRoundingVersion;
+  child(child(content(f.root), 'СвГруз'), 'ОпГруз').attributes.Объем = '5.12';
+  rejects(() => fillConsignmentDraft(bytes(f.root), f.snapshot, f.number));
+  rejects(() => allocateNativeConsignmentDraft(bytes(f.root), [f.snapshot], f.number));
 });

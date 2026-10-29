@@ -118,7 +118,7 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
       assert.equal(shown?.title, 'Новый рейс · Артэль'); assert.equal(shown?.url, sent[0].url);
       pass('chromium: actual service worker creates the new-trip notification with the CRM tab closed (synthetic PushEvent)');
       const probeSub = subscription();
-      assert.equal((await driver.call('/api/push/subscription', 'POST', { subscription: probeSub })).status, 200);
+      assert.equal((await driver.call('/api/push/subscription', 'POST', { explicit: true, subscription: probeSub })).status, 200);
       const probeResult = await driver.call('/api/push/test', 'POST', { endpoint: probeSub.endpoint }); assert.equal(probeResult.status, 200);
       await worker.evaluate(payload => self.dispatchEvent(new PushEvent('push', { data: JSON.stringify(payload) })), sent.at(-1));
       await expect.poll(async () => (await driver.call(`/api/push/test-status?probeId=${probeResult.body.probeId}`)).body.status).toBe('confirmed');

@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { SabyClient, SabyError, isSabyFailureDiagnostic, sabyConfigFromEnv, type SabyObject } from '../server/saby-client';
-import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, restorePreparedSigning, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningKeyType, type SabySigningSide } from '../server/saby-signing';
+import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readPreparedCarrierDraft, readSigningEvidence, restorePreparedSigning, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningKeyType, type SabySigningSide } from '../server/saby-signing';
 
 const fp = 'a'.repeat(40);
 const config = { sessionId: 'synthetic-sender-session', login: 'synthetic-login', password: 'synthetic-password', accountNumber: 'synthetic-sender', carrierAccountNumber: 'synthetic-carrier',
   customer: { inn: '0000000000', kpp: '000000000', name: 'Synthetic sender', address: 'Synthetic' }, carrier: { inn: '1111111111', kpp: '111111111', name: 'Synthetic carrier', address: 'Synthetic' } };
 const bytes = Buffer.from('<synthetic-final>payload</synthetic-final>');
+// Full provider envelope shape from a native UI draft; every private string,
+// party identifier, certificate, link and filename has been replaced.
+const nativeConsignment = (): SabyObject => JSON.parse(readFileSync(new URL('./fixtures/saby-native-consignment-envelope.json', import.meta.url), 'utf8'));
 const digest = (input: Uint8Array) => createHash('sha256').update(input).digest('hex');
 const certificateRow = (side: SabySigningSide = 'sender'): SabyObject => {
   const org = side === 'sender' ? config.customer : config.carrier;
@@ -65,6 +69,39 @@ test('certificate normalization ties both certificate subject and account organi
   assert.equal(signingCertificateForOrganization(expired, config.customer), null);
   const unqualified = certificateRow(); ((unqualified.Certificate as SabyObject).CertificateInfo as SabyObject).IsQualified = false;
   assert.equal(signingCertificateForOrganization(unqualified, config.customer), null);
+});
+
+test('native ConsignmentNote canonical parties bind both NK sides without a TransportOrder', () => {
+  const directConfig = new SabyClient(config).forNkDirectEtrn().config, certificate = normalizeSigningCertificate(certificateRow('carrier'))!;
+  for (const side of ['sender', 'carrier'] as const) {
+    const remote = nativeConsignment();
+    if (side === 'carrier') {
+      remote.Состояние = { Код: '4' };
+      const stage = (remote.Этап as SabyObject[])[0]; stage.Название = 'Получение груза'; ((stage.Действие as SabyObject[])[0]).Название = 'Принят';
+      remote.ТекущиеЭтапы = [{ Идентификатор: stage.Идентификатор }]; (remote.Вложение as SabyObject[])[0].Подтип = '1110340';
+    }
+    const binding = createSigningBinding(remote, side, certificate, directConfig, 'Отложенный', 'ConsignmentNote');
+    assert.equal(binding.documentType, 'ConsignmentNote'); assert.equal(binding.routePolicy, 'nk-direct-v1'); assert.equal(binding.organizationInn, binding.counterpartyInn);
+    const legacy = structuredClone(remote), parties = legacy.Стороны as SabyObject;
+    legacy.Грузоотправитель = parties.Отправитель; legacy.ТранспортнаяКомпания = parties.Перевозчик; delete legacy.Стороны;
+    assert.deepEqual(createSigningBinding(legacy, side, certificate, directConfig, 'Отложенный', 'ConsignmentNote'), binding);
+    for (const change of [
+      (doc:SabyObject)=>{doc.Стороны=null;},
+      (doc:SabyObject)=>{doc.Стороны=[];},
+      (doc:SabyObject)=>{delete (doc.Стороны as SabyObject).Отправитель;},
+      (doc:SabyObject)=>{delete (doc.Стороны as SabyObject).Перевозчик;},
+      (doc:SabyObject)=>{(doc.Стороны as SabyObject).Отправитель={};},
+      (doc:SabyObject)=>{(doc.Стороны as SabyObject).Перевозчик=null;},
+      (doc:SabyObject)=>{doc.ТранспортнаяКомпания={СвЮЛ:{ИНН:'2222222222',КПП:'222222222'}};},
+      (doc:SabyObject)=>{doc.Грузоотправитель={СвЮЛ:{ИНН:'2222222222',КПП:'222222222'}};},
+    ]) {
+      const changed=structuredClone(remote); changed.Грузоотправитель=structuredClone(legacy.Грузоотправитель); changed.ТранспортнаяКомпания=structuredClone(legacy.ТранспортнаяКомпания); change(changed);
+      assert.throws(()=>createSigningBinding(changed,side,certificate,directConfig,'Отложенный','ConsignmentNote'),SabyError);
+    }
+  }
+  // Unrelated canonical blocks never alter the historical TransportOrder identity contract.
+  const order=advertiseAutomaticSigning(document());order.Стороны={Перевозчик:null};
+  assert.equal(createSigningBinding(order,'sender',normalizeSigningCertificate(certificateRow())!,config,'Отложенный').documentType,undefined);
 });
 
 test('binding uses current stage summary IDs and fails on wrong side, historical stage, ambiguous revision or signed title', () => {
@@ -424,4 +461,50 @@ test('preparation certificate metadata is not a substitute for current deferred-
     assert.equal(fake.requests.filter(r => r.method === 'СБИС.ПодготовитьДействие').length, 1);
     assert.equal(fake.requests.filter(r => r.method === 'СБИС.ВыполнитьДействие').length, revoked ? 0 : 1);
   }
+});
+
+test('direct signed T1 may advance at state 10 only to the exact active carrier stage', async () => {
+  for (const variant of ['valid','unsigned','bytes','certificate','missing-current','two-current','old-stage','duplicate-stage','wrong-name','service','completed','inactive','no-signing','duplicate-action','error'] as const) {
+    const original = nativeConsignment(), directConfig = new SabyClient(config).forNkDirectEtrn().config;
+    const binding = createSigningBinding(original, 'sender', normalizeSigningCertificate(certificateRow('carrier'))!, directConfig, 'Отложенный', 'ConsignmentNote');
+    const file = (original.Вложение as SabyObject[])[0];
+    const attachments = [{ id: String(file.Идентификатор), name: String((file.Файл as SabyObject).Имя), subtype: '1110339', sha256: digest(bytes) }];
+    const manifest = {binding, attachments, preparedHash: signingManifestHash({binding,attachments})};
+    const remote = structuredClone(original); remote.Состояние = {Код:'10'};
+    (remote.Вложение as SabyObject[])[0].Подпись = variant === 'unsigned' ? [] : [{Сертификат:{Отпечаток:variant === 'certificate' ? 'b'.repeat(40) : fp,ИНН:config.carrier.inn},Файл:{Ссылка:'https://disk.saby.ru/synthetic-signature'}}];
+    const stage:SabyObject = {Идентификатор:'carrier-next',Название:'Получение груза',Служебный:'Нет',Действие:[{Название:'Принят',ТребуетПодписания:'Да'}]};
+    remote.Этап=[stage];remote.ТекущиеЭтапы=[{Идентификатор:'carrier-next'}];
+    if (variant === 'missing-current') delete remote.ТекущиеЭтапы;
+    if (variant === 'two-current') (remote.ТекущиеЭтапы as SabyObject[]).push({Идентификатор:binding.stageId});
+    if (variant === 'old-stage') {stage.Идентификатор=binding.stageId;remote.ТекущиеЭтапы=[{Идентификатор:binding.stageId}];}
+    if (variant === 'duplicate-stage') (remote.Этап as SabyObject[]).push(structuredClone(stage));
+    if (variant === 'wrong-name') stage.Название='Другой этап';
+    if (variant === 'service') stage.Служебный='Да';
+    if (variant === 'completed') stage.Завершен='Да';
+    if (variant === 'inactive') stage.Актуален='Нет';
+    if (variant === 'no-signing') (stage.Действие as SabyObject[])[0].ТребуетПодписания='Нет';
+    if (variant === 'duplicate-action') (stage.Действие as SabyObject[]).push(structuredClone((stage.Действие as SabyObject[])[0]));
+    if (variant === 'error') stage.Ошибка={Сообщение:'Synthetic failure'};
+    const fake=api('carrier',{alteredBytes:variant==='bytes',onRequest:req=>req.method==='СБИС.ПрочитатьДокумент'?remote:undefined});
+    const evidence=await readSigningEvidence(fake.client.forNkDirectEtrn(),manifest);
+    assert.equal(evidence.state,variant==='valid'?'confirmed':variant==='unsigned'?'unconfirmed':['bytes','certificate'].includes(variant)?'changed':'pending',variant);
+    assert.ok(fake.requests.every(req=>['СБИС.Аутентифицировать','СБИС.ПрочитатьДокумент','sabyCertificate.List','sabyCertificate.Read'].includes(req.method)));
+  }
+});
+
+for (const failure of ['none','missing','duplicate','direction','revision','stage'] as const) test(`carrier draft read reconciliation rejects ${failure} without writes`,async()=>{
+  const binding=createCarrierDraftBinding(carrierWithoutReply(),normalizeSigningCertificate(certificateRow('carrier'))!,config);
+  const fake=api('carrier',{onRequest:request=>{
+    if(request.method!=='СБИС.ПрочитатьДокумент')return;
+    const current=document('carrier'), title=(current.Вложение as SabyObject[])[0];
+    if(failure==='missing')current.Вложение=[];
+    if(failure==='duplicate')(current.Вложение as SabyObject[]).push({...title,Идентификатор:'different-title'});
+    if(failure==='direction')title.Направление='Входящий';
+    if(failure==='revision')current.Редакция=[{Идентификатор:'different-revision',Актуален:'Да'}];
+    if(failure==='stage')current.ТекущиеЭтапы=[];
+    return current;
+  }});
+  if(failure==='none')assert.ok(await readPreparedCarrierDraft(fake.client,binding));
+  else await assert.rejects(readPreparedCarrierDraft(fake.client,binding),SabyError);
+  assert.ok(fake.requests.every(row=>['СБИС.Аутентифицировать','СБИС.ПрочитатьДокумент'].includes(row.method)));
 });

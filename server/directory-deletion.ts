@@ -59,7 +59,8 @@ export function deleteDirectoryEntry(kind: string, id: string, input: Record<str
     if (data.work?.tasks.some(row => row.companyId === id) || data.work?.companyRecords.some(row => row.companyId === id)) blocked(name, 'в рабочем пространстве сотрудников');
     if (catalog.oilDepots?.some(row => oilDepotRoleKeys.some(key => row[key] === id))) blocked(name, 'в справочнике нефтебаз');
     if (catalog.addresses.some(row => row.companyId === id)) blocked(name, 'в справочнике адресов');
-    if (catalog.customerManagers?.some(row => row.companyId === id)) blocked(name, 'в назначении менеджера компании');
+    // Ownership is metadata of an otherwise unused client, not a business dependency.
+    data.directories!.customerManagers = (data.directories!.customerManagers ?? []).filter(row => row.companyId !== id);
     data.companies = data.companies.filter(row => row.id !== id);
     rememberDeletion(data, key, id);
   } else {

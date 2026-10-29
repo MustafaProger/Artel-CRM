@@ -5,6 +5,7 @@ export function readTripRequestsMapConfig(environment: Record<string, string | u
   { provider: 'yandex'; configured: boolean; rendering: 'tiles'; projection: 'web_mercator' } {
   return { provider: 'yandex', configured: !!environment.YANDEX_TILES_API_KEY?.trim(), rendering: 'tiles', projection: 'web_mercator' };
 }
+
 function invalidSavedPair(value: TripRequestAddress) {
   return [value.latitude, value.longitude].some(item => item !== null && item !== undefined && String(item).trim() !== '') && tripRequestExplicitCoordinates({ latitude: value.latitude, longitude: value.longitude })?.status !== 'found';
 }
@@ -50,3 +51,4 @@ import { tripRequestExplicitCoordinates, tripRequestMapCoordinates, type TripReq
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 import { canAccessTripRequest, requireTripRequest } from './trip-requests';
+

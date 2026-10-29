@@ -55,6 +55,28 @@ export function driverConfirmedAt(result: TripSabyResponse) {
   return value && Number.isFinite(Date.parse(value)) ? value : null
 }
 
+/** Each direct delivery needs its own evidence; a later phase is not a receipt. */
+export function directWorkflowSteps(result: TripSabyResponse, requiredShipmentIds: string[]) {
+  if (result.notRequired || !requiredShipmentIds.length) return []
+  const deliveries = requiredShipmentIds.map(id => result.deliveries.find(row => row.shipmentId === id))
+  const dated = (value: string | null | undefined) => !!value && Number.isFinite(Date.parse(value))
+  const counts = [
+    deliveries.filter(row => !!row?.id).length,
+    deliveries.filter(row => row?.dispatch?.sender.state === 'confirmed').length,
+    deliveries.filter(row => row?.dispatch?.carrier.state === 'confirmed').length,
+    deliveries.filter(row => dated(row?.dispatch?.completedAt)).length,
+    deliveries.filter(row => dated(row?.dispatch?.recipientAcceptedAt)).length,
+  ]
+  const labels = ['Подготовка', 'Подтверждение водителя', 'Создание ЭТрН', 'Подпись отправителя НК', 'Подпись перевозчика НК', 'Передача клиентам', 'Приёмка клиентами']
+  const done = [result.ready || result.locked, !!driverConfirmedAt(result), ...counts.map(count => count === deliveries.length)]
+  const hasExchange = deliveries.some(row => !!row?.id)
+  const current = done.findIndex((complete, index) => !complete && !(hasExchange && index < 2))
+  return labels.map((label, index) => {
+    const state = done[index] ? 'done' : index === current ? 'current' : hasExchange && index < 2 ? 'unconfirmed' : 'pending'
+    return { label, state, note: state === 'unconfirmed' ? 'Не зафиксировано' : index >= 2 ? `${counts[index - 2]} из ${deliveries.length}` : undefined }
+  })
+}
+
 export function workflowSteps(result: TripSabyResponse, currentStep: number) {
   const labels = ['Подготовка', 'Подтверждение водителя', 'Отправка АРТЭЛЬ', 'Водитель и машина', 'Подтверждение НК', 'Создание ЭТрН', 'Отправка клиентам']
   return labels.map((label, index) => {

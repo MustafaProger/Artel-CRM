@@ -4,6 +4,7 @@ import { LoaderCircle, Save, X } from 'lucide-react'
 import DirectorySelect from './DirectorySelect'
 import DeliveryPointPicker from './DeliveryPointPicker'
 import type { Company, Directories } from './model'
+import { requestToday, validRequestDate } from './trip-request-schedule'
 import type { TripRequest } from './trip-request-model'
 import { getDeliveryPlaceDisplay } from './trip-request-display'
 import { tripRequestExplicitCoordinates, tripRequestMapCoordinates } from './trip-request-map-coordinates'
@@ -33,6 +34,7 @@ export default function TripRequestEditor({ request, companies, directories, onC
   const [companyId, setCompanyId] = useState(request?.companyId ?? ''), [addressId, setAddressId] = useState(request?.addressId ?? '')
   const [quantityLitres, setQuantityLitres] = useState(request?.quantityLitres ?? ''), [comment, setComment] = useState(request?.comment ?? '')
   const [salePricePerLitre, setSalePricePerLitre] = useState(request?.salePricePerLitre ?? '')
+  const [executionDate, setExecutionDate] = useState(request ? request.executionDate ?? '' : requestToday())
   const [savedRequest, setSavedRequest] = useState(request)
   const [deliveryAddress, setDeliveryAddress] = useState(request?.address ?? '')
   const [point, setPoint] = useState<{ latitude: string; longitude: string } | null>(null)
@@ -45,7 +47,7 @@ export default function TripRequestEditor({ request, companies, directories, onC
   const selectedAddressText = selectedAddress?.address || selectedAddress?.name || ''
   const requestPlace = request ? getDeliveryPlaceDisplay(request.addressName, request.address) : null
   const addressChanged = normalizeAddress(deliveryAddress) !== (savedRequest?.address ?? selectedAddressText)
-  const dirty = companyId !== (savedRequest?.companyId ?? '') || addressId !== (savedRequest?.addressId ?? '') || quantityLitres !== (savedRequest?.quantityLitres ?? '') || salePricePerLitre !== (savedRequest?.salePricePerLitre ?? '') || comment !== (savedRequest?.comment ?? '') || point !== null || addressChanged
+  const dirty = executionDate !== (savedRequest ? savedRequest.executionDate ?? '' : requestToday()) || companyId !== (savedRequest?.companyId ?? '') || addressId !== (savedRequest?.addressId ?? '') || quantityLitres !== (savedRequest?.quantityLitres ?? '') || salePricePerLitre !== (savedRequest?.salePricePerLitre ?? '') || comment !== (savedRequest?.comment ?? '') || point !== null || addressChanged
   const inheritedPoint = addressChanged ? null : savedRequest ? tripRequestMapCoordinates(savedRequest, addresses) : selectedAddress ? tripRequestExplicitCoordinates(selectedAddress) : null
   const geocodeTarget = addressChanged ? null : savedRequest ? savedRequest.status === 'active' ? requestLocationTarget(savedRequest) : null : selectedAddress ? directoryLocationTarget(selectedAddress) : null
   const { states: locations, retry: retryLocation } = useTripRequestLocations(!point && !inheritedPoint && geocodeTarget ? [geocodeTarget] : [])
@@ -69,6 +71,7 @@ export default function TripRequestEditor({ request, companies, directories, onC
     if (busy.current || unavailable || latestRequest) return
     let body = retryBody.current
     if (!body) {
+      if (executionDate && !validRequestDate(executionDate)) { setError('Укажите корректную дату выполнения заявки.'); return }
       let litres: string
       try {
         const value = quantityLitres.replace(/\s/g, '').replace(',', '.')
@@ -85,7 +88,7 @@ export default function TripRequestEditor({ request, companies, directories, onC
       }
       if (!companyId || !addressId || !request && !selectedAddressText.trim()) { setError('Выберите компанию и место доставки с заполненным адресом из справочника.'); return }
       if (!normalizeAddress(deliveryAddress)) { setError('Укажите адрес доставки.'); return }
-      const payload = request ? { version, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, comment: comment.trim(), ...point } : { idempotencyKey: idempotencyKey.current, companyId, addressId, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, comment: comment.trim(), ...point }
+      const payload = request ? { version, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, executionDate: executionDate || null, comment: comment.trim(), ...point } : { idempotencyKey: idempotencyKey.current, companyId, addressId, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, executionDate: executionDate || null, comment: comment.trim(), ...point }
       body = JSON.stringify(payload)
     }
     const submitted = JSON.parse(body) as { quantityLitres: string; salePricePerLitre: string | null; comment: string; address?: string; latitude?: string; longitude?: string }
@@ -118,7 +121,7 @@ export default function TripRequestEditor({ request, companies, directories, onC
       <div className="shipment-editor-body">
         <p className="shipment-editor-note">{request ? 'Уточните адрес доставки, количество литров, цену для клиента или комментарий.' : 'Выберите компанию и одну из её площадок. Литры, цена для клиента и комментарий будут перенесены в рейс.'}</p>
         {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
-        {latestRequest && <button type="button" className="button" disabled={saving} onClick={() => { setVersion(latestRequest.version); setQuantityLitres(latestRequest.quantityLitres); setSalePricePerLitre(latestRequest.salePricePerLitre ?? ''); setComment(latestRequest.comment); setSavedRequest(latestRequest); setDeliveryAddress(latestRequest.address); setPoint(null); setLatestRequest(null); setError(''); setDiscard(false) }}>Загрузить актуальную заявку</button>}
+        {latestRequest && <button type="button" className="button" disabled={saving} onClick={() => { setVersion(latestRequest.version); setExecutionDate(latestRequest.executionDate ?? ''); setQuantityLitres(latestRequest.quantityLitres); setSalePricePerLitre(latestRequest.salePricePerLitre ?? ''); setComment(latestRequest.comment); setSavedRequest(latestRequest); setDeliveryAddress(latestRequest.address); setPoint(null); setLatestRequest(null); setError(''); setDiscard(false) }}>Загрузить актуальную заявку</button>}
         {unavailable && <p className="shipment-calculation-warning" role="status">Заявка уже удалена или включена в рейс. Закройте форму, чтобы обновить список.</p>}
         {uncertain && <p className="shipment-calculation-warning" role="status">Ответ пока не подтверждён. Повторное сохранение проверит тот же запрос.</p>}
         <div className="trip-request-form">
@@ -129,7 +132,8 @@ export default function TripRequestEditor({ request, companies, directories, onC
           {(request || selectedAddress) && <div className="trip-request-address-input"><label className="shipment-field"><span>Адрес доставки *</span><textarea rows={3} maxLength={2000} value={deliveryAddress} disabled={disabled} required onChange={event => { setDeliveryAddress(event.target.value); setPoint(null); setError(''); setDiscard(false) }}/></label><small className="trip-request-address-hint">Точка определяется автоматически после сохранения. Изменение адреса действует только для этой заявки.</small></div>}
           {addressChanged && <p className="trip-request-geocode-status" role="status">Найдём уточнённый адрес после сохранения.</p>}
           {automaticPoint && <div className="trip-request-geocode-status" role="status"><span>{locationStatusText(automaticPoint)}</span>{automaticPoint.status === 'unavailable' && geocodeTarget && <button type="button" className="button" disabled={disabled} onClick={() => retryLocation(geocodeTarget)}>Повторить поиск адреса</button>}</div>}
-          {(request || selectedAddress) && <DeliveryPointPicker key={`${addressId}-${version}-${addressChanged ? 'changed' : 'saved'}`} latitude={shownPoint?.latitude} longitude={shownPoint?.longitude} mapUrl={point || addressChanged ? null : savedRequest ? savedRequest.mapUrl : selectedAddress?.mapUrl} disabled={disabled} onChange={(latitude, longitude) => { setPoint({ latitude, longitude }); setError(''); setDiscard(false) }}/>}
+          {(request || selectedAddress) && <DeliveryPointPicker key={`${addressId}-${version}-${addressChanged ? 'changed' : 'saved'}`} latitude={shownPoint?.latitude} longitude={shownPoint?.longitude} mapUrl={point || addressChanged ? null : savedRequest ? savedRequest.mapUrl : selectedAddress?.mapUrl} disabled={disabled} onChange={(latitude, longitude) => { setPoint({ latitude, longitude }); setError(''); setDiscard(false) }}/>} 
+          <label className="shipment-field"><span>Дата выполнения</span><input type="date" min="0001-01-01" max="9999-12-31" value={executionDate} disabled={disabled} onChange={event => { setExecutionDate(event.target.value); setError(''); setDiscard(false) }}/></label>
           <label className="shipment-field"><span>Количество литров, л *</span><input inputMode="decimal" value={quantityLitres} disabled={disabled} required onChange={event => { setQuantityLitres(event.target.value); setError(''); setDiscard(false) }}/></label>
           <label className="shipment-field"><span>Цена за литр для клиента, ₽</span><input aria-label="Цена за литр для клиента, ₽" inputMode="decimal" maxLength={40} value={salePricePerLitre} disabled={disabled} onChange={event => { setSalePricePerLitre(event.target.value); setError(''); setDiscard(false) }}/><small>Необязательно. В рейсе цену можно изменить.</small></label>
           <label className="shipment-field"><span>Комментарий</span><textarea rows={3} maxLength={4000} value={comment} disabled={disabled} onChange={event => { setComment(event.target.value); setError(''); setDiscard(false) }}/></label>

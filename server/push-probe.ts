@@ -23,7 +23,8 @@ export function readPushProbe(data: OperationsData, probeId: unknown, userId: st
   if (!probe || probe.userId !== userId) throw new ApiError(404, 'Проверка уведомления не найдена.');
   return {
     probeId,
-    status: probe.notificationCreatedAt !== undefined ? 'confirmed' : now >= probe.expiresAt ? 'expired' : 'pending',
+    status: probe.notificationCreatedAt !== undefined ? 'confirmed' : probe.failure ? 'failed' : now >= probe.expiresAt ? 'expired' : 'pending',
+    ...(probe.failure ? {failure: probe.failure} : {}),
     providerAcceptedAt: probe.providerAcceptedAt ?? null,
     notificationCreatedAt: probe.notificationCreatedAt ?? null,
     expiresAt: probe.expiresAt,

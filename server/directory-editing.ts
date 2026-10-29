@@ -9,9 +9,11 @@ import { validInn } from './checko';
 import { companyRoleUsed } from './directory-deletion';
 import { saveOilDepot } from './oil-depots';
 import { deliveryDistances, sameDeliveryDistances } from './delivery-distances';
+import { saveOperatorDirectory } from './operator-directories';
 
 export type EditableDirectory = 'managers' | 'products' | 'paymentForms' | 'vehicles' | 'drivers' | 'addresses';
 export function updateDirectoryEntry(kind: string, id: string, input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
+  if (kind === 'operatorGroups' || kind === 'operatorServices') return saveOperatorDirectory(kind, input, snapshot, data, id);
   if (kind === 'oilDepots') return saveOilDepot(input, snapshot, data, id);
   if (!['managers', 'products', 'paymentForms', 'vehicles', 'drivers', 'addresses'].includes(kind)) throw new ApiError(400, 'Неизвестный справочник.');
   const key = kind as EditableDirectory;

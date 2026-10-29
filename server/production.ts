@@ -13,6 +13,7 @@ import { BANK_SYNC_TICK_MS } from './banking/schedule';
 import { dispatchReminders, pushReady, type PushConfig } from './push';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
 import { createTripSabyScheduler, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
+import { configuredInvoiceBridge, syncInvoiceEvents } from './invoice-bridge';
 
 type Environment = Record<string, string | undefined>;
 const pausedBankMessage = 'Обновление банков на этом сервере пока выключено. Сохранённые данные доступны.';
@@ -147,12 +148,14 @@ export async function createProductionRuntime(env: Environment = process.env) {
     publicKey: env.VAPID_PUBLIC_KEY ?? '', privateKey: env.VAPID_PRIVATE_KEY ?? '',
     subject: env.VAPID_SUBJECT ?? '', schedule: env.PUSH_SCHEDULE_ENABLED === 'true',
   };
+  const invoiceBridge = await configuredInvoiceBridge(env);
   const middleware = createSnapshotMiddleware(snapshotDirectory, {
     operationsStore: store, secureCookies: true, requireAuthentication: true,
     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
-    cabinetEnvironment: env,
+    cabinetEnvironment: { ...env, ARTEL_YANDEX_BALANCE_FILE: resolve(storeDirectory, 'yandex-balance.json') },
     accountPasswordKey: env.ARTEL_ACCOUNT_PASSWORD_KEY,
+    invoiceBridge,
     setupToken: env.ARTEL_SETUP_TOKEN, cronSecret: env.CRON_SECRET, checkoApiKey: env.CHECKO_API_KEY,
     sabyClient: sabyScheduler.client,
     sabyWorkflowMonitoringEnabled: sabyEnabled,
@@ -222,6 +225,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
       }
       if (env.ARTEL_CABINET_ENCRYPTION_KEY && env.ARTEL_CABINET_SYNC_ENABLED !== 'false') schedule(60_000, () => refreshDueCabinets(store, base.provenance.sourceSha256, env));
       if (pushReady(push)) schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
+      if (invoiceBridge) schedule(5000, () => syncInvoiceEvents(invoiceBridge, store, base.provenance.sourceSha256), true);
       if (sabyEnabled) {
         schedule(SABY_WORKFLOW_TICK_MS, () => sabyScheduler.tick(), true);
         schedule(SABY_CARRIER_WAIT_TICK_MS, () => sabyScheduler.tick(true));

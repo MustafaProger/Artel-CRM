@@ -2,10 +2,11 @@ import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual 
 import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
-import { effectiveSections, hasSection, isAdministrator, isScopedEmployee, sections, type SectionId } from '../web/src/auth-model';
+import { effectiveSections, defaultEmployeeSections, validDirectoryGrants, hasSection, isAdministrator, isScopedEmployee, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
+import { queueInvoiceRevocations } from './invoice-bridge';
 
 import { encryptAccountPassword, validPasswordCiphertext } from './account-passwords';
 
@@ -16,7 +17,7 @@ export interface AccountsData {
   sessions: { hash: string; userId: string; expiresAt: number; audience?: 'logistics' }[];
   attempts: Record<string, { count: number; until: number }>;
 }
-export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
+export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
 export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt && user.role !== 'driver').map(publicUser);
 export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -53,6 +54,7 @@ export function validateAccounts(value: AccountsData) {
   for(const u of value.users){
     if (u.passwordCiphertext !== undefined && !validPasswordCiphertext(u.passwordCiphertext)) throw new Error('Invalid password ciphertext');
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
+    if (u.directoryGrants !== undefined && !validDirectoryGrants(u.directoryGrants)) throw new Error('Invalid directory grants');
     if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
     if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','employee','manager','logistician','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
     if (u.role === 'driver') {
@@ -73,7 +75,7 @@ export async function passwordFields(input: unknown, passwordKey = process.env.A
   return { ...fields, passwordCiphertext: passwordKey === undefined ? undefined : encryptAccountPassword(input, fields, passwordKey) };
 }
 export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false,passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
-  if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
+  if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections','directoryGrants'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
   const accounts=data.accounts ??= {users:[],sessions:[],attempts:{}};
   const previous=id?accounts.users.find(u=>u.id===id):undefined;
   if (previous?.role === 'driver') throw new ApiError(403, 'Управляйте доступом водителя в разделе «Сотрудники и доступ».');
@@ -92,11 +94,18 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if(previous?.role==='director' && (!active || role!=='director') && !accounts.users.some(u=>u.id!==id && u.active && u.role==='director'))throw new ApiError(409,'Нельзя отключить последнего директора.');
   if (!setup && !managerId && (!previous || isScopedEmployee({ role: role as AccountUser['role'] }) && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
   if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
+  if (input.directoryGrants !== undefined && !validDirectoryGrants(input.directoryGrants)) throw new ApiError(400, 'Некорректный список справочников.');
   const permissions = input.sections === undefined ? previous && isScopedEmployee(previous) ? effectiveSections(previous) : undefined
     : [...new Set((input.sections as SectionId[]).map(id => id === 'settlements' ? 'overview' : id))];
   if (previous?.passwordCiphertext && input.password && !passwordKey) throw new ApiError(503, 'Хранилище паролей недоступно.');
   const user:StoredUser={...(previous??await passwordFields(input.password, passwordKey)),...(previous && input.password?await passwordFields(input.password, passwordKey):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
-  user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
+  user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : defaultEmployeeSections))]
+    : sections.map(section => section.id);
+  if (previous && hasSection(previous, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
+  if (isScopedEmployee(user)) {
+    if (input.directoryGrants !== undefined) user.directoryGrants = [...input.directoryGrants as NonNullable<AccountUser['directoryGrants']>];
+    else if (previous && !isScopedEmployee(previous)) delete user.directoryGrants;
+  } else delete user.directoryGrants;
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);
   if (previous && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
@@ -120,6 +129,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   const tasks = data.work?.tasks.filter(row => row.assigneeId === id && !row.archivedAt && row.status !== 'done').length ?? 0;
   const companies = data.work?.companyRecords.filter(row => row.assigneeId === id && !row.archivedAt).length ?? 0;
   if (tasks || companies) throw new ApiError(409, `У сотрудника есть незавершённые записи: задачи — ${tasks}, работа с компаниями — ${companies}. В разделе «Работа» передайте их другому сотруднику или завершите и архивируйте, затем повторите удаление.`);
+  if (hasSection(user, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
   user.active = false;
   user.deletedAt = new Date().toISOString();
   user.deletedBy = actor.id;
@@ -134,10 +144,41 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   }
   return { id, deleted: true, changed: true };
 }
-export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics',onChanged:()=>void=()=>{}) {
+interface LoginResult { status: number; token?: string; user?: AccountUser; error?: string }
+const loginName = (input: Record<string, unknown>) => typeof input.login === 'string' ? input.login.trim().toLowerCase().slice(0, 64) : '';
+const loginIdentity = (user: StoredUser | undefined): string | null => user ? JSON.stringify([
+  user.id, user.login, user.passwordHash, user.salt, user.version, user.active, user.deletedAt,
+  user.role, user.managerId, user.driverId, user.sections, user.directoryGrants,
+]) : null;
+
+/** Credential work has no authority to create a session. The returned completion
+ * is scoped to one mutate call and must recheck fresh transaction identity,
+ * throttles, audience and driver availability before publishing a session. */
+export async function prepareLogin(data: OperationsData, input: Record<string, unknown>, audience?: 'logistics') {
+  if (!data.accounts?.users.length) throw new ApiError(403, 'Сначала создайте учётную запись директора.');
+  const name = loginName(input);
+  const user = data.accounts.users.find(row => row.login === name && row.active && !row.deletedAt);
+  // Capture primitives before yielding, even if a caller mutates its input object.
+  const identity = loginIdentity(user), expected = user?.passwordHash;
+  const salt = user?.salt ?? '00000000000000000000000000000000';
+  const password = typeof input.password === 'string' && input.password.length <= 256 ? input.password : '';
+  // Known, unknown and throttled users all perform the same password derivation.
+  const actual = await scrypt(password, salt, 64) as Buffer;
+  const verified = expected !== undefined && timingSafeEqual(actual, Buffer.from(expected, 'hex'));
+  return (fresh: OperationsData, onChanged: () => void = () => {}): LoginResult => {
+    return finishLogin(fresh, name, identity, verified, audience, onChanged);
+  };
+}
+
+/** Atomic setup and direct callers retain the same public helper. HTTP login
+ * prepares outside mutate and invokes only its synchronous completion inside. */
+export async function login(data: OperationsData, input: Record<string, unknown>, audience?: 'logistics', onChanged: () => void = () => {}) {
+  return (await prepareLogin(data, input, audience))(data, onChanged);
+}
+
+function finishLogin(data:OperationsData,name:string,identity:string|null,verified:boolean,audience:'logistics'|undefined,onChanged:()=>void):LoginResult {
   const accounts=data.accounts;
   if(!accounts?.users.length)throw new ApiError(403,'Сначала создайте учётную запись директора.');
-  const name=typeof input.login==='string'?input.login.trim().toLowerCase().slice(0,64):'';
   const now=Date.now(), key=hash(`artel:auth:user:${name}`), globalKey=hash('artel:auth:global-login-limit:v2');
   for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now){delete accounts.attempts[k];onChanged();}
   // Preserve existing throttles when separating user keys from the old global
@@ -159,13 +200,8 @@ export async function login(data:OperationsData,input:Record<string,unknown>,aud
   const userLimited=(accounts.attempts[key]?.count??0)>=5;
   const globalLimited=(accounts.attempts[globalKey]?.count??0)>=50;
   const user=accounts.users.find(u=>u.login===name && u.active && !u.deletedAt);
-  // A random-username flood must not lock every employee out. Known and unknown
-  // names follow the same password-derivation path; the API bounds concurrent
-  // logins before they can enter the storage transaction queue.
-  const password=typeof input.password==='string' && input.password.length<=256?input.password:'';
-  const actual=await scrypt(password,user?.salt??'00000000000000000000000000000000',64) as Buffer;
   if(userLimited)return limited;
-  if(!user || !driverAccountAvailable(data, user) || !timingSafeEqual(actual,Buffer.from(user.passwordHash,'hex'))){
+  if(!user || loginIdentity(user)!==identity || !verified || !driverAccountAvailable(data, user)){
     if(!globalLimited || user){
       for(const k of [key,globalKey])accounts.attempts[k]={count:Math.min((accounts.attempts[k]?.count??0)+1,k===globalKey?50:5),until:accounts.attempts[k]?.until??now+900000};
       onChanged();
@@ -180,4 +216,12 @@ export async function login(data:OperationsData,input:Record<string,unknown>,aud
   onChanged();
   return {token,user:publicUser(user),status:200};
 }
-export function logout(data:OperationsData,request:IncomingMessage){const token=sessionToken(request);if(data.accounts && token)data.accounts.sessions=data.accounts.sessions.filter(s=>s.hash!==hash(token));}
+export function logout(data:OperationsData,request:IncomingMessage){
+  const token=sessionToken(request);
+  if(data.accounts && token) {
+    const session = data.accounts.sessions.find(row => row.hash === hash(token));
+    const user = session && data.accounts.users.find(row => row.id === session.userId);
+    if (session && !session.audience && user && hasSection(user, 'invoices')) queueInvoiceRevocations(data, [session.hash]);
+    data.accounts.sessions=data.accounts.sessions.filter(s=>s.hash!==hash(token));
+  }
+}

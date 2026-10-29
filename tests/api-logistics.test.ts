@@ -47,8 +47,8 @@ async function fixture() {
   const signed = await request(prefix + '/auth/login', 'POST', { login: 'logistics-owner', password });
   assert.equal(signed.status, 200, signed.text);
   const cookie = signed.cookie!;
-  const user = async (sections: string[] = ['trips'], managerId = 'manager', login = 'logistics-employee') => {
-    const input = { name: login, login, password, role: 'manager', managerId, sections };
+  const user = async (sections: string[] = ['trips'], managerId = 'manager', login = 'logistics-employee', directoryGrants: string[] = []) => {
+    const input = { name: login, login, password, role: 'manager', managerId, sections, directoryGrants };
     const created = await request('/api/auth/users', 'POST', input, crmCookie);
     assert.equal(created.status, 201, created.text);
     const signed = await request(prefix + '/auth/login', 'POST', { login, password });
@@ -173,7 +173,7 @@ test('logistics managers retain own-client isolation, hidden mixed trips, denied
 test('logistics directory edits preserve hidden bank fields and original directory permissions', async () => {
   const f = await fixture();
   try {
-    const user = await f.user(['trips', 'directories']);
+    const user = await f.user(['trips', 'directories'], 'manager', 'logistics-employee', ['drivers']);
     const context = await f.request(prefix + '/context', 'GET', undefined, user.cookie);
     assert.equal(context.body.directories.drivers[0].phone, '+70000000003');
     assert.doesNotMatch(context.text, /PRIVATE-BANK|PRIVATE-ACCOUNT/);

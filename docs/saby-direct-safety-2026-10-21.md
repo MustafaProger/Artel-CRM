@@ -1,6 +1,6 @@
 # Прямая ЭТрН НК: опубликованное исправление и новый рейс №30
 
-Состояние на 21.10.2026, 13:34:42 МСК: опубликован `artel-crm:20261021-saby-native-amendment-b12b7cdb`, healthy; сохранён свежий интерфейс operator-responsive. В 13:31 добавлены ровно два согласования электронного уведомления и revision+1, все остальные поля остановленных снимков точны. После штатного старта №2 сохранил verified=true и одну попытку Execute, однако Saby вернул state6 «Проблемы при доставке» и файлы общей ошибки: подписей0, T2 нет, acknowledgement Execute не подтверждён. №3 не начинал dispatch и остаётся неподписанным. Сохранены исходный prepared manifest, grant, факты и неизвестные исходы первоначальных попыток №27/30. Исследование конкретной причины продолжается; повтор Execute/Prepare/Reserve и сброс флагов запрещены без отдельной сверки результата.
+Состояние на 21.10.2026, 12:51 МСК: опубликован `artel-crm:20261021-saby-direct-signing-3f64c9cf`, healthy/0 restart. Новый реальный №30 создан по прямому поручению пользователя, нативные Saby №2/3 заполнены и привязаны. В 12:22 отдельно сняты два удержания без нового grant и provider calls. После исправления участников Saby первый документ прошёл Prepare, но последующая проверка T1 остановила продолжение; Execute и подписи не подтверждены, вторая доставка dispatch не начинала. Пользователь принял электронное уведомление о переадресовке для обеих накладных; соответствующее адресное разрешение и строгое продолжение сохранённого Prepare ещё готовятся. Деловые факты и неизвестные исходы первоначальных попыток №27/30 сохранены.
 
 Эта рабочая версия отчёта дополнена после выпуска. Опубликованный source archive, manifest, backend и образы не перепаковывались; их неизменные хеши и первоначальный отчёт подготовки сохранены в каталоге выпуска.
 
@@ -144,54 +144,8 @@ Raw before/after и after-startup снимки скачаны с проверк�
 
 Read-only проверка в 12:51 подтвердила текущие 645 исходных файлов, config/archive/manifest, running bundle и все 38 frontend-файлов. Свежая база для следующей работы: `.local/direct-release/baseline-saby-direct-signing-3f64c9cf`, proof SHA `54ac3a209ba65e8c5390e6766aa2389543673ec716c513e9cd849d7fc779dcbd`. Старый backend и данные не восстанавливать.
 
-## Причина поправки после первого Prepare
+## Текущее продолжение
 
 Реальные чтения около 12:44 подтвердили: Saby №2 назначил UID на Prepare, исходный prepared manifest сохранён, Execute/подписей нет; №3 пока не начинал dispatch. Проверка деловых полей остановила продолжение на изменении способа уведомления о переадресовке с телефонного на электронный и дополнительном служебном блоке Saby. Пользователь явно выбрал «Принять электронное уведомление Saby» для обеих накладных. Готовится адресная запись только двух доказательств этого указания и строгое принятие служебных полей; исходные снимки, prepared manifest, grant и журналы попыток не переписываются, Prepare первой доставки не повторяется.
 
-На checkpoint 12:51 поправка и maintenance ещё не были опубликованы/применены. Последующие действия зафиксированы ниже. Новый рейс не закрывает неизвестный исход первоначальной записи №27 либо прежней первой попытки №30.
-
-## Строгая поправка native T1 — выпуск 13:29 МСК
-
-Опубликован `20261021-saby-native-amendment-b12b7cdb` поверх актуального `operator-responsive-3fc8da7e`. Во время подготовки появились два независимых UI-выпуска: сначала побайтно перенесены 11 файлов operator-details и его 38 UI-файлов, затем ровно пять обновлённых файлов operator-responsive и его 38 UI-файлов. Backend обоих UI-выпусков оставался f412; их изменения сохранены. После свежей read-only проверки parent временно удерживал три release-lock до готовности пакета; CRM/store при подготовке оставались доступны. Перед single switch удержания освобождены, switch взял собственные locks.
-
-Runtime-дельта ровно три файла: `server/etrn-dispatch.ts`, `server/etrn-service.ts`, `server/saby-consignment-evidence.ts`. Исправление допускает только явно согласованное изменение способа уведомления, строго связывает служебную информацию native Saby с текущим вложением и XML-временем, проверяет сохранённый prepared manifest первой доставки без повторного Prepare. Остальная дельта — три файла тестов и отчёт.
-
-| Артефакт | SHA-256 |
-| --- | --- |
-| config | `5de7b1a9bf5c0435681dd6ca212c6738df3acbd193be73c1a25de6bbe86fca37` |
-| оба image ID | `9fb53e00b81bb94a381fe68368c7bbacbcb6c3dac673911f20d202b6d9fbb597` |
-| backend | `18ba399fe11c0c061f1581fe2c0d95609adc6179e294f8786a54c5294ff9833e` |
-| source code | `745017fe5264cba0700d3149d36edc7119149a938cf679d573e6570be7da640c` |
-| source archive | `fa28ce3d01dbab58d95fc99c7a62f422beb66d964b86d1a5e565b31b1925cfe5` |
-| source manifest | `f71acd30feb48861da520d0f67dfcf4497843c4f8220229a50bc6567b7d7d0aa` |
-| UI manifest | `5489ac7a4f48fa9afc95edab57fa2cfa9218827ddac587bfdda4d452b653976d` |
-
-658 API, 206 Saby, 3 bank-period и build-server прошли на неизменном runtime; первоначальные source-bound JSON/логи сохранены. Явное доказательство QA rebase связывает origin с точным объединением 11 опубликованных UI-файлов и равенством всего backend/API/test кода. Fresh lint/TypeScript прошли на source7450. Chromium/WebKit на точном backend18ba и новом UI: четыре целевые группы, шесть scoped axe и шесть снимков; provider calls0. Это целевая проверка, прежняя полная UI-проверка и восемь baseline contrast findings остаются историческими.
-
-Оба новых образа фактически прошли семь групп: 134 основных, 10 invoice, 12 autostart, 11 canonical protocol, 29 operator, restart/lock/SIGKILL и static HTTP. Сборка завершилась в 13:27:00; production/worker/соседи не менялись, production mounts и сеть не использовались. Image-proof SHA `536f7b65049465320d4772e02173278216d8dd16bcf980452d046cd2565b2c79`; static-proof `62f84dda127ff1560128f79b9a3c38250d78c0f89d20f843e1e10728fde13116`; isolation-proof `e7a453e5c4b0014c3ce1e0fc05442bed9231aecbfc97c83bc3053cb3be3a6155`.
-
-Ранее пакет63599394 остановился на сменившейся production-базе до сборки. Пакет306e7fbf прошёл обе image-проверки, но live preflight обнаружил ожидание `draft` вместо фактического `unknown` первого подготовленного документа. Это произошло **до switch-started/остановки CRM**, business writes0; backup выполнялся. Старые пакеты и ошибки сохранены. Новый guard допускает unknown только у известного №2 с тем же prepared/binding, без verified/Execute/действий перевозчика; unknown остаётся неизменяемым, prior manifest дополнительно закреплён. 32 helper-теста, независимый review и фактический read-only preflight прошли. Guard SHA `39db7f707b5cf42ad0ad27407690d49b47b2f7c0b22bd87ddd5cffabdd1544e2`.
-
-Single switch b12 завершился exit0, metadata записана в 13:29:47, healthy/public38/9. Исходный strict=false/raw4 сохранён. Независимая сверка снимков до и после запуска, **до maintenance**, подтвердила все 13 деловых коллекций, банки по стабильным ID, №27 кроме восьми проверенных poll-полей, неизменяемые факты/grant/native history/старый prepared №30. Worker и соседи не перезапускались; у bridge изменился только валидный журнал nonce. Семь целевых runtime-дельт №30 остаются отдельной фазой provider-сверки; неожиданных нецелевых дельт и структурных ошибок receipts0. Raw false не заменён true.
-
-Доказательства: `private/saby-direct-fix-20261021/native-amendment-release-live-20261021/`; независимый `independent-switch-phase.json` SHA `e903af141385ba092b8a042fc9bc0786c4e5726b125142f0b593765699224b67`.
-
-## Явное согласование электронного уведомления — 13:31 МСК
-
-Фактическая rehearsal v3 на отдельной полной копии данных, штатном entrypoint/FD9 и backend18ba с networknone прошла: только два согласования плюс revision+1, остальные поля/grant/prepared manifest точны, чтение candidate schema не изменило store, повторное применение отвергнуто. Report SHA `e747f5e65d302c7cbe4994a41266f6e6749c5cfe2ddf36be52c1ebed924b0f94`. Первая rehearsal остановилась до мутации на unknown/draft, вторая — до копирования при смене базы; обе ошибки сохранены.
-
-После публикации root создал свежий пакет с TTL10 минут, отдельно проверил два точных records и применил одну maintenance-операцию. Каталог `/opt/artel-crm/ops/native30-business-approval-20261021-b12-v1`; config SHA `b68d7a20757fa855d2cc394f91263bda1bdef0c1a9c9be3b71244e571eb432ea`, reviewed input SHA `87f7eab6ecfdaf66bf1e644b36bdbb3df7fdbb798dc4c456f5c1a723dc012c02`. Операция завершилась в 13:31:29; CRM healthy на том же candidate.
-
-Независимая остановленная сверка OperationsStore подтвердила: добавлены только `nativeSenderAmendment` двух документов и revision+1. Оба значения точно равны проверенным records; полный №27, весь остальной store, grant, prepared manifest и dispatch flags совпали. Maintenance helper не отправлял/подписывал документы, provider calls0 и new grantfalse. Эти нули относятся только к helper; после старта scheduler может продолжить ранее разрешённую цепочку.
-
-Records SHA: №2 `5ba547dca90074b15b491dae9866e3945f6ffc40c9b863a3653c6a99d600e86c`, №3 `042d0c591554d04d7567d40facd1c51f7c93e4ee555bb25ae31364689549fc24`. Raw before SHA `9e72afc058eb38cb42664364578e307da9170b38ebc7bdca3ffcc5d34d46bae7`, after `94e3ec62aab44c8acdbe085b9c72f63c237a284c60a186cd96eadb478e538c51`. Приватный независимый отчёт `native30-business-approval-20261021-b12-v1/independent-stopped-amendment.json`, SHA `e23b553446595baa3f96dcf5704010cfee9189f673ae5364393253c776903c36`.
-
-Фактическое состояние Saby, подписи и отправка проверяются отдельно. До этой сверки успешное завершение обеих доставок не заявляется.
-
-## Реальный результат Saby после согласования — 13:34:42 МСК
-
-№2: persisted sender verified=true и ExecuteAttempted=true; удалённый Saby state6 «Проблемы при доставке», доступны файлы общей ошибки. Provider signature receipts0, T2 нет, acknowledgement Execute не записан. №3 не начинал dispatch и остаётся неподписанным. Это не доказательство успешной отправки и не доказательство безопасного повтора неизвестной попытки Execute. Исходный prepared manifest1805f19e… и полная привязка сохранены; Prepare первой доставки не повторялся.
-
-Независимая проверка обоих полных T1 подтвердила исходные деловые поля с двумя согласованными поправками, строго допустимым служебным блоком и UID первой накладной из prepared XML. Grant, факты, amendments, native history и первоначальные неизвестные попытки сохранены. У №27 менялись только наблюдённые poll-поля. Первоначальный audit остался `passed=false`: различие document.status №2 unknown→draft разобрано отдельным supplement; raw отчёт не переписан. Все остальные закреплённые поля точны.
-
-Доказательства в `private/saby-direct-fix-20261021/native30-postapproval-afterb12-error/`: `independent-facts-receipts.private.json` SHA `5bc31091cc8cb71f7b58284aa7c540de584cb9bcd6fa570ae5094e9bcac5532a`, отдельный `independent-facts-status-supplement.private.json` SHA `2e6eac243bca12915fde90faef6146ce8a0215980c0441341cdd0474aaac192f`. Исследование конкретной причины ошибки продолжается. До адресной сверки результата не повторять Execute/Prepare/Reserve и не очищать сохранённые флаги либо manifest.
+На этом checkpoint новая поправка и maintenance ещё не опубликованы/не применены. Только фактические последующие read-back могут подтвердить подписи и отправку. Новый рейс не закрывает неизвестный исход первоначальной записи №27 либо прежней первой попытки №30.

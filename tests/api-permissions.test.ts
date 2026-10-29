@@ -14,7 +14,7 @@ import { OperationsStore, encodeOperations, decodeOperations } from '../server/o
 import { currentSnapshot } from '../server/shipment-operations';
 import { scopeSnapshot } from '../server/auth-scope';
 import { shipmentOwnership } from '../server/shipment-ownership';
-import { sections, effectiveSections, legacyManagerSections, type AccountUser } from '../web/src/auth-model';
+import { sections, effectiveSections, legacyManagerSections, defaultEmployeeSections, type AccountUser } from '../web/src/auth-model';
 import type { Shipment, ShipmentTrip, Snapshot } from '../web/src/model';
 const base = await loadSnapshot();
 
@@ -76,7 +76,7 @@ for (const role of ['employee', 'logistician'] as const) test(`${role} persists 
     for (const path of ['/api/work', '/api/shipments', '/api/shipment-trips']) assert.equal((await f.aidar(path)).status, 403, path);
     const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'New role QA' });
     const created = await f.director('/api/auth/users', 'POST', { name: 'New role QA', login: 'new-role-qa', password: f.password, managerId: employee.body.entry.id, role });
-    assert.equal(created.status, 201); assert.deepEqual(created.body.user.sections, []);
+    assert.equal(created.status, 201); assert.deepEqual(created.body.user.sections, defaultEmployeeSections);
     const duplicate = await f.director('/api/auth/users', 'POST', { name: 'Duplicate QA', login: 'duplicate-role-qa', password: f.password, managerId: employee.body.entry.id, role });
     assert.equal(duplicate.status, 409);
   } finally { await f.close(); }
@@ -154,7 +154,8 @@ test('a manager cannot claim an unassigned customer through a zero shipment or t
     const customer = { customer_id: customerId, payment_form_id: catalog.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '0' };
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields: truck, customers: [{ fields: customer }] })).status, 403);
     assert.equal(await readFile(f.store.path, 'utf8'), before);
-    assert.ok(!(await f.aidar('/api/snapshot')).body.companies.some((company: { id: string }) => company.id === customerId));
+    const directoryCompany = (await f.aidar('/api/snapshot')).body.companies.find((company: { id: string }) => company.id === customerId);
+    assert.equal(directoryCompany, undefined, 'Unassigned customer is not an own customer');
     assert.ok(!(await f.aidar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
     const seeded = await f.director('/api/shipments', 'POST', { fields: { ...fields, manager_id: f.users[0].managerId } });
     assert.equal(seeded.status, 201);
@@ -269,7 +270,7 @@ test('stored legacy settlement access survives reload as overview; explicit empt
   } finally { await f.close(); }
 });
 
-test('manager directory projection never exposes unrelated payment/summary customer aliases, addresses or deleted IDs', async () => {
+test('without directory access the projection hides unrelated customer details; directory grants expose enabled catalogs but no foreign operations', async () => {
   const f = await fixture(); try {
     const template = f.snapshot.companies[0];
     const hidden = { ...template, id: 'hidden-customer', name: 'Hidden customer name', roles: ['customer', 'payment_counterparty'] };
@@ -279,19 +280,29 @@ test('manager directory projection never exposes unrelated payment/summary custo
       addresses: [{ id: 'hidden-address', name: 'Hidden delivery address', companyId: hidden.id, kind: 'delivery' as const }],
       customerManagers: [{ companyId: hidden.id, managerId: f.users[1].managerId! }], deletedEntries: { companies: ['deleted-private-company'] },
     } };
-    const scoped = scopeSnapshot(snapshot, f.users[0]);
+    const scoped = scopeSnapshot(snapshot, { ...f.users[0], sections: ['shipments'] });
     assert.deepEqual(scoped.companies.map(company => company.id), [supplier.id]);
     assert.deepEqual(scoped.companies[0].roles, ['supplier']); assert.equal(scoped.companies[0].inn, undefined);
     assert.deepEqual(scoped.directories!.addresses, []); assert.equal(scoped.directories!.deletedEntries, undefined);
     assert.equal(scoped.overview.companyCount, 0);
     for (const text of [hidden.name, payment.name, 'hidden-address', 'deleted-private-company', 'hidden-shipment']) assert.ok(!JSON.stringify(scoped).includes(text), text);
+    const closed = scopeSnapshot(snapshot, { ...f.users[0], sections: ['directories'] }, 'directories');
+    assert.deepEqual(closed.companies, []);
+    const catalog = scopeSnapshot(snapshot, { ...f.users[0], sections: ['directories'], directoryGrants: ['suppliers'] }, 'directories');
+    assert.deepEqual(catalog.companies.map(company => company.id), [supplier.id]);
+    assert.equal(catalog.companies[0].inn, supplier.inn);
+    assert.deepEqual(catalog.directories!.managers.map(row => row.id), [f.users[0].managerId]);
+    assert.deepEqual(catalog.directories!.customerManagers, []);
+    assert.deepEqual(catalog.directories!.addresses, []);
+    assert.deepEqual(catalog.shipments, []); assert.deepEqual(catalog.payments, []); assert.deepEqual(catalog.stocks, []);
+    assert.ok(catalog.companies.every(company => !company.shipmentIds.length && !company.paymentIds.length));
   } finally { await f.close(); }
 });
 
 
 test('enabled pages respect explicit grants without adding new rights to old managers', () => {
   const user: AccountUser = { id: 'qa', name: 'QA', login: 'qa', role: 'manager', managerId: 'qa', active: true, version: 1, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) };
-  assert.equal(enabledPages.length, 11);
+  assert.equal(enabledPages.length, 12);
   for (const id of ['stock', 'payroll'] as const) {
     assert.ok(effectiveSections(user).includes(id));
     assert.equal(hasPageAccess(user, id), false);
@@ -305,7 +316,7 @@ test('enabled pages respect explicit grants without adding new rights to old man
   }
   assert.equal(hasPageAccess(user, 'operator'), true);
   assert.equal(hasPageAccess({ ...user, sections: [] }, 'operator'), false);
-  assert.equal(availablePagesFor(user).length, 9);
+  assert.equal(availablePagesFor(user).length, 10);
   assert.equal(availablePagesFor({ ...user, role: 'director' }).length, enabledPages.length);
 });
 
@@ -324,6 +335,7 @@ test('editing visible permissions preserves hidden grants and cabinet access sta
     assert.deepEqual((await f.director('/api/auth/users')).body.users.find((user: AccountUser) => user.id === before.id).sections, permissions);
   } finally { await f.close(); }
 });
+
 
 test('cabinet balances can be granted and revoked independently of role and account management', async () => {
   const f = await fixture(); try {

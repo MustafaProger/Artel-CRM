@@ -71,7 +71,7 @@ test('manager financial scope does not leak global aggregates or other shipment 
     const scoped=(await r.request('/api/snapshot','GET',undefined,managerCookie)).body;
     assert.equal(scoped.payments.length,0);assert.equal(scoped.stocks.length,0);assert.equal(scoped.overview.incoming.total,null);
     assert.equal((await r.request('/api/auth/users','POST',{name:'Intruder',login:'intruder',password,role:'director'},managerCookie)).status,403);
-    assert.equal((await r.request('/api/directories','POST',{kind:'products',name:'forbidden'},managerCookie)).status,403);
+    assert.equal((await r.request('/api/directories','POST',{kind:'products',name:'A closed catalog denies editing'},managerCookie)).status,403);
     assert.equal((await r.request('/api/shipments/'+base.shipments[0].id,'GET',undefined,managerCookie)).status,404);
     const record=structuredClone(base.shipments[0]);record.fields.manager_id=managerId;
     const visible=scopeSnapshot({...snap,shipments:[record]},account.body.user as AccountUser);

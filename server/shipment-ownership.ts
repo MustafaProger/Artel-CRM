@@ -5,7 +5,7 @@ import { directoryEntryId, normalizeName } from './directory-operations';
  * A renamed deterministic employee ID keeps the original source association.
  * This never rewrites imported fields or treats an employee name as a role.
  */
-export function shipmentOwnership(snapshot: Snapshot, row: Shipment) {
+export function shipmentOwnership(snapshot: Pick<Snapshot, 'directories'>, row: Shipment) {
   const employees = snapshot.directories?.managers ?? [];
   const explicit = row.fields.manager_id;
   if (explicit) return employees.some(employee => employee.id === explicit)

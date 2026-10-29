@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { currentSnapshot } from '../server/shipment-operations';
-import { serializeSabyTransportOrder } from '../server/saby-transport-order';
-import { serializeSabyConsignmentNote } from '../server/saby-consignment-note';
+import { sabyTransportBlockers, serializeSabyTransportOrder } from '../server/saby-transport-order';
+import { sabyConsignmentBlockers, serializeSabyConsignmentNote } from '../server/saby-consignment-note';
 import type { TripSabyRecord } from '../server/trip-saby-workflow';
+import { SABY_VOLUME_ROUNDING_VERSION } from '../server/saby-volume';
 import { integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
 
 test('new order trips use the sender as loader and keep the independent infrastructure owner', async () => {
@@ -15,6 +21,7 @@ test('new order trips use the sender as loader and keep the independent infrastr
     const vehicle = source.directories!.vehicles.find(row => row.id === 'vehicle')!; vehicle.cargoDistributable = '0';
     const prepared = runtime.prepare(source, data, runtime.trip, integrationConfig());
     assert.equal(prepared.deliveries[0].snapshot.profile.loadingActor.sameAsConsignor, true);
+    assert.equal(prepared.deliveries[0].snapshot.profile.instructions.redirectionMethod, 'Электронное уведомление перевозчика о переадресовке');
     assert.equal(prepared.deliveries[0].snapshot.profile.loadingActor.party.inn, integrationConfig().customer.inn);
     assert.equal(prepared.deliveries[0].snapshot.profile.infrastructureOwner.party.inn, source.companies.find(row => row.id === 'carrier')!.inn);
     assert.equal(prepared.order.fields.loading_address, site.address);
@@ -45,6 +52,7 @@ test('new loader XML contains sender identity and preserves the separate owner; 
     assert.doesNotMatch(xml, /<РекЛицПогрГр>/);
     assert.match(xml, /<ВладИнфр СовпГОВ="2">/);
     const historical = structuredClone(snapshot);
+    historical.profile.instructions.redirectionMethod = 'По телефону';
     historical.profile.loadingActor = { sameAsConsignor: false, party: { ...snapshot.profile.infrastructureOwner.party } };
     // This pure preflight reads only saved delivery snapshots, not workflow state.
     data.tripSaby = { trips: { [runtime.trip.id]: { deliveries: [{ shipmentId: historical.shipmentId, snapshot: historical }] } as TripSabyRecord } };
@@ -52,6 +60,7 @@ test('new loader XML contains sender identity and preserves the separate owner; 
     const before = structuredClone(data);
     const again = runtime.prepare(source, data, runtime.trip, integrationConfig());
     assert.deepEqual(again.deliveries[0].snapshot.profile.loadingActor, historical.profile.loadingActor);
+    assert.equal(again.deliveries[0].snapshot.profile.instructions.redirectionMethod, 'По телефону');
     assert.deepEqual(data, before);
     again.deliveries[0].snapshot.profile.loadingActor.party.name = 'changed outside saved data';
     assert.deepEqual(data, before);
@@ -146,5 +155,115 @@ test('agreed maximum is accepted in tonnes; unconverted kilograms are blocked in
     }
     vehicle.payloadTonnes = '27.9';
     assert.deepEqual(runtime.prepare(source, data, runtime.trip, integrationConfig()).blockers, []);
+  } finally { await runtime.close(); }
+});
+
+for (const [capacityLitres, litres, masses] of [
+  ['10228', ['10228'], ['8.583']],
+  ['15048', ['5118', '9930'], ['4.291', '8.33']],
+] as const) test(`new preparations use the saved ${capacityLitres} litre tank without requiring sections or changing exact facts`, async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
+    const trip = structuredClone(runtime.trip); trip.fields.trip_flow_version = 'driver-v1';
+    trip.fields.quantity_tonnes = masses.length === 1 ? '8.583' : '12.621';
+    trip.fields.quantity_gross_tonnes = trip.fields.quantity_tonnes;
+    trip.customers = trip.customers.slice(0, litres.length).map((row, index) => ({ ...row, fields: { ...row.fields, quantity_litres: litres[index], quantity_tonnes: masses[index], quantity_gross_tonnes: masses[index] } }));
+    const vehicle = source.directories!.vehicles.find(row => row.id === 'vehicle')!;
+    vehicle.capacityLitres = capacityLitres; delete vehicle.compartmentsLitres;
+    const before = structuredClone({ source, trip });
+    const prepared = runtime.prepare(source, data, trip, integrationConfig());
+    assert.deepEqual(prepared.blockers, []);
+    assert.equal(prepared.order.volumeRoundingVersion, SABY_VOLUME_ROUNDING_VERSION);
+    assert.equal(prepared.order.fields.quantity_litres, capacityLitres);
+    assert.equal(prepared.order.profile!.vehicleById.vehicle.capacityCubicMetres, capacityLitres === '10228' ? '10.228' : '15.048');
+    for (const row of prepared.deliveries) assert.equal(row.snapshot.volumeRoundingVersion, SABY_VOLUME_ROUNDING_VERSION);
+    const xml = new TextDecoder('windows-1251').decode(serializeSabyTransportOrder(prepared.order, '00000000-0000-4000-8000-000000000000', '2025-04-01T10:00:00Z').xml);
+    assert.match(xml, new RegExp(`Вместим="${capacityLitres === '10228' ? '10.23' : '15.05'}"`));
+    for (const volume of capacityLitres === '10228' ? ['10.23'] : ['5.12', '9.93']) assert.ok(xml.includes(`Объем="${volume}"`));
+    for (const amount of litres) assert.ok(xml.includes(`${amount} л;`));
+    const directory = mkdtempSync(resolve(tmpdir(), 'saby-rounded-order-'));
+    try {
+      const path = resolve(directory, 'order.xml');
+      writeFileSync(path, serializeSabyTransportOrder(prepared.order, '00000000-0000-4000-8000-000000000000', '2025-04-01T10:00:00Z').xml);
+      execFileSync('xmllint', ['--noout', '--schema', 'tests/fixtures/saby/transport-order-1110361-5.01.xsd', path], { stdio: 'pipe' });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+    assert.deepEqual({ source, trip }, before);
+    const legacy = structuredClone(prepared.order); delete legacy.volumeRoundingVersion;
+    assert.ok(sabyTransportBlockers(legacy).some(message => /вместимость|объём/i.test(message)));
+  } finally { await runtime.close(); }
+});
+
+test('order diagnostics name the actual missing vehicle field and block a positive amount rounded to zero', async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
+    const config = integrationConfig(); delete config.transportProfile!.cargoByProductId.product;
+    delete source.directories!.vehicles[0].cargoDistributable;
+    const prepared = runtime.prepare(source, data, runtime.trip, config);
+    assert.ok(prepared.blockers.some(message => /машины.*распределение груза по платформе/.test(message)));
+    assert.ok(!prepared.blockers.some(message => /Для выбранного продукта не подтверждены/.test(message)));
+    const order = runtime.prepare(source, data, runtime.trip, integrationConfig()).order;
+    order.fields.quantity_litres = '4.999'; order.deliveries = undefined;
+    assert.ok(sabyTransportBlockers(order).some(message => /Объём заказа после округления.*нулю/.test(message)));
+  } finally { await runtime.close(); }
+});
+
+test('legacy order snapshot keeps pre-release XML bytes without the new rounding marker', async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
+    const order = runtime.prepare(source, data, runtime.trip, integrationConfig()).order;
+    delete order.volumeRoundingVersion;
+    order.tripId = order.shipmentId = 'fixture-trip';
+    order.deliveries!.forEach((row, index) => { row.shipmentId = `fixture-delivery-${index}`; });
+    order.intermediateStops!.forEach(row => { row.afterShipmentId = 'fixture-delivery-0'; });
+    const bytes = serializeSabyTransportOrder(order, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '2025-04-01T09:20:30.000Z').xml;
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), 'afd295f9af0f281dbddc219f57e2558cdce6404731773d2524e5443c7847e8cd');
+    order.profile!.vehicleById.vehicle.capacityCubicMetres = '025.0000';
+    const padded = serializeSabyTransportOrder(order, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '2025-04-01T09:20:30.000Z').xml;
+    assert.equal(new TextDecoder('windows-1251').decode(padded), new TextDecoder('windows-1251').decode(bytes).replace('Вместим="25"', 'Вместим="025.0000"'));
+  } finally { await runtime.close(); }
+});
+
+test('rounded capacity cannot hide overload or falsely reject an exactly full tank rounded down', async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
+    const trip = structuredClone(runtime.trip); trip.fields.trip_flow_version = 'driver-v1'; trip.fields.quantity_tonnes = trip.fields.quantity_gross_tonnes = '8.583';
+    trip.customers = [{ ...trip.customers[0], fields: { ...trip.customers[0].fields, quantity_litres: '10224', quantity_tonnes: '8.583', quantity_gross_tonnes: '8.583' } }];
+    source.directories!.vehicles[0].capacityLitres = '10224';
+    const prepared = runtime.prepare(source, data, trip, integrationConfig());
+    assert.deepEqual(prepared.blockers, []);
+    const order = structuredClone(prepared.order);
+    order.fields.quantity_litres = order.deliveries![0].fields.quantity_litres = '10225';
+    assert.ok(sabyTransportBlockers(order).some(message => /превышает.*вместимость/i.test(message)));
+    const delivery = structuredClone(prepared.deliveries[0].snapshot);
+    delivery.fields.quantity_litres = '10225'; delivery.tripTotalLitres = '10225';
+    assert.ok(sabyConsignmentBlockers(delivery, { stage: 'preparation' }).some(message => /превышает.*вместимость/i.test(message)));
+  } finally { await runtime.close(); }
+});
+
+test('driver order rounds each cargo separately without fabricating a duplicated total volume or redistributing litres', async () => {
+  const runtime = await integrationRuntime();
+  try {
+    const data = await runtime.store.read(runtime.source); const source = currentSnapshot(runtime.base, data);
+    const trip = structuredClone(runtime.trip); trip.fields.trip_flow_version = 'driver-v1'; trip.fields.quantity_tonnes = trip.fields.quantity_gross_tonnes = '1.6';
+    trip.customers = trip.customers.map(row => ({ ...row, fields: { ...row.fields, quantity_litres: '1005', quantity_tonnes: '0.8', quantity_gross_tonnes: '0.8' } }));
+    source.directories!.vehicles[0].capacityLitres = '2010';
+    const prepared = runtime.prepare(source, data, trip, integrationConfig());
+    assert.deepEqual(prepared.blockers, []);
+    assert.equal(prepared.order.fields.quantity_litres, '2010');
+    const bytes = serializeSabyTransportOrder(prepared.order, '00000000-0000-4000-8000-000000000000', '2025-04-01T10:00:00Z').xml;
+    const xml = new TextDecoder('windows-1251').decode(bytes);
+    assert.equal((xml.match(/ Объем=/g) ?? []).length, 2, '1110361 has one volume per cargo, no extra aggregate volume');
+    assert.equal((xml.match(/ Объем="1.01"/g) ?? []).length, 2);
+    assert.match(xml, /Вместим="2.01"/, 'vehicle capacity is a separate physical fact, not a rounded cargo sum');
+    assert.equal((xml.match(/1005 л;/g) ?? []).length, 2);
+    const directory = mkdtempSync(resolve(tmpdir(), 'saby-rounded-cargos-'));
+    try {
+      const path = resolve(directory, 'order.xml'); writeFileSync(path, bytes);
+      execFileSync('xmllint', ['--noout', '--schema', 'tests/fixtures/saby/transport-order-1110361-5.01.xsd', path], { stdio: 'pipe' });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   } finally { await runtime.close(); }
 });

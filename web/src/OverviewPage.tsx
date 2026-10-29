@@ -1,3 +1,4 @@
+import { watchVisibleRefresh } from './visible-refresh'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, CircleCheck, LoaderCircle, Menu, RefreshCw, Wallet } from 'lucide-react'
 import type { SettlementsReport } from './settlements-model'
@@ -38,14 +39,9 @@ export default function OverviewPage({ onOpenMenu, menuOpen }: { onOpenMenu: () 
   }, [])
   useEffect(() => {
     void refresh()
-    const visibleRefresh = () => { if (document.visibilityState === 'visible') void refresh() }
-    const interval = window.setInterval(visibleRefresh, 30_000)
-    window.addEventListener('focus', visibleRefresh)
-    document.addEventListener('visibilitychange', visibleRefresh)
+    const stop = watchVisibleRefresh(() => { void refresh() }, 30_000)
     return () => {
-      window.clearInterval(interval)
-      window.removeEventListener('focus', visibleRefresh)
-      document.removeEventListener('visibilitychange', visibleRefresh)
+      stop()
       activeRequest.current?.abort()
     }
   }, [refresh])

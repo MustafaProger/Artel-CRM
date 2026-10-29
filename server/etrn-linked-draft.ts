@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { SabyClient, SabyError, sabyDocumentWorkflow, sabyObject, sabyText, type SabyObject, type SabyOrganization } from './saby-client';
 import type { SabyConsignmentSnapshot } from './saby-consignment-note';
-import { fillConsignmentDraft, hasExactConsignmentOrderLink, verifyConsignmentDraftUpdate, verifyDraftRequestedFields } from './saby-consignment-draft';
+import { allocateNativeConsignmentDraft, fillConsignmentDraft, hasExactConsignmentOrderLink, verifyConsignmentDraftUpdate, verifyDraftRequestedFields } from './saby-consignment-draft';
 
 /** Private, immutable before/expected evidence; only dispatch and confirmation flags advance. */
 export interface LinkedDraftState {
   version: 1;
+  allocation?: { version: 1; shipmentIds: string[]; snapshotHashes: string[] };
   sourceOrderId: string; sourceOrderNumber: string; sourceOrderDate: string;
   documentId: string; documentNumber: string; documentDate: string; originalMarker: string;
   originalRevision: string; originalStateCode: '0'; originalMetadataHash: string;
@@ -22,7 +23,11 @@ export interface LinkedDraftContext {
   client: SabyClient;
   order: { id: string; number: string; date: string };
   deliveryCount: number;
+  allocationSnapshots?: SabyConsignmentSnapshot[];
+  allocationDocumentIds?: string[];
   readOnly?: boolean;
+  /** A confirmed fill may later become an exactly pinned, verified signing title. */
+  verifyPreparedTitle?: (remote: SabyObject, bytes: Uint8Array) => void;
   current: () => LinkedDraftDocument;
   update: (patch: { id?: string | null; number?: string; linkedDraft?: LinkedDraftState }) => Promise<void>;
   checkAccess: () => Promise<void>;
@@ -38,7 +43,7 @@ const base64Bytes = (value: unknown): Buffer => {
   if (bytes.length > 20 * 1024 * 1024 || bytes.toString('base64') !== value) throw new Error('Invalid linked draft bytes');
   return bytes;
 };
-const stateFields = ['version', 'sourceOrderId', 'sourceOrderNumber', 'sourceOrderDate', 'documentId', 'documentNumber', 'documentDate', 'originalMarker', 'originalRevision', 'originalStateCode', 'originalMetadataHash', 'preservedHeadersHash', 'existingRecipientHash', 'attachmentId', 'attachmentName', 'beforeBase64', 'beforeHash', 'filledBase64', 'filledHash', 'writeAttempted', 'writeConfirmed', 'confirmedAt'];
+const stateFields = ['version', 'allocation', 'sourceOrderId', 'sourceOrderNumber', 'sourceOrderDate', 'documentId', 'documentNumber', 'documentDate', 'originalMarker', 'originalRevision', 'originalStateCode', 'originalMetadataHash', 'preservedHeadersHash', 'existingRecipientHash', 'attachmentId', 'attachmentName', 'beforeBase64', 'beforeHash', 'filledBase64', 'filledHash', 'writeAttempted', 'writeConfirmed', 'confirmedAt'];
 
 export function validateLinkedDraftState(value: unknown, documentId?: string | null): asserts value is LinkedDraftState | undefined {
   if (value === undefined) return;
@@ -50,6 +55,7 @@ export function validateLinkedDraftState(value: unknown, documentId?: string | n
       !(value.confirmedAt === null || typeof value.confirmedAt === 'string' && Number.isFinite(Date.parse(value.confirmedAt))) ||
       value.writeConfirmed !== (value.confirmedAt !== null) || documentId !== undefined && value.documentId !== documentId ||
       !String(value.attachmentName).toLowerCase().endsWith('.xml') || /[/\\]/u.test(String(value.attachmentName))) throw new Error('Invalid linked draft evidence');
+  if (value.allocation !== undefined && (!sabyObject(value.allocation) || Object.keys(value.allocation).some(key => !['version', 'shipmentIds', 'snapshotHashes'].includes(key)) || value.allocation.version !== 1 || !Array.isArray(value.allocation.shipmentIds) || !value.allocation.shipmentIds.length || !value.allocation.shipmentIds.every(validString) || new Set(value.allocation.shipmentIds).size !== value.allocation.shipmentIds.length || !Array.isArray(value.allocation.snapshotHashes) || value.allocation.snapshotHashes.length !== value.allocation.shipmentIds.length || !value.allocation.snapshotHashes.every(validHash))) throw new Error('Invalid native allocation evidence');
   if (digest(base64Bytes(value.beforeBase64)) !== value.beforeHash || digest(base64Bytes(value.filledBase64)) !== value.filledHash) throw new Error('Invalid linked draft evidence hash');
 }
 
@@ -110,7 +116,7 @@ function validateOrder(remote: SabyObject, context: LinkedDraftContext) {
 function validateNote(remote: SabyObject, order: SabyObject, context: LinkedDraftContext, state?: LinkedDraftState) {
   const doc = context.current();
   if (remote.Тип !== 'ConsignmentNote' || !validString(remote.Идентификатор) || doc.id !== null && remote.Идентификатор !== doc.id || !validString(remote.Номер) ||
-      remote.Дата !== ruDate(doc.snapshot.fields.date ?? '') || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' || consignmentLinks(order).length !== 1 || !hasExactConsignmentOrderLink(remote, order)) fail('Не подтверждена однозначная связь существующей ЭТрН с этой заявкой.');
+      remote.Дата !== ruDate(doc.snapshot.fields.date ?? '') || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' || (state?.allocation && context.allocationDocumentIds ? JSON.stringify(consignmentLinks(order).map(x => (x.Документ as SabyObject).Идентификатор).sort()) !== JSON.stringify([...new Set([...context.allocationDocumentIds, state.documentId])].sort()) : consignmentLinks(order).length !== 1) || !hasExactConsignmentOrderLink(remote, order)) fail('Не подтверждена однозначная связь существующей ЭТрН с этой заявкой.');
   if (doc.number !== undefined && doc.number !== remote.Номер || state && (state.documentId !== remote.Идентификатор || state.documentNumber !== remote.Номер || state.documentDate !== remote.Дата || marker(remote) !== state.originalMarker) ||
       !state && marker(remote) !== '' && marker(remote) !== doc.marker) fail('Номер или метка существующей ЭТрН не совпадают с сохранённой попыткой.');
   verifyParties(remote, doc.snapshot, false);
@@ -138,11 +144,17 @@ function preservedHeadersMatch(remote: SabyObject, state: LinkedDraftState, snap
   if (state.existingRecipientHash !== null || !partyMatches(remote.Контрагент, snapshot.profile.recipient)) return false;
   return [null, {}].some(empty => preservedHeadersHash({ ...remote, Контрагент: empty }) === state.preservedHeadersHash);
 }
+/** Signature download URLs expire independently; all signature identity/content metadata stays pinned. */
+function signatureMetadata(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(signatureMetadata);
+  if (!sabyObject(value) || !sabyObject(value.Файл)) return value;
+  return { ...value, Файл: Object.fromEntries(Object.entries(value.Файл).filter(([key]) => key !== 'Ссылка')) };
+}
 /** URLs and polling timestamps change between reads; pin business headers and the full file inventory. */
 function metadataHash(remote: SabyObject): string {
   const keys = ['Идентификатор', 'Тип', 'Номер', 'Дата', 'Примечание', 'Направление', 'Удален', 'ЧастичныеДанные', 'НашаОрганизация', 'Грузоотправитель', 'ТранспортнаяКомпания', 'Перевозчик', 'Грузополучатель', 'Стороны', 'Контрагент', 'Регламент', 'ДокументОснование', 'ДокументСледствие', 'Состояние'];
   return digest(JSON.stringify(canonical({ ...Object.fromEntries(keys.map(key => [key, remote[key] ?? null])), revision: revision(remote),
-    files: list(remote.Вложение).map(row => ({ ...Object.fromEntries(Object.entries(row).filter(([key]) => !['Файл', 'СсылкаНаPDF'].includes(key))), Файл: sabyObject(row.Файл) ? { Имя: row.Файл.Имя ?? null } : null })),
+    files: list(remote.Вложение).map(row => ({ ...Object.fromEntries(Object.entries(row).filter(([key]) => !['Файл', 'СсылкаНаPDF', 'Подпись'].includes(key))), Подпись: signatureMetadata(row.Подпись), Файл: sabyObject(row.Файл) ? { Имя: row.Файл.Имя ?? null } : null })),
   })));
 }
 function recipientHeader(snapshot: SabyConsignmentSnapshot): SabyObject {
@@ -212,8 +224,8 @@ export async function reconcileLinkedConsignmentDraft(context: LinkedDraftContex
   let remoteOrder = await client.readTransportOrder(order.id); validateOrder(remoteOrder, context);
   const links = consignmentLinks(remoteOrder);
   if (!links.length && !current().linkedDraft) return null;
-  if (context.deliveryCount !== 1 || links.length !== 1 || !sabyObject(links[0].Документ) || !validString(links[0].Документ.Идентификатор)) return fail('Для автоматической сверки требуется одна ЭТрН, связанная с единственной доставкой заявки. Новые документы не создаются.');
-  const linkedId = links[0].Документ.Идентификатор;
+  if ((!context.allocationSnapshots && context.deliveryCount !== 1) || (!current().linkedDraft?.allocation && links.length !== 1) || !links.length || !sabyObject(links[0].Документ) || !validString(links[0].Документ.Идентификатор)) return fail('Для автоматической сверки требуется одна ЭТрН, связанная с единственной доставкой заявки. Новые документы не создаются.');
+  const linkedId = current().linkedDraft?.documentId ?? links[0].Документ.Идентификатор;
   if (current().id !== null && current().id !== linkedId) return fail('У сохранённой попытки уже есть другая ЭТрН. Автоматическая замена запрещена.');
   let remote = await client.readConsignmentNote(linkedId);
   let state = current().linkedDraft;
@@ -224,8 +236,10 @@ export async function reconcileLinkedConsignmentDraft(context: LinkedDraftContex
     const file = senderAttachment(remote, true), originalRevision = revision(remote);
     const before = await client.downloadAttachment(linkedId, file.id, originalRevision);
     if (before.name !== file.name) return fail('Имя скачанного исходного XML ЭТрН изменилось.');
-    const filled = fillConsignmentDraft(before.bytes, current().snapshot, String(remote.Номер));
-    state = { version: 1, sourceOrderId: order.id, sourceOrderNumber: order.number, sourceOrderDate: order.date,
+    const allocation = context.allocationSnapshots;
+    if (allocation && (allocation.length !== context.deliveryCount || JSON.stringify(allocation[0]) !== JSON.stringify(current().snapshot))) return fail('Состав распределения ЭТрН изменился.');
+    const filled = allocation ? allocateNativeConsignmentDraft(before.bytes, allocation, String(remote.Номер)) : fillConsignmentDraft(before.bytes, current().snapshot, String(remote.Номер));
+    state = { version: 1, ...(allocation ? { allocation: { version: 1 as const, shipmentIds: allocation.map(x => x.shipmentId), snapshotHashes: allocation.map(x => digest(JSON.stringify(x))) } } : {}), sourceOrderId: order.id, sourceOrderNumber: order.number, sourceOrderDate: order.date,
       documentId: linkedId, documentNumber: String(remote.Номер), documentDate: String(remote.Дата), originalMarker: marker(remote),
       originalRevision, originalStateCode: '0', originalMetadataHash: metadataHash(remote), attachmentId: file.id, attachmentName: file.name,
       preservedHeadersHash: preservedHeadersHash(remote), existingRecipientHash: existingRecipient(remote) ? hashObject(existingRecipient(remote)) : null,
@@ -236,6 +250,7 @@ export async function reconcileLinkedConsignmentDraft(context: LinkedDraftContex
     await checkAccess(); await update({ id: linkedId, number: state.documentNumber, linkedDraft: state });
   }
   const saved = state;
+  if (saved.allocation && (!context.allocationSnapshots || JSON.stringify(saved.allocation.snapshotHashes) !== JSON.stringify(context.allocationSnapshots.map(x => digest(JSON.stringify(x)))) || JSON.stringify(saved.allocation.shipmentIds) !== JSON.stringify(context.allocationSnapshots.map(x => x.shipmentId)))) return fail('Снимки распределения ЭТрН изменились.');
   const verifyReadback = async (): Promise<SabyObject> => {
     await checkAccess();
     remoteOrder = await client.readTransportOrder(order.id); validateOrder(remoteOrder, context);
@@ -245,8 +260,12 @@ export async function reconcileLinkedConsignmentDraft(context: LinkedDraftContex
     const title = senderAttachment(result, false, saved.attachmentId), readRevision = revision(result);
     if (!saved.writeConfirmed && readRevision !== saved.originalRevision) return fail('Редакция существующей ЭТрН изменилась. Результат дополнения не подтверждён. Повторная запись запрещена.');
     const read = await client.downloadAttachment(saved.documentId, title.id, readRevision);
-    verifyConsignmentDraftUpdate(read.bytes, base64Bytes(saved.filledBase64));
-    verifyDraftRequestedFields(read.bytes, current().snapshot, saved.documentNumber);
+    if (context.readOnly && saved.writeConfirmed && context.verifyPreparedTitle) {
+      context.verifyPreparedTitle(result, read.bytes);
+    } else {
+      verifyConsignmentDraftUpdate(read.bytes, base64Bytes(saved.filledBase64));
+      verifyDraftRequestedFields(read.bytes, current().snapshot, saved.documentNumber);
+    }
     const finalOrder = await client.readTransportOrder(order.id); validateOrder(finalOrder, context);
     const final = await client.readConsignmentNote(saved.documentId); validateNote(final, finalOrder, context, saved); verifyParties(final, current().snapshot, true);
     if (sabyDocumentWorkflow(final).revision !== readRevision || metadataHash(final) !== metadataHash(result)) return fail('Сведения дополненной ЭТрН изменились во время сверки.');

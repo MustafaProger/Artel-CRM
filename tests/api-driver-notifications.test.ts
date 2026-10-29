@@ -9,7 +9,7 @@ type Notice = { userId: string; body: string; tag: string; url: string };
 const capture = (sent: Notice[]): PushSender => async (device, payload) => { sent.push({ ...JSON.parse(payload), userId: device.userId }); };
 async function fixture(sender: PushSender) {
   const f = await driverNotificationFixture(sender);
-  for (const driver of f.drivers) assert.equal((await driver.call('/api/push/subscription', 'POST', { subscription: subscription() })).status, 200);
+  for (const driver of f.drivers) assert.equal((await driver.call('/api/push/subscription', 'POST', { explicit: true, subscription: subscription() })).status, 200);
   return f;
 }
 
@@ -20,7 +20,7 @@ test('driver subscribes and verifies receipt on own device, with no work/other-d
     const [a, b] = f.drivers;
     const sub = subscription();
     assert.equal((await a.call('/api/push/config')).status, 200);
-    assert.equal((await a.call('/api/push/subscription', 'POST', { subscription: sub })).status, 200);
+    assert.equal((await a.call('/api/push/subscription', 'POST', { explicit: true, subscription: sub })).status, 200);
     assert.equal((await b.call('/api/push/test', 'POST', { endpoint: sub.endpoint })).status, 404);
     const probe = await a.call('/api/push/test', 'POST', { endpoint: sub.endpoint });
     assert.equal(probe.status, 200); assert.equal(payloads[0].url, '/#driver-trips');
@@ -32,7 +32,7 @@ test('driver subscribes and verifies receipt on own device, with no work/other-d
     for (const path of ['/api/work', '/api/snapshot', '/api/push/unknown']) assert.equal((await a.call(path)).status, 403);
     assert.equal((await a.call('/api/push/dispatch', 'POST', {})).status, 403);
     for (const method of ['PATCH', 'PUT', 'GET']) assert.equal((await a.call('/api/push/subscription', method)).status, 403);
-    assert.equal((await a.call('/api/push/subscription', 'POST', { subscription: { ...sub, endpoint: 'https://127.0.0.1/private' } })).status, 400);
+    assert.equal((await a.call('/api/push/subscription', 'POST', { explicit: true, subscription: { ...sub, endpoint: 'https://127.0.0.1/private' } })).status, 400);
     await b.call('/api/push/subscription', 'DELETE', { endpoint: sub.endpoint });
     assert.equal((await f.store.read(f.source)).push!.devices.length, 1);
     await a.call('/api/auth/logout', 'POST', { pushEndpoint: sub.endpoint });

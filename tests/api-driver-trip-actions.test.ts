@@ -42,7 +42,7 @@ async function fixture(automatic = false, requestSabyWorkflow?: (tripId: string)
   const path = `/api/driver/trips/${created.trip.id}`;
   return { ...rt, provider, client, created, request, path, actor: driver.body.user as AccountUser, cookie: driver.cookie!, adminCookie: owner.cookie!,
     read: () => request(path, 'GET', undefined, driver.cookie),
-    action: (name: 'arrive' | 'depart', body: unknown) => request(`${path}/${name}`, 'POST', body, driver.cookie),
+    action: (name: 'arrive' | 'depart' | 'deliver' | 'complete', body: unknown) => request(`${path}/${name}`, 'POST', body, driver.cookie),
     async close() { await new Promise<void>(done => server.close(() => done())); await rt.close(); } };
 }
 
@@ -248,7 +248,7 @@ test('legacy trips are read only and draft completion alone never archives', asy
 });
 
 
-test('archive requires terminal evidence for every current delivery, never a stage-six timestamp alone', async () => {
+test('document completion never archives a physically unfinished trip', async () => {
   const f = await fixture();
   try {
     const initial = (await f.read()).body.trip;
@@ -261,7 +261,7 @@ test('archive requires terminal evidence for every current delivery, never a sta
     const projected = () => readDriverTrips(snapshot, f.actor, f.created.trip.id, '', data).trip!.archived;
     assert.equal(projected(), false);
     for (const delivery of record.deliveries) data.etrn!.trips[f.created.trip.id].deliveries[delivery.shipmentId] = { document: { id: delivery.id, dispatch: { completedAt: now, sender: { state: 'confirmed' }, carrier: { state: 'confirmed' } } } } as never;
-    assert.equal(projected(), true);
+    assert.equal(projected(), false);
     const second = record.deliveries[1];
     delete data.etrn!.trips[f.created.trip.id].deliveries[second.shipmentId].document!.dispatch!.completedAt;
     assert.equal(projected(), false);
@@ -294,7 +294,7 @@ test('all-excluded trip keeps every driver delivery and mass, completes locally,
     assert.equal(arrived.status, 200, arrived.text); assert.equal(arrived.body.trip.archived, false);
     const masses = trip.deliveries.map((row: { id: string }, index: number) => ({ deliveryId: row.id, netTonnes: index ? '2.5' : '1.5' }));
     const departed = await f.action('depart', { versions: trip.versions, masses });
-    assert.equal(departed.status, 200, departed.text); assert.equal(departed.body.trip.archived, true);
+    assert.equal(departed.status, 200, departed.text); assert.equal(departed.body.trip.archived, false);
     assert.equal(departed.body.trip.deliveries.length, 2);
     const saved = await f.store.read(f.source);
     assert.equal(saved.tripSaby?.trips[f.created.trip.id], undefined); assert.equal(saved.saby?.trips[f.created.trip.id], undefined);
@@ -327,5 +327,142 @@ test('mixed driver draft only contains eligible delivery and sums its measured m
     assert.equal(record.deliveries[0].snapshot.tripTotalMassTonnes, '3.2');
     assert.equal(saved.shipments[trip.deliveries[0].id].fields.trip_total_tonnes, '12.3');
     assert.equal((await f.read()).body.trip.archived, false);
+  } finally { await f.close(); }
+});
+
+test('physical deliveries are independent, durable, idempotent and close only after every stop without touching Saby or accounting', async () => {
+  const f = await fixture(true, undefined, [true, true]);
+  try {
+    let trip = (await f.read()).body.trip;
+    const body = (deliveryId?: string) => ({ versions: trip.versions, executionVersion: trip.execution.version, ...(deliveryId ? { deliveryId } : {}) });
+    assert.equal((await f.action('deliver', body(trip.deliveries[0].id))).status, 409);
+    await f.action('arrive', { versions: trip.versions });
+    const departed = await f.action('depart', { versions: trip.versions, masses: trip.deliveries.map((row: { id: string }) => ({ deliveryId: row.id, netTonnes: '1' })) });
+    assert.equal(departed.status, 200, departed.text); trip = departed.body.trip;
+    const before = await f.store.read(f.source);
+    assert.equal((await f.action('complete', body())).status, 410);
+    assert.equal((await f.action('deliver', { ...body(), deliveryId: 'foreign' })).status, 400);
+    assert.equal((await f.action('deliver', { ...body(trip.deliveries[0].id), at: '2000-01-01' })).status, 400);
+    assert.equal((await f.action('deliver', { ...body(trip.deliveries[0].id), versions: {} })).status, 409);
+    const firstBody = body(trip.deliveries[0].id);
+    const [first, repeated] = await Promise.all([f.action('deliver', firstBody), f.action('deliver', firstBody)]);
+    assert.equal(first.status, 200, first.text); assert.equal(repeated.status, 200, repeated.text);
+    trip = first.body.trip; assert.equal(trip.execution.stage, 'delivering'); assert.equal(trip.archived, false);
+    assert.equal(Object.keys(trip.execution.deliveries).length, 1);
+    assert.deepEqual(repeated.body.trip.execution, trip.execution);
+    const savedFirst = trip.execution.deliveries[trip.deliveries[0].id];
+    assert.equal(savedFirst.by, f.actor.id); assert.equal(savedFirst.role, 'driver');
+    assert.equal((await f.action('complete', body())).status, 410);
+    assert.equal((await f.action('deliver', { ...body(trip.deliveries[1].id), executionVersion: 0 })).status, 409);
+    const logistics = `/api/shipment-trips/${f.created.trip.id}/execution`;
+    assert.equal((await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.cookie)).status, 403);
+    assert.equal((await f.request(`${f.path}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie)).status, 403);
+    const second = await f.request(`${logistics}/deliver`, 'POST', body(trip.deliveries[1].id), f.adminCookie);
+    assert.equal(second.status, 200, second.text); assert.equal(second.body.execution.stage, 'completed');
+    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].role, 'logistics');
+    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].kind, undefined);
+    assert.equal(second.body.execution.deliveries[trip.deliveries[1].id].name, 'Синтетический директор');
+    trip = (await f.read()).body.trip;
+    assert.equal(trip.archived, true);
+    assert.deepEqual(trip.execution.completed, trip.execution.deliveries[trip.deliveries[1].id]);
+    assert.equal((await f.action('complete', body())).status, 410);
+    const replay = await f.action('deliver', { ...body(trip.deliveries[1].id), executionVersion: 1 });
+    assert.equal(replay.status, 200);
+    assert.deepEqual(replay.body.trip.execution, trip.execution);
+    assert.deepEqual((await f.read()).body.trip.execution, trip.execution);
+    assert.deepEqual((await f.request(logistics, 'GET', undefined, f.adminCookie)).body.execution, trip.execution);
+    const list = await f.request('/api/shipment-trips', 'GET', undefined, f.adminCookie);
+    assert.deepEqual(list.body.trips.find((t: { id: string }) => t.id === trip.id).execution, trip.execution);
+    assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions: trip.versions }, f.adminCookie)).status, 409);
+    const after = await f.store.read(f.source);
+    const { revision: _a, tripExecutions: execution, ...actual } = after;
+    const { revision: _b, ...expected } = before;
+    assert.deepEqual(actual, expected); assert.equal(execution![trip.id].version, 2);
+    assert.deepEqual(execution![trip.id].deliveries[trip.deliveries[0].id], savedFirst);
+    assert.equal(f.provider.calls.length, 0);
+  } finally { await f.close(); }
+});
+
+test('execution actions enforce driver assignment and fresh trip-section access', async () => {
+  const f = await fixture(false, undefined, [true,true]);
+  try {
+    const trip = (await f.read()).body.trip, body = { versions: trip.versions, executionVersion: 0, deliveryId: trip.deliveries[0].id };
+    await f.store.mutate(f.source, data => {
+      const actor = data.accounts!.users.find(u => u.id === f.actor.id)!;
+      actor.driverId = 'another-driver'; return { result: null, changed: true };
+    });
+    assert.equal((await f.action('deliver', body)).status, 401);
+    assert.equal((await f.request(`/api/shipment-trips/${trip.id}/execution/deliver`, 'POST', body)).status, 401);
+    assert.equal(f.provider.calls.length, 0);
+  } finally { await f.close(); }
+});
+
+test('execution stale composition hides previous confirmations and rejects a mismatched customer before any write', async () => {
+  const f = await fixture(false, undefined, [true,true]);
+  try {
+    const initial = (await f.read()).body.trip;
+    await f.action('arrive', { versions: initial.versions });
+    await f.action('depart', { versions: initial.versions, masses: initial.deliveries.map((r: { id: string }) => ({ deliveryId:r.id, netTonnes:'1' })) });
+    const trip = (await f.read()).body.trip;
+    const delivered = await f.action('deliver', { versions:trip.versions, executionVersion:0, deliveryId:trip.deliveries[0].id }); assert.equal(delivered.status,200);
+    const { readTripExecution, recordTripExecution, validateTripExecutions } = await import('../server/trip-execution');
+    const data = await f.store.read(f.source), before = structuredClone(data);
+    const snapshot = currentSnapshot(f.base,data,false);
+    snapshot.shipments.find(r => r.id === trip.deliveries[0].id)!.fields.customer_id = 'different-client';
+    const changed = readTripExecution(snapshot,data,trip.id); assert.equal(changed.stage,'conflict'); assert.deepEqual(changed.deliveries,{}); assert.equal(changed.completed,null);
+    assert.throws(() => recordTripExecution(snapshot,data,f.actor,trip.id,'complete',{versions:trip.versions,executionVersion:1}), /сверка/);
+    assert.deepEqual(data,before);
+    validateTripExecutions(data.tripExecutions);
+    for (const patch of [{version:-1},{composition:'bad'},{deliveries:{fake:{at:'bad'}}},{completed:{at:'bad'}}]) assert.throws(() => validateTripExecutions({[trip.id]:{...data.tripExecutions![trip.id],...patch}}));
+  } finally { await f.close(); }
+});
+
+
+test('driver final delivery atomically completes, concurrent retry is unchanged, and legacy complete deliveries project without mutation', async () => {
+  const f = await fixture(false, undefined, [true,true]);
+  try {
+    let trip = (await f.read()).body.trip;
+    await f.action('arrive', { versions: trip.versions });
+    trip = (await f.action('depart', { versions:trip.versions, masses:trip.deliveries.map((r: { id: string }) => ({ deliveryId:r.id, netTonnes:'1' })) })).body.trip;
+    trip = (await f.action('deliver', { versions:trip.versions, executionVersion:0, deliveryId:trip.deliveries[0].id })).body.trip;
+    const body = { versions:trip.versions, executionVersion:1, deliveryId:trip.deliveries[1].id };
+    const replies = await Promise.all([f.action('deliver',body), f.action('deliver',body)]);
+    assert.ok(replies.every(r => r.status === 200));
+    assert.deepEqual(replies[0].body.trip.execution,replies[1].body.trip.execution);
+    trip = replies[0].body.trip;
+    assert.equal(trip.archived,true); assert.equal(trip.execution.version,2);
+    assert.equal(trip.execution.completed.role,'driver');
+    assert.equal(trip.execution.completed.by,f.actor.id);
+    assert.deepEqual(trip.execution.completed,trip.execution.deliveries[body.deliveryId]);
+    const {readTripExecution} = await import('../server/trip-execution');
+    const data = await f.store.read(f.source);
+    data.tripExecutions![trip.id].completed = null;
+    const before = structuredClone(data);
+    const execution = readTripExecution(currentSnapshot(f.base,data,false), data, trip.id);
+    assert.equal(execution.stage,'completed'); assert.deepEqual(execution.completed,trip.execution.completed);
+    assert.deepEqual(data,before);
+    assert.equal(f.provider.calls.length,0);
+  } finally { await f.close(); }
+});
+
+test('staff delivery requires current trips permission and preserves the real actor', async () => {
+  const f = await fixture(false, undefined, [true,true]);
+  try {
+    let trip = (await f.read()).body.trip;
+    await f.action('arrive', { versions: trip.versions });
+    trip = (await f.action('depart', { versions:trip.versions, masses:trip.deliveries.map((r: { id: string }) => ({ deliveryId:r.id, netTonnes:'1' })) })).body.trip;
+    const { recordTripExecution } = await import('../server/trip-execution');
+    const data = await f.store.read(f.source), snapshot = currentSnapshot(f.base,data,false);
+    const actor: AccountUser = { id:'staff-test', name:'Логист', login:'staff-test', role:'logistician', managerId:null, active:true, version:1, sections:['trips'] };
+    const payload = { versions:trip.versions, executionVersion:0, deliveryId:trip.deliveries[0].id };
+    const before = structuredClone(data);
+    for (const denied of [{...actor,sections:[]}, {...actor,active:false}]) {
+      assert.throws(() => recordTripExecution(snapshot,data,denied,trip.id,'deliver',payload), /недоступен/);
+      assert.deepEqual(data,before);
+    }
+    const result = recordTripExecution(snapshot,data,actor,trip.id,'deliver',payload);
+    assert.equal(result.result.deliveries[payload.deliveryId].by,actor.id);
+    assert.equal(result.result.deliveries[payload.deliveryId].role,'logistics');
+    assert.equal(recordTripExecution(snapshot,data,actor,trip.id,'deliver',payload).changed,false);
   } finally { await f.close(); }
 });

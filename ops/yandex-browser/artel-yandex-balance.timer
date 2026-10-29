@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Yandex fuel balance every five minutes
+
+[Timer]
+OnBootSec=45
+OnUnitInactiveSec=300
+AccuracySec=10
+Unit=artel-yandex-balance.service
+
+[Install]
+WantedBy=timers.target

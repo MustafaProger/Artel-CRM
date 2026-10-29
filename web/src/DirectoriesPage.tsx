@@ -1,3 +1,5 @@
+import OperatorServiceColorPicker from './OperatorServiceColorPicker'
+import OperatorServiceBadge from './OperatorServiceBadge'
 import { useDialogMotion } from './useDialogMotion'
 import ScrollableSegments from './ScrollableSegments'
 import RoleFilter, { type RoleFilterValue } from './RoleFilter'
@@ -13,13 +15,14 @@ import { tripRequestExplicitCoordinates } from './trip-request-map-coordinates'
 import { companyFields, driverFields, vehicleFields, stsFields, ptsFields, productTransportFields, vehicleTransportFields } from './directory-fields'
 import { directoryDraft, directoryEntry, directoryPayload, mergeDirectoryPayload, directoryFieldLabel, withCurrentAddressVersions, type EditorTab } from './directory-editor-data'
 import { customerManagerId } from './customer-manager'
+import { readOperatorCatalog } from './operator-catalog'
 import './directories.css'
 import './form-refinements.css'
 
-const tabs = [{id:'customers',name:'Клиенты'}, {id:'suppliers',name:'Поставщики'}, {id:'oilDepots',name:'Нефтебазы'}, {id:'managers',name:'Сотрудники'}, {id:'products',name:'Товары'}, {id:'paymentForms',name:'Формы оплаты'}, {id:'vehicles',name:'Автомобили'}, {id:'drivers',name:'Водители'}, {id:'addresses',name:'Места погрузки и доставки'}, {id:'customerManagers',name:'Клиенты и менеджеры'}] as const
-export type DirectoryTab = (typeof tabs)[number]['id']
-type Tab = DirectoryTab
-const titles: Record<EditorTab, string> = { customers: 'клиента', suppliers: 'поставщика', loadingParty: 'участника погрузки', oilDepots: 'нефтебазы', managers: 'сотрудника', products: 'товара', paymentForms: 'формы оплаты', vehicles: 'автомобиля', drivers: 'водителя', addresses: 'адреса', customerManagers: 'назначения менеджера' }
+const tabs = [{id:'customers',name:'Клиенты'}, {id:'suppliers',name:'Поставщики'}, {id:'oilDepots',name:'Нефтебазы'}, {id:'managers',name:'Сотрудники'}, {id:'products',name:'Товары'}, {id:'paymentForms',name:'Формы оплаты'}, {id:'vehicles',name:'Автомобили'}, {id:'drivers',name:'Водители'}, {id:'addresses',name:'Места погрузки и доставки'}, {id:'customerManagers',name:'Клиенты и менеджеры'}, {id:'operatorServices',name:'Сервисы операторской'}] as const
+ export type DirectoryTab = (typeof tabs)[number]['id']
+ type Tab = DirectoryTab
+const titles: Record<EditorTab, string> = { customers: 'клиента', suppliers: 'поставщика', loadingParty: 'участника погрузки', oilDepots: 'нефтебазы', managers: 'сотрудника', products: 'товара', paymentForms: 'формы оплаты', vehicles: 'автомобиля', drivers: 'водителя', addresses: 'адреса', customerManagers: 'назначения менеджера', operatorServices: 'сервиса операторской' }
 const roleLabels = { customer: 'Клиент', supplier: 'Поставщик' }
 const normalizedPlaceAddress = (value:string) => value.trim().replace(/\s+/g,' ')
 const companyTab = (tab: EditorTab) => ['customers', 'suppliers', 'loadingParty'].includes(tab)
@@ -30,12 +33,16 @@ const vehicleName = (vehicle: Vehicle) => vehicle.name || vehicle.plate
 const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== vehicle.plate ? vehicle.plate : '', vehicle.capacityLitres ? `${Number(vehicle.capacityLitres).toLocaleString('ru-RU')} л` : '', vehicle.compartmentsLitres?.length ? `Секции: ${vehicle.compartmentsLitres.join(' + ')} л` : ''].filter(Boolean).join(' · ')
 type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager?:string;managerId?:string;addresses?:string;roles?:string[];kind?:'managers'|'drivers';accountRoles?:AccountRole[]}
 
-export default function DirectoriesPage({data,onChanged,canManage=true,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
+export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=true,canManageTab,canViewAccounts=false,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;canManageTab?:(tab:DirectoryTab)=>boolean;canViewAccounts?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
   const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
+  useEffect(() => {
+    if (allowedTabs && !allowedTabs.includes(tab)) {setTab(allowedTabs[0] ?? 'operatorServices'); setEditor(null); setDeleting(null)}
+  }, [allowedTabs, tab])
+  const canManage = baseCanManage && (!canManageTab || canManageTab(tab))
   const [editor,setEditor] = useState<{id?:string;kind?:'managers'|'drivers'} | null>(null), [notice,setNotice] = useState(''), [deleting,setDeleting] = useState<DirectoryRow|null>(null)
   const [accessUsers,setAccessUsers] = useState<AccountUser[]|null>(null), [accessError,setAccessError] = useState(''), [accessRevision,setAccessRevision] = useState(0)
   const [roleFilter,setRoleFilter] = useState<RoleFilterValue>('all')
-  const personnel = tab === 'managers' && canManage && !isLogisticsWorkspace()
+  const personnel = tab === 'managers' && canViewAccounts && !isLogisticsWorkspace()
   useEffect(()=>{
     if(!personnel)return
     let cancelled=false
@@ -44,12 +51,14 @@ export default function DirectoriesPage({data,onChanged,canManage=true,initialTa
     return()=>{cancelled=true}
   },[personnel,data.directories,accessRevision])
   const catalog = data.directories!
+  const operatorCatalog = readOperatorCatalog(catalog)
   const rows: DirectoryRow[] = companyTab(tab) ? data.companies.filter(company => !company.directoryArchived && company.roles.includes(tabRole(tab))).map(company => ({
     id: company.id, name: company.name, version: company.version, roles: company.roles,
     detail: [company.inn ? `ИНН ${company.inn}` : 'ИНН не указан', ...company.roles.filter(r => r in roleLabels).map(r => roleLabels[r as keyof typeof roleLabels])].join(' · '),
     manager: catalog.managers.find(manager => manager.id === customerManagerId(catalog, company.id))?.name || 'Не назначен',
     addresses: catalog.addresses.filter(address => address.companyId === company.id).map(address => address.name).join('; '),
   })) : tab === 'vehicles' ? catalog.vehicles.map(vehicle => ({...vehicle,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))
+    : tab === 'operatorServices' ? operatorCatalog.services.map(row => ({...row,detail:`Скидка: ${row.discountPercent.replace('.', ',')}%`}))
     : tab === 'products' ? catalog.products.map(product => ({...product,detail:[product.documentName,product.transportProductKind==='diesel'?'Дизель: транспортные документы':''].filter(Boolean).join(' · ')}))
     : tab === 'drivers' ? catalog.drivers.map(driver => ({ ...driver, detail: [driver.phone, catalog.vehicles.find(vehicle => vehicle.id === driver.vehicleId)].map(value => typeof value === 'object' ? vehicleName(value) : value).filter(Boolean).join(' · ') }))
     : tab === 'oilDepots' ? (catalog.oilDepots ?? []).map(depot => ({...depot,detail:[depot.address,data.companies.find(company=>company.id===depot.ownerCompanyId)?.name].filter(Boolean).join(' · ')}))
@@ -64,6 +73,7 @@ export default function DirectoriesPage({data,onChanged,canManage=true,initialTa
   const roleRows=personnel&&roleFilter!=='all'?personnelRows.filter(row=>accessUsers&&(roleFilter==='none'?!row.accountRoles?.length:row.accountRoles?.includes(roleFilter))):personnelRows
   const visible = roleRows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
   const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
+  if (allowedTabs && !allowedTabs.length) return <p className="empty-state">Нет доступных справочников. Обратитесь к администратору.</p>
   return <div className="directories-page">
     {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setRoleFilter('all');setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
@@ -74,9 +84,9 @@ export default function DirectoriesPage({data,onChanged,canManage=true,initialTa
       {personnel&&<><RoleFilter value={roleFilter} onChange={value=>{setRoleFilter(value);setPage(0)}} includeUnlinked disabled={!accessUsers} counts={{all:personnelRows.length,none:personnelRows.filter(row=>!row.accountRoles?.length).length,...Object.fromEntries(Object.keys(roleNames).map(role=>[role,personnelRows.filter(row=>row.accountRoles?.includes(role as AccountRole)).length]))}}/>{!accessUsers&&!accessError&&<p role="status">Загружаем полномочия…</p>}{accessError&&<p className="shipment-error" role="alert">{accessError} <button type="button" className="button" onClick={()=>setAccessRevision(value=>value+1)}>Повторить загрузку полномочий</button></p>}</>}
       <div className="directory-record-count">Записей: {visible.length}</div>
       <div className="directory-records">{visible.slice(currentPage*30,(currentPage+1)*30).map(row=><div className="directory-record" key={`${row.kind??tab}:${row.id}`}>
-        <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind==='managers'||row.kind==='drivers'?row.kind:undefined})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><strong>{row.name}</strong>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
+        <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind==='managers'||row.kind==='drivers'?row.kind:undefined})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><strong>{tab === 'operatorServices' ? <OperatorServiceBadge service={row.name} serviceId={row.id} backgroundColor={operatorCatalog.services.find(item=>item.id===row.id)?.backgroundColor} part="name"/> : row.name}</strong>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
           {row.manager !== undefined && <span className="directory-record-manager"><small>Менеджер</small><span>{row.manager}</span></span>}{canManage&&<Pencil size={17}/>}</button>
-        {canManage&&<button className="icon-button directory-delete" aria-label={`Удалить: ${row.name}`} onClick={()=>setDeleting(row)}><Trash2 size={17}/></button>}
+        {canManage&&tab!=='operatorServices'&&<button className="icon-button directory-delete" aria-label={`Удалить: ${row.name}`} onClick={()=>setDeleting(row)}><Trash2 size={17}/></button>}
       </div>)}</div>
       {!visible.length && (!personnel||accessUsers) && <p className="directory-empty">{query||personnel&&roleFilter!=='all' ? 'По выбранным фильтрам ничего не найдено.' : canManage ? 'Записей пока нет. Нажмите «Добавить», чтобы создать первую.' : 'Записей пока нет.'}</p>}
       <div className="directory-pagination"><span>{visible.length ? `${currentPage*30+1}–${Math.min((currentPage+1)*30,visible.length)} из ${visible.length}` : '0 записей'}</span><div><button className="icon-button" aria-label="Предыдущая страница справочника" disabled={!currentPage} onClick={()=>setPage(currentPage-1)}><ChevronLeft size={18}/></button><span>{currentPage+1} / {lastPage+1}</span><button className="icon-button" aria-label="Следующая страница справочника" disabled={currentPage===lastPage} onClick={()=>setPage(currentPage+1)}><ChevronRight size={18}/></button></div></div>
@@ -134,7 +144,7 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
   const [savedCompanies,setSavedCompanies] = useState<Company[]>([])
   const relatedCompanies = [...data.companies.filter(company=>!savedCompanies.some(saved=>saved.id===company.id)),...savedCompanies]
   const [companyId,setCompanyId] = useState(id??'')
-  const [managerId,setManagerId] = useState(()=>customerManagerId(catalog,id??''))
+  const [managerId,setManagerId] = useState(()=>customerManagerId(catalog,id??'') || (tab==='customers' ? catalog.currentEmployeeId ?? '' : ''))
   const [addresses,setAddresses] = useState<(Omit<ShipmentAddress,'companyId'> & {pointAddress?:string})[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind,version,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})=>({id,name,kind,version:version??0,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})))
   const [oilDepotDistancesKm,setOilDepotDistancesKm] = useState<ShipmentAddress['oilDepotDistancesKm']>(()=>tab==='addresses'?(entry as ShipmentAddress|undefined)?.oilDepotDistancesKm:undefined)
   const [lookupBusy,setLookupBusy] = useState(false), [lookupNotice,setLookupNotice] = useState('')
@@ -232,7 +242,7 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
   return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
     <div className="directory-editor-heading"><h2>{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy} onClick={close}><X size={20}/></button></div>
     <div className="directory-editor-body"><fieldset className="directory-edit-fields" disabled={!!conflict}><div className="shipment-field-grid">
-      {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} disabled={saving||lookupBusy}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role));setDirty(true)}}/>{label}</label>)}</fieldset></>}</>
+      {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} disabled={saving||lookupBusy||!!catalog.currentEmployeeId}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role));setDirty(true)}}/>{label}</label>)}</fieldset></>}</>
       :tab==='oilDepots'?<>
         <section className="directory-form-section form-field-wide" aria-labelledby="oil-depot-location-title"><div className="directory-form-section-heading"><h3 id="oil-depot-location-title">Место погрузки</h3><p>Название и фактический адрес нефтебазы.</p></div><div className="shipment-field-grid">
           <div className="form-field-wide">{input('Наименование нефтебазы','name',true)}</div>{input('Фактический адрес места погрузки / пункта подачи','address')}
@@ -245,6 +255,7 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
         </div></section>
         <details className="directory-extra-fields form-field-wide directory-map-fields"><summary>Карта и координаты</summary><div className="shipment-field-grid"><div className="form-field-wide">{input('Ссылка на Яндекс.Карты','mapUrl')}</div>{input('Широта','latitude')}{input('Долгота','longitude')}</div></details>
       </>
+      :tab==='operatorServices'?<>{input('Название сервиса','name',true)}<label className="shipment-field"><span>Скидка, % *</span><input aria-label="Скидка, %" inputMode="decimal" value={fields.discountPercent??''} required maxLength={32} disabled={saving||lookupBusy} onChange={event=>update('discountPercent',event.target.value)}/></label><OperatorServiceColorPicker name={fields.name??''} id={id} color={fields.backgroundColor} disabled={saving||lookupBusy} onChange={color=>update('backgroundColor',color)}/><p className="operator-service-terms-note">Название и цвет обновляются во всех операциях. Новая скидка действует для новых операций с сегодняшней датой и позже; сохранённые суммы и скидки не меняются.</p></>
       :tab==='vehicles'?<>{input('Автомобиль / номер','plate',true)}{input('Название для выбора','name')}{input('Марка','brand')}{input('Модель','model')}{input('Прицеп','trailer')}{input('Объём автомобиля, л','capacityLitres')}<label className="shipment-field"><span>Секции, л (через +)</span><input aria-label="Секции, л (через +)" value={sections} disabled={saving||lookupBusy} onChange={event=>{setSections(event.target.value);setDirty(true)}}/></label></>
       :tab==='customerManagers'?<><DirectorySelect label="Клиент" entries={data.companies.filter(company=>company.roles.includes('customer'))} value={companyId} onChange={id=>{setCompanyId(id);setManagerId(customerManagerId(catalog,id));setDirty(true)}} required disabled={saving||!!id}/><DirectorySelect label="Менеджер" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} required disabled={saving}/></>
       :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя сотрудника':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={fields.latitude} longitude={fields.longitude} mapUrl={fields.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setFields(old=>({...old,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:old.address||old.name||''}));setDirty(true)}}/></div>}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<>{input('Приёмщик','receiverName')}{input('Телефон приёмщика','receiverPhone')}</>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
