@@ -94,7 +94,7 @@ def verify(release,expected):
  assert tree(r/'context')==json.loads((r/'bundle-manifest.json').read_text())
  assert tree(r/'context/app-dist')==ui_manifest
  assert sha(r/'context/server-render/production.mjs')==c['serverBundleSha256']
- assert (r/'context/Dockerfile').read_text()==f"FROM {c['previousImageId']}\nCOPY --chown=node:node app-dist /app/app-dist\nCOPY --chown=node:node server-render /app/server-render\nCOPY --chmod=0555 entrypoint.sh /usr/local/bin/artel-entrypoint\n"
+ assert (r/'context/Dockerfile').read_text()==f"FROM {c['previousImageId']}\nCOPY --chown=node:node app-dist /app/app-dist\nCOPY --chown=node:node server-render /app/server-render\nCOPY --chown=node:node entrypoint.sh /usr/local/bin/artel-entrypoint\nRUN chmod 0555 /usr/local/bin/artel-entrypoint\n"
  archive={}
  with tarfile.open(r/'source.tar.gz') as tar:
   for member in tar.getmembers():
