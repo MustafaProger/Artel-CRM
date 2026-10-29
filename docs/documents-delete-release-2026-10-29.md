@@ -7,3 +7,5 @@
 Проверки объединённого кода: 821 API, 305 целевых, 564 модульных и 3 банковских теста, lint и production build. Документы проверены на разделённом синтетическом хранилище: Chromium/WebKit, source/built, 320/390/768/1440 px, по восемь сценариев и восемь axe. Проверены отмена, Escape, ошибка/повтор, каскад и сохранность соседней категории. Первый API-прогон не нашёл локальные fixtures; после подключения fixtures полный прогон прошёл. Исходный лог не удалён.
 
 Source и доказательства: `/Users/mustafa/Desktop/Artel-CRM/.local/documents-delete-release-20261029`. Тестовые файлы и учётные записи не входят в пакет. Миграция Work повторно не выполняется; публикация не должна удалять реальные документы. Итог публикации и аудита будет добавлен после серверной приёмки.
+
+Frozen package: `20261029-documents-delete-f624b2f0`; config SHA-256 `3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148`. Source files: 760. Release patch: `docs/patches/documents-delete-release-20261029.patch`.

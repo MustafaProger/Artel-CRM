@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createProductionRuntime } from '/app/server-render/production.mjs';
+const bytes=await readFile('/compat/operations.json'),before=JSON.parse(bytes).data;
+await mkdir('/tmp/operations');await writeFile('/tmp/operations/operations.json',bytes);
+execFileSync(process.execPath,['/app/server-render/work-storage.mjs','split','/tmp/operations',before.sourceSha256,'--writers-stopped']);
+const exported=()=>JSON.parse(execFileSync(process.execPath,['/app/server-render/export-operations.mjs'],{env:{...process.env,ARTEL_STORE_DIR:'/tmp/operations',ARTEL_SNAPSHOT_DIR:'/compat/snapshot'},encoding:'utf8',maxBuffer:64*1024*1024})).data;
+assert.deepEqual(exported(),before);
+let external=0;globalThis.fetch=async()=>{external++;throw new Error('No external network in compatibility test');};
+const runtime=await createProductionRuntime({ARTEL_PUBLIC_ORIGIN:'https://compat.example.test',ARTEL_SNAPSHOT_DIR:'/compat/snapshot',ARTEL_STORE_DIR:'/tmp/operations',ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false',ARTEL_CABINET_SYNC_ENABLED:'false',ARTEL_GEOCODER_ENABLED:'false',SABY_WORKFLOW_ENABLED:'false',PUSH_SCHEDULE_ENABLED:'false',PORT:'0'});
+await runtime.start();await runtime.stop();
+const after=exported();
+execFileSync(process.execPath,['/app/server-render/work-storage.mjs','merge','/tmp/operations',before.sourceSha256,'--writers-stopped']);
+assert.deepEqual(JSON.parse(await readFile('/tmp/operations/operations.json','utf8')).data,before);
+assert.deepEqual(after,before);assert.equal(external,0);
+console.log(JSON.stringify({passed:true,currentStoreLoaded:true,fullDataExact:true,externalRequests:external,sourceStoreSha256:createHash('sha256').update(bytes).digest('hex'),operations:Object.keys(before.operator?.refuellings??{}).length,cases:Object.keys(before.operator?.cases??{}).length}));

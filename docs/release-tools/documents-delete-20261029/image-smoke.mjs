@@ -1,0 +1,674 @@
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import { request as httpRequest } from 'node:http';
+import { createProductionRuntime } from '/app/server-render/production.mjs';
+
+let externalRequests = 0;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => { externalRequests++; throw new Error('External fetch forbidden in synthetic image smoke'); };
+const root = await mkdtemp(resolve(tmpdir(), 'artel-image-smoke-'));
+const snapshot = resolve(root,'snapshot'), store = resolve(root,'operations');
+await Promise.all([mkdir(snapshot),mkdir(store)]);
+const hash = value => createHash('sha256').update(value).digest('hex');
+const source = 'a'.repeat(64);
+const meta = {source_file:'synthetic.xlsx',source_sha256:source,created_at_utc:'2026-09-28T00:00:00Z',source_kind:'test',google_verified:false,formula_policy:'',ownership_policy:''};
+const validation = {status:'ok',registry_verified:false,issue_counts:{},cell_issues:[],record_flag_counts:{},duplicate_record_candidates:[],legal_form_alias_candidate_groups:[],multiple_manager_companies:[],limitations:[]};
+const files = {};
+for (const name of ['companies','shipments','payments','stock_summaries','manager_labels','validation_report']) {
+  const raw=JSON.stringify({meta,data:name==='validation_report'?validation:[]});
+  await writeFile(resolve(snapshot,`${name}.json`),raw);
+  files[`${name}.json`]={sha256:hash(raw),bytes:Buffer.byteLength(raw)};
+}
+await writeFile(resolve(snapshot,'manifest.json'),JSON.stringify({meta,counts:{},files}));
+const data={schemaVersion:2,sourceSha256:source,revision:0,shipments:{},companies:[],paymentAllocations:[],directories:{managers:[],products:[],paymentForms:[],vehicles:[{id:'synthetic-vehicle',plate:'Т001ЕЕ777'}],drivers:[{id:'synthetic-driver',name:'Тестов Тест',vehicleId:'synthetic-vehicle',phone:'+79990000001'}],addresses:[],defaults:{profit:'template-payment-form'},duplicates:[],customerManagers:[],fleetSeedApplied:true}};
+data.companies = [
+  {id:'retained-archive',name:'Synthetic archived client',roles:['payment_counterparty'],directoryArchived:true,managerLabels:[],shipmentIds:[],paymentIds:[],flags:[],phone:'synthetic-preserved'},
+  {id:'legacy-name-only',name:'Synthetic INN client',roles:['payment_counterparty'],managerLabels:[],shipmentIds:[],paymentIds:[],flags:[]},
+  {id:'retained-supplier',name:'Synthetic retained supplier',roles:['supplier'],managerLabels:[],shipmentIds:[],paymentIds:[],flags:[]},
+];
+await writeFile(resolve(store,'operations.json'),JSON.stringify({sha256:hash(JSON.stringify(data)),data}));
+const origin='https://synthetic.example.test';
+const env={ARTEL_ACCOUNT_PASSWORD_KEY:'a'.repeat(64),ARTEL_GEOCODER_ENABLED:'false',ARTEL_CABINET_SYNC_ENABLED:'false',ARTEL_CABINET_ENCRYPTION_KEY:'9'.repeat(64),ARTEL_PUBLIC_ORIGIN:origin,ARTEL_SNAPSHOT_DIR:snapshot,ARTEL_STORE_DIR:store,ARTEL_SETUP_TOKEN:'synthetic-test-only',ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false',PORT:'0'};
+let runtime=await createProductionRuntime(env);
+await runtime.start();
+let cookie;
+const password=randomUUID();
+const request=(path,method='GET',body)=>new Promise((done,reject)=>{
+  const payload=body?JSON.stringify(body):undefined;
+  const req=httpRequest({hostname:'127.0.0.1',port:runtime.server.address().port,path,method,headers:{host:'synthetic.example.test',origin,'content-type':'application/json',...(payload?{'content-length':Buffer.byteLength(payload)}:{}),...(cookie?{cookie}:{})}},response=>{
+    const chunks=[];response.on('data',chunk=>chunks.push(chunk));response.on('error',reject);
+    response.on('end',()=>done(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:Object.fromEntries(Object.entries(response.headers).map(([key,value])=>[key,Array.isArray(value)?value.join(', '):value]))})));
+  });req.on('error',reject);req.end(payload);
+});
+try {
+  assert.equal((await request('/api/cabinets')).status,401);
+  assert.equal((await request('/api/operator/plans')).status,401);
+  assert.equal((await request('/healthz')).status,200);
+  assert.equal((await request('/api/shipment-trips')).status,401);
+  assert.equal((await request('/api/trip-requests')).status,401);
+  assert.equal((await request('/api/trip-requests/map-config')).status,401);
+  assert.equal((await request('/api/maps/yandex/tiles?x=619&y=344&z=10&scale=1')).status,401);
+  const setup=await request('/api/auth/setup','POST',{name:'Synthetic director',login:'image-qa',password,setupToken:'synthetic-test-only'});
+  assert.equal(setup.status,200); cookie=setup.headers.get('set-cookie').split(';')[0];
+  const passwordUsers = await (await request('/api/auth/users')).json();
+  const passwordOwner = passwordUsers.users.find(row => row.login === 'image-qa');
+  assert.equal(passwordOwner.passwordAvailable, true);
+  assert.ok(!JSON.stringify(passwordUsers).includes(password));
+  assert.ok(!JSON.stringify(passwordUsers).includes('passwordCiphertext'));
+  const passwordRead = await request(`/api/auth/users/${passwordOwner.id}/password`, 'POST', {version:passwordOwner.version});
+  assert.equal(passwordRead.status,200);assert.equal(passwordRead.headers.get('cache-control'),'no-store');
+  assert.equal((await passwordRead.json()).password,password);
+  assert.ok(!(await readFile(resolve(store,'operations.json'),'utf8')).includes(password));
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  assert.equal((await (await request(`/api/auth/users/${passwordOwner.id}/password`, 'POST', {version:passwordOwner.version})).json()).password,password);
+  const workScope = await (await request('/api/work')).json();
+  assert.deepEqual(workScope.companies.map(c => c.id), ['retained-supplier']);
+  const scopeBefore = await readFile(resolve(store,'operations.json'),'utf8');
+  for (const companyId of ['legacy-name-only','retained-archive']) {
+    assert.equal((await request('/api/work/tasks','POST',{title:'Excluded company',companyId})).status,400);
+    assert.equal((await request('/api/work/companies','POST',{question:'Excluded company',companyId})).status,400);
+  }
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),scopeBefore);
+  assert.equal((await request('/api/maps/yandex/tiles?x=619&y=344&z=10&scale=1')).status,503);
+  assert.equal((await request('/api/maps/yandex/tiles?x=9999&y=344&z=10&scale=1')).status,400);
+  assert.equal(externalRequests,0);
+  assert.match(setup.headers.get('set-cookie'),/Secure/); assert.match(setup.headers.get('set-cookie'),/HttpOnly/);
+  const cabinetInitial=await (await request('/api/cabinets')).json();
+  assert.equal(cabinetInitial.credentialStorageReady,true); assert.deepEqual(cabinetInitial.connections,[]);
+  const cabinetInput={provider:'glopro',label:'Synthetic cabinet',login:'synthetic-provider-login',password:'synthetic-provider-password'};
+  const cabinetSaved=await request('/api/cabinets','POST',cabinetInput); assert.equal(cabinetSaved.status,201);
+  const cabinetReply=await cabinetSaved.json();assert.equal(cabinetReply.connection.state,'awaiting_setup');
+  assert.ok(!JSON.stringify(cabinetReply).includes(cabinetInput.password));
+  const additionalCabinets=[];
+  for(const provider of ['natcar','rosneft']) {
+    const payload={...cabinetInput,provider,...(provider==='natcar'?{organizationNames:['Synthetic company']}: {})};
+    const response=await request('/api/cabinets','POST',payload);assert.equal(response.status,201);
+    additionalCabinets.push((await response.json()).connection);
+  }
+  const cabinetDisk=await readFile(resolve(store,'operations.json'),'utf8');assert.ok(!cabinetDisk.includes(cabinetInput.password));assert.ok(!cabinetDisk.includes(cabinetInput.login));
+
+  for (const [id,name] of [['retained-archive','Synthetic archived client'],['retained-supplier','Synthetic retained supplier']]) {
+    const payload={kind:'companies',name,roles:['customer'],addresses:[],managerId:null,phone:''};
+    const response=await request('/api/directories','POST',payload);
+    assert.equal(response.status,200,await response.clone().text());
+    const result=await response.json();assert.equal(result.created,false);assert.equal(result.entry.id,id);
+    const saved=(await (await request('/api/snapshot')).json()).companies.find(c=>c.id===id);
+    assert.ok(saved.roles.includes('customer'));assert.ok(!saved.directoryArchived);
+    if(id==='retained-archive')assert.equal(saved.phone,'synthetic-preserved');
+    else assert.ok(saved.roles.includes('supplier'));
+    assert.equal((await request('/api/directories','POST',payload)).status,409);
+  }
+  const identified={kind:'companies',name:'Synthetic INN client',inn:'9999999998',roles:['customer'],addresses:[]};
+  const identifiedResponse=await request('/api/directories','POST',identified);
+  assert.equal(identifiedResponse.status,201,await identifiedResponse.clone().text());
+  const identifiedId=(await identifiedResponse.json()).entry.id;assert.notEqual(identifiedId,'legacy-name-only');
+  const legacy=(await (await request('/api/snapshot')).json()).companies.find(c=>c.id==='legacy-name-only');
+  assert.deepEqual(legacy.roles,['payment_counterparty']);assert.equal(legacy.inn,undefined);
+  assert.equal((await request('/api/directories','POST',identified)).status,409);
+  const add=async value=>{const response=await request('/api/directories','POST',value);assert.equal(response.status,201,await response.clone().text());return (await response.json()).entry;};
+  const supplier=await add({kind:'companies',name:'Synthetic supplier',roles:['supplier'],addresses:[]});
+  const customer=await add({kind:'companies',name:'Synthetic customer',roles:['customer'],addresses:[]});
+  const manager=await add({kind:'managers',name:'Synthetic employee'});
+  const product=await add({kind:'products',name:'Synthetic product',transportProductKind:'diesel',cargoPackaging:'bulk'});
+  const carrier=await add({kind:'companies',name:'Synthetic carrier',roles:['carrier'],addresses:[]});
+  const owner=await add({kind:'companies',name:'Synthetic depot owner',roles:['other'],address:'Synthetic legal address',addresses:[]});
+  const depot=await add({kind:'oilDepots',name:'Synthetic depot',address:'Synthetic physical loading address',ownerCompanyId:owner.id,loadingActorCompanyId:owner.id,infrastructureOwnerCompanyId:owner.id});
+  const vehicle=await add({kind:'vehicles',plate:'Т002ЕЕ777',carrierId:carrier.id});
+  const driver=await add({kind:'drivers',name:'Synthetic linked driver',vehicleId:vehicle.id,carrierId:carrier.id});
+  const delivery = await add({kind:'addresses',companyId:customer.id,addressKind:'delivery',name:'Synthetic delivery site',address:'Synthetic delivery address, 1',latitude:'55.7',longitude:'37.6'});
+  const createRequest = async (litres='20000', price) => {
+    const body={companyId:customer.id,addressId:delivery.id,quantityLitres:litres,executionDate:'2026-10-29',...(price === undefined ? {} : {salePricePerLitre:price}),comment:'',idempotencyKey:randomUUID()};
+    const response=await request('/api/trip-requests','POST',body);assert.equal(response.status,201,await response.clone().text());
+    const saved=(await response.json()).request;assert.equal(saved.executionDate,'2026-10-29');
+    assert.equal((await request('/api/trip-requests/'+saved.id,'PATCH',{version:saved.version,quantityLitres:litres,executionDate:'2026-02-30'})).status,400);
+    const repeat=await request('/api/trip-requests','POST',body);assert.equal(repeat.status,201);assert.equal((await repeat.json()).request.id,saved.id);
+    return saved;
+  };
+  const mapConfig=await request('/api/trip-requests/map-config');assert.equal(mapConfig.status,200);assert.deepEqual(await mapConfig.json(),{provider:'yandex',configured:false,rendering:'tiles',projection:'web_mercator'});
+  const sourceRequest=await createRequest('20000','65'); assert.equal(sourceRequest.salePricePerLitre,'65');
+  const activeRequests=await (await request('/api/trip-requests')).json();assert.equal(activeRequests.requests.length,1);assert.equal(activeRequests.requests[0].quantityLitres,'20000');
+  const catalog=(await (await request('/api/snapshot')).json()).directories;
+  const payload={idempotencyKey:randomUUID(),fields:{organization_id:'nk-artel',date:'2026-09-28',loading_at:'2026-09-28T10:30',supplier_id:supplier.id,oil_depot_id:depot.id,product_id:product.id,purchase_price_unspecified_unit:'60000',quantity_tonnes:'16',driver_id:driver.id,vehicle_id:vehicle.id},customers:[{sourceRequestId:sourceRequest.id,sourceRequestVersion:sourceRequest.version,fields:{customer_id:customer.id,unloading_address_id:delivery.id,manager_id:manager.id,payment_form_id:catalog.paymentForms[0].id,quantity_litres:'20000',sale_price_per_litre:'70',transport_amount:'8000',invoice_not_required:'true'}}]};
+  const missingRequest=structuredClone(payload);missingRequest.idempotencyKey=randomUUID();delete missingRequest.customers[0].sourceRequestId;delete missingRequest.customers[0].sourceRequestVersion;
+  const direct = await request('/api/shipment-trips','POST',missingRequest); assert.equal(direct.status,201,await direct.clone().text()); const directTrip=(await direct.json()).trip; assert.ok(!directTrip.customers[0].fields.source_request_id); assert.equal((await (await request('/api/trip-requests')).json()).requests.length,1); assert.equal((await request('/api/shipment-trips/'+directTrip.id,'DELETE',{versions:Object.fromEntries(directTrip.customers.map(row=>[row.id,row.version]))})).status,200);
+  const created=await request('/api/shipment-trips','POST',payload);assert.equal(created.status,201,await created.clone().text());
+  const trip=(await created.json()).trip; assert.equal(trip.number,2);
+  assert.equal((await (await request('/api/trip-requests')).json()).requests.length,0);
+  assert.equal(trip.customers[0].fields.source_request_id,sourceRequest.id);
+  assert.equal(trip.customers[0].fields.unloading_latitude,'55.7');
+  const duplicateConsumption={...payload,idempotencyKey:randomUUID()};assert.equal((await request('/api/shipment-trips','POST',duplicateConsumption)).status,409);
+  const editableRequest=await createRequest('99');
+  const editedResponse=await request(`/api/trip-requests/${editableRequest.id}`,'PATCH',{version:editableRequest.version,quantityLitres:'100.123456',salePricePerLitre:'66,5',comment:'Synthetic revised need'});assert.equal(editedResponse.status,200);const editedRequest=(await editedResponse.json()).request;
+  assert.equal(editedRequest.quantityLitres,'100.123456');
+  assert.equal((await request(`/api/trip-requests/${editableRequest.id}`,'DELETE',{version:editedRequest.version})).status,200);
+  assert.equal((await (await request('/api/trip-requests')).json()).requests.length,0);
+  assert.equal(trip.fields.quantity_gross_tonnes,'16');
+  assert.equal(trip.fields.loading_address,'Synthetic physical loading address');
+  assert.equal(trip.fields.loading_actual_at,'2026-09-28T10:30');
+  assert.equal(trip.customers[0].fields.unloading_actual_at,'2026-09-28T10:30');
+  assert.equal(trip.fields.carrier_id,null);
+  const repeat=await request('/api/shipment-trips','POST',payload);assert.equal((await repeat.json()).trip.id,trip.id);
+  assert.equal((await (await request('/api/shipment-trips')).json()).trips.length,1);
+  const saby=await (await request(`/api/shipment-trips/${trip.id}/saby`)).json();assert.equal(saby.readiness.ready,false);assert.equal(saby.saby.documents.length,0);
+  assert.equal((await request(`/api/shipment-trips/${trip.id}/saby`,'POST',{})).status,422);
+  const etrnResponse=await request(`/api/shipment-trips/${trip.id}/etrn`);assert.equal(etrnResponse.status,200);const etrn=await etrnResponse.json();assert.equal(etrn.configured,false);assert.equal(etrn.deliveries.length,1);assert.ok(etrn.deliveries[0].blockers.length);
+  assert.equal((await request(`/api/shipment-trips/${trip.id}/etrn/submit`,'POST',{shipmentId:trip.customers[0].id})).status,422);
+  const savedEtrn=await request(`/api/shipment-trips/${trip.id}/etrn`,'PUT',{shipmentId:trip.customers[0].id,profile:{confirmed:false,order:{number:'synthetic-durable-draft'}}});assert.equal(savedEtrn.status,200,await savedEtrn.clone().text());
+
+  // Real bundled HTTP driver routes, synthetic store only, no external network.
+  const driverAccessPath = `/api/drivers/${driver.id}/access`;
+  const accessRead = await request(driverAccessPath); assert.equal(accessRead.status, 200);
+  assert.equal((await accessRead.json()).access.status, 'not-issued');
+  const issuedResponse = await request(driverAccessPath, 'POST', {version:0,action:'issue'});
+  assert.equal(issuedResponse.status, 200);
+  const issued = await issuedResponse.json();
+  assert.ok(issued.temporaryPassword.length >= 24);
+  const safeAccess = await request(driverAccessPath); assert.ok(!(await safeAccess.text()).includes(issued.temporaryPassword));
+  const duplicateIssue = await (await request(driverAccessPath, 'POST', {version:1,action:'issue'})).json();
+  assert.equal(duplicateIssue.temporaryPassword, undefined); assert.equal(duplicateIssue.access.userId, issued.access.userId);
+  const directorCookie = cookie;
+  const driverLogin = await request('/api/auth/login', 'POST', {login:issued.access.login,password:issued.temporaryPassword});
+  assert.equal(driverLogin.status, 200); cookie = driverLogin.headers.get('set-cookie').split(';')[0];
+  const driverTrips = await (await request('/api/driver/trips')).json(); assert.equal(driverTrips.total, 1); assert.equal(driverTrips.trips[0].id,trip.id); assert.equal(driverTrips.trips[0].number,trip.number);
+  assert.ok(!JSON.stringify(driverTrips).includes('transport_amount'));
+  for (const path of ['/api/snapshot','/api/auth/users','/api/directories','/api/shipment-trips','/api/trip-requests','/api/trip-requests/map-config','/api/maps/yandex/tiles?x=619&y=344&z=10&scale=1','/api/banking','/api/work','/api/operator','/api/operator/plans']) assert.equal((await request(path)).status,403,path);
+  assert.equal((await request('/api/driver/trips/foreign')).status,404);
+  assert.equal((await request('/api/driver/trips','POST',{})).status,403);
+  assert.equal((await request(`/api/shipment-trips/${trip.id}/etrn/files/foreign/file`)).status,403);
+  const notificationConfig = await request('/api/push/config'); assert.equal(notificationConfig.status,200);
+  assert.equal((await notificationConfig.json()).enabled,false);
+  assert.equal((await request('/api/push/subscription','POST',{})).status,503);
+  const persisted = JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.equal(persisted.push.tripAssignments[trip.id].driverId,driver.id);
+  assert.equal(Object.keys(persisted.push.tripAssignments).length,1);
+  const driverCookie = cookie; cookie = directorCookie;
+  const reset = await (await request(driverAccessPath,'POST',{version:1,action:'reset'})).json();
+  assert.equal(reset.access.version,2); assert.notEqual(reset.temporaryPassword,issued.temporaryPassword);
+  cookie=driverCookie; assert.equal((await request('/api/driver/trips')).status,401); cookie=directorCookie;
+  const customPassword = randomUUID();
+  assert.equal((await request(driverAccessPath,'POST',{version:2,action:'reset',password:'short'})).status,400);
+  const customResponse = await request(driverAccessPath,'POST',{version:2,action:'reset',password:customPassword});
+  assert.equal(customResponse.status,200);
+  const custom = await customResponse.json(); assert.ok(custom.temporaryPassword === customPassword); assert.equal(custom.access.version,3);
+  assert.equal((await request('/api/auth/login','POST',{login:issued.access.login,password:reset.temporaryPassword})).status,401);
+  assert.equal((await request('/api/auth/login','POST',{login:issued.access.login,password:customPassword})).status,200);
+  assert.ok(!(await (await request(driverAccessPath)).text()).includes(customPassword));
+  const renamedResponse=await request(driverAccessPath,'PATCH',{version:3,login:'synthetic.renamed'});assert.equal(renamedResponse.status,200);
+  const renamed=(await renamedResponse.json()).access;assert.equal(renamed.login,'synthetic.renamed');assert.equal(renamed.userId,issued.access.userId);assert.equal(renamed.version,4);
+  assert.equal((await request('/api/auth/login','POST',{login:issued.access.login,password:customPassword})).status,401);
+  assert.equal((await request('/api/auth/login','POST',{login:renamed.login,password:customPassword})).status,200);
+  assert.equal((await request(driverAccessPath,'PATCH',{version:4,active:false})).status,200);
+  const renamedRevoked=await request(driverAccessPath,'PATCH',{version:5,login:'synthetic.revoked'});assert.equal(renamedRevoked.status,200);
+  assert.equal((await renamedRevoked.json()).access.active,false);
+  assert.equal((await request('/api/auth/login','POST',{login:'synthetic.revoked',password:customPassword})).status,401);
+
+  const unifiedUsers = await (await request('/api/auth/users')).json();
+  assert.ok(unifiedUsers.users.some(user => user.id === issued.access.userId && user.role === 'driver'));
+  assert.doesNotMatch(JSON.stringify(unifiedUsers), /passwordHash|temporaryPassword|salt/);
+  for (const role of ['employee', 'logistician']) {
+    const entry = await add({kind:'managers',name:'Synthetic new role ' + role});
+    const response = await request('/api/auth/users','POST',{name:'Synthetic '+role,login:'image.'+role,password,role,managerId:entry.id,sections:['work']});
+    assert.equal(response.status,201); const user=(await response.json()).user;
+    assert.deepEqual(user.sections,['work']);
+    const signed=await request('/api/auth/login','POST',{login:user.login,password});
+    assert.equal(signed.status,200); const savedCookie=cookie; cookie=signed.headers.get('set-cookie').split(';')[0];
+    assert.equal((await request('/api/work')).status,200);
+    assert.equal((await request('/api/auth/users')).status,403);
+    assert.equal((await request('/api/shipment-trips')).status,403);
+    assert.equal((await request('/api/operator/plans')).status,403);
+    cookie=savedCookie;
+  }
+  const opRecipient = await request('/api/operator/recipients','POST',{name:'Synthetic recipient',bank:'Synthetic bank',card:'0000000000000000',phone:'',details:'Test only',idempotencyKey:randomUUID()});
+  assert.equal(opRecipient.status,201); const opRecipientId=(await opRecipient.json()).id;
+  const opPayload={date:'2026-10-19',name:'Synthetic fuel driver',service:'Synthetic service',discountPercent:'5',litres:'100.5',pricePerLitre:'65',amount:'6200.25',comment:'Synthetic only',recipientId:opRecipientId,recipientVersion:1,idempotencyKey:randomUUID()};
+  const opCreated=await request('/api/operator/refuellings','POST',opPayload);assert.equal(opCreated.status,201);const opId=(await opCreated.json()).id;
+  assert.equal((await request('/api/operator/refuellings','POST',opPayload)).status,200);
+  const opPayment={version:1,paid:true,idempotencyKey:randomUUID()};
+  assert.equal((await request(`/api/operator/refuellings/${opId}/payment`,'PATCH',opPayment)).status,200);
+  assert.equal((await request(`/api/operator/refuellings/${opId}/payment`,'PATCH',opPayment)).status,200);
+  // Version 2 uses the normal directory grant, formula totals and operation-local recipient text.
+  const operatorDirectorCookie = cookie;
+  const operatorEmployee = await add({kind:'managers',name:'Synthetic operator directory editor'});
+  const operatorAccount = await request('/api/auth/users','POST',{name:'Synthetic operator directory editor',login:'image.operator.directories',password,role:'employee',managerId:operatorEmployee.id,sections:['operator','directories'],directoryGrants:['operatorServices']});
+  assert.equal(operatorAccount.status,201,await operatorAccount.clone().text());
+  const operatorUser=(await operatorAccount.json()).user;
+  assert.deepEqual(operatorUser.sections,['operator','directories']);
+  const operatorLogin=await request('/api/auth/login','POST',{login:operatorUser.login,password});
+  assert.equal(operatorLogin.status,200);
+  const operatorCookie=operatorLogin.headers.get('set-cookie').split(';')[0];cookie=operatorCookie;
+  const operatorRawBeforeRead=await readFile(resolve(store,'operations.json'),'utf8');
+  const operatorCatalogResponse=await request('/api/directories');assert.equal(operatorCatalogResponse.status,200);
+  const operatorCatalog=(await operatorCatalogResponse.json()).directories;
+  assert.deepEqual(operatorUser.directoryGrants,['operatorServices']);
+  assert.deepEqual(operatorCatalog.oilDepots,[]);
+  assert.equal((await request('/api/directories','POST',{kind:'oilDepots',name:'Closed depot'})).status,403);
+  assert.deepEqual(operatorCatalog.operatorGroups,[]);
+  assert.deepEqual(operatorCatalog.operatorServices.map(row=>[row.name,row.discountPercent]),[['Роснефть','10'],['Лукойл','10'],['ГПН','10'],['Яндекс','10'],['ННК','10']]);
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),operatorRawBeforeRead);
+  const operatorGroup=await add({kind:'operatorGroups',name:'Synthetic group initial'});
+  const groupEdit=await request(`/api/directories/operatorGroups/${operatorGroup.id}`,'PATCH',{version:operatorGroup.version,name:'Synthetic group edited'});
+  assert.equal(groupEdit.status,200);const savedGroup=(await groupEdit.json()).entry;assert.equal(savedGroup.version,operatorGroup.version+1);
+  const operatorService=await add({kind:'operatorServices',name:'Synthetic service catalog',discountPercent:'20'});
+  const serviceEdit=await request(`/api/directories/operatorServices/${operatorService.id}`,'PATCH',{version:operatorService.version,name:'Synthetic service edited',discountPercent:'12,5',backgroundColor:'#145678'});
+  assert.equal(serviceEdit.status,200);const savedService=(await serviceEdit.json()).entry;assert.equal(savedService.discountPercent,'12.5');assert.equal(savedService.backgroundColor,'#145678');assert.equal(savedService.discountHistory[0].discountPercent,'20');
+  const operatorRate=operatorCatalog.operatorServices[0];
+  const directoryUnaffected=await readFile(resolve(store,'operations.json'),'utf8');
+  assert.equal((await request(`/api/directories/operatorGroups/${operatorGroup.id}`,'PATCH',{version:operatorGroup.version,name:'Stale group'})).status,409);
+  assert.equal((await request(`/api/directories/operatorServices/${operatorService.id}`,'PATCH',{version:operatorService.version,name:operatorService.name,discountPercent:'15'})).status,409);
+  assert.equal((await request(`/api/directories/operatorServices/${operatorService.id}`,'PATCH',{version:savedService.version,name:savedService.name,discountPercent:'101'})).status,400);
+  for(const [kind,entry] of [['operatorGroups',savedGroup],['operatorServices',savedService]])assert.equal((await request(`/api/directories/${kind}/${entry.id}`,'DELETE',{version:entry.version})).status,400);
+  for(const path of ['/api/auth/users','/api/banking/export','/api/directories/cleanup','/api/directories/reconcile-customers'])assert.equal((await request(path)).status,403,path);
+  assert.equal((await request(`/api/shipments/${trip.customers[0].id}`,'DELETE',{version:trip.customers[0].version})).status,403);
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),directoryUnaffected);
+  const recipientText='Synthetic recipient name\nSynthetic bank / 0000000000000000';
+  const v2Payload={schemaVersion:2,date:new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),name:'Synthetic formula driver',groupId:savedGroup.id,serviceId:operatorRate.id,serviceVersion:operatorRate.version??0,discountPercent:'10',litres:'100',pricePerLitre:'78.45',amount:'7060.50',amountMode:'auto',recipientText,comment:'Synthetic formula only',idempotencyKey:randomUUID()};
+  const beforeInvalidFuel=await readFile(resolve(store,'operations.json'),'utf8');
+  for(const [fields,status] of [[{amount:'7061'},400],[{litres:'100.125'},400],[{pricePerLitre:'78.451'},400],[{recipientId:opRecipientId},400],[{recipientText:''},400],[{groupId:''},400],[{discountPercent:'8',amount:'7217.40'},409]])assert.equal((await request('/api/operator/refuellings','POST',{...v2Payload,...fields,idempotencyKey:randomUUID()})).status,status);
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),beforeInvalidFuel);
+  const v2Created=await request('/api/operator/refuellings','POST',v2Payload);assert.equal(v2Created.status,201,await v2Created.clone().text());const v2HistoricalId=(await v2Created.json()).id;
+  const v2Repeated=await request('/api/operator/refuellings','POST',v2Payload);assert.equal(v2Repeated.status,200);assert.equal((await v2Repeated.json()).id,v2HistoricalId);
+  const manualPayload={...v2Payload,name:'Synthetic manually adjusted driver',amountMode:'manual',amount:'7000.17',idempotencyKey:randomUUID()};
+  const manualCreated=await request('/api/operator/refuellings','POST',manualPayload);assert.equal(manualCreated.status,201);const v2ManualId=(await manualCreated.json()).id;
+  const readOperatorRow=async id=>(await (await request('/api/operator')).json()).refuellings.find(row=>row.id===id);
+  const saveV2=async(body,version)=>{const response=await request(`/api/operator/refuellings/${v2ManualId}`,'PATCH',{...body,version,idempotencyKey:randomUUID()});assert.equal(response.status,200,await response.clone().text());return readOperatorRow(v2ManualId);};
+  const retainedManual=await saveV2({...manualPayload,comment:'Only the comment changes'},1);assert.equal(retainedManual.amount,'7000.17');assert.equal(retainedManual.amountMode,'manual');
+  // The form explicitly resets mode and supplies the newly calculated total after each input change.
+  const litresReset={...manualPayload,litres:'200',amountMode:'auto',amount:'14121.00'};
+  const afterLitres=await saveV2(litresReset,2);assert.equal(afterLitres.amount,'14121.00');assert.equal(afterLitres.amountMode,'auto');
+  const priceReset={...litresReset,pricePerLitre:'80',amount:'14400.00'};
+  const afterPrice=await saveV2(priceReset,3);assert.equal(afterPrice.amount,'14400.00');
+  const serviceReset={...priceReset,serviceId:savedService.id,serviceVersion:savedService.version,discountPercent:'12.5',amount:'14000.00'};
+  const afterService=await saveV2(serviceReset,4);assert.equal(afterService.amount,'14000.00');assert.equal(afterService.service,savedService.name);
+  const catalogRateChanged=await request(`/api/directories/operatorServices/${operatorRate.id}`,'PATCH',{version:operatorRate.version??0,name:operatorRate.name,discountPercent:'8'});assert.equal(catalogRateChanged.status,200);const currentRate=(await catalogRateChanged.json()).entry;
+  const previousDay=new Date(Date.parse(v2Payload.date)-86400000).toISOString().slice(0,10);
+  assert.equal((await request('/api/operator/refuellings','POST',{...v2Payload,date:previousDay,serviceVersion:currentRate.version,discountPercent:'8',amount:'7217.40',idempotencyKey:randomUUID()})).status,409);
+  assert.equal(currentRate.discountHistory[0].discountPercent,'10');
+  const oldTerms=await readOperatorRow(v2HistoricalId);assert.equal(oldTerms.discountPercent,'10');assert.equal(oldTerms.amount,'7060.50');assert.equal(oldTerms.serviceVersion,0);assert.equal(oldTerms.groupName,savedGroup.name);
+  const oldBeforeStale=await readFile(resolve(store,'operations.json'),'utf8');
+  assert.equal((await request('/api/operator/refuellings','POST',{...v2Payload,idempotencyKey:randomUUID()})).status,409);
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),oldBeforeStale);
+  const resetAgain=await saveV2({...serviceReset,amountMode:'manual',amount:'13999.50'},5);assert.equal(resetAgain.amount,'13999.50');
+  const changedBack={...priceReset,serviceId:currentRate.id,serviceVersion:currentRate.version,discountPercent:'8',amount:'14720.00',amountMode:'auto'};
+  const afterCurrentRate=await saveV2(changedBack,6);assert.equal(afterCurrentRate.discountPercent,'8');assert.equal(afterCurrentRate.amount,'14720.00');assert.equal(afterCurrentRate.amountMode,'auto');
+  const v2Payment={version:7,paid:true,idempotencyKey:randomUUID()};
+  assert.equal((await request(`/api/operator/refuellings/${v2ManualId}/payment`,'PATCH',v2Payment)).status,200);
+  assert.equal((await request(`/api/operator/refuellings/${v2ManualId}/payment`,'PATCH',v2Payment)).status,200);
+  assert.equal((await request(`/api/operator/refuellings/${v2ManualId}`,'PATCH',{...changedBack,version:8,comment:'Denied paid edit',idempotencyKey:randomUUID()})).status,409);
+  const afterV2=await (await request('/api/operator')).json();assert.equal(afterV2.refuellings.length,3);assert.equal(afterV2.recipients.length,1);assert.equal(afterV2.recipients[0].id,opRecipientId);
+  for(const id of [v2HistoricalId,v2ManualId]){const row=afterV2.refuellings.find(row=>row.id===id);assert.equal(row.recipientText,recipientText);assert.equal(row.recipient,undefined);assert.equal(row.recipientId,undefined);assert.equal(row.schemaVersion,2);}
+  const v2Disk=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.equal(Object.keys(v2Disk.operator.recipients).length,1);assert.equal(v2Disk.operator.refuellings[v2HistoricalId].discountPercent,'10');
+  assert.equal(v2Disk.directories.operatorServices.find(row=>row.id===operatorRate.id).discountPercent,'8');
+  assert.deepEqual(v2Disk.accounts.users.find(row=>row.id===operatorUser.id).sections,['operator','directories']);
+  cookie=operatorDirectorCookie;
+  // The scoped session remains a separate audience across runtime restarts.
+  const mainCookie=cookie;
+  const logisticsLogin=await request('/api/logistics/auth/login','POST',{login:'image-qa',password});
+  assert.equal(logisticsLogin.status,200,await logisticsLogin.clone().text());
+  const logisticsCookie=logisticsLogin.headers.get('set-cookie').split(';')[0];
+  assert.match(logisticsLogin.headers.get('set-cookie'),/Path=\/api\/logistics;/);
+  cookie=logisticsCookie;
+  assert.equal((await request('/api/snapshot')).status,401);
+  assert.equal((await request('/api/logistics/snapshot')).status,403);
+  assert.equal((await request('/api/logistics/banking')).status,403);
+  const context=await (await request('/api/logistics/context')).json();
+  assert.deepEqual(Object.keys(context).sort(),['companies','directories']);
+  assert.ok(!JSON.stringify(context).includes('paymentCounterparty'));
+  assert.equal((await (await request('/api/logistics/shipment-trips')).json()).trips[0].id,trip.id);
+  cookie=logisticsCookie.replace('artel_logistics_session=','artel_session=');
+  assert.equal((await request('/api/snapshot')).status,401);
+  cookie=mainCookie;
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  const opRestored=await (await request('/api/operator')).json();assert.equal(opRestored.refuellings.length,3);
+  const legacyRestored=opRestored.refuellings.find(row=>row.id===opId);assert.equal(legacyRestored.amount,'6200.25');assert.equal(legacyRestored.paid,true);assert.equal(legacyRestored.paymentHistory.length,1);assert.equal(legacyRestored.recipientId,opRecipientId);
+  const formulaRestored=opRestored.refuellings.find(row=>row.id===v2HistoricalId);assert.equal(formulaRestored.discountPercent,'10');assert.equal(formulaRestored.amount,'7060.50');assert.equal(formulaRestored.recipientText,recipientText);assert.equal(formulaRestored.recipientId,undefined);
+  const manualRestored=opRestored.refuellings.find(row=>row.id===v2ManualId);assert.equal(manualRestored.discountPercent,'8');assert.equal(manualRestored.amount,'14720.00');assert.equal(manualRestored.amountMode,'auto');assert.equal(manualRestored.paid,true);assert.equal(manualRestored.paymentHistory.length,1);assert.equal(manualRestored.paymentHistory[0].actorId,operatorUser.id);
+  assert.equal(opRestored.recipients.length,1);
+  cookie=operatorCookie;assert.equal((await request('/api/operator')).status,200);
+  const catalogRestored=await (await request('/api/directories')).json();assert.equal(catalogRestored.directories.operatorGroups.find(row=>row.id===savedGroup.id).name,savedGroup.name);assert.equal(catalogRestored.directories.operatorServices.find(row=>row.id===currentRate.id).discountPercent,'8');assert.equal(catalogRestored.directories.operatorServices.find(row=>row.id===savedService.id).discountPercent,'12.5');assert.equal((await request('/api/auth/users')).status,403);cookie=mainCookie;
+  const restartedUsers = await (await request('/api/auth/users')).json();
+  for (const role of ['employee','logistician','driver']) assert.ok(restartedUsers.users.some(user => user.role === role));
+  const restartedSnapshot=await (await request('/api/snapshot')).json();
+  for(const id of ['retained-archive','retained-supplier',identifiedId])assert.ok(restartedSnapshot.companies.find(c=>c.id===id).roles.includes('customer'));
+  const restoredEtrn=await (await request(`/api/shipment-trips/${trip.id}/etrn`)).json();assert.equal(restoredEtrn.deliveries[0].profile.order.number,'synthetic-durable-draft');assert.equal(restoredEtrn.deliveries[0].document,null);
+  assert.equal((await (await request('/api/shipment-trips')).json()).trips[0].id,trip.id);
+  assert.equal((await request('/api/auth/session')).status,200);
+
+  cookie=logisticsCookie;
+  assert.equal((await request('/api/logistics/context')).status,200);
+  assert.equal((await request('/api/logistics/auth/logout','POST',{})).status,200);
+  assert.equal((await request('/api/logistics/context')).status,401);
+  cookie=mainCookie;
+  assert.equal((await request('/api/snapshot')).status,200);
+  // New driver flow uses the same bundled API, still only this /tmp fixture.
+  const flowDriver = await add({kind:'drivers',name:'Synthetic driver flow',vehicleId:vehicle.id});
+  const flowFields = {...payload.fields,organization_id:'artel',trip_flow_version:'driver-v1',date:'2099-10-08',loading_at:'2099-10-08T09:00',driver_id:flowDriver.id};
+  delete flowFields.quantity_tonnes;
+  const flowSources=[await createRequest(),await createRequest()];
+  const flowPayload = {idempotencyKey:randomUUID(),fields:flowFields,customers:flowSources.map(source=>({...structuredClone(payload.customers[0]),sourceRequestId:source.id,sourceRequestVersion:source.version}))};
+  const flowCreated = await request('/api/shipment-trips','POST',flowPayload);
+  assert.equal(flowCreated.status,201,await flowCreated.clone().text());
+  const flowResult = await flowCreated.json(), flowTrip = flowResult.trip;
+  assert.equal(flowTrip.fields.quantity_tonnes,null); assert.equal(flowTrip.fields.loading_actual_at,null);
+  assert.equal(flowTrip.fields.loading_planned_at,'2099-10-08T09:00');
+  assert.equal(new Set(flowTrip.customers.map(row=>row.id)).size,2);
+  for (const row of flowResult.shipments) {
+    for (const key of ['quantity_tonnes','quantity_gross_tonnes','purchase_amount','profit_source','unloading_actual_at','unloading_planned_at']) assert.equal(row.fields[key],null,key);
+    assert.ok(Number(row.fields.customer_amount)>0);
+  }
+  const flowIssued = await (await request(`/api/drivers/${flowDriver.id}/access`,'POST',{version:0,action:'issue'})).json();
+  const flowLogin = await request('/api/auth/login','POST',{login:flowIssued.access.login,password:flowIssued.temporaryPassword});
+  assert.equal(flowLogin.status,200); cookie=flowLogin.headers.get('set-cookie').split(';')[0];
+  const flowCookie=cookie, flowPath=`/api/driver/trips/${flowTrip.id}`;
+  const flowRead=async()=>{const response=await request(flowPath);assert.equal(response.status,200);return (await response.json()).trip;};
+  const initialFlow=await flowRead();
+  assert.equal(initialFlow.archived,false); assert.equal(initialFlow.arrivedAt,null); assert.equal(initialFlow.departedAt,null);
+  assert.doesNotMatch(JSON.stringify(initialFlow),/purchase|sale_price|profit|bank|certificate|password|manager/);
+  const masses=initialFlow.deliveries.map((row,index)=>({deliveryId:row.id,netTonnes:index?'3.000001':'2.123456'}));
+  assert.equal((await request(flowPath+'/depart','POST',{versions:initialFlow.versions,masses})).status,409);
+  assert.equal((await request(flowPath+'/arrive','POST',{versions:initialFlow.versions,arrivedAt:'2000-01-01T00:00:00Z'})).status,400);
+  const arrivedResponse=await request(flowPath+'/arrive','POST',{versions:initialFlow.versions});assert.equal(arrivedResponse.status,200);
+  const arrived=(await arrivedResponse.json()).trip;
+  assert.ok(arrived.arrivedAt); assert.equal(arrived.departedAt,null);
+  const arrivalRepeat=await request(flowPath+'/arrive','POST',{versions:initialFlow.versions});
+  assert.equal((await arrivalRepeat.json()).trip.arrivedAt,arrived.arrivedAt);
+  assert.equal((await request(flowPath+'/depart','POST',{versions:arrived.versions,masses:masses.slice(0,1)})).status,400);
+  assert.equal((await flowRead()).departedAt,null);
+  const departedResponse=await request(flowPath+'/depart','POST',{versions:arrived.versions,masses});assert.equal(departedResponse.status,200);
+  const departed=(await departedResponse.json()).trip;
+  assert.ok(departed.departedAt);assert.equal(departed.archived,false);
+  assert.deepEqual(departed.deliveries.map(row=>row.netTonnes),['2.123456','3.000001']);
+  const departureRepeat=await request(flowPath+'/depart','POST',{versions:arrived.versions,masses});assert.equal(departureRepeat.status,200);
+  assert.equal((await departureRepeat.json()).trip.departedAt,departed.departedAt);
+  cookie=mainCookie;
+  assert.equal((await (await request(`/api/shipment-trips/${flowTrip.id}`)).json()).trip.fields.quantity_tonnes,'5.123457');
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();cookie=flowCookie;
+  const restartedFlow=await flowRead();assert.equal(restartedFlow.arrivedAt,arrived.arrivedAt);assert.equal(restartedFlow.departedAt,departed.departedAt);
+  assert.equal(restartedFlow.archived,false);assert.deepEqual(restartedFlow.deliveries.map(row=>row.netTonnes),['2.123456','3.000001']);cookie=mainCookie;
+  // Physical execution is independent of Saby; verify the bundled routes and restart.
+  const executionBefore=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  cookie=flowCookie;
+  assert.equal((await request(flowPath+'/complete','POST',{versions:restartedFlow.versions,executionVersion:0})).status,410);
+  let execution=restartedFlow.execution;
+  for(const row of restartedFlow.deliveries){
+    const actionBody={versions:restartedFlow.versions,executionVersion:execution.version,deliveryId:row.id};
+    cookie=mainCookie;
+    const path=`/api/shipment-trips/${flowTrip.id}/execution/deliver`;
+    const response=await request(path,'POST',actionBody);assert.equal(response.status,200,await response.clone().text());
+    execution=(await response.json()).execution;
+    assert.deepEqual((await (await request(path,'POST',actionBody)).json()).execution,execution);
+    cookie=flowCookie;
+  }
+  assert.equal(execution.stage,'completed');
+  const completedExecution=await flowRead();assert.equal(completedExecution.archived,true);
+  assert.equal(completedExecution.execution.completed.role,'logistics');
+  assert.equal(completedExecution.execution.completed.kind,undefined);
+  assert.equal(completedExecution.execution.version,restartedFlow.deliveries.length);
+  cookie=mainCookie;
+  const deniedBefore=await readFile(resolve(store,'operations.json'),'utf8');
+  assert.equal((await request(`/api/shipment-trips/${flowTrip.id}/execution/deliver`,'POST',{versions:restartedFlow.versions,executionVersion:execution.version,deliveryId:restartedFlow.deliveries[0].id})).status,200);
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),deniedBefore);
+  cookie=flowCookie;
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  assert.deepEqual((await flowRead()).execution,completedExecution.execution);
+  cookie=mainCookie;
+  assert.deepEqual((await (await request(`/api/shipment-trips/${flowTrip.id}/execution`)).json()).execution,completedExecution.execution);
+  const executionAfter=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  for(const key of ['shipments','driverTripProgress','etrn','tripSaby','saby','banking','operator'])assert.deepEqual(executionAfter[key],executionBefore[key],key);
+  const cabinetsAfterRestart=await (await request('/api/cabinets')).json();
+  assert.equal(cabinetsAfterRestart.credentialStorageReady,true);assert.equal(cabinetsAfterRestart.connections.length,3);assert.deepEqual(cabinetsAfterRestart.connections[0],cabinetReply.connection);
+  assert.deepEqual(cabinetsAfterRestart.connections.slice(1),additionalCabinets);
+  const parsedCabinetDisk=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.ok(parsedCabinetDisk.cabinets.connections[cabinetReply.connection.id].encryptedCredentials.startsWith('v1.'));
+  const requestHistoryData=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.equal(requestHistoryData.tripRequests[sourceRequest.id].status,'consumed');assert.equal(requestHistoryData.tripRequests[sourceRequest.id].tripId,trip.id);
+  assert.equal(requestHistoryData.tripRequests[editableRequest.id].status,'cancelled');assert.equal(requestHistoryData.tripRequests[editableRequest.id].quantityLitres,'100.123456');
+  assert.equal(requestHistoryData.tripRequests[sourceRequest.id].salePricePerLitre,'65');
+  assert.equal(trip.customers[0].fields.sale_price_per_litre,'70');
+  assert.equal(requestHistoryData.tripRequests[editableRequest.id].salePricePerLitre,'66.5');
+  assert.ok(flowSources.every(source=>requestHistoryData.tripRequests[source.id].status==='consumed'));
+  assert.equal((await (await request('/api/trip-requests')).json()).requests.length,0);assert.equal(externalRequests,0);
+  const pricedSource=await createRequest('15000','65');
+  const pricedPayload=structuredClone(payload);pricedPayload.idempotencyKey=randomUUID();
+  pricedPayload.customers[0].sourceRequestId=pricedSource.id;pricedPayload.customers[0].sourceRequestVersion=pricedSource.version;
+  delete pricedPayload.customers[0].fields.sale_price_per_litre;delete pricedPayload.customers[0].fields.quantity_litres;
+  const pricedResponse=await request('/api/shipment-trips','POST',pricedPayload);assert.equal(pricedResponse.status,201,await pricedResponse.clone().text());
+  const pricedTrip=(await pricedResponse.json()).trip;
+  assert.equal(pricedTrip.customers[0].fields.sale_price_per_litre,'65');assert.equal(pricedTrip.customers[0].fields.quantity_litres,'15000');
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();cookie=mainCookie;
+  const pricedRead=(await (await request('/api/shipment-trips/'+pricedTrip.id)).json()).trip;
+  assert.equal(pricedRead.customers[0].fields.sale_price_per_litre,'65');assert.equal(pricedRead.customers[0].fields.quantity_litres,'15000');
+
+  // Plans and V3 allocations: real bundled handlers, employee session, synthetic /tmp store.
+  cookie=operatorCookie;
+  const moneyCents=value=>{
+    assert.match(value,/^\d+(?:\.\d{1,2})?$/);
+    const [whole,fraction='']=value.split('.');
+    return BigInt(whole)*100n+BigInt(fraction.padEnd(2,'0'));
+  };
+  const equalMoney=(actual,expected)=>assert.equal(moneyCents(actual),moneyCents(expected));
+  const operatorRead=async()=>{
+    const response=await request('/api/operator');assert.equal(response.status,200);
+    return response.json();
+  };
+  const planRead=async id=>{
+    const plan=(await operatorRead()).plans.find(row=>row.id===id);assert.ok(plan);return plan;
+  };
+  const planRecipient=(name,limit)=>({id:randomUUID(),name,bank:'Synthetic plan bank',card:'0000000000000000',phone:'',details:'Synthetic only',limit});
+  const createPlan=async(clientName,managerId,recipients)=>{
+    const payload={clientName,managerId,recipients,idempotencyKey:randomUUID()};
+    const created=await request('/api/operator/plans','POST',payload);assert.equal(created.status,201,await created.clone().text());
+    const result=await created.json();const first=await planRead(result.id);
+    const replay=await request('/api/operator/plans','POST',payload);assert.equal(replay.status,200,await replay.clone().text());
+    assert.equal((await replay.json()).id,result.id);assert.deepEqual(await planRead(result.id),first);
+    return first;
+  };
+  const recipientsA=[planRecipient('Synthetic first card','10000.00'),planRecipient('Synthetic second card','50000.00')];
+  const planA=await createPlan('Synthetic customer split cards','aidar',recipientsA);
+  assert.equal(planA.status,'active');equalMoney(planA.totalLimit,'60000.00');equalMoney(planA.remaining,'60000.00');
+  const fuelV3=(plan,allocations,amount='35000.00')=>({schemaVersion:3,date:v2Payload.date,name:'Synthetic plan fuel driver',groupId:savedGroup.id,serviceId:currentRate.id,serviceVersion:currentRate.version,discountPercent:'8',litres:'100',pricePerLitre:'78.45',amount,amountMode:'manual',comment:'Synthetic plan allocation only',planId:plan.id,planVersion:plan.version,allocations,idempotencyKey:randomUUID()});
+  const allocationsA=[{kind:'recipient',recipientId:recipientsA[0].id,amount:'10000.00'},{kind:'recipient',recipientId:recipientsA[1].id,amount:'25000.00'}];
+  const assertRejectedWithoutWrite=async payload=>{
+    const before=await readFile(resolve(store,'operations.json'),'utf8');
+    const response=await request('/api/operator/refuellings','POST',payload);
+    assert.ok([400,404,409].includes(response.status),'Expected allocation validation rejection, got '+response.status);
+    assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),before);
+  };
+  await assertRejectedWithoutWrite(fuelV3(planA,[{kind:'recipient',recipientId:recipientsA[0].id,amount:'9999.99'},{kind:'recipient',recipientId:recipientsA[1].id,amount:'25000.00'}]));
+  await assertRejectedWithoutWrite(fuelV3(planA,[{kind:'recipient',recipientId:randomUUID(),amount:'35000.00'}]));
+  await assertRejectedWithoutWrite(fuelV3(planA,[{kind:'recipient',recipientId:recipientsA[1].id,amount:'10000.00'},{kind:'recipient',recipientId:recipientsA[1].id,amount:'25000.00'}]));
+  assert.deepEqual(await planRead(planA.id),planA);
+  const splitPayload=fuelV3(planA,allocationsA);
+  const splitCreated=await request('/api/operator/refuellings','POST',splitPayload);assert.equal(splitCreated.status,201,await splitCreated.clone().text());
+  const splitId=(await splitCreated.json()).id;
+  const splitPlan=await planRead(planA.id);
+  assert.equal(splitPlan.version,planA.version+1);assert.equal(splitPlan.status,'active');equalMoney(splitPlan.remaining,'25000.00');equalMoney(splitPlan.allocated,'35000.00');
+  equalMoney(splitPlan.recipients.find(row=>row.id===recipientsA[0].id).remaining,'0');
+  equalMoney(splitPlan.recipients.find(row=>row.id===recipientsA[1].id).remaining,'25000.00');
+  const splitReplay=await request('/api/operator/refuellings','POST',splitPayload);assert.equal(splitReplay.status,200);assert.equal((await splitReplay.json()).id,splitId);assert.deepEqual(await planRead(planA.id),splitPlan);
+  await assertRejectedWithoutWrite({...splitPayload,idempotencyKey:randomUUID()});
+  const splitRow=(await operatorRead()).refuellings.find(row=>row.id===splitId);
+  assert.equal(splitRow.schemaVersion,3);assert.equal(splitRow.planId,planA.id);assert.equal(splitRow.planClientName,planA.clientName);
+  assert.equal(splitRow.allocations.length,2);assert.ok(splitRow.allocations.every(row=>row.kind==='recipient'));
+  assert.equal(splitRow.allocations[0].recipient.name,recipientsA[0].name);assert.equal(splitRow.allocations[1].recipient.name,recipientsA[1].name);
+  equalMoney(splitRow.allocations[0].amount,'10000');equalMoney(splitRow.allocations[1].amount,'25000');
+  const splitPayment={version:splitRow.version,paid:true,idempotencyKey:randomUUID()};
+  const paidSplit=await request(`/api/operator/refuellings/${splitId}/payment`,'PATCH',splitPayment);assert.equal(paidSplit.status,200,await paidSplit.clone().text());
+  assert.deepEqual(await planRead(planA.id),splitPlan);
+  const closeA=fuelV3(splitPlan,[{kind:'recipient',recipientId:recipientsA[1].id,amount:'25000.00'}],'25000.00');
+  const closedA=await request('/api/operator/refuellings','POST',closeA);assert.equal(closedA.status,201,await closedA.clone().text());
+  const closedAId=(await closedA.json()).id;const completeA=await planRead(planA.id);
+  assert.equal(completeA.status,'completed');assert.equal(completeA.version,splitPlan.version+1);equalMoney(completeA.remaining,'0');equalMoney(completeA.allocated,'60000');
+  const aboveLimit=await request('/api/operator/refuellings','POST',fuelV3(completeA,[{kind:'recipient',recipientId:recipientsA[1].id,amount:'1.00'}],'1.00'));
+  assert.equal(aboveLimit.status,201);assert.equal((await planRead(planA.id)).remaining,'-1.00');
+  const managerRows=[];
+  for(const managerId of ['eldar','aidar']){
+    const recipient=planRecipient('Synthetic last card '+managerId,'10000.00');
+    const plan=await createPlan('Synthetic final remainder '+managerId,managerId,[recipient]);
+    const payload=fuelV3(plan,[{kind:'recipient',recipientId:recipient.id,amount:'10000.00'},{kind:'manager',managerId,amount:'25000.00'}]);
+    const created=await request('/api/operator/refuellings','POST',payload);assert.equal(created.status,201,await created.clone().text());
+    const id=(await created.json()).id;const completed=await planRead(plan.id);
+    assert.equal(completed.status,'completed');equalMoney(completed.remaining,'0');equalMoney(completed.allocated,'10000');
+    equalMoney(completed.recipients[0].remaining,'0');assert.equal(completed.version,plan.version+1);
+    const replay=await request('/api/operator/refuellings','POST',payload);assert.equal(replay.status,200);assert.equal((await replay.json()).id,id);assert.deepEqual(await planRead(plan.id),completed);
+    const row=(await operatorRead()).refuellings.find(value=>value.id===id);
+    assert.equal(row.schemaVersion,3);assert.equal(row.planClientName,plan.clientName);equalMoney(row.amount,'35000');assert.equal(row.allocations.length,2);
+    equalMoney(row.allocations[0].amount,'10000');assert.equal(row.allocations[0].recipient.name,recipient.name);
+    const manager=row.allocations.find(value=>value.kind==='manager');assert.ok(manager);assert.equal(manager.managerId,managerId);equalMoney(manager.amount,'25000');
+    managerRows.push({id,planId:plan.id,managerId});
+  }
+  const finalPlanState=await operatorRead();
+  assert.equal(finalPlanState.plans.length,3);assert.ok(finalPlanState.plans.every(row=>row.status==='completed'));
+  const finalV3Ids=[splitId,closedAId,...managerRows.map(row=>row.id)];
+  const finalV3Rows=finalPlanState.refuellings.filter(row=>finalV3Ids.includes(row.id));assert.equal(finalV3Rows.length,4);
+  const finalDisk=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.equal(Object.keys(finalDisk.operator.plans).length,3);
+  for(const row of finalV3Rows){const stored=finalDisk.operator.refuellings[row.id];assert.equal(stored.schemaVersion,3);assert.equal(stored.planId,row.planId);assert.deepEqual(stored.allocations,row.allocations);}
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  const restartedPlanState=await operatorRead();
+  assert.deepEqual(restartedPlanState.plans,finalPlanState.plans);
+  assert.deepEqual(restartedPlanState.refuellings.filter(row=>finalV3Ids.includes(row.id)),finalV3Rows);
+  assert.equal(restartedPlanState.refuellings.find(row=>row.id===splitId).paymentHistory.length,1);
+  for(const expected of managerRows){const row=restartedPlanState.refuellings.find(value=>value.id===expected.id);const manager=row.allocations.find(value=>value.kind==='manager');assert.equal(manager.managerId,expected.managerId);equalMoney(manager.amount,'25000');assert.equal(restartedPlanState.plans.find(value=>value.id===expected.planId).status,'completed');}
+  const finalPlansDisk=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.deepEqual(finalPlansDisk.operator.plans,finalDisk.operator.plans);assert.equal(externalRequests,0);cookie=mainCookie;
+  cookie=operatorCookie;
+  const uxRecipients=[planRecipient('Synthetic UX card','100.00'),planRecipient('Synthetic UX removable','200.00')];
+  const uxCreate={clientName:'Synthetic creator account',recipients:uxRecipients,idempotencyKey:randomUUID()};
+  const uxCreated=await request('/api/operator/plans','POST',uxCreate);assert.equal(uxCreated.status,201,await uxCreated.clone().text());
+  let uxPlan=await planRead((await uxCreated.json()).id);
+  assert.equal(uxPlan.createdBy,operatorUser.id);assert.equal(uxPlan.createdByName,operatorUser.name);assert.equal(uxPlan.managerId,undefined);
+  const spoof=await request('/api/operator/plans','POST',{...uxCreate,createdByName:'Forged creator',idempotencyKey:randomUUID()});assert.equal(spoof.status,400);
+  const uxFuel=fuelV3(uxPlan,[{kind:'recipient',recipientId:uxRecipients[0].id,amount:'100.00'}],'100.00');
+  const uxFuelCreated=await request('/api/operator/refuellings','POST',uxFuel);assert.equal(uxFuelCreated.status,201,await uxFuelCreated.clone().text());
+  const uxId=(await uxFuelCreated.json()).id;
+  uxPlan=await planRead(uxPlan.id);
+  const uxEdit={version:uxPlan.version,clientName:uxPlan.clientName,recipients:[uxRecipients[0]],idempotencyKey:randomUUID()};
+  const uxEdited=await request(`/api/operator/plans/${uxPlan.id}`,'PATCH',uxEdit);assert.equal(uxEdited.status,200,await uxEdited.clone().text());
+  uxPlan=await planRead(uxPlan.id);assert.equal(uxPlan.recipients.length,1);equalMoney(uxPlan.remaining,'0');assert.equal(uxPlan.status,'completed');
+  const paidCurrent=(await operatorRead()).refuellings.find(row=>row.id===splitId);
+  const paidDelete=await request(`/api/operator/refuellings/${splitId}/delete`,'PATCH',{version:paidCurrent.version,idempotencyKey:randomUUID()});assert.equal(paidDelete.status,409);
+  const uxDelete={version:1,idempotencyKey:randomUUID()};
+  const uxDeleted=await request(`/api/operator/refuellings/${uxId}/delete`,'PATCH',uxDelete);assert.equal(uxDeleted.status,200,await uxDeleted.clone().text());assert.equal((await uxDeleted.json()).deleted,true);
+  const uxDeleteReplay=await request(`/api/operator/refuellings/${uxId}/delete`,'PATCH',uxDelete);assert.equal(uxDeleteReplay.status,200);assert.equal((await uxDeleteReplay.json()).deleted,true);
+  const uxOldCreateReplay=await request('/api/operator/refuellings','POST',uxFuel);assert.equal(uxOldCreateReplay.status,200);assert.equal((await uxOldCreateReplay.json()).deleted,true);
+  assert.ok(!(await operatorRead()).refuellings.some(row=>row.id===uxId));
+  uxPlan=await planRead(uxPlan.id);equalMoney(uxPlan.remaining,'100');assert.equal(uxPlan.status,'active');
+  const afterDeleteEdit=await request(`/api/operator/plans/${uxPlan.id}`,'PATCH',{version:uxPlan.version,clientName:'Synthetic renamed after deletion',recipients:[{...uxRecipients[1],name:'New recipient after deletion'}],idempotencyKey:randomUUID()});assert.equal(afterDeleteEdit.status,200,await afterDeleteEdit.clone().text());
+  const uxBeforeRestart=await operatorRead();
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  assert.deepEqual(await operatorRead(),uxBeforeRestart);assert.equal(externalRequests,0);cookie=mainCookie;
+  // Direct NK per-delivery scope: actual bundled handlers and /tmp data only.
+  // The earlier ARTEL driver flow retains transport-document/archive assertions.
+  for (const ownExcluded of [[false,false],[false,true],[true,false],[true,true]]) {
+  const ownRequired=ownExcluded.filter(value=>!value).length;
+  const ownDriver = await add({kind:'drivers',name:'Synthetic own-NK driver '+ownExcluded.join('-'),vehicleId:vehicle.id});
+  const ownCustomer = await add({kind:'companies',name:'Synthetic own-NK second client '+ownExcluded.join('-'),roles:['customer'],addresses:[]});
+  const ownAddress = await add({kind:'addresses',companyId:ownCustomer.id,addressKind:'delivery',name:'Synthetic second own-NK site',address:'Synthetic second full delivery address, 2',latitude:'55.8',longitude:'37.7'});
+  const ownFields = {...flowFields,organization_id:'nk-artel',driver_id:ownDriver.id};
+  assert.equal(ownFields.trip_document_policy,undefined, 'The policy must be assigned by the server');
+  const ownPayload = {idempotencyKey:randomUUID(),fields:ownFields,customers:[
+    {fields:{...payload.customers[0].fields,quantity_litres:'8000',invoice_not_required:'true',etrn_not_required:String(ownExcluded[0])}},
+    {fields:{...payload.customers[0].fields,customer_id:ownCustomer.id,unloading_address_id:ownAddress.id,quantity_litres:'9500',invoice_not_required:'false',etrn_not_required:String(ownExcluded[1])}},
+  ]};
+  const ownCreatedResponse = await request('/api/shipment-trips','POST',ownPayload);
+  assert.equal(ownCreatedResponse.status,201,await ownCreatedResponse.clone().text());
+  const ownTrip=(await ownCreatedResponse.json()).trip;
+  assert.equal(ownTrip.fields.trip_document_policy,'nk-direct-autostart-v1');
+  assert.equal(ownTrip.fields.organization_id,'nk-artel');
+  assert.equal(new Set(ownTrip.customers.map(row=>row.fields.customer_id)).size,2);
+  assert.deepEqual(ownTrip.customers.map(row=>row.fields.quantity_litres),['8000','9500']);
+  const ownPrefix=`/api/shipment-trips/${ownTrip.id}`;
+  const ownWorkflow=async()=>{
+    const response=await request(ownPrefix+'/saby-workflow');assert.equal(response.status,200);
+    const value=await response.json();assert.equal(value.documentMode,'nk_direct_etrn');assert.equal(value.notRequired,ownRequired===0);
+    assert.equal(value.order,null);assert.deepEqual(value.deliveries.map(row=>row.shipmentId),ownTrip.customers.filter((_,index)=>!ownExcluded[index]).map(row=>row.id));assert.equal(value.monitoring.enabled,false);assert.equal(value.automation.mode,'after_driver_departure');assert.equal(value.automation.enrolled,true);
+    assert.equal(value.start,undefined);assert.equal(value.signing,undefined);return value;
+  };
+  await ownWorkflow();
+  const ownShipmentId=ownTrip.customers[0].id;
+  const ownSigning={requestId:randomUUID(),previewToken:'a'.repeat(64),senderSignatureId:'ab'.repeat(20),carrierSignatureId:'cd'.repeat(20),confirmed:true};
+  if(ownRequired) for(const [suffix,method,input] of [
+    ['/saby','GET'],['/saby','POST',{}],['/etrn','PUT',{shipmentId:ownShipmentId,profile:{}}],
+    ['/etrn/submit','POST',{shipmentId:ownShipmentId}],['/etrn/refresh','POST',{shipmentId:ownShipmentId}],
+    ['/saby-workflow','POST',{}],
+    ['/saby-workflow/signing','GET'],['/saby-workflow/signing/start','POST',ownSigning],
+  ]) {
+    const response=await request(ownPrefix+suffix,method,input);assert.equal(response.status,409,suffix+': '+await response.clone().text());
+    assert.match((await response.json()).error,/прям|напрям/i);
+  }
+  assert.equal((await request(ownPrefix+'/etrn')).status,200);
+  const rejectedOwnStart=await request(ownPrefix+'/saby-workflow/start','POST',{mode:'draft',previewToken:'a'.repeat(64)});assert.ok([409,422].includes(rejectedOwnStart.status));
+  const ownIssuedResponse=await request(`/api/drivers/${ownDriver.id}/access`,'POST',{version:0,action:'issue'});assert.equal(ownIssuedResponse.status,200);
+  const ownIssued=await ownIssuedResponse.json();
+  const ownLogin=await request('/api/auth/login','POST',{login:ownIssued.access.login,password:ownIssued.temporaryPassword});assert.equal(ownLogin.status,200);
+  cookie=ownLogin.headers.get('set-cookie').split(';')[0];const ownCookie=cookie;
+  const ownDriverPath=`/api/driver/trips/${ownTrip.id}`;
+  const ownDriverRead=async()=>{const response=await request(ownDriverPath);assert.equal(response.status,200);return (await response.json()).trip;};
+  const ownAssigned=await ownDriverRead();assert.equal(ownAssigned.documentMode,'nk_direct_etrn');assert.equal(ownAssigned.documentAutomation,'after_driver_departure');assert.equal(ownAssigned.etrnRequired,ownRequired>0);assert.equal(ownAssigned.archived,false);
+  const ownArrivedResponse=await request(ownDriverPath+'/arrive','POST',{versions:ownAssigned.versions});assert.equal(ownArrivedResponse.status,200);
+  const ownArrived=(await ownArrivedResponse.json()).trip;
+  const ownDeparture={versions:ownArrived.versions,masses:ownTrip.customers.map((row,index)=>({deliveryId:row.id,netTonnes:index?'7,985':'6,745'}))};
+  const ownDepartedResponse=await request(ownDriverPath+'/depart','POST',ownDeparture);assert.equal(ownDepartedResponse.status,200,await ownDepartedResponse.clone().text());
+  const ownDeparted=(await ownDepartedResponse.json()).trip;
+  assert.deepEqual(ownDeparted.deliveries.map(row=>row.netTonnes),['6.745','7.985']);assert.equal(ownDeparted.etrnRequired,ownRequired>0);assert.equal(ownDeparted.archived,false);assert.ok(ownDeparted.departedAt);
+  const ownReplay=await request(ownDriverPath+'/depart','POST',ownDeparture);assert.equal(ownReplay.status,200);assert.deepEqual((await ownReplay.json()).trip,ownDeparted);
+  cookie=mainCookie;
+  const ownSaved=(await (await request(ownPrefix)).json()).trip;assert.equal(ownSaved.fields.quantity_tonnes,'14.73');
+  assert.deepEqual(ownSaved.customers.map(row=>row.fields.invoice_not_required),ownTrip.customers.map(row=>row.fields.invoice_not_required));
+  const ownDiskBefore=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  const ownStoredProjection=data=>({
+    shipments:Object.fromEntries(ownTrip.customers.map(row=>[row.id,data.shipments[row.id]])),
+    progress:data.driverTripProgress?.[ownTrip.id],etrn:data.etrn?.trips?.[ownTrip.id],
+    workflow:data.tripSaby?.trips?.[ownTrip.id],saby:data.saby?.trips?.[ownTrip.id],
+  });
+  const ownBefore=ownStoredProjection(ownDiskBefore);
+  assert.equal(ownBefore.workflow,undefined);assert.equal(ownBefore.saby,undefined);assert.ok(ownBefore.etrn.loadingFacts);assert.equal(ownBefore.etrn.direct,undefined);
+  assert.equal(ownBefore.etrn.directAutostart.state,ownRequired?'blocked':'not_required');
+  assert.ok(ownBefore.etrn.directAutostart.event);
+  if(ownRequired)assert.ok(ownBefore.etrn.directAutostart.lastError);
+  assert.ok(!Object.values(ownBefore.etrn.deliveries??{}).some(row=>row.document));
+  assert.deepEqual(ownTrip.customers.map(row=>ownBefore.etrn.loadingFacts.deliveries[row.id].grossMassTonnes),['6.745','7.985']);
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();cookie=ownCookie;
+  assert.deepEqual(await ownDriverRead(),ownDeparted);cookie=mainCookie;
+  assert.ok((await ownWorkflow()).driverConfirmation.confirmedAt);
+  const ownDiskAfter=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  assert.deepEqual(ownStoredProjection(ownDiskAfter),ownBefore);assert.equal(externalRequests,0);
+  }
+  cookie=operatorCookie;
+  assert.equal((await request('/api/push/config')).status,200);
+  const notifyRecipient=planRecipient('Synthetic notification recipient','100');
+  const notifyPlan=await createPlan('Synthetic notification plan','aidar',[notifyRecipient]);
+  const notifyDisk=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data;
+  const createdEvent=notifyDisk.push.operatorPlanEvents[notifyPlan.id+':created'];
+  assert.equal(createdEvent.kind,'created');assert.ok(createdEvent.recipientIds.length);assert.ok(!createdEvent.recipientIds.includes(operatorUser.id));
+  cookie=mainCookie;
+  const notifyPayload=fuelV3(notifyPlan,[{kind:'recipient',recipientId:notifyRecipient.id,amount:'100'}],'100');
+  assert.equal((await request('/api/operator/refuellings','POST',notifyPayload)).status,201);
+  const notifyCompleted=JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data.push.operatorPlanEvents;
+  assert.equal(notifyCompleted[notifyPlan.id+':created'],undefined);
+  assert.deepEqual(notifyCompleted[notifyPlan.id+':completed'].recipientIds,[operatorUser.id]);
+  assert.equal((await request('/api/operator/refuellings','POST',notifyPayload)).status,200);
+  assert.deepEqual(JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data.push.operatorPlanEvents,notifyCompleted);
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  assert.deepEqual(JSON.parse(await readFile(resolve(store,'operations.json'),'utf8')).data.push.operatorPlanEvents,notifyCompleted);
+  assert.equal(externalRequests,0);
+  // New integration reads a sanitized adjacent snapshot; never mutates the business store.
+  const yandexFile=resolve(store,'yandex-balance.json'), yandexAt=new Date().toISOString();
+  const yandexFixture={version:1,companyId:'7d90c6ecc6804d738c19d1c1c0ab0aaa',contractId:'49844602',contractNumber:'43207794/25',createdAt:yandexAt,lastAttemptAt:yandexAt,lastSuccessAt:yandexAt,state:'connected',balance:{amountMinor:12345,availableMinor:12345,currency:'RUB'}};
+  const yandexBefore=await readFile(resolve(store,'operations.json'),'utf8');
+  await writeFile(yandexFile,JSON.stringify(yandexFixture));cookie=mainCookie;
+  const readYandex=async()=> (await (await request('/api/cabinets')).json()).connections.find(c=>c.id==='yandex-server-fuel');
+  assert.equal((await readYandex()).accounts[0].amountMinor,12345);
+  await runtime.stop();runtime=await createProductionRuntime(env);await runtime.start();
+  assert.equal((await readYandex()).lastSuccessAt,yandexAt);
+  await writeFile(yandexFile,JSON.stringify({...yandexFixture,state:'auth_required'}));
+  assert.equal((await readYandex()).state,'auth_required');assert.equal((await readYandex()).accounts[0].amountMinor,12345);
+  await writeFile(yandexFile,JSON.stringify({...yandexFixture,contractId:'wrong'}));assert.equal((await readYandex()).accounts,undefined);
+  assert.equal(await readFile(resolve(store,'operations.json'),'utf8'),yandexBefore);
+  await rm(yandexFile);
+  console.log(JSON.stringify({synthetic:true,networkDisabled:true,externalRequests,checks:['yandexServerBalance','yandexBalanceRestart','yandexBalanceReauth','yandexBalanceScope','yandexNoBusinessWrite','accountPasswordEncryptedStorage','accountPasswordExplicitReveal','accountPasswordRestartPersistence','operatorPushSectionAccess','operatorNewPlanRecipients','operatorCompletionCreatorOnly','operatorNotificationReplay','operatorNotificationRestart','nkDirectMissingConfigPersistsBlockedDepartureIntent','nkDirectAllSkipIntentNotRequired','nkDirectServerAssignedPolicy','nkDirectTwoClientsAndNoTransportWorkflow','nkDirectExplicitTransportRoutesBlocked','nkDirectExactMassesAndEvidenceGatedArchive','nkDirectDepartureReplay','nkDirectNoExternalDocuments','nkDirectRestartPersistence','nkDirectBothMixedAndNoneRequired','nkDirectInvoiceFlagIndependence','operatorCreatorFromAccount','operatorCreatorSpoofRejected','operatorUsedPlanUnusedRecipientRemoval','operatorPaidDeleteBlocked','operatorDeleteReturnsCapacity','operatorDeleteReplayNoDoubleRefund','operatorOldCreateReplayDoesNotResurrect','operatorDeletedSnapshotsAllowLaterPlanEdit','operatorUxRestartPersistence','operatorPlans401AndRoleIsolation','operatorPlansCreateReplay','operatorPlansRecipientLimits','operatorPlansAllocationSumValidation','operatorPlansUnknownRecipientRejected','operatorPlansDuplicateRecipientRejected','operatorPlansPrematureManagerRejected','operatorPlansCardSplit10000Plus25000','operatorPlansRemainingAndCompletion','operatorPlansStaleVersionRejected','operatorPlansFuelReplayNoDoubleDebit','operatorPlansPaymentNoLimitChange','operatorPlansRecipientSnapshots','operatorPlansManagerEldarRemainder25000','operatorPlansManagerAidarRemainder25000','operatorPlansCompletedWriteRejected','operatorPlansPersistedV3Readback','operatorPlansRestartPersistence','operatorCatalogLazyDefaultsNoWrite','operatorDirectoriesEmployeeGroupCreateEdit','operatorDirectoriesEmployeeServiceCreateEdit','operatorCatalogVersionConflict','operatorDiscountRangeValidation','operatorCatalogDeleteUnsupported','operatorDirectoryAdminBoundaries','operatorV2FormulaFinalRounding','operatorV2TwoDecimalInputs','operatorV2RequiredFields','operatorV2NoRecipientBinding','operatorV2CreateIdempotency','operatorV2ManualAdjustmentPreserved','operatorV2LitresRecalculationPayload','operatorV2PriceRecalculationPayload','operatorV2ServiceRecalculationPayload','operatorV2SavedRateUnchanged','operatorV2StaleServiceRejected','operatorV2CurrentRateOnServiceChange','operatorV2PaymentAudit','operatorV2PaidEditBlocked','operatorV2RecipientTextOnly','operatorV2RestartPersistence','operatorCatalogRestartPersistence','operatorDirectoryEmployeeRestartSession','operatorRecipientPersistence','operatorIdempotentCreate','operatorManualPaymentAudit','operatorRestartRead','requestPriceInheritance','requestPriceIndependentOverride','requestPriceEditRestartPersistence','requestPriceTripRestartPersistence','yandexTilesAuthBoundary','yandexTilesMissingKeyFailClosed','yandexTilesInvalidParameters','yandexTilesMetadataOnly','natcarExplicitOrganizationScope','newProvidersRestartPersistence','cabinetAuthentication','cabinetEncryptedStorage','cabinetMetadataOnly','cabinetPendingStatus','cabinetRestartPersistence','directTripAllowedWithoutConsumingRequest','requestCreateIdempotency','requestMapConfigProtected','requestAtomicConsumption','requestDuplicateConsumptionBlocked','requestExactLitresAndCancel','requestHistoryDurable','sharedTripNumber','driverLoginRenamePreservesPasswordAndDisabledState','newInnAlongsideLegacyName','durableArchivedCustomerRestore','retainedSupplierPromotion','duplicate409','health','authentication','secureCookie','tripCreate','oneBulkDieselMass','separateOilDepot','driverFirstWithoutCompany','unifiedDates','durableIdempotency','tripList','sabyConfigurationBlock','restartAndSessionPersistence','logisticsAudienceIsolation','renamedCookieDenied','logisticsApiAllowlist','logisticsScopedContext','logisticsRestartPersistence','independentLogout','driverAccessOneTimeIssue','driverAccountIdempotency','driverOwnTrips','driverClosedBoundary','driverResetRevokesSessions','driverRevoke','customDriverPassword','customPasswordValidation','customPasswordLogin','driverFlowMasslessCreation','driverFlowFuturePlan','driverFlowSafeProjection','driverFlowAtomicMasses','driverFlowImmutableArrivalDeparture','driverFlowRestartPersistence','driverFlowNoPrematureArchive']}));
+} finally {globalThis.fetch=originalFetch;await runtime.stop();await rm(root,{recursive:true,force:true});}
