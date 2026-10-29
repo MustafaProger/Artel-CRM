@@ -19,3 +19,11 @@ dialog.archive-drawer{position:fixed;inset:0 0 0 auto;margin:0;width:min(520px,1
  .document-archive .archive-controls .archive-main-actions>.button{width:100%;min-width:0;padding:8px;font-size:12px;white-space:normal;justify-content:center;line-height:1.3}
  .document-archive .archive-empty{padding:18px 14px}
 }
+
+.archive-file-row{display:flex;align-items:center;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--line,#e4e7ec);border-radius:12px;background:var(--surface-soft,#f8f9fa)}
+.archive-file-summary{flex:1;min-width:0;display:grid;gap:5px;overflow-wrap:anywhere}.archive-file-summary strong{font-size:14px;line-height:1.45;font-weight:600}.archive-file-summary span{font-size:12px;line-height:1.4;color:#b42318}
+.archive-file-row.is-expired{background:#fff0ee;border-color:#f4b4ae}
+.archive-drawer .archive-file-edit,.archive-drawer .archive-file-download{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;min-width:44px;flex-shrink:0;border-radius:50%;text-decoration:none}
+.archive-drawer .archive-file-edit{background:#fff3cd;border:1px solid #e2c56f;color:#775516}.archive-drawer .archive-file-edit:hover{background:#ffe8a3}
+.archive-drawer .archive-file-download{background:#e3f2e9;border:1px solid #aacfb8;color:#176849}.archive-drawer .archive-file-download:hover{background:#cee8da}
+.archive-file-done{justify-self:end}
