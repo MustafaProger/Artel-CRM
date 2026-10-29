@@ -1,0 +1,2036 @@
+--- /dev/null
++++ b/scripts/benchmark_saby_scheduler.ts
+@@ -0,0 +1,96 @@
++// Synthetic archived graphs only. No environment credentials or external transport.
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdir, writeFile, readFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { createTripSabyScheduler, dispatchTripSaby } from '../server/trip-saby-scheduler';
++import { runTripSabyWorkflow } from '../server/trip-saby-workflow';
++import { exchangePreparedEtrn, saveTripLoadingFacts } from '../server/etrn-service';
++import { OperationsStore, encodeOperations, type OperationsData } from '../server/operations-store';
++import { currentShipmentAccess } from '../server/shipment-operations';
++import { integrationApi, integrationConfig, integrationRuntime } from '../tests/helpers/trip-saby-integration';
++
++const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
++async function fixture() {
++  const f = await integrationRuntime(), api = integrationApi();
++  await f.store.mutate(f.source, data => {
++    data.accounts = { users: [{ id: 'initiator', login: 'initiator', name: 'Synthetic director', role: 'director', active: true, managerId: null, version: 1, passwordHash: 'a'.repeat(128), salt: 'b'.repeat(32) }], sessions: [], attempts: {} };
++    return { result: undefined, changed: true };
++  });
++  const context = { ...f, client: api.client() };
++  await runTripSabyWorkflow({ ...context, initiatorId: 'initiator', createDelivery: input => exchangePreparedEtrn(context, input) });
++  const tick = () => dispatchTripSaby({ ...f, config: integrationConfig(), enabled: true, send: api.send });
++  return { ...f, api, context, tick };
++}
++function track(store: OperationsStore) {
++  const counts = { reads: 0, mutations: 0, changed: 0 };
++  const read = store.read.bind(store), mutate = store.mutate.bind(store);
++  store.read = async source => { counts.reads++; return read(source); };
++  store.mutate = async (source, update) => { counts.mutations++; return mutate(source, async data => { const result = await update(data); if (result.changed) counts.changed++; return result; }); };
++  return counts;
++}
++function expand(original: OperationsData, tripId: string, count: number) {
++  const expanded = structuredClone(original);
++  expanded.shipments = {}; expanded.tripSaby = { trips: {} }; expanded.etrn = { trips: {} }; expanded.tripNumbers = {};
++  const ids = Object.keys(original.shipments);
++  for (let index = 0; index < count; index++) {
++    const map = new Map([tripId, ...ids].map(id => [id, `${id}-${index.toString(16)}`]));
++    // Remap all graph references, including keys and frozen snapshots, then
++    // recompute snapshot hashes. These synthetic records are never sent.
++    const remap = (value: unknown): unknown => {
++      if (typeof value === 'string') return [...map].reduce((text, [from, to]) => text.replaceAll(from, to), value);
++      if (Array.isArray(value)) return value.map(remap);
++      if (value && typeof value === 'object') {
++        const row = Object.fromEntries(Object.entries(value).map(([key, child]) => [String(remap(key)), remap(child)]));
++        if ('snapshot' in row && 'payloadHash' in row) row.payloadHash = digest(row.snapshot);
++        if ('snapshot' in row && 'preparedHash' in row) row.preparedHash = digest(row.snapshot);
++        return row;
++      }
++      return value;
++    };
++    const clone = remap(original) as OperationsData, id = map.get(tripId)!;
++    Object.assign(expanded.shipments, clone.shipments);
++    expanded.tripSaby.trips[id] = clone.tripSaby!.trips[id];
++    expanded.etrn.trips[id] = clone.etrn!.trips[id];
++    expanded.tripNumbers[id] = index + 1;
++  }
++  // The normal store validator checks references and hashes before benchmarking.
++  return expanded;
++}
++async function main() {
++  const output = process.argv[process.argv.indexOf('--output') + 1];
++  assert.ok(output && process.argv.includes('--output'));
++  const f = await fixture();
++  try {
++    const counts = track(f.store), calls = f.api.calls.length;
++    const began = performance.now(), cpu = process.cpuUsage(); await f.tick();
++    const awaiting = { scenario: 'awaiting_carrier', ms: performance.now() - began, cpu: process.cpuUsage(cpu), ...counts, networkMethods: f.api.calls.slice(calls).map(call => call.method) };
++    f.api.accept(); await f.tick(); await saveTripLoadingFacts(f.context, f.facts(), 'initiator'); await f.tick();
++    const original = await f.store.read(f.source), scales = [];
++    const fixedNow = Date.now();
++    for (const saved of Object.values(original.etrn!.trips[f.tripId].deliveries)) saved.document!.updatedAt = new Date(fixedNow).toISOString();
++    for (const multiplier of [1, 5, 10]) {
++      const trips = 10 * multiplier, data = expand(original, f.tripId, trips), encoded = encodeOperations(data);
++      assert.equal(currentShipmentAccess(f.base, data).shipments.length, 2 * trips);
++      const dir = resolve(f.directory, `scale-${multiplier}`); await mkdir(dir); await writeFile(resolve(dir, 'operations.json'), encoded);
++      const store = new OperationsStore(dir), metric = track(store);
++      const scheduler = createTripSabyScheduler({ ...f, store, config: integrationConfig(), enabled: true, now: fixedNow, send: async () => { throw new Error('Idle synthetic scheduler must not send'); } });
++      const before = digest(await readFile(store.path)), started = performance.now(), beforeCpu = process.cpuUsage();
++      try { await scheduler.tick(); await scheduler.drain(); }
++      finally { await scheduler.stop(); }
++      scales.push({ multiplier, trips, shipments: 2 * trips, bytes: Buffer.byteLength(encoded), ms: performance.now() - started, cpu: process.cpuUsage(beforeCpu), ...metric, storedBytesExact: before === digest(await readFile(store.path)) });
++      assert.equal(metric.changed, 0); assert.equal(metric.mutations, 0);
++      // The candidate should have one read; the baseline measurement records its original count.
++    }
++    const dueDir = resolve(f.directory, 'due'); await mkdir(dueDir);
++    for (const saved of Object.values(original.etrn!.trips[f.tripId].deliveries)) saved.document!.updatedAt = new Date(fixedNow - 60_000).toISOString();
++    await writeFile(resolve(dueDir, 'operations.json'), encodeOperations(original));
++    const dueStore = new OperationsStore(dueDir), dueCounts = track(dueStore), networkStart = f.api.calls.length, dueStart = performance.now(), dueCpu = process.cpuUsage();
++    const result = await dispatchTripSaby({ ...f, store: dueStore, config: integrationConfig(), enabled: true, send: f.api.send, now: fixedNow });
++    const due = { scenario: 'completed_due_two_deliveries', result, ms: performance.now() - dueStart, cpu: process.cpuUsage(dueCpu), ...dueCounts, networkMethods: f.api.calls.slice(networkStart).map(call => call.method) };
++    const report = { method: 'Isolated synthetic validated linked records; real OperationsStore reads and durable writes; synthetic network only', awaiting, scales, due, memory: process.memoryUsage() };
++    await writeFile(output, JSON.stringify(report, null, 2));
++    console.log(JSON.stringify({ output, scales: scales.map(row => ({ trips: row.trips, reads: row.reads, ms: row.ms })), dueReads: dueCounts.reads, dueWrites: dueCounts.changed }));
++  } finally { await f.close(); }
++}
++await main();
+--- /dev/null
++++ b/scripts/frontend-performance-cases.mjs
+@@ -0,0 +1,91 @@
++import assert from 'node:assert/strict';
++import { expect } from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import { resolve } from 'node:path';
++
++export async function frontendCases({ context, base, engine, report, baseline, output }) {
++  const mapPage = await context.newPage();
++  const mapModules = path => /\/yandex-map(?:-|\.ts)|\/TripRequestsMap|\/DeliveryPointMap|\/DeliveryPointPicker-|\/ol[._/]/.test(path) && !path.includes('coordinates') && !/ol\.css$|ol_proj/.test(path);
++  await mapPage.goto(base + '/#trips');
++  await expect(mapPage.locator('.trips-page')).toBeVisible();
++  const closedScripts = await mapPage.evaluate(() => performance.getEntriesByType('resource').map(row => ({ path: new URL(row.name).pathname, bytes: row.decodedBodySize })));
++  const closedMapScripts = closedScripts.filter(row => mapModules(row.path));
++  if (!baseline) assert.deepEqual(closedMapScripts, [], 'closed map does not download map engine');
++  await mapPage.getByRole('button', { name: 'Карта', exact: true }).click();
++  await expect(mapPage.locator('.trip-map-empty')).toBeVisible();
++  const openScripts = await mapPage.evaluate(() => performance.getEntriesByType('resource').map(row => ({ path: new URL(row.name).pathname, bytes: row.decodedBodySize })));
++  assert.ok(openScripts.some(row => mapModules(row.path)), 'opening map loads its module');
++  report.maps.push({ engine, closedMapScripts, closedTotalJsBytes: closedScripts.filter(row => /\.js(?:\?|$)/.test(row.path)).reduce((sum, row) => sum + row.bytes, 0), openMapScripts: openScripts.filter(row => mapModules(row.path)) });
++  await mapPage.close();
++
++  const journal = await context.newPage();
++  const original = await (await context.request.get(base + '/api/operator')).json();
++  let count = 100;
++  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date());
++  await journal.route('**/api/operator', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...original, plans: Array.from({ length: count / 10 }, (_, group) => ({ id: `qa-plan-${group}`, version: 1, clientName: `QA client ${group}`, status: 'active', totalLimit: '16000', allocated: '8000', remaining: '8000', createdAt: `${today}T10:00:00Z`, updatedAt: `${today}T10:00:00Z`, createdBy: 'qa-actor', recipients: Array.from({ length: 10 }, (_, index) => ({ id: `qa-recipient-${group * 10 + index}`, name: `QA recipient ${group * 10 + index}`, bank: 'QA bank', card: '', phone: '', details: '', limit: '1600', used: '800', remaining: '800' })) })), refuellings: Array.from({ length: count }, (_, index) => ({
++    id: `qa-operation-${index}`, version: 1, schemaVersion: 3, date: today, name: `QA driver ${index}`,
++    serviceId: original.services[0].id, service: original.services[0].name, serviceVersion: original.services[0].version,
++    discountPercent: '0', litres: '10', pricePerLitre: '80', amount: '800', paid: false,
++    planId: `qa-plan-${Math.floor(index / 10)}`, planClientName: `QA client ${Math.floor(index / 10)}`,
++    allocations: [{ kind: 'recipient', recipientId: `qa-recipient-${index}`, amount: '800', planId: `qa-plan-${Math.floor(index / 10)}`, planClientName: `QA client ${Math.floor(index / 10)}`, recipient: { id: `qa-recipient-${index}`, name: `QA recipient ${index}`, bank: 'QA bank', card: '', phone: '', details: '' } }],
++    amountMode: 'manual', createdBy: 'qa-actor', recipientText: `QA recipient ${index}`, comment: '', createdAt: `${today}T10:00:00Z`, updatedAt: `${today}T10:00:00Z`, paymentHistory: [],
++  })) }) }));
++  for (const width of [1440, 390]) {
++    await journal.setViewportSize({ width, height: 1000 });
++    for (const multiplier of [1, 5, 10]) {
++      count = 100 * multiplier;
++      await journal.goto('about:blank');
++      await journal.goto(base + '/#operator');
++      await expect(journal.locator('.operator-workspace')).toBeVisible();
++      await expect(journal.locator(width > 700 ? '.operator-desktop-journal tbody' : '.operator-operation-card')).toHaveCount(baseline ? count : 50);
++      await journal.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
++      const result = await journal.evaluate(() => ({ readyMs: performance.now(), domNodes: document.getElementsByTagName('*').length, operations: document.querySelectorAll('[data-operation-id]').length, longTaskSupported: window.__qaLongTaskSupported, longTasks: window.__qaLongTasks }));
++      if (!baseline) assert.equal(result.operations, 50, 'one responsive DOM for each of fifty visible operations');
++      report.growth.push({ engine, width, multiplier, count, ...result });
++      if (!baseline && multiplier === 10) {
++        const axe = await new AxeBuilder({ page: journal }).include('.operator-workspace').analyze();
++        assert.deepEqual(axe.violations, []);
++        report.axe.push({ engine, width, violations: axe.violations });
++        await journal.getByRole('navigation', { name: 'Страницы операций', exact: true }).scrollIntoViewIfNeeded();
++        const screenshot = resolve(output, `${engine}-pagination-${width}.png`);
++        await journal.screenshot({ path: screenshot }); report.screenshots.push(screenshot);
++      }
++    }
++  }
++  await journal.setViewportSize({ width: 700, height: 1000 }); await expect(journal.locator('.operator-operation-card')).toHaveCount(baseline ? count : 50);
++  await journal.setViewportSize({ width: 701, height: 1000 }); await expect(journal.locator('.operator-desktop-journal tbody')).toHaveCount(baseline ? count : 50);
++  if (!baseline) {
++    await journal.getByRole('button', { name: 'Следующая страница операций', exact: true }).click();
++    await expect(journal.locator('[data-operation-id="qa-operation-50"]')).toBeVisible();
++    await journal.setViewportSize({ width: 390, height: 1000 });
++    await expect(journal.locator('[data-operation-id="qa-operation-50"]')).toBeVisible();
++    await journal.getByLabel('Поиск операций', { exact: true }).fill('QA driver 999');
++    await expect(journal.locator('[data-operation-id]')).toHaveCount(1);
++    await expect(journal.locator('[data-operation-id="qa-operation-999"]')).toBeVisible();
++    await journal.getByLabel('Поиск операций', { exact: true }).fill('');
++    await expect(journal.locator('[data-operation-id="qa-operation-0"]')).toBeVisible();
++    await expect(journal.getByRole('button', { name: 'Предыдущая страница операций', exact: true })).toBeDisabled();
++  }
++  await journal.close();
++  console.log('PASS', engine, 'linked operator records x1/x5/x10, responsive 700/701');
++
++  // The browser clock advances timers; HTTP still uses the isolated middleware.
++  // Authentication refresh is intentionally outside these endpoint counters.
++  for (const [routeId, endpoint, selector] of [['overview', '/api/settlements', '.overview-page'], ['cabinet-balances', '/api/cabinets', '.cabinet-page'], ['payments', '/api/banking', '.banking-page'], ['invoices', '/api/invoices', '.invoice-workspace']]) {
++    const poll = await context.newPage(); let reads = 0;
++    poll.on('request', request => { if (new URL(request.url()).pathname === endpoint) reads++; });
++    await poll.goto(`${base}/#${routeId}`); await expect(poll.locator(selector)).toBeVisible(); await poll.waitForTimeout(200);
++    await poll.clock.install();
++    const initial = reads;
++    await poll.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); });
++    await poll.clock.runFor(65_000); await poll.waitForTimeout(100);
++    const hidden = reads - initial, beforeReturn = reads;
++    await poll.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' }); document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });
++    await poll.clock.runFor(100); await poll.waitForTimeout(100);
++    const returned = reads - beforeReturn;
++    if (!baseline) { assert.equal(hidden, 0, `${routeId}: hidden reads`); assert.equal(returned, 1, `${routeId}: coalesced return read`); }
++    report.polling.push({ engine, route: routeId, hiddenMs: 65_000, hiddenReads: hidden, returnReads: returned });
++    await poll.close();
++  }
++  console.log('PASS', engine, 'hidden polling and paired focus/visibility');
++}
+--- /dev/null
++++ b/scripts/profile_backend_growth.mjs
+@@ -0,0 +1,86 @@
++// Reproducible related-record growth. Synthetic only; no source data, timers or providers.
++import assert from 'node:assert/strict';
++import { createHash, scryptSync } from 'node:crypto';
++import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { pathToFileURL } from 'node:url';
++import { createServer } from 'node:http';
++import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
++const args = Object.fromEntries(Array.from({ length: Math.ceil((process.argv.length - 2) / 2) }, (_, i) => [process.argv[i * 2 + 2]?.replace(/^--/, ''), process.argv[i * 2 + 3]]));
++for (const key of ['adapter', 'output']) assert.ok(args[key], `--${key} required`);
++const iterations = Number(args.iterations ?? 3), factors = (args.factors ?? '1,5,10').split(',').map(Number), concurrencies = (args.concurrency ?? '1,4').split(',').map(Number);
++assert.ok(iterations >= 2 && iterations <= 30 && factors.every(n => [1,5,10].includes(n)) && concurrencies.every(n => [1,4].includes(n)));
++for (const key of Object.keys(process.env)) if (/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key)) delete process.env[key];
++const { createSnapshotMiddleware, loadSnapshot, OperationsStore, emptyDirectories, currentSnapshot, SHIPMENT_FIELDS } = await import(pathToFileURL(resolve(args.adapter)));
++const digest = value => createHash('sha256').update(value).digest('hex');
++const date = '2026-10-28T00:00:00.000Z', source = digest('synthetic-linked-growth-v1'), salt = '0'.repeat(32), password = 'Synthetic-growth-password-only';
++const passwordHash = scryptSync(password, salt, 64).toString('hex');
++const users = [...Array.from({length:4}, (_,i) => ({ id:`growth-user-${i}`, name:`Synthetic User ${i}`, login:`growth-user-${i}`, role:'director', managerId:null })), {id:'growth-employee',name:'Synthetic Scoped',login:'growth-employee',role:'employee',managerId:'manager-0',sections:['work','trips','shipments','directories','overview']}].map(user=>({...user,active:true,version:1,passwordHash,salt}));
++const tokens = users.map(user=>digest(`synthetic-session-${user.id}`));
++const percentile = (values,p) => [...values].sort((a,b)=>a-b)[Math.min(values.length-1, Math.ceil(values.length*p)-1)];
++const summary = values => ({medianMs:percentile(values,.5),p95Ms:percentile(values,.95),minMs:Math.min(...values),maxMs:Math.max(...values)});
++const normalize = value => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key])=>key!=='revision').map(([key,v])=>[key,key==='updatedAt'?'<timestamp>':normalize(v)])) : value;
++let externalCalls = 0;
++const blocked = async () => { externalCalls++; throw new Error('External providers forbidden'); };
++const report = { adapterSha256:digest(await readFile(resolve(args.adapter))),scriptSha256:digest(await readFile(import.meta.filename)), syntheticOnly:true, timersStarted:false, liveDataRead:false, providerCalls:0, iterations, model:'x1 = 40 clients + 1 supplier, 200 shipments in 100 two-delivery trips, 200 tasks, 100 notes, 40 company records; all business-record counts multiply by factor; four separate director users and a scoped employee. No padding, external documents, bank payments or scheduler contention.', runs:[] };
++async function snapshot(directory) {
++ await mkdir(directory,{recursive:true});
++ const meta={source_file:'synthetic.xlsx',source_sha256:source,created_at_utc:date,source_kind:'test',google_verified:false,formula_policy:'',ownership_policy:''};
++ const validation={status:'ok',registry_verified:false,issue_counts:{},cell_issues:[],record_flag_counts:{},duplicate_record_candidates:[],legal_form_alias_candidate_groups:[],multiple_manager_companies:[],limitations:[]};
++ const files={};
++ for(const name of ['companies','shipments','payments','stock_summaries','manager_labels','validation_report']) { const raw=JSON.stringify({meta,data:name==='validation_report'?validation:[]});await writeFile(resolve(directory,`${name}.json`),raw);files[`${name}.json`]={sha256:digest(raw),bytes:Buffer.byteLength(raw)}; }
++ await writeFile(resolve(directory,'manifest.json'),JSON.stringify({meta,counts:{},files}));
++}
++function populate(data,factor) {
++ const count=40*factor;
++ const company=(id,name,role)=>({id,name,roles:[role],managerLabels:[],shipmentIds:[],paymentIds:[],flags:[]});
++ data.sourceOperationsCleared=true;
++ data.companies=[company('supplier','Synthetic Supplier','supplier'),...Array.from({length:count},(_,i)=>company(`client-${i}`,`Synthetic Client ${i}`,'customer'))];
++ data.directories={...emptyDirectories(),fleetSeedApplied:true,managers:Array.from({length:4},(_,i)=>({id:`manager-${i}`,name:`Synthetic Manager ${i}`})),products:[{id:'product',name:'Synthetic diesel'}],paymentForms:[{id:'payment',name:'б/нал'}],vehicles:[{id:'vehicle',plate:'Т000ЕЕ00'}],drivers:[{id:'driver',name:'Synthetic Driver',vehicleId:'vehicle'}],addresses:Array.from({length:count},(_,i)=>({id:`address-${i}`,name:`Synthetic Address ${i}`,companyId:`client-${i}`,kind:'delivery'}))};
++ data.accounts={users:structuredClone(users),sessions:users.map((user,i)=>({userId:user.id,hash:digest(tokens[i]),expiresAt:4102444800000})),attempts:{}};
++ data.shipments={};data.tripNumbers={};data.tripCreateRequests={};
++ for(let i=0;i<200*factor;i++) {
++  const t=Math.floor(i/2),trip=`shipment-trip-${t.toString(16).padStart(8,'0')}-0000-4000-8000-000000000000`,client=i%count,manager=Math.floor(client/2)%4,day=String(t%28+1).padStart(2,'0');
++  data.tripNumbers[trip]=t+1;
++  data.shipments[`shipment-local-${i}`]={version:1,createdAt:date,updatedAt:date,fields:{...Object.fromEntries(SHIPMENT_FIELDS.map(field=>[field,null])),date:`2026-10-${day}`,organization_id:t%2?'artel':'nk-artel',customer_id:`client-${client}`,customer_name:`Synthetic Client ${client}`,supplier_id:'supplier',supplier_name:'Synthetic Supplier',manager_id:`manager-${manager}`,manager_label:`Synthetic Manager ${manager}`,product_id:'product',product:'Synthetic diesel',payment_form_id:'payment',payment_form:'б/нал',driver_id:'driver',vehicle_id:'vehicle',unloading_address_id:`address-${client}`,trip_id:trip,trip_delivery_order:String(i%2+1),trip_total_tonnes:'2',trip_additional_costs:'0',quantity_tonnes:'1',quantity_litres:'1200',sale_price_per_litre:'75',purchase_price_unspecified_unit:'70000',purchase_unit:'tonnes',calculation_mode:'automatic',additional_costs:'0',transport_amount:'1000',opening_paid_amount:'0'}};
++ }
++ const entry=(id,i)=>({id,version:1,assigneeId:users[i%4].id,createdBy:users[i%4].id,updatedBy:users[i%4].id,createdAt:date,updatedAt:date});
++ data.work={tasks:Array.from({length:200*factor},(_,i)=>({...entry(`task-${i}`,i),title:`Synthetic task ${i}`,description:'Linked synthetic record',status:'todo',companyId:`client-${i%count}`,dueDate:null,reminderAt:null})),notes:Array.from({length:100*factor},(_,i)=>({...entry(`note-${i}`,i),title:`Synthetic note ${i}`,content:'Synthetic note content'})),companyRecords:Array.from({length:count},(_,i)=>({...entry(`company-record-${i}`,i),companyId:`client-${i}`,question:'Synthetic question',comments:[],reminderAt:null}))};
++ delete data.push;
++}
++for(const factor of factors) for(const concurrency of concurrencies) {
++ const temporary=await mkdtemp(resolve(tmpdir(),'artel-linked-growth-')),snapshotDir=resolve(temporary,'snapshot'),storeDir=resolve(temporary,'store');let server;
++ try {
++  await snapshot(snapshotDir);const base=await loadSnapshot(snapshotDir),store=new OperationsStore(storeDir);
++  await store.mutate(source,data=>{populate(data,factor);return{changed:true,result:null};});
++  const input=await store.read(source),assembled=currentSnapshot(base,input),inputBytes=await readFile(store.path);
++  assert.equal(assembled.shipments.length,200*factor);assert.equal(assembled.companies.length,40*factor+1);
++  assert.equal(new Set(assembled.shipments.map(row=>row.fields.trip_id)).size,100*factor);
++  assert.ok(assembled.shipments.every(row=>row.customerId&&assembled.companies.some(c=>c.id===row.customerId)));
++  let reads=0;const originalRead=store.read.bind(store);store.read=async(...a)=>{reads++;return originalRead(...a)};
++  const middleware=createSnapshotMiddleware(snapshotDir,{operationsStore:store,operationsDirectory:storeDir,requireAuthentication:true,bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},cabinetEnvironment:{},geocoderEnvironment:{},yandexTilesEnvironment:{},bankRequest:blocked,sberRequest:blocked,fetcher:blocked,tripRequestGeocoder:async()=>({status:'unavailable',reason:'provider_unavailable'}),pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false},sabyWorkflowMonitoringEnabled:false});
++  server=createServer((req,res)=>middleware(req,res,()=>{res.writeHead(404);res.end()}));await new Promise(done=>server.listen(0,'127.0.0.1',done));const url=`http://127.0.0.1:${server.address().port}`;
++  const request=async(path,index=0,method='GET',body)=>{const start=performance.now(),response=await fetch(url+path,{method,headers:{cookie:`artel_session=${tokens[index]}`,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})}),bytes=Buffer.from(await response.arrayBuffer()),json=JSON.parse(bytes.toString());assert.equal(response.status,200,`${path} ${JSON.stringify(json)}`);return{ms:performance.now()-start,status:response.status,bytes:bytes.length,hash:digest(bytes),semanticHash:digest(JSON.stringify(normalize(json))),json};};
++  const endpoints=[['work','/api/work'],['navigation','/api/navigation'],['directories','/api/directories'],['shipments','/api/shipments?limit=50'],['trips','/api/shipment-trips'],['settlements','/api/settlements']];
++  const permissions=[];
++  for(const path of ['/api/navigation','/api/shipments?limit=50','/api/shipment-trips']) {const r=await request(path,4);permissions.push({path,status:r.status,hash:r.hash});if(path==='/api/navigation')assert.ok(r.json.shipmentCount>0&&r.json.shipmentCount<200*factor);}
++  const denied=await fetch(url+'/api/banking',{headers:{cookie:`artel_session=${tokens[4]}`}});assert.equal(denied.status,403);permissions.push({path:'/api/banking',status:denied.status,hash:digest(await denied.text())});
++  const beforeReadHash=digest(await readFile(store.path)),loop=monitorEventLoopDelay({resolution:10});loop.enable();const cpuStart=process.cpuUsage(),runStart=performance.now(),measurements=[];
++  for(const [name,path] of endpoints) {
++   await Promise.all(Array.from({length:concurrency},(_,i)=>request(path,i)));
++   const samples=[],batchMs=[],readCounts=[];
++   for(let n=0;n<iterations;n++){reads=0;const started=performance.now(),responses=await Promise.all(Array.from({length:concurrency},(_,i)=>request(path,i)));batchMs.push(performance.now()-started);readCounts.push(reads);samples.push(...responses.map(({json,...row},user)=>({...row,user,round:n})));}
++   measurements.push({name,path,method:'GET',...summary(samples.map(s=>s.ms)),batch:summary(batchMs),readCounts,samples});
++  }
++  assert.equal(digest(await readFile(store.path)),beforeReadHash);
++  for(const kind of ['workStatus','login']) {
++   const samples=[],batchMs=[];const versions=Array(concurrency).fill(1);
++   for(let n=0;n<iterations;n++){const started=performance.now(),responses=await Promise.all(Array.from({length:concurrency},(_,i)=>kind==='login'?request('/api/auth/login',i,'POST',{login:users[i].login,password}):request(`/api/work/tasks/task-${i}`,i,'PATCH',{version:versions[i],status:n%2?'todo':'done'})));batchMs.push(performance.now()-started);responses.forEach((r,i)=>{if(kind==='workStatus')versions[i]=r.json.entry.version});samples.push(...responses.map(({json,...row},user)=>({...row,user,round:n})));}
++   measurements.push({name:kind,method:kind==='login'?'POST':'PATCH',...summary(samples.map(s=>s.ms)),batch:summary(batchMs),samples});
++  }
++  loop.disable();const cpu=process.cpuUsage(cpuStart);
++  report.runs.push({factor,concurrency,counts:{companies:input.companies.length,shipments:assembled.shipments.length,trips:100*factor,tasks:input.work.tasks.length,notes:input.work.notes.length,companyRecords:input.work.companyRecords.length},inputBytes:inputBytes.length,inputSha256:digest(inputBytes),getStoreBytesUnchanged:true,permissions,measurements,durationMs:performance.now()-runStart,cpuMs:{user:cpu.user/1000,system:cpu.system/1000},eventLoopMs:{mean:loop.mean/1e6,p95:loop.percentile(95)/1e6,max:loop.max/1e6},rssBytes:process.memoryUsage().rss});
++  assert.equal(externalCalls,0);report.providerCalls=externalCalls;await writeFile(resolve(args.output),JSON.stringify(report,null,2),{mode:0o600});console.log(JSON.stringify({factor,concurrency,inputBytes:inputBytes.length,measurements:measurements.length}));
++ }finally{if(server){server.closeAllConnections();await new Promise(done=>server.close(done));}await rm(temporary,{recursive:true,force:true});}
++}
+--- /dev/null
++++ b/scripts/profile_backend_login_interleaving.mjs
+@@ -0,0 +1,48 @@
++// Isolated deterministic interleaving probe. Only synthetic stores and loopback HTTP.
++import assert from 'node:assert/strict';
++import crypto, {createHash,scryptSync} from 'node:crypto';
++import {syncBuiltinESMExports} from 'node:module';
++import {mkdtemp,rm} from 'node:fs/promises';
++import {tmpdir} from 'node:os';
++import {resolve} from 'node:path';
++import {createServer} from 'node:http';
++const digest=value=>createHash('sha256').update(value).digest('hex'), password='Synthetic-interleaving-password',salt='c'.repeat(32),passwordHash=scryptSync(password,salt,64).toString('hex');
++const original=crypto.scrypt;let holding=false,pending=[],derivations=0,waiters=[];
++crypto.scrypt=(...args)=>{derivations++;if(!holding)return Reflect.apply(original,crypto,args);pending.push(()=>Reflect.apply(original,crypto,args));for(const waiter of waiters)waiter();};syncBuiltinESMExports();
++const {createSnapshotMiddleware,loadSnapshot}=await import('../server/local-api.ts');
++const {OperationsStore}=await import('../server/operations-store.ts');
++const {emptyDirectories}=await import('../server/directory-operations.ts');
++const {prepareLogin}=await import('../server/auth.ts');
++const {writeTripsQaSnapshot}=await import('./qa-trips-runtime.mjs');
++for(const key of Object.keys(process.env))if(/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key))delete process.env[key];
++const temporary=await mkdtemp(resolve(tmpdir(),'artel-login-interleaving-')),snapshotDir=resolve(temporary,'snapshot'),store=new OperationsStore(resolve(temporary,'store'));
++await writeTripsQaSnapshot(snapshotDir);const base=await loadSnapshot(snapshotDir),source=base.provenance.sourceSha256;
++const instant='2026-10-28T00:00:00.000Z',token=digest('synthetic-owner-session');
++const owner={id:'owner',name:'Synthetic Owner',login:'owner.user',role:'director',managerId:null,active:true,version:1,salt,passwordHash};
++const target={...owner,id:'target',name:'Synthetic Target',login:'target.user',role:'employee',managerId:'manager',sections:['work','trips']};
++const task={id:'task',version:1,assigneeId:owner.id,createdBy:owner.id,updatedBy:owner.id,createdAt:instant,updatedAt:instant,title:'Synthetic Task',description:'',status:'todo',companyId:null,dueDate:null,reminderAt:null};
++const reset=async(driver=false)=>store.mutate(source,data=>{data.sourceOperationsCleared=true;data.accounts={users:[structuredClone(owner),driver?{...target,role:'driver',managerId:null,driverId:'driver',sections:[]}:structuredClone(target)],sessions:[{userId:owner.id,hash:digest(token),expiresAt:4102444800000}],attempts:{}};data.directories={...emptyDirectories(),fleetSeedApplied:true,managers:[{id:'manager',name:'Synthetic Manager'}],vehicles:[{id:'vehicle',plate:'Т000ЕЕ00'}],drivers:[{id:'driver',name:'Synthetic Driver',vehicleId:'vehicle'},{id:'driver-two',name:'Other Driver',vehicleId:'vehicle'}]};data.work={tasks:[structuredClone(task)],companyRecords:[],notes:[]};return{changed:true,result:null};});
++const blocked=async()=>{throw new Error('No external provider allowed')};
++const middleware=createSnapshotMiddleware(snapshotDir,{operationsStore:store,operationsDirectory:resolve(temporary,'store'),bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},cabinetEnvironment:{},geocoderEnvironment:{},bankRequest:blocked,sberRequest:blocked,fetcher:blocked,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false},sabyWorkflowMonitoringEnabled:false});
++const server=createServer((req,res)=>middleware(req,res,()=>{res.writeHead(404);res.end()}));await new Promise(done=>server.listen(0,'127.0.0.1',done));const url=`http://127.0.0.1:${server.address().port}`;
++const call=(path,method='GET',body)=>fetch(url+path,{method,signal:AbortSignal.timeout(5000),headers:{cookie:`artel_session=${token}`,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
++const login=(name='target.user',candidate=password,logistics=false)=>call(logistics?'/api/logistics/auth/login':'/api/auth/login','POST',{login:name,password:candidate});
++const waitPending=async(count)=>{if(pending.length>=count)return;await new Promise((done,reject)=>{const timer=setTimeout(()=>reject(new Error('KDF did not reach barrier')),4000);const check=()=>{if(pending.length>=count){clearTimeout(timer);waiters=waiters.filter(w=>w!==check);done();}};waiters.push(check);check();});};
++const release=()=>{holding=false;const jobs=pending.splice(0);jobs.forEach(run=>run());};
++const checks=[];
++try{
++ await reset();holding=true;const pendingLogins=Array.from({length:4},()=>login('target.user','wrong'));await waitPending(4);
++ const before=performance.now();const work=await call('/api/work/tasks/task','PATCH',{version:1,status:'done'});assert.equal(work.status,200);const workMs=performance.now()-before;assert.equal(pending.length,4,'Work must finish while all KDFs remain held');
++ assert.equal((await call('/api/auth/session')).status,200);assert.equal((await login('overflow.user')).status,429);assert.equal(pending.length,4);release();assert.deepEqual((await Promise.all(pendingLogins)).map(r=>r.status),[401,401,401,401]);
++ let fresh=await store.read(source);assert.equal(fresh.accounts.attempts[digest('artel:auth:user:target.user')].count,4);assert.equal(fresh.work.tasks[0].status,'done');checks.push('held KDFs do not hold Work mutation; four-login gate retained');
++ const next=await Promise.all([login('target.user','wrong'),login('target.user','wrong')]);assert.deepEqual(next.map(r=>r.status).sort(),[401,429]);fresh=await store.read(source);assert.equal(fresh.accounts.attempts[digest('artel:auth:user:target.user')].count,5);assert.equal((await login()).status,429);checks.push('parallel failed attempts serialize to5 and fresh limit blocks correct password');
++ const mutations={password:row=>{row.passwordHash='0'.repeat(128)},salt:row=>{row.salt='d'.repeat(32)},version:row=>{row.version++},role:row=>{row.role='manager'},login:row=>{row.login='renamed.user'},id:row=>{row.id='replacement-target'},active:row=>{row.active=false},deleted:row=>{row.active=false;row.deletedAt=instant;row.deletedBy='owner'},sections:row=>{row.sections=[]}};
++ for(const [name,mutate] of Object.entries(mutations)){await reset();holding=true;const attempt=login();await waitPending(1);await store.mutate(source,data=>{mutate(data.accounts.users[1]);return{changed:true,result:null};});release();const response=await attempt;assert.equal(response.status,401,name);assert.equal(response.headers.get('set-cookie'),null,name);assert.equal((await store.read(source)).accounts.sessions.length,1,name);checks.push(`fresh ${name} revocation rejects stale proof`);}
++ for(const name of ['driver-binding','driver-archived']){await reset(true);holding=true;const attempt=login('target.user',password,true);await waitPending(1);await store.mutate(source,data=>{if(name==='driver-binding')data.accounts.users[1].driverId='driver-two';else data.directories.deletedEntries={drivers:['driver']};return{changed:true,result:null};});release();assert.equal((await attempt).status,401,name);assert.equal((await store.read(source)).accounts.sessions.length,1);checks.push(name+' checked fresh');}
++ await reset();holding=true;const attempt=login();await waitPending(1);await store.mutate(source,data=>{data.accounts.attempts[digest('artel:auth:user:target.user')]={count:5,until:Date.now()+900000};return{changed:true,result:null};});release();assert.equal((await attempt).status,429);checks.push('attempt limit committed during derivation takes precedence');
++ await reset();holding=true;const newlyCreated=login('new.user');await waitPending(1);await store.mutate(source,data=>{data.accounts.users.push({...target,id:'new-target',login:'new.user'});return{changed:true,result:null};});release();assert.equal((await newlyCreated).status,401);assert.equal((await store.read(source)).accounts.sessions.length,1);checks.push('unknown-to-created transition cannot adopt a dummy derivation');
++ await reset();await store.mutate(source,data=>{data.accounts.users[1].sections=[];return{changed:true,result:null};});assert.equal((await login('target.user',password,true)).status,403);checks.push('logistics audience access rechecked at completion');
++ await reset();for(const name of ['target.user','unknown.user']){const count=derivations;await login(name,'wrong');assert.equal(derivations-count,1);}checks.push('known and unknown HTTP credentials each perform exactly one KDF');
++ await reset();const data=await store.read(source),finish=await prepareLogin(data,{login:'target.user',password});const abandoned=structuredClone(data),retry=structuredClone(data);assert.equal(finish(abandoned).status,200);assert.equal(finish(retry).status,200);assert.equal(retry.accounts.sessions.length,2);const revokedRetry=structuredClone(data);revokedRetry.accounts.users[1].role='manager';assert.equal(finish(revokedRetry).status,401);assert.equal(revokedRetry.accounts.sessions.length,1);checks.push('CAS callback retry discards abandoned session and checks identity anew');
++ console.log(JSON.stringify({passed:true,syntheticOnly:true,workPatchWhileFourKdfsHeldMs:workMs,checks,derivations}));
++}finally{release();server.closeAllConnections();await new Promise(done=>server.close(done));crypto.scrypt=original;syncBuiltinESMExports();await rm(temporary,{recursive:true,force:true});}
+--- /dev/null
++++ b/scripts/verify_frontend_performance.mjs
+@@ -0,0 +1,225 @@
++import { frontendCases } from './frontend-performance-cases.mjs';
++// Built UI, synthetic API and temporary storage only. No provider or production calls.
++import assert from 'node:assert/strict';
++import { chromium, webkit, expect as baseExpect } from '@playwright/test';
++import { createServer } from 'node:http';
++import { createServer as createViteServer } from 'vite';
++import react from '@vitejs/plugin-react';
++import { readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
++import { resolve, extname, relative, sep } from 'node:path';
++import { tmpdir } from 'node:os';
++import { randomUUID } from 'node:crypto';
++import { createSnapshotMiddleware } from '../server/local-api.ts';
++import { writeTripsQaSnapshot } from './qa-trips-runtime.mjs';
++
++const expect = baseExpect.configure({ timeout: 15000 });
++const root = resolve(import.meta.dirname, '..');
++const output = process.env.ARTEL_FRONTEND_QA_OUTPUT || resolve(root, '../frontend/performance-built');
++await mkdir(output, { recursive: true });
++const temp = await mkdtemp(resolve(tmpdir(), 'artel-navigation-split-'));
++const snapshotDirectory = resolve(temp, 'snapshot'), operationsDirectory = resolve(temp, 'operations');
++await writeTripsQaSnapshot(snapshotDirectory);
++const denied = async () => { throw new Error('Provider call forbidden in navigation QA'); };
++// Exercise the real CRM invoice authorization/proxy route against an injected
++// worker response. No 1C provider, PDF creation or external request is involved.
++const invoiceWorkspace = {
++  integration: { status: 'read_only', message: 'Синтетические справочники QA', checkedAt: '2026-10-28T10:00:00Z' },
++  organizations: [{ id: 'qa-seller', name: 'Учебный продавец', connectionId: 'qa-connection' }],
++  buyers: [{ id: 'qa-buyer', name: 'Учебный покупатель', inn: '0000000000', connectionId: 'qa-connection' }],
++  defaultUnitPrice: '79', settings: { defaultUnitPrice: '79', revision: 1, updatedAt: null, updatedBy: null },
++  product: { name: 'Предоплата за дизельное топливо', unit: 'л', vatRate: '22', vatMode: 'included' },
++  canCreate: false, canPrepare: false, canEditDefaultPrice: false, history: { status: 'ready', items: [] },
++};
++const middleware = createSnapshotMiddleware(snapshotDirectory, {
++  operationsDirectory, requireAuthentication: true, checkoApiKey: '', setupToken: '',
++  tripRequestGeocoder: async () => ({ status: 'unavailable', message: 'Synthetic QA' }),
++  bankEnvironment: { ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false' },
++  bankRequest: denied, sberRequest: denied, fetcher: denied,
++  cabinetEnvironment: {}, pushConfig: { publicKey: '', privateKey: '', subject: '', schedule: false }, pushSender: denied,
++  invoiceBridge: { request: async (path, method, body, identity) => {
++    assert.equal(path, '/api/invoices'); assert.equal(method, 'GET');
++    assert.equal(body.length, 0); assert.ok(identity?.crmUserId);
++    return { status: 200, contentType: 'application/json', body: Buffer.from(JSON.stringify(invoiceWorkspace)) };
++  } },
++});
++const publicRoot = resolve(process.env.ARTEL_FRONTEND_BASELINE_DIST || resolve(root, 'app-dist'));
++const sourceMode = process.env.ARTEL_FRONTEND_SOURCE === '1';
++const baseline = !!process.env.ARTEL_FRONTEND_BASELINE_DIST;
++const types = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
++const staticServer = createServer((request, response) => middleware(request, response, async () => {
++  try {
++    const pathname = new URL(request.url, 'http://localhost').pathname;
++    const path = resolve(publicRoot, `.${pathname === '/' ? '/index.html' : pathname}`);
++    const rel = relative(publicRoot, path);
++    if (rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('Outside public directory');
++    const bytes = await readFile(path);
++    response.writeHead(200, { 'Content-Type': types[extname(path)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
++    response.end(bytes);
++  } catch { response.writeHead(404); response.end(); }
++}));
++let vite;
++if (sourceMode) {
++  vite = await createViteServer({ configFile: false, envDir: false, cacheDir: resolve(temp, 'vite-cache'), root: resolve(root, 'web'), plugins: [react(), { name: 'synthetic-api', configureServer(server) { server.middlewares.use(middleware); } }], server: { host: '127.0.0.1', port: 0, cors: false, fs: { strict: true, allow: [resolve(root, 'web'), resolve(root, 'node_modules'), resolve(temp, 'vite-cache')] } } });
++  await vite.listen();
++} else await new Promise(done => staticServer.listen(0, '127.0.0.1', done));
++const base = `http://127.0.0.1:${(vite?.httpServer ?? staticServer).address().port}`;
++const report = { checks: [], initialScripts: [], initialScriptBytes: 0, errors: [], apiErrors: [], apiResponses: [], requestFailures: [], scriptResponses: [], screenshots: [] };
++report.webPushExcluded = true; report.synthetic = true; report.mode = sourceMode ? 'source' : 'built'; report.baseline = baseline; report.readiness = []; report.growth = []; report.axe = []; report.polling = []; report.maps = [];
++report.invoiceWorkerSynthetic = true;
++const check = name => { report.checks.push(name); console.log('PASS', name); };
++const pages = [
++  ['overview', '.overview-page'], ['work', '.work-page'], ['shipments', '.shipments-workspace'],
++  ['trips', '.trips-page'], ['payments', '.banking-page'], ['cabinet-balances', '.cabinet-page'],
++  ['china', '.china-page'], ['accounts', '.account-management'], ['directories', '.directories-page'],
++  ['invoices', '.invoice-workspace'], ['operator', '.operator-workspace'],
++];
++report.routes = pages.map(([id]) => id);
++const primaryApi = {
++  overview: '/api/settlements', work: '/api/work', shipments: '/api/shipments', trips: '/api/trip-requests',
++  payments: '/api/banking', 'cabinet-balances': '/api/cabinets', china: '/api/china', accounts: '/api/auth/users',
++  directories: '/api/snapshot', invoices: '/api/invoices', operator: '/api/operator',
++};
++const waitForData = (page, id) => page.waitForResponse(response => new URL(response.url()).pathname === primaryApi[id] && response.request().method() === 'GET' && response.status() === 200);
++async function loaded(page, id, selector) {
++  await expect(page.locator(selector)).toBeVisible();
++  if (id === 'invoices') {
++    await expect(page.getByRole('combobox', { name: 'Продавец', exact: true })).toBeEnabled();
++    await expect(page.getByRole('combobox', { name: 'Продавец', exact: true }).locator('option')).toContainText(['Выберите продавца', 'Учебный продавец']);
++    await expect(page.getByRole('heading', { name: 'История счетов', exact: true })).toBeVisible();
++    await expect(page.getByRole('button', { name: 'Обновить счета', exact: true })).toBeEnabled();
++  }
++  if (id === 'operator') {
++    await expect(page.getByRole('heading', { name: /^Операции по водителям/ })).toBeVisible();
++    await expect(page.getByLabel('Поиск операций', { exact: true })).toBeEnabled();
++    await expect(page.locator('.operator-workspace').getByRole('button', { name: 'Обновить', exact: true })).toBeEnabled();
++    await expect(page.getByText('Операций пока нет', { exact: true })).toBeVisible();
++  }
++}
++let browser, initialized = false;
++try {
++  for (const [engine, launch] of [['chromium', () => chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' })], ['webkit', () => webkit.launch({ headless: true })]].filter(([engine]) => !process.env.ARTEL_SPLIT_ONLY_WEBKIT || engine === 'webkit')) {
++    browser = await launch();
++    // Navigation QA has no push provider. Native WebKit getSubscription freezes
++    // this headless runtime even with the unchanged baseline; exclude workers.
++    const context = await browser.newContext({ ...(initialized ? { storageState: resolve(temp, 'session.json') } : {}), viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
++    await context.addInitScript(() => {
++      window.__qaLongTasks = []; window.__qaLongTaskSupported = PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false;
++      if (PerformanceObserver.supportedEntryTypes?.includes('longtask')) new PerformanceObserver(list => { window.__qaLongTasks.push(...list.getEntries().map(entry => ({ start: entry.startTime, ms: entry.duration }))); }).observe({ type: 'longtask', buffered: true });
++    });
++    context.on('response', response => {
++      const path = new URL(response.url()).pathname;
++      if (!path.startsWith('/api/')) return;
++      const row = { engine, path, status: response.status() };
++      report.apiResponses.push(row);
++      if (row.status >= 400) report.apiErrors.push(row);
++    });
++    const page = await context.newPage();
++    await page.bringToFront();
++    page.on('response', response => { if (response.request().resourceType() === 'script' || response.request().resourceType() === 'stylesheet') report.scriptResponses.push({ engine, url: response.url(), status: response.status() }); });
++    page.on('requestfailed', request => report.requestFailures.push({ engine, url: request.url(), error: request.failure()?.errorText }));
++    page.on('pageerror', error => report.errors.push({ engine, message: error.message }));
++    const initialScripts = new Set();
++    page.on('request', request => { if (request.resourceType() === 'script') initialScripts.add(new URL(request.url()).pathname); });
++    await page.goto(base);
++    if (!initialized) {
++      await expect(page.getByRole('heading', { name: 'Первый вход', exact: true })).toBeVisible();
++      report.initialScripts = [...initialScripts];
++      for (const path of sourceMode ? [] : initialScripts) report.initialScriptBytes += (await readFile(resolve(publicRoot, `.${path}`))).length;
++      assert.ok(!report.initialScripts.some(path => /TripsPage|DeliveryPointPicker|BankingPage/.test(path)));
++      await page.getByLabel('Имя', { exact: true }).fill('Директор QA');
++      await page.getByLabel('Логин', { exact: true }).fill('navigation-split');
++      const password = randomUUID();
++      await page.getByLabel('Пароль', { exact: true }).fill(password);
++      await page.getByRole('button', { name: 'Создать директора', exact: true }).click();
++      await expect(page.locator('.overview-page')).toBeVisible();
++      await context.storageState({ path: resolve(temp, 'session.json') });
++      initialized = true;
++      check('Login downloads no trips, maps or banking modules');
++    } else {
++      await expect(page.locator('.overview-page')).toBeVisible();
++    }
++    // A new document for every route catches styles accidentally inherited from
++    // previously visited pages, even when browser assets are cached.
++    for (const [id, selector] of pages) {
++      const cold = await context.newPage();
++      cold.on('pageerror', error => report.errors.push({ engine, route: id, message: error.message }));
++      const ready = waitForData(cold, id);
++      await cold.goto(`${base}/#${id}`);
++      await ready;
++      await loaded(cold, id, selector);
++      await cold.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
++      report.readiness.push({ engine, route: id, ...(await cold.evaluate(() => ({ contentReadyMs: performance.now(), domNodes: document.getElementsByTagName('*').length, longTaskSupported: window.__qaLongTaskSupported, longTasks: window.__qaLongTasks, waterfall: performance.getEntriesByType('resource').map(row => ({ path: new URL(row.name).pathname, start: row.startTime, ms: row.duration, bytes: row.decodedBodySize })) }))) });
++
++      if (id === 'directories') {
++        await cold.getByRole('button', { name: 'Добавить', exact: true }).click();
++        const dialog = cold.locator('.directory-editor');
++        await expect(dialog).toBeVisible();
++        for (const width of [1440, 390, 320]) {
++          await cold.setViewportSize({ width, height: 1000 });
++          const picker = dialog.locator('.company-picker').first();
++          assert.equal(await picker.evaluate(el => getComputedStyle(el).position), 'relative');
++          assert.equal(await picker.locator('.company-combobox').evaluate(el => getComputedStyle(el).display), 'flex');
++          assert.ok((await picker.locator('input').boundingBox()).width > 40);
++          assert.equal(await dialog.locator('.shipment-field-grid').first().evaluate(el => getComputedStyle(el).display), 'grid');
++          assert.ok(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1));
++        }
++      }
++      if (id === 'china') {
++        await cold.getByRole('button', { name: 'Добавить день', exact: true }).click();
++        const dialog = cold.locator('.china-editor');
++        await expect(dialog).toBeVisible();
++        for (const width of [1440, 390, 320]) {
++          await cold.setViewportSize({ width, height: 1000 });
++          assert.equal(await dialog.locator('form').evaluate(el => getComputedStyle(el).display), 'flex');
++          assert.equal(await dialog.locator('.work-editor-body').evaluate(el => getComputedStyle(el).overflowY), 'auto');
++          assert.equal(await dialog.locator('.work-field-grid').evaluate(el => getComputedStyle(el).display), 'grid');
++          assert.ok(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1));
++        }
++        const screenshot = resolve(output, `${engine}-china-cold-320.png`);
++        await cold.screenshot({ path: screenshot, fullPage: true }); report.screenshots.push(screenshot);
++      }
++      await cold.close();
++    }
++    check(`${engine}: all eleven routes open directly with successful data APIs; shared directory and China form styles survive cold load`);
++    for (const width of [1440, 390, 320]) {
++      await page.setViewportSize({ width, height: 1000 });
++      for (const [id, selector] of pages) {
++        const titles = { overview: 'Обзор', work: 'Работа', shipments: 'Отгрузки', trips: 'Рейсы', payments: 'Платежи', 'cabinet-balances': 'Балансы кабинетов', china: 'Китай', accounts: 'Сотрудники и доступ', directories: 'Справочники', invoices: 'Счета', operator: 'Операторская' };
++        const target = page.locator('.sidebar').getByRole('button', { name: titles[id], exact: true });
++        if (!await target.isVisible() || await page.locator('.sidebar').evaluate(el => el.inert)) await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
++        await page.bringToFront();
++        const ready = new URL(page.url()).hash === `#${id}` ? Promise.resolve() : waitForData(page, id);
++        await target.click();
++        await ready;
++        await loaded(page, id, selector);
++        await expect(page.getByText('Не удалось открыть раздел', { exact: true })).toHaveCount(0);
++        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${engine}/${id}/${width} horizontal overflow`);
++      }
++      const screenshot = resolve(output, `${engine}-${width}.png`);
++      await page.screenshot({ path: screenshot, fullPage: true }); report.screenshots.push(screenshot);
++      check(`${engine}: all eleven pages load and fit at ${width}px`);
++    }
++    if (engine === 'chromium' && !sourceMode) {
++      const broken = await context.newPage();
++      await broken.route('**/assets/WorkPage-*.js', route => route.abort());
++      await broken.goto(`${base}/#work`);
++      await expect(broken.getByText('Не удалось открыть раздел', { exact: true })).toBeVisible();
++      await broken.unroute('**/assets/WorkPage-*.js');
++      await broken.getByRole('button', { name: 'Обновить страницу', exact: true }).click();
++      await expect(broken.locator('.work-page')).toBeVisible();
++      await broken.close();
++      check('A failed page-module download offers reload and recovers');
++    }
++    await frontendCases({ context, base, engine, report, baseline, output });
++    await browser.close(); browser = null;
++  }
++  assert.deepEqual(report.errors, []);
++  assert.deepEqual(report.apiErrors, []);
++  check('Normal navigation has no browser JavaScript or API errors across eleven routes');
++  report.passed = true;
++} finally {
++  await browser?.close();
++  if (vite) await vite.close(); else await new Promise(done => staticServer.close(done));
++  await rm(temp, { recursive: true, force: true });
++  await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2));
++}
+--- /dev/null
++++ b/scripts/verify_lazy_maps_performance.mjs
+@@ -0,0 +1,130 @@
++// Real OpenLayers, authenticated synthetic CRM, local stub tiles; no provider/live-store claims.
++import assert from 'node:assert/strict';
++import { randomUUID } from 'node:crypto';
++import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { chromium, webkit, expect } from '@playwright/test';
++import { OperationsStore } from '../server/operations-store.ts';
++import { loadSnapshot } from '../server/local-api.ts';
++import { projectMapPoint, unprojectMapPoint } from '../web/src/yandex-map-coordinates.ts';
++import { writeTripsQaSnapshot } from './qa-trips-runtime.mjs';
++import { startOperatorQaServer } from './qa-operator-runtime.mjs';
++import { authenticateContext } from './qa-auth.mjs';
++const root = resolve(import.meta.dirname, '..'), output = resolve(process.env.ARTEL_MAP_QA_OUTPUT || resolve(root, '../frontend/maps-source'));
++const temporary = await mkdtemp(resolve(tmpdir(), 'artel-yandex-'));
++const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'operations');
++await mkdir(output, { recursive: true }); await writeTripsQaSnapshot(snapshotDirectory);
++const snapshot = await loadSnapshot(snapshotDirectory), store = new OperationsStore(operationsDirectory);
++const positions = [[55.6032093, 37.3583189], [55.643825, 37.851260], [56.1, 37.0]];
++await store.mutate(snapshot.provenance.sourceSha256, data => {
++  data.sourceOperationsCleared = true; data.shipments = {}; data.paymentAllocations = [];
++  data.companies = positions.map((_, i) => ({ id: `customer-${i}`, name: `QA Компания ${i}`, roles: ['customer'], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] }));
++  data.directories = { fleetSeedApplied: true, managers: [], products: [], paymentForms: [], drivers: [], vehicles: [], oilDepots: [], addresses: positions.map(([latitude, longitude], i) => ({ id: `address-${i}`, companyId: `customer-${i}`, kind: 'delivery', name: `QA Площадка ${i}`, address: `Синтетический адрес площадки ${i}`, latitude: String(latitude), longitude: String(longitude) })), customerManagers: [], defaults: { profit: 'template-payment-form' }, duplicates: [] };
++  return { changed: true, result: null };
++});
++const report = { fixtureOnly: true, workingStoreAccessed: false, realOpenLayers: true, stubbedYandexApiTiles: true, realProviderVerified: false, externalRequests: [], errors: [], checks: [], screenshots: [], tileRequests: [], status: 'running' };
++const check = name => { report.checks.push(name); console.log('PASS', name); };
++const tileSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#eaf0e5"/><path d="M0 150H512M130 0V512M0 380H512M388 0V512" stroke="#fff" stroke-width="24"/><text x="150" y="280" fill="#85917d" font-family="sans-serif" font-size="24">QA TILE</text></svg>';
++let runtime, browser;
++try {
++  runtime = await startOperatorQaServer({ root, snapshotDirectory, operationsDirectory });
++  const { cookie } = await runtime.bootstrap(), sources = [];
++  for (let i = 0; i < 3; i++) {
++    const response = await fetch(runtime.base + '/api/trip-requests', { method: 'POST', headers: { Cookie: cookie, Origin: runtime.base, 'Content-Type': 'application/json' }, body: JSON.stringify({ companyId: `customer-${i}`, addressId: `address-${i}`, quantityLitres: String((i + 1) * 3000), executionDate: new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date()), comment: 'Въезд через северные ворота.\nТекст <img src=x onerror="window.__xss=1"> безопасен.', idempotencyKey: randomUUID() }) });
++    assert.ok(response.ok); sources.push((await response.json()).request);
++  }
++  for (const [engine, driver] of [['chromium', chromium], ['webkit', webkit]]) {
++    browser = await driver.launch({ headless: true });
++    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, reducedMotion: 'reduce', serviceWorkers: 'block' });
++    await authenticateContext(context, runtime.base, cookie);
++    let scenario = 'group', failTiles = false;
++    await context.route('**/*', async route => {
++      const url = new URL(route.request().url());
++      if (url.origin !== runtime.base) { report.externalRequests.push(url.origin); return route.abort(); }
++      if (url.pathname === '/api/maps/yandex/tiles') {
++        assert.equal(url.searchParams.get('scale'), '2'); assert.ok(Number(url.searchParams.get('z')) <= 20); assert.equal([...url.searchParams.keys()].sort().join(','), 'scale,x,y,z');
++        report.tileRequests.push(url.pathname + url.search);
++        return failTiles ? route.fulfill({ status: 503, body: 'unavailable' }) : route.fulfill({ contentType: 'image/svg+xml', body: tileSvg });
++      }
++      if (url.pathname === '/api/trip-requests' && route.request().method() === 'GET') {
++        const response = await route.fetch(), result = await response.json();
++        const grouped = { ...sources[0], id: 'grouped', companyName: 'QA Общая точка', quantityLitres: '7500' };
++        result.requests = scenario === 'single' ? sources.slice(0, 1) : scenario === 'empty' ? [] : scenario === 'unlocated' ? [{ ...sources[0], id: 'unknown', addressId: 'unknown', latitude: null, longitude: null, mapUrl: null, location: { status: 'not_found', message: 'Адрес не найден' } }] : [...sources, grouped];
++        return route.fulfill({ json: result });
++      }
++      return route.continue();
++    });
++    const page = await context.newPage(); page.setDefaultTimeout(12000); page.on('pageerror', error => report.errors.push(`${engine}: ${error.message}`));
++    const map = () => page.locator('.trip-map-canvas'), pins = () => page.locator('.trip-map-marker'), card = () => page.locator('.trip-map-details');
++    const open = async () => { if (page.url() === runtime.base + '/#trips') await page.reload(); else await page.goto(runtime.base + '/#trips'); await page.locator('.trips-section-tabs').getByRole('button', { name: 'Карта', exact: true }).click(); await expect(map().locator('.ol-viewport')).toBeVisible(); await expect(page.locator('.trip-map-loading')).toHaveCount(0); };
++    const signature = () => map().evaluate(e => [...e.querySelectorAll('.ol-overlay-container')].map(n => n.style.transform));
++    const close = async () => { if (await card().count()) await page.getByRole('button', { name: 'Закрыть карточку точки', exact: true }).click(); await page.mouse.move(0, 0); };
++    const shot = async name => { const path = resolve(output, `${engine}-${name}.png`); await page.screenshot({ path, animations: 'disabled' }); report.screenshots.push(path); };
++    const allInside = async () => {
++      const b = await map().boundingBox(); for (const p of await pins().all()) { const a = await p.boundingBox(); assert.ok(a && a.x >= b.x + 10 && a.y >= b.y + 10 && a.x + a.width <= b.x + b.width - 10 && a.y + a.height <= b.y + b.height - 30, 'every marker fits with padding'); }
++    };
++    await open(); await expect(pins()).toHaveCount(3); await expect(page.locator('.trip-map-summary')).toContainText('На карте 4 из 4');
++    await expect(map().getByRole('link', { name: 'Яндекс Карты', exact: true })).toBeVisible(); await expect(map().getByRole('link', { name: '© Яндекс' })).toBeVisible(); await expect(map().getByRole('link', { name: 'Открыть в Картах' })).toHaveAttribute('href', /ll=.*&z=/);
++    assert.ok(await map().locator('.yandex-map-logo img').evaluate(e => e.complete && e.naturalWidth > 0));
++    const broad = await signature(); await page.getByRole('button', { name: 'Показать все', exact: true }).click(); await expect.poll(signature).not.toEqual(broad); await allInside(); const fitted = await signature();
++    for (let repeat = 0; repeat < 3; repeat++) {
++      const b = await map().boundingBox(); await page.mouse.move(b.x + b.width * .6, b.y + b.height * .5); await page.mouse.down(); await page.mouse.move(b.x + b.width * .35, b.y + b.height * .75, { steps: 10 }); await page.waitForTimeout(200); await page.mouse.up(); await page.waitForTimeout(350);
++      await map().getByRole('button', { name: 'Приблизить карту', exact: true }).click(); await page.waitForTimeout(350); assert.notDeepEqual(await signature(), fitted);
++      await page.getByRole('button', { name: 'Показать все', exact: true }).click(); await expect.poll(signature).toEqual(fitted); await allInside();
++    }
++    check(`${engine}: initial wide view, exact actual-points fit, three drag/zoom/show-all cycles, all markers padded`);
++    const grouped = pins().filter({ hasText: '2' }); await grouped.hover(); await expect(card()).toBeVisible(); await expect(card()).toContainText('QA Общая точка'); await expect(card()).toContainText('7 500 л');
++    assert.equal(await card().locator('img').count(), 0); assert.equal(await page.evaluate(() => window.__xss), undefined); assert.deepEqual(await signature(), fitted); await shot('desktop-group-card'); await close();
++    await grouped.focus(); await page.keyboard.press('Enter'); await expect(card()).toBeVisible(); await page.keyboard.press('Escape'); await expect(card()).toHaveCount(0);
++    await map().evaluate(e => { e.dataset.identity = 'retained'; }); const beforeRefresh = await signature(); await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await page.waitForTimeout(700); assert.equal(await map().getAttribute('data-identity'), 'retained'); assert.deepEqual(await signature(), beforeRefresh);
++    check(`${engine}: grouped hover/keyboard safe details, source branding, refresh keeps mounted map/view`);
++    for (const width of [320, 390, 768, 1920]) {
++      await page.setViewportSize({ width, height: width === 320 ? 568 : width === 390 ? 844 : 1000 }); await page.waitForTimeout(100); await page.getByRole('button', { name: 'Показать все', exact: true }).click(); await page.waitForTimeout(100); await allInside(); await grouped.click(); await expect(card()).toBeVisible();
++      const b = await map().boundingBox(), c = await card().boundingBox(); assert.ok(c.x >= b.x && c.x + c.width <= b.x + b.width + 1 && c.y >= b.y && c.y + c.height <= b.y + b.height - 42); assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
++      await expect(map().getByRole('link', { name: 'Яндекс Карты', exact: true })).toBeVisible(); await shot(`group-card-${width}`); await close();
++    }
++    check(`${engine}: 320/390/768/1920 touch-sized markers/cards, branding unobscured, no page overflow`);
++    await page.setViewportSize({ width: 1440, height: 1000 }); scenario = 'single'; await open(); await expect(pins()).toHaveCount(1); const singleBroad = await signature(); await page.getByRole('button', { name: 'Показать все', exact: true }).click(); await expect.poll(signature).not.toEqual(singleBroad); await allInside(); await shot('single-fit');
++    for (let level = 0; level < 10; level++) { await map().getByRole('button', { name: 'Приблизить карту', exact: true }).click(); await page.waitForTimeout(280); }
++    await expect(map().getByRole('link', { name: 'Открыть в Картах' })).toHaveAttribute('href', /&z=20$/);
++    assert.ok(report.tileRequests.some(url => new URL(url, runtime.base).searchParams.get('z') === '20'));
++    check(`${engine}: maximum zoom capped at 20; all retina tile requests use standard XYZ z<=20`);
++    scenario = 'unlocated'; await open(); await expect(pins()).toHaveCount(0); await expect(page.getByRole('button', { name: 'Показать все', exact: true })).toBeDisabled(); await expect(page.locator('.trip-map-list-static')).toBeVisible();
++    scenario = 'empty'; await page.reload(); await page.locator('.trips-section-tabs').getByRole('button', { name: 'Карта', exact: true }).click(); await expect(page.getByText('Нет заявок на сегодня и завтра')).toBeVisible(); await expect(map()).toHaveCount(0);
++    check(`${engine}: single actual point, no coordinates disables fit, empty active set has honest placeholder`);
++    scenario = 'group'; failTiles = true; await open(); await expect(page.locator('.trip-map-load-error')).toBeVisible(); await expect(pins()).toHaveCount(3); failTiles = false; await page.locator('.trip-map-load-error').getByRole('button', { name: 'Повторить', exact: true }).click(); await expect(page.locator('.trip-map-load-error')).toHaveCount(0); await expect(page.locator('.trip-map-loading')).toHaveCount(0);
++    check(`${engine}: failed Yandex tiles retain points, explicit retry succeeds without fallback`);
++    await page.locator('.trip-map-list li').filter({ hasText: 'QA Компания 0' }).getByRole('button', { name: 'Изменить точку: QA Компания 0', exact: true }).click();
++    const editor = page.getByRole('dialog', { name: 'Изменить заявку', exact: true }); await editor.getByRole('button', { name: 'Изменить точку на карте', exact: true }).click();
++    const picker = editor.locator('.delivery-point-map'); await expect(picker.locator('.ol-viewport')).toBeVisible(); await expect(picker.getByRole('link', { name: 'Яндекс Карты', exact: true })).toBeVisible();
++    const lat = editor.getByRole('textbox', { name: 'Широта точки', exact: true }), lon = editor.getByRole('textbox', { name: 'Долгота точки', exact: true });
++    await lat.fill('55.643825'); await lon.fill('37.851260'); await editor.getByRole('button', { name: 'Применить координаты', exact: true }).click(); await expect(editor.locator('.delivery-point-summary')).toContainText('55.643825, 37.851260');
++    const b = await picker.boundingBox(); await page.mouse.move(b.x + b.width / 2 + 8, b.y + b.height / 2 + 6); await page.mouse.down(); await page.mouse.move(b.x + b.width / 2 + 53, b.y + b.height / 2 + 41, { steps: 10 }); await page.mouse.up(); await expect(lat).not.toHaveValue('55.643825'); const dragged = await lat.inputValue();
++    const projected = projectMapPoint([55.643825, 37.851260]), resolution = 2 * Math.PI * 6378137 / (256 * 2 ** 16);
++    const expectedPoint = unprojectMapPoint([projected[0] + 45 * resolution, projected[1] - 35 * resolution]);
++    assert.equal(dragged, expectedPoint[0].toFixed(6)); assert.equal(await lon.inputValue(), expectedPoint[1].toFixed(6));
++    await picker.click({ position: { x: b.width * .7, y: b.height * .3 } }); await expect(lat).not.toHaveValue(dragged); await shot('picker-manual-drag-click');
++    const live = await (await fetch(runtime.base + '/api/trip-requests', { headers: { Cookie: cookie } })).json(); assert.equal(live.requests.find(r => r.id === sources[0].id).latitude, sources[0].latitude); assert.equal(live.requests.find(r => r.id === sources[0].id).longitude, sources[0].longitude);
++    await editor.getByRole('button', { name: 'Отмена', exact: true }).click(); await editor.getByRole('button', { name: 'Закрыть без сохранения', exact: true }).click(); await expect(editor).toHaveCount(0);
++    check(`${engine}: Yandex picker manual coordinates, real vector drag, map click, cancellation preserves stored point`);
++    const directoryBefore = (await (await fetch(runtime.base + '/api/trip-requests', { headers: { Cookie: cookie } })).json()).addresses;
++    await page.goto(runtime.base + '/#directories');
++    await page.getByRole('button', { name: 'Места погрузки и доставки', exact: true }).click();
++    await page.getByRole('button', { name: 'Редактировать: QA Площадка 0', exact: true }).click();
++    const directory = page.getByRole('dialog', { name: 'Карточка адреса', exact: true });
++    await directory.getByRole('button', { name: 'Изменить точку на карте', exact: true }).click();
++    await expect(directory.locator('.delivery-point-map .ol-viewport')).toBeVisible();
++    await expect(directory.locator('.delivery-point-map').getByRole('link', { name: 'Яндекс Карты', exact: true })).toBeVisible();
++    await expect(directory.getByRole('textbox', { name: 'Широта точки', exact: true })).toHaveValue(String(positions[0][0]));
++    await expect(directory.getByRole('textbox', { name: 'Долгота точки', exact: true })).toHaveValue(String(positions[0][1]));
++    await shot('directory-read-only-point'); await directory.getByRole('button', { name: 'Отмена', exact: true }).click(); await expect(directory).toHaveCount(0);
++    const directoryAfter = (await (await fetch(runtime.base + '/api/trip-requests', { headers: { Cookie: cookie } })).json()).addresses;
++    assert.deepEqual(directoryAfter, directoryBefore);
++    check(`${engine}: directory Yandex picker shows exact persisted point, read-only open/cancel preserves all addresses`);
++    await context.unrouteAll({ behavior: 'wait' });
++    await context.close(); await browser.close(); browser = undefined;
++  }
++  assert.equal(report.externalRequests.length, 0); assert.equal(report.errors.length, 0); assert.ok(report.tileRequests.length > 0); report.status = 'passed'; report.passed = true;
++} catch (error) { report.status = 'failed'; report.failure = String(error.stack || error); throw error; }
++finally { await browser?.close(); await runtime?.server.close(); await rm(temporary, { recursive: true, force: true }); await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2)); }
+--- a/server/auth.ts
++++ b/server/auth.ts
+@@ -144,10 +144,41 @@
+   }
+   return { id, deleted: true, changed: true };
+ }
+-export async function login(data:OperationsData,input:Record<string,unknown>,audience?:'logistics',onChanged:()=>void=()=>{}) {
++interface LoginResult { status: number; token?: string; user?: AccountUser; error?: string }
++const loginName = (input: Record<string, unknown>) => typeof input.login === 'string' ? input.login.trim().toLowerCase().slice(0, 64) : '';
++const loginIdentity = (user: StoredUser | undefined): string | null => user ? JSON.stringify([
++  user.id, user.login, user.passwordHash, user.salt, user.version, user.active, user.deletedAt,
++  user.role, user.managerId, user.driverId, user.sections, user.directoryGrants,
++]) : null;
++
++/** Credential work has no authority to create a session. The returned completion
++ * is scoped to one mutate call and must recheck fresh transaction identity,
++ * throttles, audience and driver availability before publishing a session. */
++export async function prepareLogin(data: OperationsData, input: Record<string, unknown>, audience?: 'logistics') {
++  if (!data.accounts?.users.length) throw new ApiError(403, 'Сначала создайте учётную запись директора.');
++  const name = loginName(input);
++  const user = data.accounts.users.find(row => row.login === name && row.active && !row.deletedAt);
++  // Capture primitives before yielding, even if a caller mutates its input object.
++  const identity = loginIdentity(user), expected = user?.passwordHash;
++  const salt = user?.salt ?? '00000000000000000000000000000000';
++  const password = typeof input.password === 'string' && input.password.length <= 256 ? input.password : '';
++  // Known, unknown and throttled users all perform the same password derivation.
++  const actual = await scrypt(password, salt, 64) as Buffer;
++  const verified = expected !== undefined && timingSafeEqual(actual, Buffer.from(expected, 'hex'));
++  return (fresh: OperationsData, onChanged: () => void = () => {}): LoginResult => {
++    return finishLogin(fresh, name, identity, verified, audience, onChanged);
++  };
++}
++
++/** Atomic setup and direct callers retain the same public helper. HTTP login
++ * prepares outside mutate and invokes only its synchronous completion inside. */
++export async function login(data: OperationsData, input: Record<string, unknown>, audience?: 'logistics', onChanged: () => void = () => {}) {
++  return (await prepareLogin(data, input, audience))(data, onChanged);
++}
++
++function finishLogin(data:OperationsData,name:string,identity:string|null,verified:boolean,audience:'logistics'|undefined,onChanged:()=>void):LoginResult {
+   const accounts=data.accounts;
+   if(!accounts?.users.length)throw new ApiError(403,'Сначала создайте учётную запись директора.');
+-  const name=typeof input.login==='string'?input.login.trim().toLowerCase().slice(0,64):'';
+   const now=Date.now(), key=hash(`artel:auth:user:${name}`), globalKey=hash('artel:auth:global-login-limit:v2');
+   for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now){delete accounts.attempts[k];onChanged();}
+   // Preserve existing throttles when separating user keys from the old global
+@@ -169,13 +200,8 @@
+   const userLimited=(accounts.attempts[key]?.count??0)>=5;
+   const globalLimited=(accounts.attempts[globalKey]?.count??0)>=50;
+   const user=accounts.users.find(u=>u.login===name && u.active && !u.deletedAt);
+-  // A random-username flood must not lock every employee out. Known and unknown
+-  // names follow the same password-derivation path; the API bounds concurrent
+-  // logins before they can enter the storage transaction queue.
+-  const password=typeof input.password==='string' && input.password.length<=256?input.password:'';
+-  const actual=await scrypt(password,user?.salt??'00000000000000000000000000000000',64) as Buffer;
+   if(userLimited)return limited;
+-  if(!user || !driverAccountAvailable(data, user) || !timingSafeEqual(actual,Buffer.from(user.passwordHash,'hex'))){
++  if(!user || loginIdentity(user)!==identity || !verified || !driverAccountAvailable(data, user)){
+     if(!globalLimited || user){
+       for(const k of [key,globalKey])accounts.attempts[k]={count:Math.min((accounts.attempts[k]?.count??0)+1,k===globalKey?50:5),until:accounts.attempts[k]?.until??now+900000};
+       onChanged();
+--- a/server/banking/sber-service.ts
++++ b/server/banking/sber-service.ts
+@@ -62,9 +62,9 @@
+     });
+     return { pending: true };
+   }
+-  async dispatch(now = Date.now()) {
++  async dispatch(now = Date.now(), initial?: Promise<OperationsData>) {
+     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false };
+-    const state = (await this.store.read(this.source))[this.connection.slot] ?? emptySber(this.connection);
++    const state = (await (initial ?? this.store.read(this.source)))[this.connection.slot] ?? emptySber(this.connection);
+     if (this.missing(state).length || !state.job && !syncDue(state.lastScheduledAt, state.lastSuccessAt, now)) return { enabled: true, pending: false };
+     if (!state.job) await this.mutate(data => {
+       const current = data[this.connection.slot]!;
+--- a/server/banking/scheduler.ts
++++ b/server/banking/scheduler.ts
+@@ -8,9 +8,12 @@
+ /** One page per connected bank; failures and retry delays never block the other bank. */
+ export async function dispatchBanks(store: OperationsStorage, source: string, env: Record<string, string | undefined> = process.env, bankRequest?: BankRequest, sberRequest?: SberRequest, now = Date.now()) {
+   if (env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false, failed: false, connections: [] };
++  // One fresh planning view for this tick. Claims, tokens and publication still
++  // use their own fresh transactions before any provider action.
++  const initial = store.read(source);
+   const results = await Promise.allSettled([
+-    new BankingService(store, source, env, bankRequest).dispatch(now),
+-    ...Object.values(sberConnections).map(connection => new SberService(store, source, env, sberRequest, connection).dispatch(now)),
++    new BankingService(store, source, env, bankRequest).dispatch(now, initial),
++    ...Object.values(sberConnections).map(connection => new SberService(store, source, env, sberRequest, connection).dispatch(now, initial)),
+   ]);
+   const connections = results.map((result, index) => ({
+     id: ['tbank-nk-artel', ...Object.keys(sberConnections)][index],
+--- a/server/banking/service.ts
++++ b/server/banking/service.ts
+@@ -155,9 +155,9 @@
+     if (!result) throw new ApiError(423, 'Банк занят синхронизацией. Повторите получение формы позже.');
+     return result;
+   }
+-  async dispatch(now = Date.now()) {
++  async dispatch(now = Date.now(), initial?: Promise<OperationsData>) {
+     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
+-    const data = (await this.store.read(this.source)).banking ?? emptyBanking();
++    const data = (await (initial ?? this.store.read(this.source))).banking ?? emptyBanking();
+     const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? bankJobDue(state.job, now) : state?.lastSuccessAt && (state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
+     if (!due) return { enabled: true, pending: false };
+     if (!due.state?.job) await this.mutate(data => {
+--- a/server/directory-operations.ts
++++ b/server/directory-operations.ts
+@@ -40,7 +40,9 @@
+   };
+   const local = Object.values(store.shipments).filter(row => !row.deleted);
+   const duplicates = base.quality.aliasCandidates.map(group => ({ kind: 'companies', ...group, reason: 'Сходные названия без подтверждённого общего ИНН. Связи сохранены; требуется проверка.' }));
+-  const companies = [...base.companies.filter(c => !store.companies.some(s => s.id === c.id)), ...store.companies].filter(company => !saved.deletedEntries?.companies?.includes(company.id));
++  const savedCompanyIds = new Set(store.companies.map(company => company.id));
++  const deletedCompanyIds = new Set(saved.deletedEntries?.companies);
++  const companies = [...base.companies.filter(c => !savedCompanyIds.has(c.id)), ...store.companies].filter(company => !deletedCompanyIds.has(company.id));
+   const names = new Map<string, typeof companies>();
+   for (const company of companies) { const key = normalizeName(company.name); names.set(key, [...(names.get(key) ?? []),company]); }
+   for (const group of names.values()) if (group.length > 1) duplicates.push({kind:'companies',ids:group.map(c=>c.id),names:group.map(c=>c.name),reason:'Одинаковое название; идентичность юридического лица требует подтверждения по ИНН.'});
+--- a/server/etrn-service.ts
++++ b/server/etrn-service.ts
+@@ -18,7 +18,7 @@
+ import { NATIVE_APPROVED_REDIRECTION_METHOD, validConsignmentOperatorUid, verifyConsignmentSenderBusiness, type SabyConsignmentEvidenceOptions } from './saby-consignment-evidence';
+ import { assertTripTransportDocumentsAllowed, isNkDirectEtrn } from './trip-document-mode';
+ import { validateNkDirectAutostart, type NkDirectAutostart } from './nk-direct-autostart';
+-import { authorizeNkDirectEtrn, preparedNkDirectEtrn, validateNkDirectEtrn, type NkDirectEtrnRecord } from './nk-direct-etrn';
++import { authorizeNkDirectFromSnapshot, preparedNkDirectFromSnapshot, validateNkDirectEtrn, type NkDirectEtrnRecord } from './nk-direct-etrn';
+ 
+ const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+ const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+@@ -268,8 +268,7 @@
+   if (data.etrn?.trips[tripId]?.exchangeHistory?.length || data.etrn?.trips[tripId]?.rebuild) return true;
+   return Object.values(data.etrn?.trips[tripId]?.deliveries ?? {}).some(row => row.document && (row.document.status !== 'error' || !!row.document.id));
+ }
+-function makeSnapshot(base: Snapshot, data: OperationsData, tripId: string, shipmentId: string, profile: SabyConsignmentProfile | null, config: SabyConfig) {
+-  const snapshot = currentSnapshot(base, data);
++function makeSnapshot(snapshot: Snapshot, data: OperationsData, tripId: string, shipmentId: string, profile: SabyConsignmentProfile | null, config: SabyConfig) {
+   const trip = getShipmentTrip(snapshot, tripId);
+   assertTripTransportDocumentsAllowed(trip, data);
+   if (!trip.customers.some(row => row.id === shipmentId)) throw new ApiError(404, 'Доставка не найдена в этом рейсе.');
+@@ -286,11 +285,14 @@
+   };
+ }
+ export function getEtrnTrip(base: Snapshot, data: OperationsData, tripId: string, config = sabyConfigFromEnv()): EtrnTripResponse {
+-  const trip = getShipmentTrip(currentSnapshot(base, data), tripId);
++  return getEtrnTripFromSnapshot(currentSnapshot(base, data), data, tripId, config);
++}
++function getEtrnTripFromSnapshot(fullSnapshot: Snapshot, data: OperationsData, tripId: string, config: SabyConfig): EtrnTripResponse {
++  const trip = getShipmentTrip(fullSnapshot, tripId);
+   const direct = isNkDirectEtrn(trip, data);
+   if (!direct) assertTripTransportDocumentsAllowed(trip, data);
+   const saved = data.etrn?.trips[tripId];
+-  const directPrepared = direct && trip.customers.some(requiresEtrn) ? preparedNkDirectEtrn(base, data, tripId, config) : null;
++  const directPrepared = direct && trip.customers.some(requiresEtrn) ? preparedNkDirectFromSnapshot(fullSnapshot, data, tripId, config) : null;
+   if (direct) config = new SabyClient(config).forNkDirectEtrn().config;
+   const configurationBlockers = sabyConfigurationBlockers(config);
+   const displayOrganization = (org: SabyConfig['customer']) => ({ name: org.name, inn: org.inn, kpp: org.kpp, address: org.address, phone: org.phone ?? '' });
+@@ -299,7 +301,7 @@
+     deliveries: trip.customers.filter(requiresEtrn).map(row => {
+       const preparation = saved?.deliveries[row.id];
+       const doc = preparation?.document;
+-      const snapshot = directPrepared ? doc?.snapshot ?? saved?.direct?.deliveries.find(item => item.shipmentId === row.id)?.snapshot ?? directPrepared.deliveries.find(item => item.shipmentId === row.id)!.snapshot : doc && doc.status !== 'error' ? doc.snapshot : preparation?.sourceOrderId ? preparation.snapshot : makeSnapshot(base, data, tripId, row.id, preparation?.profile ?? null, config);
++      const snapshot = directPrepared ? doc?.snapshot ?? saved?.direct?.deliveries.find(item => item.shipmentId === row.id)?.snapshot ?? directPrepared.deliveries.find(item => item.shipmentId === row.id)!.snapshot : doc && doc.status !== 'error' ? doc.snapshot : preparation?.sourceOrderId ? preparation.snapshot : makeSnapshot(fullSnapshot, data, tripId, row.id, preparation?.profile ?? null, config);
+       const stale = preparation && !doc && hash(snapshot) !== preparation.preparedHash;
+       return { shipmentId: row.id, profile: snapshot.profile, blockers: [...sabyConsignmentBlockers(snapshot), ...(stale ? ['Данные рейса или справочников изменились. Сохраните и проверьте подготовку повторно.'] : [])], document: doc ? documentSummary(doc, tripId, row.id) : null };
+     }),
+@@ -314,20 +316,22 @@
+   if (!sabyObject(raw) || JSON.stringify(raw).length > 80_000) throw new ApiError(400, 'Некорректные данные подготовки ЭТрН.');
+   const profile = readSabyConsignmentProfile(raw);
+   await store.mutate(base.provenance.sourceSha256, data => {
+-    authorize(currentSnapshot(base, data), data);
+-    assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
++    const fullSnapshot = currentSnapshot(base, data);
++    authorize(fullSnapshot, data);
++    assertTripTransportDocumentsAllowed(getShipmentTrip(fullSnapshot, tripId), data);
+     if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Рейс запущен в Saby. Исправления документов выполняются в Saby; факты погрузки вводятся отдельно.');
+     const previous = data.etrn?.trips[tripId]?.deliveries[shipmentId];
+     if (previous?.document && (previous.document.status !== 'error' || previous.document.id)) throw new ApiError(409, 'ЭТрН уже передана или результат передачи неизвестен. Сначала выполните сверку.');
+-    const snapshot = makeSnapshot(base, data, tripId, shipmentId, profile, config);
++    const snapshot = makeSnapshot(fullSnapshot, data, tripId, shipmentId, profile, config);
+     data.etrn ??= { trips: {} };
+     const trip = data.etrn.trips[tripId] ??= { deliveries: {}, updatedAt: stamp() };
+     trip.deliveries[shipmentId] = { profile: snapshot.profile!, snapshot, preparedHash: hash(snapshot), document: null, updatedAt: stamp() };
+     trip.updatedAt = stamp();
+     return { result: undefined, changed: true };
+   });
+-  const data = await store.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
+-  return getEtrnTrip(base, data, tripId, config);
++  const data = await store.read(base.provenance.sourceSha256), fullSnapshot = currentSnapshot(base, data);
++  authorize(fullSnapshot, data);
++  return getEtrnTripFromSnapshot(fullSnapshot, data, tripId, config);
+ }
+ 
+ function partyMatches(raw: unknown, expected: { inn: string; kpp: string }) {
+@@ -384,13 +388,14 @@
+   const source = base.provenance.sourceSha256;
+   const leaseId = randomUUID();
+   const claimed = await store.mutate(source, data => {
+-    authorize(currentSnapshot(base, data), data);
+-    assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
++    const fullSnapshot = currentSnapshot(base, data);
++    authorize(fullSnapshot, data);
++    assertTripTransportDocumentsAllowed(getShipmentTrip(fullSnapshot, tripId), data);
+     if (data.tripSaby?.trips[tripId] && !refresh) throw new ApiError(409, 'ЭТрН этого рейса создаются общей цепочкой Saby после подтверждения перевозчика.');
+     const preparation = data.etrn?.trips[tripId]?.deliveries[shipmentId];
+     if (!preparation) throw new ApiError(422, 'Сначала сохраните и проверьте сведения ЭТрН.');
+     // Check membership even for old records, and forbid writes against another organization.
+-    const fresh = makeSnapshot(base, data, tripId, shipmentId, preparation.profile, client.config);
++    const fresh = makeSnapshot(fullSnapshot, data, tripId, shipmentId, preparation.profile, client.config);
+     const previous = preparation.document;
+     if (refresh && preparation.sourceOrderId && !previous?.id) throw new ApiError(409, 'Сверьте результат общей цепочкой Saby: отдельное восстановление ЭТрН без идентификатора недоступно.');
+     if (previous?.leaseId && previous.leaseUntil && Date.parse(previous.leaseUntil) > Date.now()) throw new ApiError(409, 'Запрос ЭТрН уже выполняется. Обновите состояние позже.');
+@@ -462,8 +467,9 @@
+       await update({ leaseId: null, leaseUntil: null });
+     }
+   }
+-  const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+-  return getEtrnTrip(base, data, tripId, client.config);
++  const data = await store.read(source), fullSnapshot = currentSnapshot(base, data);
++  authorize(fullSnapshot, data);
++  return getEtrnTripFromSnapshot(fullSnapshot, data, tripId, client.config);
+ }
+ 
+ export async function saveTripLoadingFacts(options: EtrnOptions, raw: unknown, actorId: string): Promise<void> {
+@@ -473,9 +479,10 @@
+   try { validateLoadingFacts(facts); } catch { throw new ApiError(400, 'Укажите фактические прибытие и убытие, положительную массу каждой доставки в тоннах и способ определения массы.'); }
+   if (Date.parse(`${facts.departedAt}+03:00`) > Date.now()) throw new ApiError(400, 'Фактическое убытие не может быть в будущем.');
+   await store.mutate(base.provenance.sourceSha256, data => {
+-    authorize(currentSnapshot(base, data), data);
++    const fullSnapshot = currentSnapshot(base, data);
++    authorize(fullSnapshot, data);
+     const workflow = data.tripSaby?.trips[tripId];
+-    if (getShipmentTrip(currentSnapshot(base, data), tripId).fields.trip_flow_version === 'driver-v1') throw new ApiError(409, 'Факты этого рейса фиксирует назначенный водитель действиями «Прибыл» и «Убыл».');
++    if (getShipmentTrip(fullSnapshot, tripId).fields.trip_flow_version === 'driver-v1') throw new ApiError(409, 'Факты этого рейса фиксирует назначенный водитель действиями «Прибыл» и «Убыл».');
+     if (!workflow?.carrierEvidence) throw new ApiError(409, 'Сначала дождитесь подтверждения заявки перевозчиком в Saby.');
+     if (workflow.leaseId && workflow.leaseUntil && Date.parse(workflow.leaseUntil) > Date.now()) throw new ApiError(409, 'Обмен выполняется. Дождитесь его завершения.');
+     const ids = workflow.deliveries.map(row => row.shipmentId);
+@@ -509,20 +516,24 @@
+   const direct = 'documentMode' in input && input.documentMode === 'nk-direct-v1';
+   const orderInput = direct ? null : input as CreateTripSabyDelivery;
+   const leaseId = randomUUID();
+-  const initial = await store.read(source); authorize(currentSnapshot(base, initial), initial);
+-  if (direct) authorizeNkDirectEtrn(base, initial, tripId, client.config);
+-  else assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, initial), tripId), initial);
+-  requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, initial), tripId), shipmentId);
++  const initial = await store.read(source), initialSnapshot = currentSnapshot(base, initial);
++  authorize(initialSnapshot, initial);
++  if (direct) authorizeNkDirectFromSnapshot(base, initialSnapshot, initial, tripId, client.config);
++  const initialTrip = getShipmentTrip(initialSnapshot, tripId);
++  if (!direct) assertTripTransportDocumentsAllowed(initialTrip, initial);
++  requireEtrnDelivery(initialTrip, shipmentId);
+   const facts = initial.etrn?.trips[tripId]?.loadingFacts;
+   if (!facts) return { status: 'error', id: null, lastError: 'Заявка подтверждена. Заполните фактические сведения погрузки всего рейса.', waitingForLoading: true };
+   // Validate ALL deliveries before the first consignment reservation, including saved actual facts.
+-  const allErrors = direct ? preparedNkDirectEtrn(base, initial, tripId, client.config).blockers : (initial.tripSaby?.trips[tripId]?.deliveries ?? []).flatMap(row => sabyConsignmentBlockers(snapshotWithLoading(row.snapshot, facts, orderInput!.order)));
++  const allErrors = direct ? preparedNkDirectFromSnapshot(initialSnapshot, initial, tripId, client.config).blockers : (initial.tripSaby?.trips[tripId]?.deliveries ?? []).flatMap(row => sabyConsignmentBlockers(snapshotWithLoading(row.snapshot, facts, orderInput!.order)));
+   if (allErrors.length) return { status: 'error', id: null, lastError: [...new Set(allErrors)].join(' ') };
+   const claimed = await store.mutate(source, data => {
+-    authorize(currentSnapshot(base, data), data);
+-    if (direct) authorizeNkDirectEtrn(base, data, tripId, client.config);
+-    else assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+-    requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
++    const current = currentSnapshot(base, data);
++    authorize(current, data);
++    if (direct) authorizeNkDirectFromSnapshot(base, current, data, tripId, client.config);
++    const currentTrip = getShipmentTrip(current, tripId);
++    if (!direct) assertTripTransportDocumentsAllowed(currentTrip, data);
++    requireEtrnDelivery(currentTrip, shipmentId);
+     const workflow = data.tripSaby?.trips[tripId];
+     if (direct && !data.etrn?.trips[tripId]?.direct?.deliveries.some(row => row.shipmentId === shipmentId && hash(row.snapshot) === hash(input.snapshot))) throw new ApiError(409, 'Прямая ЭТрН не соответствует согласованной доставке.');
+     if (!direct && !workflow?.deliveries.some(row => row.shipmentId === shipmentId)) throw new ApiError(409, 'Доставка не входит в согласованный состав ЭТрН.');
+@@ -752,9 +763,10 @@
+ }
+ 
+ export function preparedEtrnXml(base: Snapshot, data: OperationsData, tripId: string, shipmentId: string, config = sabyConfigFromEnv()) {
+-  const direct = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+-  if (!direct) assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+-  requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
++  const fullSnapshot = currentSnapshot(base, data), trip = getShipmentTrip(fullSnapshot, tripId);
++  const direct = isNkDirectEtrn(trip, data);
++  if (!direct) assertTripTransportDocumentsAllowed(trip, data);
++  requireEtrnDelivery(trip, shipmentId);
+   const row = data.etrn?.trips[tripId]?.deliveries[shipmentId];
+   if (!row) throw new ApiError(422, 'Сначала сохраните подготовку ЭТрН.');
+   if (row.document?.linkedDraft) {
+@@ -762,7 +774,7 @@
+     validateLinkedDraftState(saved, row.document.id);
+     return { xml: Buffer.from(saved.filledBase64, 'base64'), name: saved.attachmentName, number: saved.documentNumber, uid: row.document.attemptId };
+   }
+-  const snapshot = row.document?.snapshot ?? (direct ? row.snapshot : makeSnapshot(base, data, tripId, shipmentId, row.profile, config));
++  const snapshot = row.document?.snapshot ?? (direct ? row.snapshot : makeSnapshot(fullSnapshot, data, tripId, shipmentId, row.profile, config));
+   const errors = sabyConsignmentBlockers(snapshot);
+   if (errors.length) throw new ApiError(422, errors.join(' '));
+   return serializeSabyConsignmentNote(snapshot, row.document?.attemptId ?? '00000000-0000-4000-8000-000000000001', row.document?.createdAt ?? row.updatedAt, row.document?.number, { senderTitleVersion: row.document?.senderTitleVersion });
+@@ -772,10 +784,12 @@
+ export async function downloadEtrnFile(options: EtrnOptions, shipmentId: string, key: string) {
+   const { base, store, tripId, authorize } = options;
+   const source = base.provenance.sourceSha256;
+-  const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+-  const direct = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+-  if (!direct) assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+-  requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
++  const data = await store.read(source), fullSnapshot = currentSnapshot(base, data);
++  authorize(fullSnapshot, data);
++  const trip = getShipmentTrip(fullSnapshot, tripId);
++  const direct = isNkDirectEtrn(trip, data);
++  if (!direct) assertTripTransportDocumentsAllowed(trip, data);
++  requireEtrnDelivery(trip, shipmentId);
+   const doc = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+   const file = doc?.artifacts.find(file => file.key === key);
+   if (!doc?.id || !file) throw new ApiError(404, 'Файл ЭТрН не найден.');
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -24,7 +24,7 @@
+ import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
+ import { ApiError } from './api-error';
+ import { decryptAccountPassword } from './account-passwords';
+-import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie } from './auth';
++import { activeUsers, authenticate, deleteUser, login, prepareLogin, logout, logisticsRequest, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+ import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
+ import { readTripExecution, recordTripExecution } from './trip-execution';
+ import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
+@@ -517,10 +517,14 @@
+         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
+         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
+         const body = await jsonBody(request);
+-        const result = await gateLogin(pathname === '/api/auth/login', () => operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
++        const result = await gateLogin(pathname === '/api/auth/login', async () => {
++          // requestData supplies credentials only; completion rechecks its exact
++          // identity and all authority in the fresh transaction after derivation.
++          const completeLogin = pathname === '/api/auth/login' ? await prepareLogin(requestData, body, logistics ? 'logistics' : undefined) : undefined;
++          return operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
+           if(pathname === '/api/auth/login'){
+             let changed=false;
+-            const result=await login(data,body,logistics ? 'logistics' : undefined,()=>{changed=true;});
++            const result=completeLogin!(data,()=>{changed=true;});
+             return {result,changed};
+           }
+           if(pathname === '/api/auth/setup') {
+@@ -541,7 +545,8 @@
+             return { result: { status: 200, ...deleted }, changed };
+           }
+           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey)},changed:true};
+-        }));
++        });
++        });
+         if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure,logistics ? 'logistics' : undefined));
+         const {token:_token,...safeResult}=result as typeof result & {token?:string};
+         void _token;
+--- a/server/nk-direct-etrn.ts
++++ b/server/nk-direct-etrn.ts
+@@ -67,7 +67,7 @@
+ export function preparedNkDirectEtrn(base: Snapshot, data: OperationsData, tripId: string, config: SabyConfig) {
+   return preparedNkDirectFromSnapshot(currentSnapshot(base, data), data, tripId, config);
+ }
+-function preparedNkDirectFromSnapshot(source: Snapshot, data: OperationsData, tripId: string, config: SabyConfig) {
++export function preparedNkDirectFromSnapshot(source: Snapshot, data: OperationsData, tripId: string, config: SabyConfig) {
+   const trip = getShipmentTrip(source, tripId);
+   const prepared = prepareNkDirectEtrn(source, data, trip, config);
+   const facts = data.etrn?.trips[tripId]?.loadingFacts;
+@@ -96,8 +96,8 @@
+   return authorizeNkDirectFromSnapshot(base, currentSnapshot(base, data), data, tripId, config);
+ }
+ // Only an internal synchronous caller may supply the exact full snapshot it just built.
+-// Public callers and every provider guard still assemble from their own fresh store read.
+-function authorizeNkDirectFromSnapshot(base: Snapshot, snapshot: Snapshot, data: OperationsData, tripId: string, config: SabyConfig): NkDirectEtrnRecord {
++// Callers and every provider guard must assemble from their own fresh store read; never reuse across await.
++export function authorizeNkDirectFromSnapshot(base: Snapshot, snapshot: Snapshot, data: OperationsData, tripId: string, config: SabyConfig): NkDirectEtrnRecord {
+   const trip = getShipmentTrip(snapshot, tripId), record = data.etrn?.trips[tripId]?.direct;
+   if (data.etrn?.trips[tripId]?.rebuild?.externalRestartBlocked) throw new ApiError(409, NK_DIRECT_REBUILD_HOLD);
+   if (!record || !isNkDirectEtrn(trip, data) || data.tripSaby?.trips[tripId] || data.saby?.trips[tripId]) throw new ApiError(403, 'Не подтверждено отдельное разрешение прямой ЭТрН НК.');
+@@ -188,10 +188,13 @@
+   const check = async () => { const data = await store.read(source); const record = authority(data); if (record.attemptId !== claimed.attemptId || record.leaseId !== leaseId || Date.parse(record.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс прямого обмена изменился.'); };
+   const client = originalClient.forNkDirectEtrn().withRequestGuard(check);
+   const context = { ...options, client, authorize: (snapshot: ShipmentAccessContext, data: OperationsData) => { authorize(snapshot, data); authorizeNkDirectEtrn(base, data, tripId, config); } };
+-  const update = async (change: (record: NkDirectEtrnRecord, data: OperationsData) => void) => store.mutate(source, data => {
++  let released = false;
++  const update = async (change: (record: NkDirectEtrnRecord, data: OperationsData) => void, release = false) => store.mutate(source, data => {
+     const record = authority(data);
+     if (record.attemptId !== claimed.attemptId || record.leaseId !== leaseId || Date.parse(record.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс прямого обмена изменился.');
+-    change(record, data); record.updatedAt = stamp(); record.leaseUntil = new Date(Date.now() + 300_000).toISOString();
++    change(record, data); record.updatedAt = stamp();
++    record.leaseUntil = release ? null : new Date(Date.now() + 300_000).toISOString();
++    if (release) record.leaseId = null;
+     return { result: undefined, changed: true };
+   });
+   // Historical incomplete exchanges keep their saved execution boundary. Only
+@@ -215,7 +218,10 @@
+       record.lastError = documents.map(doc => doc?.dispatch?.lastError || doc?.lastError).find(Boolean) ?? null;
+       if (complete) record.completedAt ??= stamp();
+       else delete record.completedAt;
+-    });
++    }, true);
++    // Final local metadata and lease release share one durable transaction. There
++    // is no provider action between them; errors/early returns still release below.
++    released = true;
+   } catch (error) {
+     // Even when permissions were revoked, preserve diagnostics without granting another request.
+     await store.mutate(source, data => {
+@@ -226,7 +232,7 @@
+     });
+     if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
+   } finally {
+-    await store.mutate(source, data => {
++    if (!released) await store.mutate(source, data => {
+       const record = data.etrn?.trips[tripId]?.direct;
+       if (!record || record.attemptId !== claimed.attemptId || record.leaseId !== leaseId) return { result: undefined, changed: false };
+       record.leaseId = null; record.leaseUntil = null; return { result: undefined, changed: true };
+--- a/server/trip-saby-scheduler.ts
++++ b/server/trip-saby-scheduler.ts
+@@ -9,12 +9,12 @@
+ import { exchangeEtrn, exchangePreparedEtrn, type EtrnOptions } from './etrn-service';
+ import { SabyClient, sabyCredentialBlockers, type SabyConfig } from './saby-client';
+ import { prepareTripSaby } from './trip-saby-preparation';
+-import { authorizeAutomaticTripSaby, runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
++import { authorizeAutomaticTripSaby, runTripSabyWorkflow, type PrepareTripSaby, type TripSabyRecord } from './trip-saby-workflow';
+ import { authorizeSigningActor } from './trip-saby-signing';
+ import { carrierFastPolling } from './trip-saby-carrier';
+ import { getShipmentTrip } from './shipment-trips';
+ import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
+-import { runNkDirectEtrn } from './nk-direct-etrn';
++import { runNkDirectEtrn, type NkDirectEtrnRecord } from './nk-direct-etrn';
+ 
+ export const SABY_WORKFLOW_TICK_MS = 60_000;
+ export const SABY_CARRIER_WAIT_TICK_MS = 15_000;
+@@ -32,6 +32,28 @@
+   runNetwork?: <T>(action: () => Promise<T>) => Promise<T>;
+ }
+ export interface TripSabyDispatchResult { continued: number; refreshed: number; denied: number; failed: number }
++
++// These predicates only select work from a fresh scan; they do not authorize it.
++// Every launched pass still reads again, claims its lease and guards each request.
++function directDue(record: NkDirectEtrnRecord, now: number): boolean {
++  return record.phase !== 'completed' || !(now - Date.parse(record.lastCheckedAt ?? record.updatedAt) < SABY_COMPLETED_REFRESH_MS);
++}
++function workflowContinuing(record: TripSabyRecord, now: number): boolean {
++  const expiredSubmission = record.phase === 'submitting' && !!record.leaseId
++    && (!record.leaseUntil || Date.parse(record.leaseUntil) <= now);
++  const queuedAutomatic = !!record.autoAuthorization && record.phase === 'submitting' && !record.leaseId && !record.reservationAttempted && !record.uploadAttempted && !record.order.id;
++  return ['awaiting_driver', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic || !!record.driverFlow && record.phase === 'completed' && !record.stage6CompletedAt;
++}
++function workflowDue(data: OperationsData, tripId: string, record: TripSabyRecord, now: number, carrierWaitingOnly: boolean): boolean {
++  if (carrierWaitingOnly && (!carrierFastPolling(record, now) || now - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) return false;
++  if (!(record.signing?.requestedBy ?? record.initiatorId)) return false;
++  if (workflowContinuing(record, now)) return true;
++  if (record.phase !== 'completed') return false;
++  return record.deliveries.some(row => {
++    const doc = data.etrn?.trips[tripId]?.deliveries[row.shipmentId]?.document;
++    return !!doc?.id && !(now - Date.parse(doc.updatedAt) < SABY_COMPLETED_REFRESH_MS);
++  });
++}
+ 
+ /** A manual refresh and a scheduled refresh report the same successful observation time. */
+ export async function refreshTripSabyDelivery(context: EtrnOptions, shipmentId: string): Promise<void> {
+@@ -64,7 +86,7 @@
+   const initial = await store.read(source);
+   for (const [tripId, saved] of Object.entries(initial.etrn?.trips ?? {})) {
+     if (!saved.direct || options.carrierWaitingOnly || options.tripId && options.tripId !== tripId) continue;
+-    if (saved.direct.phase === 'completed' && (options.now ?? Date.now()) - Date.parse(saved.direct.lastCheckedAt ?? saved.direct.updatedAt) < SABY_COMPLETED_REFRESH_MS) continue;
++    if (!directDue(saved.direct, options.now ?? Date.now())) continue;
+     try {
+       await runNkDirectEtrn({ base, store, tripId, authorize: () => {}, client: options.client ?? new SabyClient(config, options.send ?? fetch, undefined, options.runNetwork) });
+       result.continued++;
+@@ -75,14 +97,10 @@
+   }
+   for (const [tripId, record] of Object.entries(sabyCredentialBlockers(config).length ? {} : initial.tripSaby?.trips ?? {})) {
+     if (options.tripId && options.tripId !== tripId) continue;
+-    if (options.carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
++    const now = options.now ?? Date.now();
++    if (!workflowDue(initial, tripId, record, now, !!options.carrierWaitingOnly)) continue;
+     const authorityId = record.signing?.requestedBy ?? record.initiatorId;
+-    if (!authorityId) continue;
+-    const expiredSubmission = record.phase === 'submitting' && !!record.leaseId
+-      && (!record.leaseUntil || Date.parse(record.leaseUntil) <= (options.now ?? Date.now()));
+-    const queuedAutomatic = !!record.autoAuthorization && record.phase === 'submitting' && !record.leaseId && !record.reservationAttempted && !record.uploadAttempted && !record.order.id;
+-    const continuing = ['awaiting_driver', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic || !!record.driverFlow && record.phase === 'completed' && !record.stage6CompletedAt;
+-    if (!continuing && record.phase !== 'completed') continue;
++    const continuing = workflowContinuing(record, now);
+     const authorize = (snapshot: ShipmentAccessContext, data: OperationsData) => {
+       const current = data.tripSaby?.trips[tripId];
+       if (!current || current.attemptId !== record.attemptId || current.initiatorId !== record.initiatorId || (current.signing?.requestId ?? current.autoAuthorization?.requestId) !== (record.signing?.requestId ?? record.autoAuthorization?.requestId) || (current.signing?.requestedBy ?? current.initiatorId) !== authorityId) throw new ApiError(403, 'Основание фонового обмена изменилось.');
+@@ -171,10 +189,10 @@
+       if (stopped || !options.enabled) return Promise.resolve();
+       const scan = (async () => {
+         const data = await options.store.read(options.base.provenance.sourceSha256);
+-        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (saved.direct) launch(tripId);
+-        for (const [tripId, record] of Object.entries(data.tripSaby?.trips ?? {})) {
+-          if (carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
+-          launch(tripId, carrierWaitingOnly);
++        const now = options.now ?? Date.now();
++        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (saved.direct && directDue(saved.direct, now)) launch(tripId);
++        if (!sabyCredentialBlockers(options.config).length) for (const [tripId, record] of Object.entries(data.tripSaby?.trips ?? {})) {
++          if (workflowDue(data, tripId, record, now, carrierWaitingOnly)) launch(tripId, carrierWaitingOnly);
+         }
+       })().finally(() => { scans.delete(scan); });
+       scans.add(scan);
+--- a/tests/api-bank-scheduler.test.ts
++++ b/tests/api-bank-scheduler.test.ts
+@@ -246,3 +246,56 @@
+     } finally { await f.close(); }
+   }
+ });
++
++test('idle scheduler plans all connections from one fresh read without changing the store', async () => {
++  const f = await fixture();
++  try {
++    const initial = await f.store.read(f.source);
++    const read = f.store.read.bind(f.store); let reads = 0;
++    f.store.read = async source => { reads++; return read(source); };
++    const blocked = async () => { assert.fail('not due: provider must not run'); };
++    const result = await dispatchBanks(f.store, f.source, f.env, blocked, blocked, f.now - 1);
++    assert.equal(reads, 1);
++    assert.equal(result.pending, false);
++    assert.deepEqual(await read(f.source), initial);
++    await dispatchBanks(f.store, f.source, { ...f.env, ARTEL_BANK_SYNC_ENABLED: 'false' }, blocked, blocked);
++    assert.equal(reads, 1, 'disabled scheduler reads nothing');
++  } finally { await f.close(); }
++});
++
++test('a planning view never bypasses a lease acquired before the fresh bank claim', async () => {
++  const f = await fixture(); let calls = 0;
++  try {
++    const read = f.store.read.bind(f.store); let first = true;
++    f.store.read = async source => {
++      const view = await read(source);
++      if (first) {
++        first = false;
++        await f.store.mutate(source, data => {
++          const until = Date.now() + 60_000;
++          data.banking!.connections['tbank-nk-artel'].lease = { id: 'competing-owner', until };
++          data.sber!.lease = { id: 'competing-owner', until };
++          return { result: null, changed: true };
++        });
++      }
++      return view;
++    };
++    await dispatchBanks(f.store, f.source, f.env, async () => { calls++; return { operations: [] }; }, async (...args) => { calls++; return sberEmpty(...args); }, f.now);
++    assert.equal(calls, 0);
++    const current = await read(f.source);
++    assert.equal(current.banking!.connections['tbank-nk-artel'].lease!.id, 'competing-owner');
++    assert.equal(current.sber!.lease!.id, 'competing-owner');
++  } finally { await f.close(); }
++});
++
++test('failed shared planning read retains per-connection failure results', async () => {
++  let reads = 0;
++  const store = {
++    read: async () => { reads++; throw new Error('unreadable fixture'); },
++    mutate: async () => { throw new Error('must not mutate'); },
++  };
++  const result = await dispatchBanks(store, 'unused-source', { ARTEL_BANK_SYNC_ENABLED: 'true' });
++  assert.equal(reads, 1);
++  assert.equal(result.failed, true);
++  assert.deepEqual(result.connections.map(row => row.failed), [true, true, true]);
++});
+--- a/tests/api-banking-security.test.ts
++++ b/tests/api-banking-security.test.ts
+@@ -61,7 +61,7 @@
+   const run = () => entry.path.startsWith('/api/banking/sber/')
+     ? sberRoutes(service as unknown as SberService, request, response, new URL(entry.path, 'http://localhost'), readBody)
+     : bankingRoutes(service as unknown as BankingService, request, response, new URL(entry.path, 'http://localhost'), readBody);
+-  return { run, calls, sent, revoke };
++  return { run, calls, sent, revoke, accounts, request, response };
+ }
+ 
+ for (const entry of cases) {
+@@ -109,3 +109,21 @@
+   assert.deepEqual(f.calls, ['start']);
+   assert.deepEqual(f.sent, []);
+ });
++
++
++test('synchronous bank list authorizes the fresh read before projection and has no provider or body boundary', async () => {
++  for (const mode of ['active', 'revoked', 'demoted'] as const) {
++    const f = fixture({ path: '/api/banking', method: 'GET', actions: ['list'] }, undefined, mode === 'demoted');
++    let reads = 0, projections = 0;
++    const service = {
++      source: 'synthetic-security-test',
++      store: { read: async () => { reads++; if (mode !== 'active') f.revoke(); return { accounts: f.accounts }; } },
++      listFromData: (data: OperationsData) => { assert.equal(data.accounts, f.accounts); projections++; return { items: [] }; },
++      list: () => { throw new Error('The synchronous list must not call the async service method'); },
++    };
++    const run = () => bankingRoutes(service as unknown as BankingService, f.request, f.response, new URL('/api/banking', 'http://localhost'), async () => { throw new Error('A GET must not read a body'); });
++    if (mode === 'active') { await run(); assert.equal(projections, 1); assert.equal(f.sent.length, 2); }
++    else { await assert.rejects(run, error => error instanceof ApiError && error.status === (mode === 'demoted' ? 403 : 401)); assert.equal(projections, 0); assert.deepEqual(f.sent, []); }
++    assert.equal(reads, 1);
++  }
++});
+--- /dev/null
++++ b/tests/api-login-interleaving.test.ts
+@@ -0,0 +1,15 @@
++import assert from 'node:assert/strict';
++import { execFile } from 'node:child_process';
++import { promisify } from 'node:util';
++import { resolve } from 'node:path';
++import { test } from 'node:test';
++
++test('HTTP login derives outside the global write queue and rejects every stale credential/permission proof', async () => {
++  // A fresh process captures the held crypto implementation before auth is imported.
++  // No test hooks, credentials or timing-dependent sleeps enter production code.
++  const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', resolve('scripts/profile_backend_login_interleaving.mjs')], { timeout: 45000, maxBuffer: 1024 * 1024 });
++  const result = JSON.parse(stdout.trim());
++  assert.equal(result.passed, true);
++  assert.equal(result.syntheticOnly, true);
++  assert.equal(result.checks.length, 18);
++});
+--- a/tests/api-nk-direct-etrn.test.ts
++++ b/tests/api-nk-direct-etrn.test.ts
+@@ -15,7 +15,7 @@
+ import { validateNativeSenderAmendment, exchangePreparedEtrn, type EtrnDocument } from '../server/etrn-service';
+ import { buildSabyConsignmentDocument } from '../server/saby-consignment-note';
+ import { encodeWindows1251 } from '../server/saby-transport-order';
+-import { dispatchTripSaby } from '../server/trip-saby-scheduler';
++import { createTripSabyScheduler, dispatchTripSaby } from '../server/trip-saby-scheduler';
+ import { parseXml } from '../server/saby-order-evidence';
+ import { CONSIGNMENT_CARRIER_ACCEPTANCE } from '../server/saby-consignment-evidence';
+ import { integrationRuntime, integrationConfig, integrationSettings, integrationApi, type IntegrationRpc } from './helpers/trip-saby-integration';
+@@ -1180,3 +1180,134 @@
+     assert.equal(api.calls.filter(row => row.method === 'СБИС.ПодготовитьДействие').length, prepares);
+   } finally { await f.close(); }
+ });
++
++
++test('direct completed due selection preserves deadline, lastCheckedAt precedence and fresh claims', async () => {
++  const f = await fixture([false, true]);
++  try {
++    await f.start(); const original = await f.store.read(f.source), now = Date.now();
++    for (const useLastChecked of [false, true]) for (const delta of [-1, 0, 1]) {
++      const data = structuredClone(original), direct = data.etrn!.trips[f.tripId].direct!;
++      direct.phase = 'completed'; direct.updatedAt = new Date(now - 120_000).toISOString();
++      if (useLastChecked) direct.lastCheckedAt = new Date(now).toISOString();
++      else { delete direct.lastCheckedAt; direct.updatedAt = new Date(now).toISOString(); }
++      let reads = 0, claims = 0, sends = 0;
++      const store: OperationsStorage = {
++        read: async () => { reads++; return structuredClone(data); },
++        mutate: async () => { claims++; throw new ApiError(409, 'Synthetic claim boundary'); },
++      };
++      const scheduler = createTripSabyScheduler({ ...f, store, config: f.config, enabled: true, now: now + 60_000 + delta, send: async () => { sends++; throw new Error('No provider requests'); } });
++      try { await scheduler.tick(); await scheduler.drain(); }
++      finally { await scheduler.stop(); }
++      assert.equal(reads, delta < 0 ? 1 : 2); assert.equal(claims, delta < 0 ? 0 : 1); assert.equal(sends, 0);
++    }
++  } finally { await f.close(); }
++});
++
++test('completed direct observation measures durable work without new provider actions', async () => {
++  const f = await fixture([false, true]), api = directApi();
++  try {
++    await f.start(); await seedExistingNativeDocuments(f, api);
++    await runNkDirectEtrn({ ...f, client: new SabyClient(f.config, api.send) });
++    assert.equal(nkDirectEtrnCompleted(await f.store.read(f.source), f.tripId), true);
++    const originalRead = f.store.read.bind(f.store), originalMutate = f.store.mutate.bind(f.store);
++    let reads = 0, transactions = 0, changed = 0;
++    f.store.read = async source => { reads++; return originalRead(source); };
++    f.store.mutate = async (source, update) => { transactions++; return originalMutate(source, async data => { const result = await update(data); if (result.changed) changed++; return result; }); };
++    const start = performance.now(), cpu = process.cpuUsage(), priorCalls = api.calls.length;
++    const result = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: api.send, now: Date.now() + 60_001 });
++    const observation = { reads, transactions, changed, ms: performance.now() - start, cpu: process.cpuUsage(cpu), result, methods: api.calls.slice(priorCalls).map(call => call.method) };
++    assert.deepEqual(result, { continued: 1, refreshed: 0, denied: 0, failed: 0 });
++    assert.ok(observation.methods.every(method => !/Записать|Подготовить|Выполнить/.test(method)), 'completed observation must not create, prepare, execute or write a provider document');
++    const after = await originalRead(f.source);
++    assert.equal(after.etrn!.trips[f.tripId].direct!.leaseId, null);
++    assert.equal(after.etrn!.trips[f.tripId].direct!.leaseUntil, null);
++    assert.equal(nkDirectEtrnCompleted(after, f.tripId), true);
++    console.log('SYNTHETIC_COMPLETED_DIRECT_PROFILE', JSON.stringify(observation));
++  } finally { await f.close(); }
++});
++
++
++test('prepared direct delivery shares each fresh full snapshot while preserving authorization failures', async () => {
++  const f = await fixture([false, true]);
++  try {
++    await f.start(); const original = await f.store.read(f.source);
++    for (const change of ['none', 'actor', 'policy', 'mass', 'version', 'loading-role'] as const) {
++      const data = structuredClone(original), config = structuredClone(f.config);
++      if (change === 'actor') data.accounts!.users.find(row => row.id === 'actor')!.active = false;
++      if (change === 'policy') config.automaticSigning!.carrier.thumbprint = 'ef'.repeat(20);
++      if (change === 'mass') data.etrn!.trips[f.tripId].loadingFacts!.deliveries[f.trip.customers[0].id].grossMassTonnes = '8';
++      if (change === 'version') data.shipments[f.trip.customers[0].id].version++;
++      if (change === 'loading-role') data.etrn!.trips[f.tripId].loadingActorMode = 'sender';
++      let expected: unknown;
++      try { authorizeNkDirectEtrn(f.base, data, f.tripId, config); } catch (error) { expected = error; }
++      let assemblyReads = 0, claims = 0;
++      const base = new Proxy(f.base, { get(target, property, receiver) { if (property === 'shipments') assemblyReads++; return Reflect.get(target, property, receiver); } });
++      currentSnapshot(base, data); const oneAssemblyReads = assemblyReads; assemblyReads = 0;
++      const stop = new Error('Synthetic successful claim boundary');
++      const store: OperationsStorage = {
++        read: async () => structuredClone(data),
++        mutate: async (_source, update) => { claims++; const before = assemblyReads; await update(structuredClone(data)); assert.equal(assemblyReads - before, oneAssemblyReads); throw stop; },
++      };
++      const input = data.etrn!.trips[f.tripId].direct!.deliveries[0];
++      await assert.rejects(exchangePreparedEtrn({ ...f, base, store, client: new SabyClient(config, async () => { throw new Error('No external call'); }) }, { documentMode: 'nk-direct-v1', ...input }), error => expected instanceof ApiError ? error instanceof ApiError && error.status === expected.status && error.message === expected.message : error === stop);
++      assert.equal(assemblyReads, oneAssemblyReads * (change === 'none' ? 2 : 1), change);
++      assert.equal(claims, change === 'none' ? 1 : 0);
++    }
++  } finally { await f.close(); }
++});
++
++for (const failure of ['final-write', 'revoked-actor', 'competing-lease'] as const) test(`direct final metadata and lease release preserve ${failure} recovery`, async () => {
++  const f = await fixture([false, true]), api = directApi();
++  try {
++    await f.start(); await seedExistingNativeDocuments(f, api);
++    await runNkDirectEtrn({ ...f, client: new SabyClient(f.config, api.send) });
++    await f.store.mutate(f.source, data => { data.etrn!.trips[f.tripId].direct!.lastCheckedAt = '2000-01-01T00:00:00.000Z'; return { result: undefined, changed: true }; });
++    const before = await f.store.read(f.source), originalRead = f.store.read.bind(f.store), originalMutate = f.store.mutate.bind(f.store);
++    let injected = false;
++    f.store.mutate = async (source, update) => {
++      if (!injected) {
++        // Probe a disposable copy to identify the final local transition. It
++        // cannot persist or send requests; the real callback still runs below
++        // against the normal freshly locked store transaction.
++        const saved = await originalRead(source), probe = structuredClone(saved);
++        await update(probe);
++        const old = saved.etrn!.trips[f.tripId].direct!, next = probe.etrn!.trips[f.tripId].direct!;
++        if (old.leaseId && next.leaseId === null && next.lastCheckedAt !== old.lastCheckedAt) {
++          injected = true;
++          if (failure === 'final-write') return originalMutate(source, async data => { await update(data); throw new Error('Synthetic final persistence failure'); });
++          await originalMutate(source, data => {
++            if (failure === 'revoked-actor') {
++              const actor = data.accounts!.users.find(row => row.id === 'actor')!;
++              data.accounts!.users.push({ ...actor, id: 'replacement-owner', login: 'replacement-owner' }); actor.active = false;
++            } else {
++              const direct = data.etrn!.trips[f.tripId].direct!;
++              direct.leaseId = 'synthetic-competing-lease'; direct.leaseUntil = new Date(Date.now() + 300_000).toISOString();
++            }
++            return { result: undefined, changed: true };
++          });
++        }
++      }
++      return originalMutate(source, update);
++    };
++    const priorCalls = api.calls.length;
++    const run = runNkDirectEtrn({ ...f, client: new SabyClient(f.config, api.send) });
++    if (failure === 'revoked-actor') await assert.rejects(run, error => error instanceof ApiError && error.status === 403);
++    else await run;
++    assert.equal(injected, true);
++    const after = await originalRead(f.source), direct = after.etrn!.trips[f.tripId].direct!;
++    if (failure === 'competing-lease') {
++      assert.equal(direct.leaseId, 'synthetic-competing-lease');
++      assert.equal(direct.lastCheckedAt, '2000-01-01T00:00:00.000Z', 'failed final ownership check cannot overwrite another lease');
++    } else {
++      assert.equal(direct.leaseId, null); assert.equal(direct.leaseUntil, null);
++      assert.equal(direct.phase, 'unknown'); assert.equal(direct.completedAt, undefined);
++      assert.ok(direct.lastError);
++    }
++    assert.deepEqual(direct.authorization, before.etrn!.trips[f.tripId].direct!.authorization);
++    const shipmentId = f.trip.customers[0].id;
++    assert.deepEqual(after.etrn!.trips[f.tripId].deliveries[shipmentId].document!.dispatch, before.etrn!.trips[f.tripId].deliveries[shipmentId].document!.dispatch);
++    assert.deepEqual(after.etrn!.trips[f.tripId].deliveries[shipmentId].document!.writeAttempts, before.etrn!.trips[f.tripId].deliveries[shipmentId].document!.writeAttempts);
++    assert.ok(api.calls.slice(priorCalls).every(call => !/Записать|Подготовить|Выполнить/.test(call.method)));
++  } finally { await f.close(); }
++});
+--- a/tests/trip-saby-scheduler.test.ts
++++ b/tests/trip-saby-scheduler.test.ts
+@@ -1,5 +1,7 @@
+ import assert from 'node:assert/strict';
+ import { test } from 'node:test';
++import { ApiError } from '../server/api-error';
++import type { OperationsData, OperationsStorage } from '../server/operations-store';
+ import { createTripSabyScheduler, dispatchTripSaby, SABY_COMPLETED_REFRESH_MS, SABY_WORKFLOW_TICK_MS } from '../server/trip-saby-scheduler';
+ import { getTripSabyWorkflow, runTripSabyWorkflow } from '../server/trip-saby-workflow';
+ import { exchangePreparedEtrn, saveTripLoadingFacts } from '../server/etrn-service';
+@@ -216,3 +218,93 @@
+     assert.equal((await response(true)).monitoring.enabled, false); await f.tick(); assert.equal(f.api.calls.length, calls);
+   } finally { await f.close(); }
+ });
++
++async function completedFixture() {
++  const f = await fixture();
++  await f.start(); f.api.accept(); await f.tick();
++  await saveTripLoadingFacts(f.context, f.facts(), 'initiator'); await f.tick();
++  return f;
++}
++
++async function selectedPass(f: Awaited<ReturnType<typeof fixture>>, data: OperationsData, now: number, carrierWaitingOnly = false) {
++  let reads = 0, mutations = 0, requests = 0;
++  const store: OperationsStorage = {
++    read: async () => { reads++; return structuredClone(data); },
++    mutate: async () => { mutations++; throw new ApiError(409, 'Synthetic claim boundary'); },
++  };
++  const scheduler = createTripSabyScheduler({ ...f, store, config: integrationConfig(), enabled: true, now,
++    send: async () => { requests++; throw new Error('No provider request allowed in selection test'); } });
++  try { await scheduler.tick(carrierWaitingOnly); await scheduler.drain(); }
++  finally { await scheduler.stop(); }
++  assert.equal(requests, 0);
++  return { selected: reads > 1, reads, mutations };
++}
++
++test('completed ordinary workflow stays idle until the exact oldest delivery deadline', async () => {
++  const f = await completedFixture();
++  try {
++    const data = await f.store.read(f.source), record = data.tripSaby!.trips[f.tripId];
++    const updated = Date.now();
++    for (const [index, row] of record.deliveries.entries()) data.etrn!.trips[f.tripId].deliveries[row.shipmentId].document!.updatedAt = new Date(updated + index * 5_000).toISOString();
++    for (const delta of [-1, 0, 1]) {
++      const pass = await selectedPass(f, data, updated + SABY_COMPLETED_REFRESH_MS + delta);
++      assert.equal(pass.selected, delta >= 0, `deadline delta ${delta}`);
++      if (delta < 0) assert.equal(pass.reads, 1);
++    }
++    const idleStore: OperationsStorage = { read: async () => structuredClone(data), mutate: async () => { throw new Error('idle dispatch must not mutate'); } };
++    const idle = await dispatchTripSaby({ ...f, store: idleStore, config: integrationConfig(), enabled: true, now: updated });
++    assert.deepEqual(idle, { continued: 0, refreshed: 0, denied: 0, failed: 0 });
++    const absent = structuredClone(data);
++    for (const row of record.deliveries) delete absent.etrn!.trips[f.tripId].deliveries[row.shipmentId].document;
++    assert.equal((await selectedPass(f, absent, updated + 120_000)).reads, 1, 'no remote delivery IDs means no scheduled refresh');
++  } finally { await f.close(); }
++});
++
++test('selection preserves submission leases, queued autostart and unfinished driver completion', async () => {
++  const f = await completedFixture();
++  try {
++    const original = await f.store.read(f.source), now = Date.now();
++    for (const delta of [-1, 0, 1]) {
++      const data = structuredClone(original), record = data.tripSaby!.trips[f.tripId];
++      record.phase = 'submitting'; record.leaseId = 'synthetic-lease'; record.leaseUntil = new Date(now + delta).toISOString();
++      assert.equal((await selectedPass(f, data, now)).selected, delta <= 0, `lease expiry delta ${delta}`);
++    }
++    const queued = structuredClone(original), queue = queued.tripSaby!.trips[f.tripId];
++    queue.phase = 'submitting'; queue.leaseId = null; queue.leaseUntil = null; queue.reservationAttempted = false; queue.uploadAttempted = false; queue.order.id = null;
++    queue.autoAuthorization = { requestId: 'synthetic-auto', requestedBy: 'initiator', requestedAt: new Date(now).toISOString(), policyId: 'synthetic', policyHash: 'a'.repeat(64), mode: 'deferred', selection: { sender: 'a'.repeat(40), carrier: 'b'.repeat(40) } };
++    assert.equal((await selectedPass(f, queued, now)).selected, true);
++    const driver = structuredClone(original), record = driver.tripSaby!.trips[f.tripId];
++    record.driverFlow = { state: 'ready', processingAllowanceHours: 10 }; delete record.stage6CompletedAt;
++    for (const row of record.deliveries) driver.etrn!.trips[f.tripId].deliveries[row.shipmentId].document!.updatedAt = new Date(now).toISOString();
++    assert.equal((await selectedPass(f, driver, now)).selected, true, 'completed exchange may still have a queued departure');
++    record.stage6CompletedAt = new Date(now).toISOString();
++    assert.equal((await selectedPass(f, driver, now)).reads, 1);
++  } finally { await f.close(); }
++});
++
++test('fast carrier selection preserves 15 second and 10 minute boundaries', async () => {
++  const f = await fixture();
++  try {
++    await f.start(); const data = await f.store.read(f.source), record = data.tripSaby!.trips[f.tripId], start = Date.now();
++    record.phase = 'awaiting_carrier'; record.order.remoteStateCode = '4'; record.lastCheckAttemptAt = new Date(start).toISOString();
++    record.carrierFill = { requestedAt: new Date(start).toISOString(), state: 'waiting', blockers: [], driverSaved: false, vehicleSaved: false, checkedAt: null };
++    for (const elapsed of [14_999, 15_000, 599_999, 600_000]) {
++      assert.equal((await selectedPass(f, data, start + elapsed, true)).selected, elapsed >= 15_000 && elapsed < 600_000, `elapsed ${elapsed}`);
++    }
++    assert.equal((await selectedPass(f, data, start + 600_000)).selected, true, 'ordinary polling continues after fast polling expires');
++  } finally { await f.close(); }
++});
++
++test('fresh dispatch rechecks data after scan before any provider request', async () => {
++  const f = await fixture();
++  try {
++    await f.start(); const data = await f.store.read(f.source); let reads = 0, sends = 0;
++    const store: OperationsStorage = {
++      read: async () => { reads++; const copy = structuredClone(data); if (reads >= 2) copy.accounts!.users[1].active = false; return copy; },
++      mutate: async () => { throw new Error('Revoked actor must not mutate'); },
++    };
++    const scheduler = createTripSabyScheduler({ ...f, store, config: integrationConfig(), enabled: true, send: async () => { sends++; throw new Error('Revoked actor must not send'); } });
++    try { await scheduler.tick(); await scheduler.drain(); assert.ok(reads >= 3); assert.equal(sends, 0); }
++    finally { await scheduler.stop(); }
++  } finally { await f.close(); }
++});
+--- /dev/null
++++ b/tests/visible-refresh.test.ts
+@@ -0,0 +1,31 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { watchVisibleRefresh } from '../web/src/visible-refresh';
++
++test('background refresh skips hidden ticks, coalesces return events and cancels pending work on cleanup', t => {
++  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
++  const windowTarget = new EventTarget(), documentTarget = Object.assign(new EventTarget(), { visibilityState: 'visible' });
++  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window'), priorDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
++  Object.defineProperty(globalThis, 'window', { configurable: true, value: windowTarget });
++  Object.defineProperty(globalThis, 'document', { configurable: true, value: documentTarget });
++  t.after(() => {
++    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow); else Reflect.deleteProperty(globalThis, 'window');
++    if (priorDocument) Object.defineProperty(globalThis, 'document', priorDocument); else Reflect.deleteProperty(globalThis, 'document');
++  });
++  let reads = 0;
++  const stop = watchVisibleRefresh(() => { reads++; }, 1000);
++  assert.equal(reads, 0, 'initial/manual refresh belongs to caller');
++  t.mock.timers.tick(1000); t.mock.timers.tick(50);
++  assert.equal(reads, 1);
++  documentTarget.visibilityState = 'hidden'; documentTarget.dispatchEvent(new Event('visibilitychange'));
++  t.mock.timers.tick(10_000); windowTarget.dispatchEvent(new Event('focus')); t.mock.timers.tick(50);
++  assert.equal(reads, 1);
++  documentTarget.visibilityState = 'visible'; documentTarget.dispatchEvent(new Event('visibilitychange'));
++  t.mock.timers.tick(20); windowTarget.dispatchEvent(new Event('focus')); t.mock.timers.tick(50);
++  assert.equal(reads, 2, 'one request for a visibility/focus pair');
++  windowTarget.dispatchEvent(new Event('focus')); documentTarget.visibilityState = 'hidden'; documentTarget.dispatchEvent(new Event('visibilitychange'));
++  t.mock.timers.tick(50); assert.equal(reads, 2, 'pending return read is cancelled when hidden again');
++  documentTarget.visibilityState = 'visible'; documentTarget.dispatchEvent(new Event('visibilitychange')); stop();
++  t.mock.timers.tick(10_000); windowTarget.dispatchEvent(new Event('focus')); t.mock.timers.tick(100);
++  assert.equal(reads, 2, 'unmounted page has no interval/listener/pending read');
++});
+--- a/web/src/BankingPage.tsx
++++ b/web/src/BankingPage.tsx
+@@ -1,3 +1,4 @@
++import { watchVisibleRefresh } from './visible-refresh'
+ import { useDialogMotion } from './useDialogMotion'
+ import ScrollableSegments from './ScrollableSegments'
+ import { useEffect, useRef, useState, type ReactNode } from 'react'
+@@ -86,8 +87,7 @@
+   // Poll durable state, including retry backoff, without needing an open page for the scheduler.
+   useEffect(() => {
+     if (source !== 'api' || sber) return
+-    const timer = setInterval(() => setRevision(v => v + 1), 30000)
+-    return () => clearInterval(timer)
++    return watchVisibleRefresh(() => setRevision(v => v + 1), 30000)
+   }, [source, sber])
+   const selectBank = (id: string) => { setConnection(id); setAccount(''); setStatus(''); setPage(1); setSettings(false); setActionError('') }
+   const card = data?.connections.find(card => card.id === connection)
+--- a/web/src/CabinetBalances.tsx
++++ b/web/src/CabinetBalances.tsx
+@@ -1,3 +1,4 @@
++import { watchVisibleRefresh } from './visible-refresh';
+ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+ import { ArrowLeft, ArrowRight, Building2, ExternalLink, LockKeyhole, Plus, RefreshCw, X } from 'lucide-react';
+ import { cabinetProviders, cabinetConnectionStale, type CabinetConnection, type CabinetProvider, type CabinetResponse } from './cabinet-model';
+@@ -22,7 +23,7 @@
+     try { const result = await request<CabinetResponse>({ signal: pending.signal }); if (!pending.signal.aborted) { setData(result); setError(''); } }
+     catch (reason) { if (!pending.signal.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
+   }, []);
+-  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 20_000); return () => { clearInterval(timer); controller.current?.abort(); }; }, [refresh]);
++  useEffect(() => { void refresh(); const stop = watchVisibleRefresh(() => { void refresh(); }, 20_000); return () => { stop(); controller.current?.abort(); }; }, [refresh]);
+   const synchronize = async (id: string) => {
+     if (syncing.includes(id)) return;
+     setSyncing(current => [...current, id]); setError('');
+--- /dev/null
++++ b/web/src/DeliveryPointMap.tsx
+@@ -0,0 +1,91 @@
++import { tripRequestExplicitCoordinates } from './trip-request-map-coordinates'
++import { useEffect, useRef, useState } from 'react'
++import type OlMap from 'ol/Map.js'
++import Feature from 'ol/Feature.js'
++import Point from 'ol/geom/Point.js'
++import VectorLayer from 'ol/layer/Vector.js'
++import VectorSource from 'ol/source/Vector.js'
++import Translate from 'ol/interaction/Translate.js'
++import { Circle as CircleStyle, Fill, Stroke, Style } from 'ol/style.js'
++import type { Coordinate } from 'ol/coordinate.js'
++import type { MapPoint } from './trip-map-view'
++import { createBaseMap, watchMapTiles } from './yandex-map'
++import { projectMapPoint, unprojectMapPoint } from './yandex-map-coordinates'
++
++type Props = {
++  latitude?: string | null; longitude?: string | null; mapUrl?: string | null;
++  disabled?: boolean; onChange: (latitude: string, longitude: string) => void;
++}
++
++
++export default function PointMap({ latitude, longitude, disabled, onChange }: Props) {
++  const canvas = useRef<HTMLDivElement>(null), map = useRef<OlMap | null>(null), marker = useRef<Feature<Point> | null>(null)
++  const source = useRef<VectorSource<Feature<Point>> | null>(null), translate = useRef<Translate | null>(null)
++  const latest = useRef({ onChange, disabled })
++  latest.current = { onChange, disabled }
++  const initial = useRef({ latitude, longitude })
++  const [latInput, setLatInput] = useState(latitude ?? ''), [lonInput, setLonInput] = useState(longitude ?? '')
++  const [tileError, setTileError] = useState(false), [error, setError] = useState(''), [retry, setRetry] = useState(0)
++  const applyPoint = ([latitude, longitude]: MapPoint) => {
++    if (latest.current.disabled) return
++    if (!Number.isFinite(latitude) || Math.abs(latitude) > 90 || !Number.isFinite(longitude) || Math.abs(longitude) > 180) return
++    latest.current.onChange(latitude.toFixed(6), longitude.toFixed(6))
++    setError('')
++  }
++  const applyRef = useRef(applyPoint)
++  applyRef.current = applyPoint
++  useEffect(() => {
++    if (!canvas.current) return
++    const created = createBaseMap(canvas.current)
++    map.current = created.map
++    source.current = new VectorSource<Feature<Point>>()
++    const points = new VectorLayer({ source: source.current, style: new Style({ image: new CircleStyle({ radius: 13, fill: new Fill({ color: '#176e50' }), stroke: new Stroke({ color: '#fff', width: 3 }) }) }) })
++    created.map.addLayer(points)
++    const point = tripRequestExplicitCoordinates(initial.current)
++    if (point?.status === 'found') { created.map.getView().setCenter(projectMapPoint([point.latitude, point.longitude])); created.map.getView().setZoom(16) }
++    translate.current = new Translate({ layers: [points], hitTolerance: 12 })
++    translate.current.setActive(!latest.current.disabled)
++    created.map.addInteraction(translate.current)
++    translate.current.on('translateend', event => {
++      const geometry = event.features.item(0)?.getGeometry()
++      if (geometry instanceof Point) applyRef.current(unprojectMapPoint(geometry.getCoordinates()))
++    })
++    created.map.on('singleclick', event => applyRef.current(unprojectMapPoint(event.coordinate)))
++    const stopWatchingTiles = watchMapTiles(created.map, created.tiles, state => setTileError(state.failed))
++    const resize = new ResizeObserver(() => created.map.updateSize())
++    resize.observe(canvas.current)
++    return () => { stopWatchingTiles(); resize.disconnect(); created.dispose(); map.current = null; marker.current = null; source.current = null; translate.current = null }
++  }, [retry])
++  useEffect(() => {
++    setLatInput(latitude ?? ''); setLonInput(longitude ?? '')
++    const point = tripRequestExplicitCoordinates({ latitude, longitude })
++    if (!map.current) return
++    translate.current?.setActive(!disabled)
++    if (point?.status !== 'found') { source.current?.clear(); marker.current = null; return }
++    const position = projectMapPoint([point.latitude, point.longitude])
++    if (!marker.current) {
++      map.current.getView().setCenter(position); map.current.getView().setZoom(16)
++      marker.current = new Feature(new Point(position))
++      source.current?.addFeature(marker.current)
++    } else marker.current.getGeometry()?.setCoordinates(position)
++  }, [latitude, longitude, disabled, retry])
++  const applyCoordinates = () => {
++    const point = tripRequestExplicitCoordinates({ latitude: latInput.trim().replace(',', '.'), longitude: lonInput.trim().replace(',', '.') })
++    if (point?.status !== 'found') { setError('Укажите широту от −90 до 90 и долготу от −180 до 180.'); return }
++    applyPoint([point.latitude, point.longitude])
++    map.current?.getView().setCenter(projectMapPoint([point.latitude, point.longitude])); map.current?.getView().setZoom(16)
++  }
++  return <>
++    <p>Нажмите на место доставки или перетащите метку. Точка сохранится вместе с формой; текст адреса останется прежним.</p>
++    <div ref={canvas} className="delivery-point-map" role="region" aria-label="Выбор точки доставки на Яндекс Карте" tabIndex={0}/>
++    {tileError && <div className="delivery-point-error" role="status">Не удалось загрузить карту. Можно повторить загрузку или ввести координаты.<button className="button" type="button" onClick={() => { initial.current = { latitude, longitude }; setTileError(false); setRetry(value => value + 1) }}>Повторить загрузку карты</button></div>}
++    <div className="delivery-point-actions"><button type="button" className="button" disabled={disabled} onClick={() => { if (map.current) applyPoint(unprojectMapPoint(map.current.getView().getCenter() as Coordinate)) }}>Поставить точку в центре карты</button></div>
++    <p>Координаты можно ввести вручную. Нажмите «Применить координаты», затем сохраните форму.</p>
++    <div className="delivery-point-coordinates">
++      <label className="shipment-field"><span>Широта точки</span><input inputMode="decimal" value={latInput} disabled={disabled} onChange={event => setLatInput(event.target.value)}/></label>
++      <label className="shipment-field"><span>Долгота точки</span><input inputMode="decimal" value={lonInput} disabled={disabled} onChange={event => setLonInput(event.target.value)}/></label>
++    </div>
++    {error && <p className="shipment-error" role="alert">{error}</p>}
++    <div className="delivery-point-actions"><button type="button" className="button" disabled={disabled} onClick={applyCoordinates}>Применить координаты</button></div>
++  </>
++}
+--- a/web/src/DeliveryPointPicker.tsx
++++ b/web/src/DeliveryPointPicker.tsx
+@@ -1,17 +1,7 @@
+-import { useEffect, useRef, useState } from 'react'
+-import type OlMap from 'ol/Map.js'
+-import Feature from 'ol/Feature.js'
+-import Point from 'ol/geom/Point.js'
+-import VectorLayer from 'ol/layer/Vector.js'
+-import VectorSource from 'ol/source/Vector.js'
+-import Translate from 'ol/interaction/Translate.js'
+-import { Circle as CircleStyle, Fill, Stroke, Style } from 'ol/style.js'
+-import type { Coordinate } from 'ol/coordinate.js'
+-import type { MapPoint } from './trip-map-view'
++import { lazy, Suspense, useState } from 'react'
+ import { Check, MapPin } from 'lucide-react'
+-import { createBaseMap, watchMapTiles } from './yandex-map'
+-import { projectMapPoint, unprojectMapPoint } from './yandex-map-coordinates'
+ import { tripRequestExplicitCoordinates } from './trip-request-map-coordinates'
++const PointMap = lazy(() => import('./DeliveryPointMap'))
+ 
+ type Props = {
+   latitude?: string | null; longitude?: string | null; mapUrl?: string | null;
+@@ -25,78 +15,6 @@
+   return <div className="delivery-point-picker">
+     <div className="delivery-point-summary">{point?.status === 'found' ? <><Check size={16} aria-hidden="true"/><span>Точка выбрана: {point.latitude.toFixed(6)}, {point.longitude.toFixed(6)}</span></> : <span>Точка доставки ещё не выбрана</span>}</div>
+     <button type="button" className="button" aria-expanded={open} disabled={disabled} onClick={() => setOpen(value => !value)}><MapPin size={16}/>{open ? 'Скрыть карту выбора' : point?.status === 'found' ? 'Изменить точку на карте' : 'Выбрать точку на карте'}</button>
+-    {open && <PointMap latitude={point?.status === 'found' ? String(point.latitude) : null} longitude={point?.status === 'found' ? String(point.longitude) : null} disabled={disabled} onChange={onChange}/>}
++    {open && <Suspense fallback={<p role="status">Загружаем карту…</p>}><PointMap latitude={point?.status === 'found' ? String(point.latitude) : null} longitude={point?.status === 'found' ? String(point.longitude) : null} disabled={disabled} onChange={onChange}/></Suspense>}
+   </div>
+ }
+-
+-function PointMap({ latitude, longitude, disabled, onChange }: Props) {
+-  const canvas = useRef<HTMLDivElement>(null), map = useRef<OlMap | null>(null), marker = useRef<Feature<Point> | null>(null)
+-  const source = useRef<VectorSource<Feature<Point>> | null>(null), translate = useRef<Translate | null>(null)
+-  const latest = useRef({ onChange, disabled })
+-  latest.current = { onChange, disabled }
+-  const initial = useRef({ latitude, longitude })
+-  const [latInput, setLatInput] = useState(latitude ?? ''), [lonInput, setLonInput] = useState(longitude ?? '')
+-  const [tileError, setTileError] = useState(false), [error, setError] = useState(''), [retry, setRetry] = useState(0)
+-  const applyPoint = ([latitude, longitude]: MapPoint) => {
+-    if (latest.current.disabled) return
+-    if (!Number.isFinite(latitude) || Math.abs(latitude) > 90 || !Number.isFinite(longitude) || Math.abs(longitude) > 180) return
+-    latest.current.onChange(latitude.toFixed(6), longitude.toFixed(6))
+-    setError('')
+-  }
+-  const applyRef = useRef(applyPoint)
+-  applyRef.current = applyPoint
+-  useEffect(() => {
+-    if (!canvas.current) return
+-    const created = createBaseMap(canvas.current)
+-    map.current = created.map
+-    source.current = new VectorSource<Feature<Point>>()
+-    const points = new VectorLayer({ source: source.current, style: new Style({ image: new CircleStyle({ radius: 13, fill: new Fill({ color: '#176e50' }), stroke: new Stroke({ color: '#fff', width: 3 }) }) }) })
+-    created.map.addLayer(points)
+-    const point = tripRequestExplicitCoordinates(initial.current)
+-    if (point?.status === 'found') { created.map.getView().setCenter(projectMapPoint([point.latitude, point.longitude])); created.map.getView().setZoom(16) }
+-    translate.current = new Translate({ layers: [points], hitTolerance: 12 })
+-    translate.current.setActive(!latest.current.disabled)
+-    created.map.addInteraction(translate.current)
+-    translate.current.on('translateend', event => {
+-      const geometry = event.features.item(0)?.getGeometry()
+-      if (geometry instanceof Point) applyRef.current(unprojectMapPoint(geometry.getCoordinates()))
+-    })
+-    created.map.on('singleclick', event => applyRef.current(unprojectMapPoint(event.coordinate)))
+-    const stopWatchingTiles = watchMapTiles(created.map, created.tiles, state => setTileError(state.failed))
+-    const resize = new ResizeObserver(() => created.map.updateSize())
+-    resize.observe(canvas.current)
+-    return () => { stopWatchingTiles(); resize.disconnect(); created.dispose(); map.current = null; marker.current = null; source.current = null; translate.current = null }
+-  }, [retry])
+-  useEffect(() => {
+-    setLatInput(latitude ?? ''); setLonInput(longitude ?? '')
+-    const point = tripRequestExplicitCoordinates({ latitude, longitude })
+-    if (!map.current) return
+-    translate.current?.setActive(!disabled)
+-    if (point?.status !== 'found') { source.current?.clear(); marker.current = null; return }
+-    const position = projectMapPoint([point.latitude, point.longitude])
+-    if (!marker.current) {
+-      map.current.getView().setCenter(position); map.current.getView().setZoom(16)
+-      marker.current = new Feature(new Point(position))
+-      source.current?.addFeature(marker.current)
+-    } else marker.current.getGeometry()?.setCoordinates(position)
+-  }, [latitude, longitude, disabled, retry])
+-  const applyCoordinates = () => {
+-    const point = tripRequestExplicitCoordinates({ latitude: latInput.trim().replace(',', '.'), longitude: lonInput.trim().replace(',', '.') })
+-    if (point?.status !== 'found') { setError('Укажите широту от −90 до 90 и долготу от −180 до 180.'); return }
+-    applyPoint([point.latitude, point.longitude])
+-    map.current?.getView().setCenter(projectMapPoint([point.latitude, point.longitude])); map.current?.getView().setZoom(16)
+-  }
+-  return <>
+-    <p>Нажмите на место доставки или перетащите метку. Точка сохранится вместе с формой; текст адреса останется прежним.</p>
+-    <div ref={canvas} className="delivery-point-map" role="region" aria-label="Выбор точки доставки на Яндекс Карте" tabIndex={0}/>
+-    {tileError && <div className="delivery-point-error" role="status">Не удалось загрузить карту. Можно повторить загрузку или ввести координаты.<button className="button" type="button" onClick={() => { initial.current = { latitude, longitude }; setTileError(false); setRetry(value => value + 1) }}>Повторить загрузку карты</button></div>}
+-    <div className="delivery-point-actions"><button type="button" className="button" disabled={disabled} onClick={() => { if (map.current) applyPoint(unprojectMapPoint(map.current.getView().getCenter() as Coordinate)) }}>Поставить точку в центре карты</button></div>
+-    <p>Координаты можно ввести вручную. Нажмите «Применить координаты», затем сохраните форму.</p>
+-    <div className="delivery-point-coordinates">
+-      <label className="shipment-field"><span>Широта точки</span><input inputMode="decimal" value={latInput} disabled={disabled} onChange={event => setLatInput(event.target.value)}/></label>
+-      <label className="shipment-field"><span>Долгота точки</span><input inputMode="decimal" value={lonInput} disabled={disabled} onChange={event => setLonInput(event.target.value)}/></label>
+-    </div>
+-    {error && <p className="shipment-error" role="alert">{error}</p>}
+-    <div className="delivery-point-actions"><button type="button" className="button" disabled={disabled} onClick={applyCoordinates}>Применить координаты</button></div>
+-  </>
+-}
+--- a/web/src/InvoicePage.tsx
++++ b/web/src/InvoicePage.tsx
+@@ -1,3 +1,4 @@
++import { watchVisibleRefresh } from './visible-refresh';
+ import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
+ import { Building2, ChevronDown, Download, FileText, History, Info, LoaderCircle, LockKeyhole, Menu, RefreshCw, Settings, Sparkles, X } from 'lucide-react';
+ import type { AccountUser as User } from './auth-model';
+@@ -207,7 +208,7 @@
+     } catch { if (!controller.signal.aborted) setError('Не удалось загрузить счета. Проверьте подключение и повторите попытку.'); return null; }
+     finally { if (!controller.signal.aborted) setLoading(false); }
+   }, [applySettings, onSessionExpired, user.id]);
+-  useEffect(() => { void refresh(); const onFocus = () => { void refresh(); }; const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(); }; window.addEventListener('focus', onFocus); document.addEventListener('visibilitychange', onVisibility); return () => { request.current?.abort(); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisibility); }; }, [refresh]);
++  useEffect(() => { void refresh(); const stop = watchVisibleRefresh(() => { void refresh(); }); return () => { stop(); request.current?.abort(); }; }, [refresh]);
+   const hasActiveJobs = Boolean(data?.history.items.some(job => job.status === 'queued' || job.status === 'processing'));
+   const hasPrintChecks = Boolean(data?.invoiceCreation?.connections.some(connection => connection.checking));
+   useEffect(() => {
+--- a/web/src/OperatorJournal.tsx
++++ b/web/src/OperatorJournal.tsx
+@@ -1,3 +1,4 @@
++import { useSyncExternalStore } from 'react'
+ import type { OperatorRefuelling, OperatorAllocation } from './operator-model'
+ import type { OperatorCaseSummary } from './operator-case-model'
+ import { display } from './operator-ui-utils'
+@@ -33,11 +34,19 @@
+ function Recipient({ entry }: { entry: ReturnType<typeof recipient> }) {
+   return <div className="operator-recipient-inline"><span className="operator-recipient-client">{entry.client}</span><strong>{entry.name}</strong><span className="operator-recipient-amount">{display(entry.amount, true)} ₽</span><span className="operator-recipient-details">{entry.details}</span></div>
+ }
++const compactQuery = '(max-width:700px)'
++const subscribeCompact = (notify: () => void) => {
++  const media = window.matchMedia(compactQuery)
++  media.addEventListener('change', notify)
++  return () => media.removeEventListener('change', notify)
++}
++const isCompact = () => window.matchMedia(compactQuery).matches
++
+ export default function OperatorJournal({ rows, onView, onAction, onPayment, paymentDisabled = false }: Props) {
++  const compact = useSyncExternalStore(subscribeCompact, isCompact, () => false)
+   const action = (row: OperatorRefuelling) => <button type="button" className="button operator-action-trigger" aria-label={`Действие с операцией ${row.name}`} onClick={event => { event.currentTarget.focus({ preventScroll: true }); onAction(row) }}>Действие</button>
+   const payment = (row: OperatorRefuelling) => <select disabled={paymentDisabled} aria-busy={paymentDisabled} className={`operator-status operator-payment-select ${row.paid ? 'is-paid' : ''}`} aria-label={`Оплата ${row.name}`} value={row.paid ? 'paid' : 'unpaid'} onChange={event => { if ((event.target.value === 'paid') !== row.paid) onPayment(row) }}><option value="paid">Оплачено</option><option value="unpaid">Не оплачено</option></select>
+-  return <>
+-    <div className="operator-table-wrap operator-desktop-journal"><table className="operator-table operator-grouped-table">
++  return !compact ? <div className="operator-table-wrap operator-desktop-journal"><table className="operator-table operator-grouped-table">
+       <caption className="operator-visually-hidden">Операции по водителям, отдельная строка каждого получателя</caption>
+       <thead><tr>{['Дата', 'Водитель', 'Сервис / скидка', 'Литры', 'Цена, ₽/л', 'Итого операции, ₽', 'Оплата', 'Получатель', ''].map((value, index) => <th key={index} className={value === 'Получатель' ? 'operator-recipient-column' : undefined} scope="col">{value || <span className="operator-visually-hidden">Действие</span>}</th>)}</tr></thead>
+       {rows.map(row => {
+@@ -55,8 +64,7 @@
+           </tr>)}
+         </tbody>
+       })}
+-    </table></div>
+-    <div className="operator-mobile-journal">{rows.map(row => {
++    </table></div> : <div className="operator-mobile-journal">{rows.map(row => {
+       const entries = allocations(row)
+       return <article key={row.id} className="operator-operation-card" data-operation-id={row.id} aria-label={`Операция ${row.name}, ${date(row)}`}>
+         <header><div><small>{date(row)}</small><button className="operator-link" onClick={() => onView(row)}>{row.name}</button></div>{action(row)}</header>
+@@ -67,5 +75,4 @@
+         <ul className="operator-card-recipients">{entries.map((entry, index) => <li key={index}><Recipient entry={entry}/></li>)}</ul>
+       </article>
+     })}</div>
+-  </>
+ }
+--- a/web/src/OperatorPage.tsx
++++ b/web/src/OperatorPage.tsx
+@@ -1,5 +1,5 @@
+ import { useEffect, useRef, useState, type FormEvent } from 'react'
+-import { Plus, RefreshCw, X } from 'lucide-react'
++import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from 'lucide-react'
+ import Decimal from 'decimal.js'
+ import OperatorCaseSourcePicker from './OperatorCaseSourcePicker'
+ import OperatorJournal from './OperatorJournal'
+@@ -39,6 +39,7 @@
+   const [caseStatus, setCaseStatus] = useState<'open' | 'completed'>('open')
+   const [query, setQuery] = useState(''), [from, setFrom] = useState(''), [to, setTo] = useState(''), [paid, setPaid] = useState('all')
+   const [serviceId, setServiceId] = useState('')
++  const [journalPage, setJournalPage] = useState({ filters: '', index: 0 })
+   const request = useRef(0)
+   const notificationTarget = useRef(new URLSearchParams(window.location.search).get('operatorPlan'))
+   const reload = async () => {
+@@ -65,6 +66,12 @@
+   const payment = useOperatorPayment(next => { request.current++; setData(next) })
+   const q = query.trim().toLocaleLowerCase('ru')
+   const rows = (data?.refuellings ?? []).filter(row => !row.deletedAt && (!serviceId || !!data && reconciliationServiceId(data, row) === serviceId) && (!planId || row.schemaVersion === 3 && (row.planId === planId || row.allocations.some(item => item.planId === planId))) && (!from || row.date >= from) && (!to || row.date <= to) && (paid === 'all' || row.paid === (paid === 'paid')) && `${row.name} ${row.schemaVersion !== undefined ? data?.services.find(service => service.id === row.serviceId)?.name ?? row.service : row.service} ${groupName(row)} ${recipientText(row)} ${row.comment} ${row.schemaVersion === 3 ? [row.planClientName, ...row.allocations.map(item => item.planClientName)].join(' ') : ''}`.toLocaleLowerCase('ru').includes(q))
++  const filters = JSON.stringify([q, from, to, paid, serviceId, planId])
++  // Reset before committing rows for a different filter; clearing a search must
++  // not restore a stale page from before that search.
++  if (journalPage.filters !== filters) setJournalPage({ filters, index: 0 })
++  const lastPage = Math.max(0, Math.ceil(rows.length / 50) - 1)
++  const page = journalPage.filters === filters ? Math.min(journalPage.index, lastPage) : 0
+   const serviceOptions = data ? [...new Map([...data.refuellings.map(row => [reconciliationServiceId(data, row), row.service] as const), ...data.services.map(service => [service.id, service.name] as const)])] : []
+   const selectedPlan = data?.plans.find(plan => plan.id === planId)
+   const scheduled = (data?.cases ?? []).filter(entry => !!entry.task)
+@@ -117,7 +124,8 @@
+           <label className="operator-plan-filter">Задание<select aria-label="Фильтр по заданию" value={planId} onChange={event => setPlanId(event.target.value)}><option value="">Все задания</option>{data.plans.map(plan => <option key={plan.id} value={plan.id}>{plan.clientName} · {plan.status === 'completed' ? 'Выполнено' : 'Активно'} · {planDate(plan.createdAt)}</option>)}</select></label>
+         </div>
+         {from && to && from > to && <p role="alert">Начало периода позже окончания.</p>}
+-        {rows.length ? <OperatorJournal rows={rows} onView={row => setEditor({ kind: 'fuel', row })} onAction={setActionRow} paymentDisabled={payment.disabled} onPayment={row => void payment.change(row)} cases={data.cases} onCase={entry => { setCaseStatus(entry.status); setTab(entry.kind); setFocusedCaseId(entry.id) }} /> : <div className="empty-state"><strong>{data.refuellings.length ? 'Операции не найдены' : 'Операций пока нет'}</strong><span>{data.refuellings.length ? 'Измените задание, поиск или фильтры.' : 'Выберите задание и создайте операцию для водителя. Оплату можно подтвердить позже.'}</span></div>}
++        {rows.length ? <OperatorJournal rows={rows.slice(page * 50, (page + 1) * 50)} onView={row => setEditor({ kind: 'fuel', row })} onAction={setActionRow} paymentDisabled={payment.disabled} onPayment={row => void payment.change(row)} cases={data.cases} onCase={entry => { setCaseStatus(entry.status); setTab(entry.kind); setFocusedCaseId(entry.id) }} /> : <div className="empty-state"><strong>{data.refuellings.length ? 'Операции не найдены' : 'Операций пока нет'}</strong><span>{data.refuellings.length ? 'Измените задание, поиск или фильтры.' : 'Выберите задание и создайте операцию для водителя. Оплату можно подтвердить позже.'}</span></div>}
++        {rows.length > 50 && <nav className="pagination" aria-label="Страницы операций"><span>{page * 50 + 1}–{Math.min((page + 1) * 50, rows.length)} из {rows.length}</span><div><button type="button" className="icon-button" aria-label="Предыдущая страница операций" disabled={!page} onClick={() => setJournalPage({ filters, index: page - 1 })}><ChevronLeft size={18}/></button><span aria-live="polite">{page + 1} / {lastPage + 1}</span><button type="button" className="icon-button" aria-label="Следующая страница операций" disabled={page === lastPage} onClick={() => setJournalPage({ filters, index: page + 1 })}><ChevronRight size={18}/></button></div></nav>}
+       </>}
+       {(tab === 'return' || tab === 'deferred') && <CaseList operations={data.refuellings} key={`${tab}:${focusedCaseId}`} cases={data.cases ?? []} kind={tab as OperatorCaseKind} status={caseStatus} focusedId={focusedCaseId} onSettle={settleCase} onTask={setCaseTask} onViewSource={viewCaseSource} />}
+     </div>}
+--- a/web/src/OverviewPage.tsx
++++ b/web/src/OverviewPage.tsx
+@@ -1,3 +1,4 @@
++import { watchVisibleRefresh } from './visible-refresh'
+ import { useCallback, useEffect, useRef, useState } from 'react'
+ import { AlertCircle, CircleCheck, LoaderCircle, Menu, RefreshCw, Wallet } from 'lucide-react'
+ import type { SettlementsReport } from './settlements-model'
+@@ -38,14 +39,9 @@
+   }, [])
+   useEffect(() => {
+     void refresh()
+-    const visibleRefresh = () => { if (document.visibilityState === 'visible') void refresh() }
+-    const interval = window.setInterval(visibleRefresh, 30_000)
+-    window.addEventListener('focus', visibleRefresh)
+-    document.addEventListener('visibilitychange', visibleRefresh)
++    const stop = watchVisibleRefresh(() => { void refresh() }, 30_000)
+     return () => {
+-      window.clearInterval(interval)
+-      window.removeEventListener('focus', visibleRefresh)
+-      document.removeEventListener('visibilitychange', visibleRefresh)
++      stop()
+       activeRequest.current?.abort()
+     }
+   }, [refresh])
+--- a/web/src/SberStatements.tsx
++++ b/web/src/SberStatements.tsx
+@@ -1,3 +1,4 @@
++import { watchVisibleRefresh } from './visible-refresh'
+ import { useDialogMotion } from './useDialogMotion'
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { ArrowDownLeft, ArrowUpRight, ChevronRight, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
+@@ -86,8 +87,7 @@
+   // Refresh saved state while the server performs the scheduled bank requests.
+   useEffect(() => {
+     if (!data?.scheduleEnabled) return
+-    const timer = setInterval(() => { if (!working.current) void load().catch(() => {}) }, 30000)
+-    return () => clearInterval(timer)
++    return watchVisibleRefresh(() => { if (!working.current) void load().catch(() => {}) }, 30000)
+   }, [load, data?.scheduleEnabled])
+ 
+   const synchronize = async () => {
+--- a/web/src/TripsPage.tsx
++++ b/web/src/TripsPage.tsx
+@@ -4,13 +4,13 @@
+ import './trip-identity.css'
+ import { useDialogMotion } from './useDialogMotion'
+ import { apiFetch as fetch } from './workspace-api'
+-import { useEffect, useRef, useState } from 'react'
+-import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
++import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
++import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map as MapIcon, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
+ import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
+ import type { TripRequest } from './trip-request-model'
+ import ScrollableSegments from './ScrollableSegments'
+ import TripRequestsPanel from './TripRequestsPanel'
+-import TripRequestsMap from './TripRequestsMap'
++const TripRequestsMap = lazy(() => import('./TripRequestsMap'))
+ import TripRequestEditor from './TripRequestEditor'
+ import './trip-requests.css'
+ import ShipmentTripEditor from './ShipmentTripEditor'
+@@ -38,7 +38,7 @@
+     const controller = new AbortController()
+     setLoading(true); setError('')
+     fetch('/api/shipment-trips', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы'); return result })
+-      .then(result => { setTrips(previous => (result.trips as ShipmentTrip[]).map(trip => { const saved = previous.find(t => t.id === trip.id)?.execution; return saved && saved.version > (trip.execution?.version ?? 0) ? { ...trip, execution: saved } : trip })); setAutomation(result.automation ?? { enabled: false }) })
++      .then(result => { setTrips(previous => { const executions = new Map(previous.map(trip => [trip.id, trip.execution])); return (result.trips as ShipmentTrip[]).map(trip => { const saved = executions.get(trip.id); return saved && saved.version > (trip.execution?.version ?? 0) ? { ...trip, execution: saved } : trip }) }); setAutomation(result.automation ?? { enabled: false }) })
+       .catch(reason => { if (!controller.signal.aborted) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
+       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+     return () => controller.abort()
+@@ -59,16 +59,18 @@
+   }, [view])
+   const [deleting, setDeleting] = useState<string | null>(null)
+   const directories = data.directories
++  const companyNames = useMemo(() => new Map([...requestCompanies, ...data.companies].map(company => [company.id, company.name])), [data.companies, requestCompanies])
++  const driverNames = useMemo(() => new Map(directories?.drivers.map(driver => [driver.id, driver.name])), [directories?.drivers])
+   if (!directories) return <p className="soft-notice">Не удалось загрузить справочники рейсов.</p>
+-  const companyName = (id: string | null) => data.companies.find(company => company.id === id)?.name ?? requestCompanies.find(company => company.id === id)?.name ?? 'Не указано'
+-  const driverName = (id: string | null) => directories.drivers.find(driver => driver.id === id)?.name ?? 'Не указан'
+-  const filtered = trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
++  const companyName = (id: string | null) => (id ? companyNames.get(id) : undefined) ?? 'Не указано'
++  const driverName = (id: string | null) => (id ? driverNames.get(id) : undefined) ?? 'Не указан'
++  const filtered = view !== 'trips' ? [] : trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
+   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
+   return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
+-    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: Map }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { setView(item.id); setNotice(''); setRefresh(value => value + 1) }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
++    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { setView(item.id); setNotice(''); setRefresh(value => value + 1) }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
+     {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} error={error} onReload={() => setRefresh(value => value + 1)}/>}
+     {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={() => setRefresh(value => value + 1)} onChanged={() => { setRefresh(value => value + 1); onChanged() }}/>}
+-    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}{requestsLoading && !requests.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/>}</section>}
++    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}{requestsLoading && !requests.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <Suspense fallback={<p role="status">Загружаем карту…</p>}><TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/></Suspense>}</section>}
+     {view === 'trips' && <><div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Номер рейса, клиент, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
+     {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку заявок</button></div>}
+     {notice && <p className="directory-notice" role="status">{notice}</p>}
+--- /dev/null
++++ b/web/src/visible-refresh.ts
+@@ -0,0 +1,26 @@
++/** Background reads only. Manual actions and authorization keep their own fresh requests. */
++export function watchVisibleRefresh(refresh: () => void, intervalMs?: number): () => void {
++  let pending: ReturnType<typeof setTimeout> | undefined
++  const run = () => {
++    pending = undefined
++    if (document.visibilityState === 'visible') refresh()
++  }
++  // Returning to a tab commonly emits both visibilitychange and focus. Schedule
++  // one read for that burst instead of aborting and restarting the same request.
++  const schedule = () => {
++    if (document.visibilityState !== 'visible') {
++      clearTimeout(pending); pending = undefined
++      return
++    }
++    clearTimeout(pending)
++    pending = setTimeout(run, 50)
++  }
++  const timer = intervalMs === undefined ? undefined : setInterval(schedule, intervalMs)
++  window.addEventListener('focus', schedule)
++  document.addEventListener('visibilitychange', schedule)
++  return () => {
++    clearTimeout(pending); clearInterval(timer)
++    window.removeEventListener('focus', schedule)
++    document.removeEventListener('visibilitychange', schedule)
++  }
++}

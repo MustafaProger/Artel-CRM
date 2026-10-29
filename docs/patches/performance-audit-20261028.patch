@@ -1,0 +1,1440 @@
+diff --git a/scripts/benchmark-api-performance.mjs b/scripts/benchmark-api-performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/benchmark-api-performance.mjs
+@@ -0,0 +1,140 @@
++import assert from 'node:assert/strict';
++import { createHash, scryptSync } from 'node:crypto';
++import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
++import { createServer } from 'node:http';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { pathToFileURL } from 'node:url';
++import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
++
++// The adapter bundle exports createSnapshotMiddleware, loadSnapshot and OperationsStore.
++// No production server is started: schedulers, bridges and real providers are disabled.
++const args = Object.fromEntries(Array.from({ length: Math.ceil((process.argv.length - 2) / 2) }, (_, i) => [process.argv[i * 2 + 2]?.replace(/^--/, ''), process.argv[i * 2 + 3]]));
++for (const key of ['adapter', 'snapshot', 'output']) assert.ok(args[key], `--${key} is required`);
++const iterations = Number(args.iterations ?? 7);
++assert.ok(Number.isSafeInteger(iterations) && iterations >= 2 && iterations <= 100);
++const sizes = (args.sizes ?? '0,6,30').split(',');
++assert.ok(sizes.every(size => /^(?:\d+(?:\.\d+)?|\d+x)$/.test(size)));
++const only = args.only ? new Set(args.only.split(',')) : null;
++const supported = new Set(['session', 'work', 'operator', 'accounts', 'navigation', 'overview', 'settlements', 'shipments', 'trips', 'tripRequests', 'banking', 'china', 'directories', 'pushConfig', 'workStatus', 'login']);
++assert.ok(!only || [...only].every(name => supported.has(name)), '--only contains an unknown measurement ID');
++const { createSnapshotMiddleware, loadSnapshot, OperationsStore } = await import(pathToFileURL(resolve(args.adapter)).href);
++const snapshotDirectory = resolve(args.snapshot);
++const base = await loadSnapshot(snapshotDirectory), source = base.provenance.sourceSha256;
++const digest = value => createHash('sha256').update(value).digest('hex');
++const token = digest('isolated-performance-session');
++const password = 'isolated-benchmark-password-only';
++const salt = '0'.repeat(32);
++const user = { id: 'performance-owner', name: 'Synthetic performance owner', login: 'performance-owner', role: 'director', managerId: null, active: true, version: 1, passwordHash: scryptSync(password, salt, 64).toString('hex'), salt };
++const date = '2026-10-28T00:00:00.000Z';
++const task = { id: 'performance-task', version: 1, assigneeId: user.id, createdAt: date, updatedAt: date, createdBy: user.id, updatedBy: user.id, title: 'Synthetic performance task', description: '', status: 'todo', companyId: null, dueDate: null, reminderAt: null };
++const blocked = async () => { throw new Error('External providers are disabled in the isolated benchmark'); };
++const percentile = (values, p) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.ceil(values.length * p) - 1)];
++const summary = values => ({ minMs: Math.min(...values), medianMs: percentile(values, 0.5), p95Ms: percentile(values, 0.95), maxMs: Math.max(...values) });
++const report = { adapterSha256: digest(await readFile(resolve(args.adapter))), iterations, isolated: true, externalProviders: false, liveStoreModified: false,
++  growthModel: 'Additional unknown JSON string field grows serialization size only; it does not model additional business records or external scheduler contention.', runs: [] };
++
++for (const size of sizes) {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-api-performance-'));
++  let server;
++  try {
++    const store = new OperationsStore(directory);
++    if (args.operations) await copyFile(resolve(args.operations), store.path);
++    await store.mutate(source, data => {
++      // Only this disposable copy receives synthetic authentication/work records.
++      data.accounts = { users: [user], sessions: [{ userId: user.id, hash: digest(token), expiresAt: 4_102_444_800_000 }], attempts: {} };
++      data.work = { tasks: [structuredClone(task)], companyRecords: [], notes: [] };
++      delete data.push;
++      return { result: null, changed: true };
++    });
++    const initialBytes = (await stat(store.path)).size;
++    const targetBytes = size.endsWith('x') ? Number(size.slice(0, -1)) * initialBytes : Number(size) * 1024 * 1024;
++    if (targetBytes > initialBytes) await store.mutate(source, data => {
++      data.syntheticPerformancePadding = 'x'.repeat(Math.floor(targetBytes - initialBytes));
++      return { result: null, changed: true };
++    });
++    const storeBytes = (await stat(store.path)).size;
++    const originalRead = store.read.bind(store);
++    let reads = 0, readMs = 0;
++    store.read = async (...params) => {
++      reads++;
++      const start = performance.now();
++      try { return await originalRead(...params); }
++      finally { readMs += performance.now() - start; }
++    };
++    const middleware = createSnapshotMiddleware(snapshotDirectory, {
++      operationsStore: store, operationsDirectory: directory, requireAuthentication: true,
++      bankEnvironment: { ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false' },
++      cabinetEnvironment: {}, geocoderEnvironment: {}, yandexTilesEnvironment: {},
++      bankRequest: blocked, sberRequest: blocked, fetcher: blocked,
++      tripRequestGeocoder: async () => ({ status: 'unavailable', reason: 'provider_unavailable' }),
++      pushConfig: { publicKey: '', privateKey: '', subject: '', schedule: false },
++      sabyWorkflowMonitoringEnabled: false,
++    });
++    server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
++    await new Promise(done => server.listen(0, '127.0.0.1', done));
++    const url = `http://127.0.0.1:${server.address().port}`;
++    const request = async (path, method = 'GET', body) => {
++      reads = 0; readMs = 0;
++      const start = performance.now();
++      const response = await fetch(url + path, { method, headers: { cookie: `artel_session=${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
++      const bytes = Buffer.from(await response.arrayBuffer());
++      const durationMs = performance.now() - start;
++      const json = JSON.parse(bytes.toString());
++      return { durationMs, status: response.status, bytes: bytes.length, sha256: digest(bytes), reads, readMs, json };
++    };
++    const navigationProbe = !only || only.has('navigation') ? await request('/api/navigation') : null;
++    const navigation = navigationProbe?.status === 200 ? '/api/navigation' : '/api/snapshot?shipments=omit';
++    const endpoints = [
++      ['session', '/api/auth/session'], ['work', '/api/work'], ['operator', '/api/operator'], ['accounts', '/api/auth/users'],
++      ['navigation', navigation], ['overview', '/api/snapshot?shipments=omit'], ['settlements', '/api/settlements'],
++      ['shipments', '/api/shipments?limit=50'], ['trips', '/api/shipment-trips'], ['tripRequests', '/api/trip-requests'],
++      ['banking', '/api/banking'], ['china', '/api/china'], ['directories', '/api/directories'], ['pushConfig', '/api/push/config'],
++    ].filter(([name]) => !only || only.has(name));
++    const measurements = [];
++    const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
++    const cpuStart = process.cpuUsage();
++    const runStart = performance.now();
++    const beforeReads = digest(await readFile(store.path));
++    for (const [name, path] of endpoints) {
++      await request(path); // Exclude route/base-cache initialization from steady-state timing.
++      const samples = [];
++      for (let i = 0; i < iterations; i++) {
++        const { json, ...sample } = await request(path);
++        if (name === 'navigation') sample.semanticSha256 = digest(JSON.stringify({ shipmentCount: json.shipmentCount ?? json.overview?.shipmentCount }));
++        samples.push(sample);
++      }
++      measurements.push({ name, path, method: 'GET', ...summary(samples.map(row => row.durationMs)), samples });
++    }
++    assert.equal(digest(await readFile(store.path)), beforeReads, 'GET benchmark must preserve store bytes');
++    if (!only || only.has('workStatus')) {
++      let version = 1;
++      const samples = [];
++      for (let i = 0; i < iterations; i++) {
++        const { json, ...sample } = await request(`/api/work/tasks/${task.id}`, 'PATCH', { version, status: i % 2 ? 'todo' : 'done' });
++        assert.equal(sample.status, 200, 'synthetic status save must succeed');
++        version = json.entry.version;
++        sample.semanticSha256 = digest(JSON.stringify({ ...json, entry: { ...json.entry, updatedAt: '<save-time>' } }));
++        samples.push(sample);
++      }
++      measurements.push({ name: 'workStatus', method: 'PATCH', path: '/api/work/tasks/:synthetic', ...summary(samples.map(row => row.durationMs)), samples });
++    }
++    if (!only || only.has('login')) {
++      const loginSamples = [];
++      for (let i = 0; i < iterations; i++) {
++        const { json: _json, ...sample } = await request('/api/auth/login', 'POST', { login: user.login, password });
++        assert.equal(sample.status, 200, 'synthetic login must succeed with the original password algorithm');
++        loginSamples.push(sample);
++      }
++      measurements.push({ name: 'login', method: 'POST', path: '/api/auth/login', ...summary(loginSamples.map(row => row.durationMs)), samples: loginSamples });
++    }
++    const cpu = process.cpuUsage(cpuStart);
++    loop.disable();
++    report.runs.push({ requestedSize: size, initialBytes, storeBytes, durationMs: performance.now() - runStart, cpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 }, eventLoopDelayMs: { mean: loop.mean / 1e6, p95: loop.percentile(95) / 1e6, max: loop.max / 1e6 }, peakRssBytes: process.resourceUsage().maxRSS * 1024, getStoreBytesUnchanged: true, measurements });
++    await writeFile(resolve(args.output), JSON.stringify(report, null, 2), { mode: 0o600 });
++    console.log(JSON.stringify({ requestedSize: size, storeBytes, endpoints: measurements.length, statuses: [...new Set(measurements.flatMap(row => row.samples.map(sample => sample.status)))] }));
++  } finally {
++    if (server) { server.closeAllConnections(); await new Promise(done => server.close(() => done())); }
++    await rm(directory, { recursive: true, force: true });
++  }
++}
+diff --git a/scripts/benchmark_operations_store.mjs b/scripts/benchmark_operations_store.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/benchmark_operations_store.mjs
+@@ -0,0 +1,96 @@
++#!/usr/bin/env node
++// Compare two compiled OperationsStore modules. Supplied source data is read only;
++// all transaction samples use separate private temporary copies without schedulers.
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join, resolve } from 'node:path';
++import { pathToFileURL } from 'node:url';
++import { performance } from 'node:perf_hooks';
++import { deserialize, serialize } from 'node:v8';
++
++const options = { samples: 9, factors: '1,5,10' };
++const allowed = new Set(['baseline', 'candidate', 'store', 'output', 'samples', 'factors']);
++for (let index = 2; index < process.argv.length; index += 2) {
++  const key = process.argv[index].replace(/^--/, '');
++  if (!allowed.has(key) || !process.argv[index + 1]) throw new Error('Use --baseline MODULE --candidate MODULE [--store FILE] [--output FILE] [--samples 5..20] [--factors 1,5,10]');
++  options[key] = process.argv[index + 1];
++}
++if (!options.baseline || !options.candidate) throw new Error('Both compiled module paths are required');
++options.samples = Number(options.samples);
++if (!Number.isInteger(options.samples) || options.samples < 5 || options.samples > 20) throw new Error('Invalid sample count');
++const factors = options.store ? [1] : String(options.factors).split(',').map(Number);
++if (factors.some(factor => !Number.isInteger(factor) || factor < 1 || factor > 10)) throw new Error('Invalid factors');
++const [before, after] = await Promise.all([options.baseline, options.candidate].map(file => import(pathToFileURL(resolve(file)).href)));
++const inputRaw = options.store ? await readFile(options.store, 'utf8') : undefined;
++const inputHash = inputRaw ? createHash('sha256').update(inputRaw).digest('hex') : undefined;
++const timestamp = '2026-01-01T00:00:00.000Z';
++function synthetic(factor) {
++  const shipments = {};
++  for (let index = 0; index < factor * 4000; index++) shipments[`shipment-${index}`] = {
++    version: 1, createdAt: timestamp, updatedAt: timestamp,
++    fields: { customer: `Synthetic customer ${index % 40}`, supplier: `Synthetic supplier ${index % 10}`, litres: String(1000 + index), note: 'Synthetic measurement Кириллица العربية 🛢️ '.repeat(10) },
++  };
++  return { schemaVersion: 1, sourceSha256: 'performance-synthetic', revision: 1, companies: [], shipments };
++}
++const rounded = value => Math.round(value * 100) / 100;
++const stats = values => {
++  const sorted = [...values].sort((a, b) => a - b);
++  return { min: rounded(sorted[0]), median: rounded(sorted[Math.floor(sorted.length / 2)]), p95: rounded(sorted[Math.ceil(sorted.length * .95) - 1]), max: rounded(sorted.at(-1)) };
++};
++async function paired(left, right) {
++  for (let warm = 0; warm < 2; warm++) { await left(); await right(); }
++  const values = [[], []];
++  for (let sample = 0; sample < options.samples; sample++) {
++    for (const side of sample % 2 ? [1, 0] : [0, 1]) {
++      const start = performance.now();
++      await (side ? right : left)();
++      values[side].push(performance.now() - start);
++    }
++  }
++  const baseline = stats(values[0]), candidate = stats(values[1]);
++  return { baseline, candidate, medianRatio: rounded(baseline.median / candidate.median) };
++}
++const report = { version: 1, node: process.version, samples: options.samples, source: options.store ? 'private-read-only-copy' : 'synthetic', units: 'milliseconds', results: [] };
++for (const factor of factors) {
++  const raw = inputRaw ?? before.encodeOperations(synthetic(factor));
++  const plain = JSON.parse(raw).data, source = plain.sourceSha256;
++  const data = before.decodeOperations(raw, source);
++  assert.deepEqual(after.decodeOperations(raw, source), data);
++  const canonical = before.encodeOperations(data);
++  assert.equal(after.encodeOperations(data), canonical);
++  const folder = await mkdtemp(join(tmpdir(), 'artel-store-benchmark-'));
++  try {
++    const stores = [];
++    for (const [index, module] of [before, after].entries()) {
++      const location = join(folder, String(index));
++      const store = new module.OperationsStore(location);
++      // A no-change mutation initializes the private folder without writing source data.
++      await store.mutate(source, () => ({ changed: false, result: null }));
++      await writeFile(store.path, canonical, { mode: 0o600 });
++      stores.push(store);
++    }
++    const encode = await paired(() => before.encodeOperations(data), () => after.encodeOperations(data));
++    const read = await paired(() => stores[0].read(source), () => stores[1].read(source));
++    const mutate = await paired(
++      () => stores[0].mutate(source, () => ({ changed: true, result: null })),
++      () => stores[1].mutate(source, () => ({ changed: true, result: null })),
++    );
++    assert.equal(await readFile(stores[0].path, 'utf8'), await readFile(stores[1].path, 'utf8'));
++    const parsed = JSON.parse(raw), serialized = serialize(parsed);
++    assert.deepEqual(structuredClone(parsed), parsed);
++    assert.deepEqual(deserialize(serialized), parsed);
++    const structuredCloneComparison = await paired(() => JSON.parse(raw), () => structuredClone(parsed));
++    const v8DeserializeComparison = await paired(() => JSON.parse(raw), () => deserialize(serialized));
++    const v8CacheRebuildComparison = await paired(() => JSON.parse(raw), () => serialize(JSON.parse(raw)));
++    const result = { factor, bytes: Buffer.byteLength(raw), shipments: Object.keys(data.shipments).length, exactEncoding: true, exactTransactions: true, encode, read, mutate, structuredCloneComparison, v8DeserializeComparison, v8CacheRebuildComparison, extraV8CacheBytes: serialized.byteLength };
++    report.results.push(result);
++    console.log(JSON.stringify(result));
++  } finally { await rm(folder, { recursive: true, force: true }); }
++}
++if (options.store) {
++  assert.equal(createHash('sha256').update(await readFile(options.store)).digest('hex'), inputHash, 'Source file changed during the benchmark');
++  report.sourceUnchanged = true;
++}
++if (options.output) await writeFile(options.output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+diff --git a/scripts/verify_crm_navigation_split.mjs b/scripts/verify_crm_navigation_split.mjs
+--- a/scripts/verify_crm_navigation_split.mjs
++++ b/scripts/verify_crm_navigation_split.mjs
+@@ -17,12 +17,27 @@
+ const snapshotDirectory = resolve(temp, 'snapshot'), operationsDirectory = resolve(temp, 'operations');
+ await writeTripsQaSnapshot(snapshotDirectory);
+ const denied = async () => { throw new Error('Provider call forbidden in navigation QA'); };
++// Exercise the real CRM invoice authorization/proxy route against an injected
++// worker response. No 1C provider, PDF creation or external request is involved.
++const invoiceWorkspace = {
++  integration: { status: 'read_only', message: 'Синтетические справочники QA', checkedAt: '2026-10-28T10:00:00Z' },
++  organizations: [{ id: 'qa-seller', name: 'Учебный продавец', connectionId: 'qa-connection' }],
++  buyers: [{ id: 'qa-buyer', name: 'Учебный покупатель', inn: '0000000000', connectionId: 'qa-connection' }],
++  defaultUnitPrice: '79', settings: { defaultUnitPrice: '79', revision: 1, updatedAt: null, updatedBy: null },
++  product: { name: 'Предоплата за дизельное топливо', unit: 'л', vatRate: '22', vatMode: 'included' },
++  canCreate: false, canPrepare: false, canEditDefaultPrice: false, history: { status: 'ready', items: [] },
++};
+ const middleware = createSnapshotMiddleware(snapshotDirectory, {
+   operationsDirectory, requireAuthentication: true, checkoApiKey: '', setupToken: '',
+   tripRequestGeocoder: async () => ({ status: 'unavailable', message: 'Synthetic QA' }),
+   bankEnvironment: { ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false' },
+   bankRequest: denied, sberRequest: denied, fetcher: denied,
+   cabinetEnvironment: {}, pushConfig: { publicKey: '', privateKey: '', subject: '', schedule: false }, pushSender: denied,
++  invoiceBridge: { request: async (path, method, body, identity) => {
++    assert.equal(path, '/api/invoices'); assert.equal(method, 'GET');
++    assert.equal(body.length, 0); assert.ok(identity?.crmUserId);
++    return { status: 200, contentType: 'application/json', body: Buffer.from(JSON.stringify(invoiceWorkspace)) };
++  } },
+ });
+ const publicRoot = resolve(root, 'app-dist');
+ const types = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
+@@ -39,14 +54,38 @@
+ }));
+ await new Promise(done => server.listen(0, '127.0.0.1', done));
+ const base = `http://127.0.0.1:${server.address().port}`;
+-const report = { checks: [], initialScripts: [], initialScriptBytes: 0, errors: [], requestFailures: [], scriptResponses: [], screenshots: [] };
++const report = { checks: [], initialScripts: [], initialScriptBytes: 0, errors: [], apiErrors: [], apiResponses: [], requestFailures: [], scriptResponses: [], screenshots: [] };
+ report.webPushExcluded = true;
++report.invoiceWorkerSynthetic = true;
+ const check = name => { report.checks.push(name); console.log('PASS', name); };
+ const pages = [
+   ['overview', '.overview-page'], ['work', '.work-page'], ['shipments', '.shipments-workspace'],
+   ['trips', '.trips-page'], ['payments', '.banking-page'], ['cabinet-balances', '.cabinet-page'],
+   ['china', '.china-page'], ['accounts', '.account-management'], ['directories', '.directories-page'],
++  ['invoices', '.invoice-workspace'], ['operator', '.operator-workspace'],
+ ];
++report.routes = pages.map(([id]) => id);
++const primaryApi = {
++  overview: '/api/settlements', work: '/api/work', shipments: '/api/shipments', trips: '/api/trip-requests',
++  payments: '/api/banking', 'cabinet-balances': '/api/cabinets', china: '/api/china', accounts: '/api/auth/users',
++  directories: '/api/snapshot', invoices: '/api/invoices', operator: '/api/operator',
++};
++const waitForData = (page, id) => page.waitForResponse(response => new URL(response.url()).pathname === primaryApi[id] && response.request().method() === 'GET' && response.status() === 200);
++async function loaded(page, id, selector) {
++  await expect(page.locator(selector)).toBeVisible();
++  if (id === 'invoices') {
++    await expect(page.getByRole('combobox', { name: 'Продавец', exact: true })).toBeEnabled();
++    await expect(page.getByRole('combobox', { name: 'Продавец', exact: true }).locator('option')).toContainText(['Выберите продавца', 'Учебный продавец']);
++    await expect(page.getByRole('heading', { name: 'История счетов', exact: true })).toBeVisible();
++    await expect(page.getByRole('button', { name: 'Обновить счета', exact: true })).toBeEnabled();
++  }
++  if (id === 'operator') {
++    await expect(page.getByRole('heading', { name: /^Операции по водителям/ })).toBeVisible();
++    await expect(page.getByLabel('Поиск операций', { exact: true })).toBeEnabled();
++    await expect(page.locator('.operator-workspace').getByRole('button', { name: 'Обновить', exact: true })).toBeEnabled();
++    await expect(page.getByText('Операций пока нет', { exact: true })).toBeVisible();
++  }
++}
+ let browser, initialized = false;
+ try {
+   for (const [engine, launch] of [['chromium', () => chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' })], ['webkit', () => webkit.launch({ headless: true })]].filter(([engine]) => !process.env.ARTEL_SPLIT_ONLY_WEBKIT || engine === 'webkit')) {
+@@ -54,6 +93,13 @@
+     // Navigation QA has no push provider. Native WebKit getSubscription freezes
+     // this headless runtime even with the unchanged baseline; exclude workers.
+     const context = await browser.newContext({ ...(initialized ? { storageState: resolve(temp, 'session.json') } : {}), viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
++    context.on('response', response => {
++      const path = new URL(response.url()).pathname;
++      if (!path.startsWith('/api/')) return;
++      const row = { engine, path, status: response.status() };
++      report.apiResponses.push(row);
++      if (row.status >= 400) report.apiErrors.push(row);
++    });
+     const page = await context.newPage();
+     await page.bringToFront();
+     page.on('response', response => { if (response.request().resourceType() === 'script' || response.request().resourceType() === 'stylesheet') report.scriptResponses.push({ engine, url: response.url(), status: response.status() }); });
+@@ -84,8 +130,10 @@
+     for (const [id, selector] of pages) {
+       const cold = await context.newPage();
+       cold.on('pageerror', error => report.errors.push({ engine, route: id, message: error.message }));
++      const ready = waitForData(cold, id);
+       await cold.goto(`${base}/#${id}`);
+-      await expect(cold.locator(selector)).toBeVisible();
++      await ready;
++      await loaded(cold, id, selector);
+       if (id === 'directories') {
+         await cold.getByRole('button', { name: 'Добавить', exact: true }).click();
+         const dialog = cold.locator('.directory-editor');
+@@ -116,22 +164,24 @@
+       }
+       await cold.close();
+     }
+-    check(`${engine}: all nine routes open directly; shared directory and China form styles survive cold load`);
++    check(`${engine}: all eleven routes open directly with successful data APIs; shared directory and China form styles survive cold load`);
+     for (const width of [1440, 390, 320]) {
+       await page.setViewportSize({ width, height: 1000 });
+       for (const [id, selector] of pages) {
+-        const titles = { overview: 'Обзор', work: 'Работа', shipments: 'Отгрузки', trips: 'Рейсы', payments: 'Платежи', 'cabinet-balances': 'Балансы кабинетов', china: 'Китай', accounts: 'Сотрудники и доступ', directories: 'Справочники' };
++        const titles = { overview: 'Обзор', work: 'Работа', shipments: 'Отгрузки', trips: 'Рейсы', payments: 'Платежи', 'cabinet-balances': 'Балансы кабинетов', china: 'Китай', accounts: 'Сотрудники и доступ', directories: 'Справочники', invoices: 'Счета', operator: 'Операторская' };
+         const target = page.locator('.sidebar').getByRole('button', { name: titles[id], exact: true });
+         if (!await target.isVisible() || await page.locator('.sidebar').evaluate(el => el.inert)) await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
+         await page.bringToFront();
++        const ready = new URL(page.url()).hash === `#${id}` ? Promise.resolve() : waitForData(page, id);
+         await target.click();
+-        await expect(page.locator(selector)).toBeVisible();
++        await ready;
++        await loaded(page, id, selector);
+         await expect(page.getByText('Не удалось открыть раздел', { exact: true })).toHaveCount(0);
+         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${engine}/${id}/${width} horizontal overflow`);
+       }
+       const screenshot = resolve(output, `${engine}-${width}.png`);
+       await page.screenshot({ path: screenshot, fullPage: true }); report.screenshots.push(screenshot);
+-      check(`${engine}: all nine pages load and fit at ${width}px`);
++      check(`${engine}: all eleven pages load and fit at ${width}px`);
+     }
+     if (engine === 'chromium') {
+       const broken = await context.newPage();
+@@ -147,7 +197,8 @@
+     await browser.close(); browser = null;
+   }
+   assert.deepEqual(report.errors, []);
+-  check('Normal navigation has no browser JavaScript errors');
++  assert.deepEqual(report.apiErrors, []);
++  check('Normal navigation has no browser JavaScript or API errors across eleven routes');
+   report.passed = true;
+ } finally {
+   await browser?.close();
+diff --git a/scripts/verify_navigation_performance.mjs b/scripts/verify_navigation_performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/verify_navigation_performance.mjs
+@@ -0,0 +1,166 @@
++// Synthetic, isolated browser regression. No production API or working store.
++import assert from 'node:assert/strict';
++import { createServer } from 'node:http';
++import { readFile, mkdir, writeFile } from 'node:fs/promises';
++import { resolve, extname } from 'node:path';
++import { chromium, webkit, expect } from '@playwright/test';
++
++const root = resolve(import.meta.dirname, '..');
++const engine = process.env.QA_WEBKIT === '1' ? 'webkit' : 'chromium';
++const output = resolve(process.env.ARTEL_PERFORMANCE_UI_OUTPUT || resolve(root, 'qa/navigation-performance'), engine);
++const report = { engine, environment: 'local built UI, mocked APIs, no business data', checks: [], measurements: [], errors: [] };
++const check = name => { report.checks.push(name); console.log('PASS', name); };
++const delay = ms => new Promise(done => setTimeout(done, ms));
++const user = { id: 'qa-owner', name: 'QA', login: 'qa', role: 'director', managerId: null, active: true, version: 1 };
++const task = { id: 'qa-task', version: 1, title: 'Проверка отклика', description: '', status: 'todo', companyId: null, dueDate: null, reminderAt: null, assigneeId: user.id, createdBy: user.id, updatedBy: user.id, createdAt: '2026-10-28T10:00:00Z', updatedAt: '2026-10-28T10:00:00Z' };
++const snapshot = { overview: { shipmentCount: 39 }, shipments: [], payments: [], monthly: [], companies: [], directories: { managers: [], drivers: [], vehicles: [], products: [], addresses: [], customerManagers: [], paymentForms: [], oilDepots: [] } };
++let browser;
++const servers = [];
++async function serve(directory) {
++  const server = createServer(async (request, response) => {
++    const path = new URL(request.url, 'http://localhost').pathname;
++    const file = resolve(directory, `.${path === '/' ? '/index.html' : path}`);
++    if (!file.startsWith(`${directory}/`)) { response.writeHead(404).end(); return; }
++    try {
++      const body = await readFile(file);
++      response.writeHead(200, { 'Content-Type': ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.png': 'image/png', '.json': 'application/json' })[extname(file)] || 'application/octet-stream' }).end(body);
++    } catch { response.writeHead(404).end(); }
++  });
++  await new Promise(done => server.listen(0, '127.0.0.1', done)); servers.push(server);
++  return `http://127.0.0.1:${server.address().port}`;
++}
++async function scenario(base, baseline = false) {
++  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
++  await context.addInitScript(() => {
++    window.__qaTimings = {};
++    document.addEventListener('click', event => {
++      if (event.target.closest('.auth-submit')) window.__qaTimings.loginStarted = performance.now();
++      if (event.target.matches('.work-task-check input')) window.__qaTimings.taskStarted = performance.now();
++    }, true);
++    new MutationObserver(() => {
++      const timings = window.__qaTimings;
++      if (timings.loginStarted && !timings.workReady && document.querySelector('.work-task-row')) timings.workReady = performance.now();
++      if (timings.taskStarted && !timings.taskFeedback && document.querySelector('.work-task-row.is-saving')) timings.taskFeedback = performance.now();
++    }).observe(document, { childList: true, subtree: true, attributes: true });
++  });
++  const page = await context.newPage();
++  page.on('pageerror', error => report.errors.push(error.message));
++  let signedIn = false, navigationDelay = 1200, navigationStatus = 200, navigationFinished = 0, snapshotStatus = 200, snapshotDelay = 1200, patchStatus = 200;
++  const calls = [];
++  let loginUser = user;
++  const currentTask = { ...task };
++  await page.route('**/api/**', async route => {
++    const request = route.request(), path = new URL(request.url()).pathname;
++    const call = { path, method: request.method(), at: performance.now(), finished: false };
++    calls.push(call);
++    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }).catch(() => {});
++    if (path === '/api/auth/session') { if (signedIn) await delay(400); return json({ user: signedIn ? loginUser : null, needsSetup: false, setupTokenRequired: false }); }
++    if (path === '/api/auth/login' || path === '/api/auth/setup') { signedIn = true; return json({ status: 200, user: loginUser }); }
++    if (path === '/api/auth/logout') { signedIn = false; return json({ status: 200 }); }
++    if (path === '/api/navigation') { const status = navigationStatus; await delay(navigationDelay); navigationFinished++; call.finished = true; return json(status === 200 ? { shipmentCount: 39 } : { error: 'QA navigation unavailable' }, status); }
++    if (path === '/api/snapshot') { await delay(snapshotDelay); return json(snapshotStatus === 200 ? snapshot : { error: 'QA snapshot unavailable' }, snapshotStatus); }
++    if (path === '/api/work') { await delay(50); return json({ work: { tasks: [currentTask], companyRecords: [], notes: [] }, users: [loginUser], historicalUsers: [], companies: [], currentUser: loginUser, revision: 1 }); }
++    if (path === '/api/work/tasks/qa-task') { await delay(900); if (patchStatus !== 200) return json({ error: 'QA rejected update' }, patchStatus); Object.assign(currentTask, request.postDataJSON(), { version: currentTask.version + 1 }); return json({ entry: currentTask }); }
++    if (path === '/api/settlements') return json({ organizations: [], unassignedShipmentCount: 0 });
++    if (path === '/api/china') return json({ china: { days: [], payments: [] }, suppliers: [] });
++    if (path === '/api/cabinets') return json({ connections: [], credentialStorageReady: false });
++    if (path === '/api/operator') return json({ recipients: [], refuellings: [], groups: [], services: [], plans: [], cases: [] });
++    if (path === '/api/auth/users') return json({ users: [loginUser], currentUserId: loginUser.id, staff: { managers: [], drivers: [] } });
++    if (path === '/api/push/config') return json({ enabled: false, publicKey: '' });
++    return json({ error: 'QA service unavailable' }, 503);
++  });
++  await page.goto(`${base}/#work`);
++  await page.getByLabel('Логин', { exact: true }).fill('qa');
++  await page.getByLabel('Пароль', { exact: true }).fill('synthetic-password-only');
++  const sessionReads = calls.filter(row => row.path === '/api/auth/session').length;
++  await page.getByRole('button', { name: 'Войти', exact: true }).click();
++  await expect(page.getByRole('button', { name: 'Новая задача', exact: true })).toBeEnabled();
++  const readyMs = await page.evaluate(() => Math.round(window.__qaTimings.workReady - window.__qaTimings.loginStarted));
++  assert.ok(Number.isFinite(readyMs));
++  const loginReads = calls.filter(row => row.path === '/api/auth/session').length - sessionReads;
++  const snapshotReads = calls.filter(row => row.path === '/api/snapshot').length;
++  report.measurements.push({ variant: baseline ? 'baseline' : 'candidate', scenario: 'login to populated work', readyMs, extraSessionReads: loginReads, snapshotReads, injectedSessionDelayMs: 400, injectedSnapshotDelayMs: 1200, injectedNavigationDelayMs: 1200, injectedWorkDelayMs: 50 });
++  if (baseline) { await context.close(); return; }
++  assert.equal(loginReads, 0);
++  assert.equal(snapshotReads, 0);
++  assert.equal(navigationFinished, 0, 'Work becomes usable while sidebar request is still pending');
++  check('Login uses committed public user; Work loads without snapshot or sidebar dependency');
++  await expect(page.getByRole('button', { name: 'Отгрузки', exact: true }).locator('small')).toHaveText('39');
++  check('Delayed sidebar count arrives without replacing the active Work page');
++
++  const checkbox = page.getByRole('checkbox', { name: 'Выполнена: Проверка отклика' });
++  const workReadsBefore = calls.filter(row => row.path === '/api/work').length;
++  await checkbox.check(); await expect(checkbox).toBeChecked(); await expect(checkbox).toBeDisabled();
++  const feedbackMs = await page.evaluate(() => Math.round(window.__qaTimings.taskFeedback - window.__qaTimings.taskStarted));
++  assert.ok(Number.isFinite(feedbackMs));
++  report.measurements.push({ scenario: 'optimistic task feedback', readyMs: feedbackMs, injectedPatchDelayMs: 900 });
++  await expect(checkbox).toBeEnabled();
++  assert.equal(calls.filter(row => row.path === '/api/work').length, workReadsBefore);
++  patchStatus = 409; await checkbox.uncheck(); await expect(checkbox).not.toBeChecked(); await expect(checkbox).toBeChecked();
++  await expect(page.getByText('QA rejected update')).toBeVisible();
++  check('Task feedback is immediate; delayed save commits once, rejection rolls back, no extra Work GET');
++
++  for (const [hash, endpoint, selector] of [['overview', '/api/settlements', '.overview-page'], ['cabinet-balances', '/api/cabinets', '.cabinet-page'], ['china', '/api/china', '.china-page'], ['operator', '/api/operator', '.operator-workspace'], ['invoices', '/api/invoices', '.page-content']]) {
++    const offset = calls.length;
++    await page.evaluate(value => { location.hash = value; }, hash);
++    await expect.poll(() => calls.slice(offset).some(row => row.path === endpoint)).toBe(true);
++    await expect(page.locator(hash === 'cabinet-balances' ? '.page-content' : selector)).toBeVisible();
++    assert.equal(calls.slice(offset).find(row => row.path === '/api/navigation')?.finished, false, `${hash} is mounted before its sidebar response`);
++    assert.equal(calls.slice(offset).some(row => row.path === '/api/snapshot'), false);
++    check(`${hash}: own API starts without snapshot; navigation remains nonblocking`);
++  }
++  navigationDelay = 0; navigationStatus = 503;
++  await page.evaluate(() => { location.hash = 'work'; });
++  await expect(page.getByRole('button', { name: 'Новая задача', exact: true })).toBeEnabled();
++  await expect(page.getByRole('button', { name: 'Отгрузки', exact: true }).locator('small')).toHaveCount(0);
++  check('Sidebar request failure hides stale count without breaking Work');
++
++  snapshotDelay = 0; snapshotStatus = 503;
++  await page.evaluate(() => { location.hash = 'directories'; });
++  await expect(page.getByRole('heading', { name: 'Данные пока недоступны' })).toBeVisible();
++  snapshotStatus = 200;
++  await page.getByRole('button', { name: 'Повторить загрузку' }).click();
++  await expect(page.getByRole('button', { name: 'Клиенты', exact: true })).toBeVisible();
++  await expect(page.getByRole('button', { name: 'Отгрузки', exact: true }).locator('small')).toHaveText('39');
++  check('Snapshot-dependent directories retain loading, failure, retry and sidebar counter');
++  snapshotDelay = 1200;
++  await page.evaluate(() => { location.hash = 'accounts'; });
++  await expect(page.getByText('Загружаем CRM…', { exact: true })).toBeVisible();
++  await page.evaluate(() => { location.hash = 'work'; });
++  await expect(page.getByRole('button', { name: 'Новая задача', exact: true })).toBeEnabled();
++  await delay(1300);
++  await expect(page.getByRole('button', { name: 'Новая задача', exact: true })).toBeEnabled();
++  check('Leaving a delayed snapshot cancels it; stale completion cannot replace current page');
++
++  navigationStatus = 401;
++  await page.evaluate(() => { location.hash = 'china'; });
++  await expect(page.getByRole('button', { name: 'Войти', exact: true })).toBeVisible();
++  check('Expired navigation session immediately returns to login');
++  navigationStatus = 200;
++  loginUser = { ...user, role: 'employee', id: 'qa-limited', sections: ['work'] };
++  await page.evaluate(() => { location.hash = 'work'; });
++  await page.getByLabel('Логин', { exact: true }).fill('qa-limited');
++  await page.getByLabel('Пароль', { exact: true }).fill('synthetic-password-only');
++  await page.getByRole('button', { name: 'Войти', exact: true }).click();
++  await expect(page.getByRole('button', { name: 'Новая задача', exact: true })).toBeEnabled();
++  const forbiddenOffset = calls.length;
++  await page.evaluate(() => { location.hash = 'directories'; });
++  await expect(page.getByText('Раздел недоступен. Обратитесь к администратору.')).toBeVisible();
++  assert.equal(calls.slice(forbiddenOffset).some(row => ['/api/snapshot', '/api/navigation'].includes(row.path)), false);
++  check('Restricted employee cannot mount or request forbidden snapshot page');
++  await page.getByRole('button', { name: 'Выйти', exact: true }).click();
++  await expect(page.getByRole('button', { name: 'Войти', exact: true })).toBeVisible();
++  check('Logout remains functional after direct login response');
++  await context.close();
++}
++try {
++  await mkdir(output, { recursive: true });
++  browser = engine === 'webkit' ? await webkit.launch({ headless: true }) : await chromium.launch({ headless: true });
++  if (process.env.ARTEL_PERFORMANCE_BASELINE_DIST) await scenario(await serve(resolve(process.env.ARTEL_PERFORMANCE_BASELINE_DIST)), true);
++  await scenario(await serve(resolve(root, 'app-dist')));
++  assert.deepEqual(report.errors, []);
++} finally {
++  await browser?.close();
++  for (const server of servers) await new Promise(done => server.close(done));
++  await writeFile(resolve(output, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
++}
+diff --git a/server/banking/routes.ts b/server/banking/routes.ts
+--- a/server/banking/routes.ts
++++ b/server/banking/routes.ts
+@@ -2,14 +2,19 @@
+ import { requireManage, requireUser } from '../auth';
+ import { requireSection } from '../permissions';
+ import { ApiError } from '../api-error';
++import type { OperationsData } from '../operations-store';
+ import { csv } from './domain';
+ import { BankingService } from './service';
+ 
+-export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
+-  requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
++export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>, requestData?: OperationsData) {
+   const method = request.method, path = url.pathname;
++  const listRequest = path === '/api/banking' && method === 'GET';
++  // Only the list GET has no body/provider await between authorization and output.
++  // Other routes must not inherit the earlier middleware view.
++  const data = listRequest && requestData ? requestData : await service.store.read(service.source);
++  requireManage(requireSection(requireUser(data, request), 'payments'));
+   const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
+-  if (path === '/api/banking' && method === 'GET') return send(await service.list(url.searchParams));
++  if (listRequest) return send(service.listFromData(data, url.searchParams));
+   if (path === '/api/banking/export' && method === 'GET') {
+     const output = csv(await service.rows(url.searchParams));
+     response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="artel-bank-operations.csv"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(output); return;
+diff --git a/server/banking/service.ts b/server/banking/service.ts
+--- a/server/banking/service.ts
++++ b/server/banking/service.ts
+@@ -27,7 +27,12 @@
+     }
+   }
+   async list(query: URLSearchParams): Promise<BankListResult> {
+-    const data = (await this.store.read(this.source)).banking ?? emptyBanking();
++    return this.listFromData(await this.store.read(this.source), query);
++  }
++  // Synchronous projection for a caller that has just authorized this same view.
++  // Call list() instead when a request body/provider await may have intervened.
++  listFromData(operations: OperationsData, query: URLSearchParams): BankListResult {
++    const data = operations.banking ?? emptyBanking();
+     const activeRows = data.operations.filter(row => row.provider === 'tbank');
+     const rows = filterOperations(activeRows, query);
+     const allCardsRows = filterOperations(activeRows, query, true);
+diff --git a/server/local-api.ts b/server/local-api.ts
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -29,7 +29,7 @@
+ import { readTripExecution, recordTripExecution } from './trip-execution';
+ import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
+ import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
+-import { scopeSnapshot, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
++import { scopeSnapshot, ownsShipment, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
+ import { apiSection, requireSection, requireTripSection } from './permissions';
+ import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
+ import { emptyChina } from '../web/src/china-model';
+@@ -39,7 +39,7 @@
+ import { deleteDirectoryEntry } from './directory-deletion';
+ import { lookupCheckoCompany, validInn } from './checko';
+ import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
+-import { currentWorkSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
++import { currentShipmentAccess, currentWorkSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
+ import { buildSettlements } from './settlements';
+ import { buildOrganizationSettlements, organizationSettlementsForActor } from './organization-settlements';
+ import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
+@@ -433,7 +433,10 @@
+         });
+       }
+       // Driver sessions never reach generic routes (including bank/auth subrouters).
+-      const boundaryUser = authenticate(await operations.read(base.provenance.sourceSha256), request);
++      // One fresh view covers the synchronous routing/authorization chain. Reuse it
++      // only before yielding; body/provider awaits and mutation callbacks read afresh.
++      const requestData = await operations.read(base.provenance.sourceSha256);
++      const boundaryUser = authenticate(requestData, request);
+       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
+       if (pathname === '/api/cabinets' || pathname.startsWith('/api/cabinets/')) return cabinetRoutes(operations, base.provenance.sourceSha256, options.cabinetEnvironment ?? process.env, request, response, () => jsonBody(request, false, 16384));
+       const banking = new BankingService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.bankRequest);
+@@ -449,7 +452,7 @@
+         return write(response, 200, '{"received":true}');
+       }
+       if (pathname === '/api/banking/sber' || pathname.startsWith('/api/banking/sber/')) return sberRoutes(new SberService(operations, base.provenance.sourceSha256, options.bankEnvironment, options.sberRequest, sberConnections[pathname.startsWith('/api/banking/sber/sber-artel/') ? 'sber-artel' : 'sber-nk-artel']), request, response, url, () => jsonBody(request));
+-      if (pathname === '/api/banking' || pathname.startsWith('/api/banking/')) return bankingRoutes(banking, request, response, url, () => jsonBody(request));
++      if (pathname === '/api/banking' || pathname.startsWith('/api/banking/')) return bankingRoutes(banking, request, response, url, () => jsonBody(request), pathname === '/api/banking' && request.method === 'GET' ? requestData : undefined);
+       const config = options.pushConfig ?? pushConfig();
+       if (cronRequest) {
+         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+@@ -480,15 +483,15 @@
+         }
+         const userId = pathname.match(/^\/api\/auth\/users\/([^/]+)$/)?.[1];
+         if (request.method === 'GET' && pathname === '/api/auth/session') {
+-          const data = await operations.read(base.provenance.sourceSha256);
++          const data = requestData;
+           return write(response, 200, JSON.stringify({ user: authenticate(data, request), needsSetup: !logistics && !data.accounts?.users.length, setupTokenRequired: !logistics && secure }));
+         }
+         if (request.method === 'GET' && pathname === '/api/auth/users') {
+-          const data = await operations.read(base.provenance.sourceSha256);
++          const data = requestData;
+           const actor = requireUser(data, request);
+           requireAccounts(actor);
+           const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(user => ({ ...publicUser(user), passwordAvailable: !!user.passwordCiphertext }));
+-          const directories = currentSnapshot(base, data, false).directories!;
++          const directories = currentShipmentAccess(base, data).directories!;
+           const staff = { managers: directories.managers.map(({ id, name }) => ({ id, name })), drivers: directories.drivers.filter(driver => !directories.deletedEntries?.drivers?.includes(driver.id)).map(({ id, name }) => ({ id, name })) };
+           return write(response, 200, JSON.stringify({users, currentUserId: actor.id, staff}));
+         }
+@@ -537,7 +540,7 @@
+         if (!['GET', 'POST', 'PATCH'].includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
+         const driverId = decodeURIComponent(driverAccessMatch[1]);
+         if (request.method === 'GET') {
+-          const data = await operations.read(base.provenance.sourceSha256);
++          const data = requestData;
+           requireAccounts(requireUser(data, request));
+           return write(response, 200, JSON.stringify({ access: readDriverAccess(data, currentSnapshot(base, data, false), driverId) }));
+         }
+@@ -551,7 +554,7 @@
+       }
+       if (pathname.startsWith('/api/driver/')) {
+         const match = pathname.match(/^\/api\/driver\/trips(?:\/([^/]+))?(?:\/(arrive|depart|deliver|complete))?$/);
+-        const data = await operations.read(base.provenance.sourceSha256);
++        const data = requestData;
+         const user = requireUser(data, request);
+         requireDriverRoute(user, pathname, request.method ?? '');
+         if (!match) throw new ApiError(404, 'Маршрут не найден.');
+@@ -593,12 +596,20 @@
+         if (section && !(user.role === 'driver' && pathname.startsWith('/api/push/')) && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
+         return user;
+       };
+-      const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
++      const actor = authEnabled ? authorized(requestData) : null;
++      if (pathname === '/api/navigation') {
++        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
++        const snapshot = currentShipmentAccess(base, requestData);
++        const shipmentCount = !actor || isAdministrator(actor) ? snapshot.shipments.length
++          : hasSection(actor, 'shipments') || hasSection(actor, 'trips')
++            ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).length : 0;
++        return write(response, 200, JSON.stringify({ shipmentCount }));
++      }
+       const executionMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/execution(?:\/(deliver|complete))?$/);
+       if (executionMatch) {
+         const tripId = decodeURIComponent(executionMatch[1]);
+         if (request.method === 'GET' && !executionMatch[2]) {
+-          const data = await operations.read(base.provenance.sourceSha256), snapshot = currentSnapshot(base, data, false);
++          const data = requestData, snapshot = currentSnapshot(base, data, false);
+           requireWholeTrip(requireTripSection(authorized(data), true), snapshot, tripId);
+           return write(response, 200, JSON.stringify({ execution: readTripExecution(snapshot, data, tripId) }));
+         }
+@@ -643,12 +654,12 @@
+         const match = pathname.match(/^\/api\/operator(?:\/(recipients|refuellings|plans|cases|reconciliations)(?:\/([a-f0-9-]{36})(?:\/(payment|archive|delete|settle|task))?)?)?$/);
+         if (!match) throw new ApiError(404, 'Маршрут не найден.');
+         if (request.method === 'GET' && !match[1]) {
+-          const stored = await operations.read(base.provenance.sourceSha256);
+-          return write(response, 200, JSON.stringify(readOperator(stored, authorized(stored), currentSnapshot(base, stored, false).directories)));
++          const stored = requestData;
++          return write(response, 200, JSON.stringify(readOperator(stored, authorized(stored), currentShipmentAccess(base, stored).directories)));
+         }
+         if (!match[1] || request.method !== (match[2] ? 'PATCH' : 'POST')) throw new ApiError(405, 'Метод не поддерживается.');
+         const body = await jsonBody(request, false, 262144);
+-        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings' | 'plans' | 'cases' | 'reconciliations', body, match[2], match[3] as 'payment' | 'archive' | 'delete' | 'settle' | 'task' | undefined, currentSnapshot(base, stored, false).directories));
++        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings' | 'plans' | 'cases' | 'reconciliations', body, match[2], match[3] as 'payment' | 'archive' | 'delete' | 'settle' | 'task' | undefined, currentShipmentAccess(base, stored).directories));
+         // The operation is durable. Provider delivery must not delay its HTTP acknowledgement.
+         const respondAsync = request.headers.prefer === 'respond-async';
+         if (respondAsync) write(response, match[2] || saved.replayed ? 200 : 201, JSON.stringify(saved));
+@@ -717,12 +728,12 @@
+         return write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(saved));
+       }
+       if (logistics && pathname === '/api/context') {
+-        const stored = await operations.read(base.provenance.sourceSha256);
++        const stored = requestData;
+         return write(response, 200, JSON.stringify(logisticsContext(currentSnapshot(base, stored), authorized(stored))));
+       }
+       if (pathname === '/api/settlements') {
+         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+-        const stored = await operations.read(base.provenance.sourceSha256);
++        const stored = requestData;
+         const snapshot = currentSnapshot(base, stored, false);
+         const report = buildSettlements(snapshot.shipments, snapshot.companies, stored).report;
+         const currentActor = actor ? authorized(stored) : null;
+@@ -733,12 +744,12 @@
+       if (pathname.startsWith('/api/push/')) {
+         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
+         if (pathname === '/api/push/config' && request.method === 'GET') {
+-          const data = await operations.read(base.provenance.sourceSha256);
++          const data = requestData;
+           return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300 }));
+         }
+         if (pathname === '/api/push/test-status') {
+           if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+-          const data = await operations.read(base.provenance.sourceSha256);
++          const data = requestData;
+           return write(response, 200, JSON.stringify(readPushProbe(data, url.searchParams.get('probeId'), authorized(data).id)));
+         }
+         if (pathname !== '/api/push/subscription' && pathname !== '/api/push/test') throw new ApiError(404, 'Маршрут не найден.');
+@@ -809,7 +820,7 @@
+         return write(response, 200, '{"ok":true}');
+       }
+       if (pathname === '/api/directories/reconcile-customers') {
+-        const data = await operations.read(base.provenance.sourceSha256);
++        const data = requestData;
+         requireManage(authorized(data));
+         if (request.method === 'GET') return write(response, 200, JSON.stringify(planCustomerReconciliation(base, data)));
+         if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+@@ -819,7 +830,7 @@
+         return write(response, 200, JSON.stringify(result));
+       }
+       if (pathname === '/api/directories/cleanup') {
+-        const stored = await operations.read(base.provenance.sourceSha256);
++        const stored = requestData;
+         requireManage(authorized(stored));
+         if (request.method === 'GET') {
+           try {
+@@ -849,7 +860,7 @@
+       if (pathname === '/api/china' || chinaMatch) {
+         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
+         if (pathname === '/api/china' && request.method === 'GET') {
+-          const data = await operations.read(base.provenance.sourceSha256);
++          const data = requestData;
+           requireManage(authorized(data));
+           return write(response, 200, JSON.stringify({ china: data.china ?? emptyChina(), suppliers: currentSnapshot(base, data).companies.filter(company => company.roles.includes('supplier')) }));
+         }
+@@ -864,7 +875,7 @@
+       const fileMatch = pathname.match(/^\/api\/work\/(tasks|companies)\/([^/]+)\/files\/([^/]+)$/);
+       if (fileMatch) {
+         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+-        const data = await operations.read(base.provenance.sourceSha256);
++        const data = requestData;
+         const file = workFile(data, fileMatch[1], decodeURIComponent(fileMatch[2]), decodeURIComponent(fileMatch[3]), authorized(data));
+         response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+         response.end(Buffer.from(file.data!, 'base64')); return;
+@@ -873,7 +884,7 @@
+       if(pathname === '/api/work' || workMatch){
+         if(!actor)throw new ApiError(401,'Войдите в приложение.');
+         if(pathname === '/api/work' && request.method === 'GET'){
+-          const data=await operations.read(base.provenance.sourceSha256);
++          const data=requestData;
+           const currentActor = authorized(data);
+           return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),url.searchParams,currentActor,activeUsers(data))));
+         }
+@@ -1022,7 +1033,7 @@
+       const allowed = directoryMatch ? ['PATCH','DELETE'] : pathname === '/api/snapshot' ? ['GET'] : tripIdMatch ? ['GET', 'PATCH', 'DELETE'] : pathname === '/api/shipment-trips' ? ['GET', 'POST'] : ['/api/companies/from-inn', '/api/companies/lookup'].includes(pathname) ? ['POST'] : shipmentIdMatch ? ['GET', 'PATCH', 'DELETE'] : ['GET', 'POST'];
+       if (!allowed.includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается для этого маршрута.');
+       if (request.method === 'GET') {
+-        const stored = await operations.read(base.provenance.sourceSha256);
++        const stored = requestData;
+         const fullSnapshot = currentSnapshot(base, stored);
+         const directoryContext = pathname === '/api/directories' || pathname === '/api/snapshot' && url.searchParams.get('context') === 'directories';
+         if (actor && directoryContext && !logistics) requireSection(authorized(stored), 'directories');
+diff --git a/server/nk-direct-etrn.ts b/server/nk-direct-etrn.ts
+--- a/server/nk-direct-etrn.ts
++++ b/server/nk-direct-etrn.ts
+@@ -93,7 +93,12 @@
+ };
+ /** Rechecked before every provider request; no old automatic grant authorizes the NK sender role. */
+ export function authorizeNkDirectEtrn(base: Snapshot, data: OperationsData, tripId: string, config: SabyConfig): NkDirectEtrnRecord {
+-  const snapshot = currentSnapshot(base, data), trip = getShipmentTrip(snapshot, tripId), record = data.etrn?.trips[tripId]?.direct;
++  return authorizeNkDirectFromSnapshot(base, currentSnapshot(base, data), data, tripId, config);
++}
++// Only an internal synchronous caller may supply the exact full snapshot it just built.
++// Public callers and every provider guard still assemble from their own fresh store read.
++function authorizeNkDirectFromSnapshot(base: Snapshot, snapshot: Snapshot, data: OperationsData, tripId: string, config: SabyConfig): NkDirectEtrnRecord {
++  const trip = getShipmentTrip(snapshot, tripId), record = data.etrn?.trips[tripId]?.direct;
+   if (data.etrn?.trips[tripId]?.rebuild?.externalRestartBlocked) throw new ApiError(409, NK_DIRECT_REBUILD_HOLD);
+   if (!record || !isNkDirectEtrn(trip, data) || data.tripSaby?.trips[tripId] || data.saby?.trips[tripId]) throw new ApiError(403, 'Не подтверждено отдельное разрешение прямой ЭТрН НК.');
+   if (Object.values(data.etrn!.trips[tripId].deliveries).some(row => row.document?.nativeAdoptionEvidence?.holdForReview)) throw new ApiError(403, 'Связанные черновики Saby проходят сверку. Подписание и отправка приостановлены до её завершения.');
+@@ -169,7 +174,11 @@
+ export async function runNkDirectEtrn(options: EtrnOptions): Promise<void> {
+   const { base, store, tripId, authorize } = options, source = base.provenance.sourceSha256, leaseId = randomUUID();
+   const originalClient = options.client ?? new SabyClient(sabyConfigFromEnv()), config = originalClient.config;
+-  const authority = (data: OperationsData) => { authorize(currentSnapshot(base, data), data); return authorizeNkDirectEtrn(base, data, tripId, config); };
++  const authority = (data: OperationsData) => {
++    const snapshot = currentSnapshot(base, data);
++    authorize(snapshot, data);
++    return authorizeNkDirectFromSnapshot(base, snapshot, data, tripId, config);
++  };
+   const claimed = await store.mutate(source, data => {
+     const record = authority(data);
+     if (record.leaseId && Date.parse(record.leaseUntil ?? '') > Date.now()) throw new ApiError(409, 'Прямой обмен уже выполняется.');
+diff --git a/server/operations-store.ts b/server/operations-store.ts
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -208,9 +208,12 @@
+   } catch { throw new StoreError('Operations store is damaged or belongs to another source'); }
+ }
+ 
+-export function encodeOperations(data: OperationsData): string {
+-  validate(data, data.sourceSha256);
+-  const encoded = JSON.stringify({ sha256: hash(JSON.stringify(data)), data });
++export function encodeOperations(data: OperationsData, sourceSha256 = data.sourceSha256): string {
++  validate(data, sourceSha256);
++  // The checksum covers these exact JSON bytes. Reuse them for the envelope
++  // instead of serializing the complete store a second time on every write.
++  const payload = JSON.stringify(data);
++  const encoded = `{"sha256":"${hash(payload)}","data":${payload}}`;
+   if (Buffer.byteLength(encoded) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
+   return encoded;
+ }
+@@ -287,8 +290,9 @@
+         const { result, changed } = await update(data);
+         if (changed) {
+           data.revision++;
+-          validate(data, sourceSha256);
+-          const encoded = encodeOperations(data);
++          // Validate once against the caller's source, including after callbacks
++          // that accidentally changed sourceSha256, before any file is written.
++          const encoded = encodeOperations(data, sourceSha256);
+           const temporary = `${this.path}.${randomUUID()}.tmp`;
+           try {
+             const file = await open(temporary, 'wx', 0o600);
+diff --git a/tests/api-banking-performance.test.ts b/tests/api-banking-performance.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/api-banking-performance.test.ts
+@@ -0,0 +1,130 @@
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { test, type TestContext } from 'node:test';
++import type { StoredUser } from '../server/auth';
++import { ApiError } from '../server/api-error';
++import { normalizeTbank } from '../server/banking/adapters';
++import { operationId } from '../server/banking/domain';
++import { bankingRoutes } from '../server/banking/routes';
++import { BankingService } from '../server/banking/service';
++import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
++import { OperationsStore } from '../server/operations-store';
++import { currentSnapshot } from '../server/shipment-operations';
++import type { BankListResult } from '../web/src/banking-model';
++import { accountNumber, dollarAccount, fixtureConfig, fixtureDay, fixtureEnvironment, tbankRow } from './banking-fixtures';
++
++const base = await loadSnapshot(resolve('data/local-xlsx-final'));
++const source = base.provenance.sourceSha256;
++const hash = (value: string) => createHash('sha256').update(value).digest('hex');
++const json = (value: unknown) => JSON.parse(JSON.stringify(value));
++class CountingStore extends OperationsStore {
++  reads = 0;
++  override async read(sourceSha256: string) { this.reads++; return super.read(sourceSha256); }
++}
++
++async function fixture(t: TestContext) {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-bank-perf-'));
++  const store = new CountingStore(directory), external = new OperationsStore(directory);
++  const env = { ...fixtureEnvironment, ARTEL_BANK_SYNC_ENABLED: 'false' };
++  let bankCalls = 0;
++  const http = async () => { bankCalls++; throw new Error('List requests must not call a bank'); };
++  const users: StoredUser[] = ['director', 'admin', 'employee', 'manager', 'logistician'].map(role => ({
++    id: role, name: role, login: role, role: role as StoredUser['role'], managerId: null,
++    sections: ['payments'], active: true, version: 1, salt: '0'.repeat(32), passwordHash: '0'.repeat(128),
++  }));
++  const row = (id: string, amount = '0.1', account = accountNumber, direction = 'Credit') => normalizeTbank(fixtureConfig(), { number: account, currency: account === dollarAccount ? 'USD' : 'RUB' }, fixtureDay, tbankRow(id, amount, account, direction));
++  const oldSber = { ...row('legacy-sber'), id: operationId('sber-nk-artel', accountNumber, 'legacy-sber'), connectionId: 'sber-nk-artel', provider: 'sber' as const };
++  await external.mutate(source, data => {
++    data.accounts = { users, sessions: users.map(user => ({ userId: user.id, hash: hash(hash(user.id)), expiresAt: Date.now() + 600_000 })), attempts: {} };
++    data.banking = {
++      version: 1,
++      connections: { 'tbank-nk-artel': { accounts: [{ number: accountNumber, currency: 'RUB' }, { number: dollarAccount, currency: 'USD' }], lastSuccessAt: '2026-09-14T11:00:00.000Z', lastCompletedPeriod: { from: fixtureDay, to: fixtureDay } } },
++      operations: [...Array.from({ length: 24 }, (_, i) => row(`rub-${i}`)), row('usd-in', '1.2', dollarAccount), row('usd-out', '0.2', dollarAccount, 'Debit'), oldSber],
++    };
++    return { changed: true, result: null };
++  });
++  const service = new BankingService(store, source, env, http);
++  const middleware = createSnapshotMiddleware(resolve('data/local-xlsx-final'), { operationsStore: store, bankEnvironment: env, bankRequest: http });
++  const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  t.after(async () => { await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); });
++  const cookie = (id = 'director') => `artel_session=${hash(id)}`;
++  const get = async (query = '', id = 'director') => {
++    store.reads = 0;
++    const response = await fetch(`${url}/api/banking?${query}`, { headers: { cookie: cookie(id) } });
++    return { status: response.status, body: await response.json() as BankListResult, reads: store.reads };
++  };
++  return { store, external, service, cookie, get, row, bankCalls: () => bankCalls };
++}
++
++test('bank list uses one fresh read with identical filters, pagination, exact totals and redacted data', async t => {
++  const f = await fixture(t), data = await f.external.read(source);
++  const before = await readFile(f.store.path, 'utf8'), financial = currentSnapshot(base, data);
++  for (const query of ['', 'page=2&pageSize=10', 'page=999&pageSize=10', `account=${dollarAccount}`, 'direction=outgoing', 'status=Transaction', 'connection=absent', 'q=rub-2', 'from=2026-09-15']) {
++    const expected = await f.service.list(new URLSearchParams(query));
++    const response = await f.get(query);
++    assert.equal(response.status, 200, query);
++    assert.equal(response.reads, 1, 'the middleware, route authorization and list projection share one uninterrupted view');
++    assert.deepEqual(response.body, json(expected), query);
++    assert.ok(response.body.items.every(row => Object.keys(row.bankData).length === 0 && row.provider === 'tbank'));
++    assert.ok(!JSON.stringify(response.body).includes('fixture-only-token'));
++  }
++  const full = (await f.get()).body;
++  assert.equal(full.total, 26); assert.equal(full.storedCount, 26); assert.equal(full.items.length, 25);
++  assert.deepEqual(full.totals, [{ currency: 'RUB', incoming: '2.4', outgoing: '0', count: 24 }, { currency: 'USD', incoming: '1.2', outgoing: '0.2', count: 2 }]);
++  assert.deepEqual(full.statuses, ['Transaction']); assert.equal(full.connections[0].state, 'connected');
++  assert.equal(full.scheduleEnabled, false);
++  const last = (await f.get('page=999&pageSize=10')).body;
++  assert.equal(last.page, 3); assert.equal(last.items.length, 6);
++  for (const query of ['pageSize=11', 'page=0', 'from=2026-09-15&to=2026-09-14']) assert.equal((await f.get(query)).status, 400);
++  assert.equal(await readFile(f.store.path, 'utf8'), before);
++  assert.deepEqual(currentSnapshot(base, await f.external.read(source)), financial);
++  assert.equal(f.bankCalls(), 0);
++});
++
++test('each banking GET sees external data, role and session changes without retaining a prior request view', async t => {
++  const f = await fixture(t);
++  for (const id of ['director', 'admin']) assert.equal((await f.get('', id)).status, 200);
++  for (const id of ['employee', 'manager', 'logistician']) assert.equal((await f.get('', id)).status, 403);
++  assert.equal((await f.get('', 'missing')).status, 401);
++  await f.external.mutate(source, data => {
++    data.banking!.operations.push(f.row('new-external-operation', '7'));
++    data.banking!.connections['tbank-nk-artel'].lastError = 'Synthetic refresh failure';
++    return { changed: true, result: null };
++  });
++  const updated = await f.get();
++  assert.equal(updated.reads, 1); assert.equal(updated.body.total, 27);
++  assert.equal(updated.body.totals[0].incoming, '9.4'); assert.equal(updated.body.connections[0].state, 'error');
++  await f.external.mutate(source, data => { data.accounts!.users.find(user => user.id === 'admin')!.role = 'employee'; return { changed: true, result: null }; });
++  assert.equal((await f.get('', 'admin')).status, 403);
++  await f.external.mutate(source, data => { data.accounts!.sessions = []; return { changed: true, result: null }; });
++  assert.equal((await f.get('', 'director')).status, 401);
++  assert.equal(f.bankCalls(), 0);
++});
++
++test('non-list bank routes ignore an earlier view and reject revoked sessions before body or provider work', async t => {
++  const f = await fixture(t), stale = await f.external.read(source);
++  await f.external.mutate(source, data => { data.accounts!.sessions = []; return { changed: true, result: null }; });
++  let bodies = 0;
++  const server = createServer((request, response) => {
++    void bankingRoutes(f.service, request, response, new URL(request.url!, 'http://localhost'), async () => { bodies++; return {}; }, stale).catch(error => {
++      response.writeHead(error instanceof ApiError ? error.status : 500); response.end();
++    });
++  });
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  t.after(() => new Promise<void>(done => server.close(() => done())));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`, id = stale.banking!.operations[0].id;
++  for (const [method, path] of [['GET', '/api/banking/export'], ['GET', `/api/banking/operations/${id}`], ['GET', `/api/banking/operations/${id}/print`], ['POST', `/api/banking/operations/${id}/refresh`], ['POST', '/api/banking/connections/tbank-nk-artel/sync'], ['POST', '/api/banking']]) {
++    f.store.reads = 0;
++    const response = await fetch(url + path, { method, headers: { cookie: f.cookie() } });
++    await response.text();
++    assert.equal(response.status, 401, path); assert.equal(f.store.reads, 1, path);
++  }
++  assert.equal(bodies, 0); assert.equal(f.bankCalls(), 0);
++});
+diff --git a/tests/api-nk-direct-etrn.test.ts b/tests/api-nk-direct-etrn.test.ts
+--- a/tests/api-nk-direct-etrn.test.ts
++++ b/tests/api-nk-direct-etrn.test.ts
+@@ -5,7 +5,7 @@
+ import test from 'node:test';
+ import { ApiError } from '../server/api-error';
+ import { enrollNkDirectAutostart, continueApprovedNkDirect27, nkDirectExistingExpectation, NK_DIRECT_EXISTING_TRIP } from '../server/nk-direct-autostart';
+-import { OperationsStore } from '../server/operations-store';
++import { OperationsStore, type OperationsStorage } from '../server/operations-store';
+ import { createSnapshotMiddleware } from '../server/local-api';
+ import { currentSnapshot } from '../server/shipment-operations';
+ import { getShipmentTrip, saveShipmentTrip } from '../server/shipment-trips';
+@@ -68,6 +68,91 @@
+     return saveNkLoadingDetails(f.base, data, f.tripId, actorId, { version: current.version, details: syntheticLoadingDetails() }, f.config);
+   });
+ }
++
++test('direct authority builds one full snapshot per fresh transaction and preserves rejection decisions', async () => {
++  const f = await fixture([false, true]);
++  try {
++    await f.start();
++    const original = await f.store.read(f.source);
++    for (const change of ['none', 'actor', 'policy', 'mass', 'version', 'loading-role', 'outer-authority'] as const) {
++      const data = structuredClone(original), config = structuredClone(f.config);
++      if (change === 'actor') data.accounts!.users.find(row => row.id === 'actor')!.active = false;
++      if (change === 'policy') config.automaticSigning!.carrier.thumbprint = 'ef'.repeat(20);
++      if (change === 'mass') data.etrn!.trips[f.tripId].loadingFacts!.deliveries[f.trip.customers[0].id].grossMassTonnes = '8';
++      if (change === 'version') data.shipments[f.trip.customers[0].id].version++;
++      if (change === 'loading-role') data.etrn!.trips[f.tripId].loadingActorMode = 'sender';
++      const authorize = () => { if (change === 'outer-authority') throw new ApiError(401, 'Synthetic outer authority revoked'); };
++      let expectedError: unknown;
++      try { authorize(); authorizeNkDirectEtrn(f.base, data, f.tripId, config); } catch (error) { expectedError = error; }
++      if (change === 'none') assert.equal(expectedError, undefined);
++      else assert.ok(expectedError instanceof ApiError, change);
++      let shipmentReads = 0;
++      const trackedBase = new Proxy(f.base, { get(target, property, receiver) {
++        if (property === 'shipments') shipmentReads++;
++        return Reflect.get(target, property, receiver);
++      } });
++      currentSnapshot(trackedBase, data);
++      const oneAssemblyReads = shipmentReads;
++      assert.ok(oneAssemblyReads > 0);
++      shipmentReads = 0;
++      const stop = new Error('Stop after isolated successful claim');
++      let claims = 0, sends = 0;
++      const store: OperationsStorage = {
++        read: async () => structuredClone(data),
++        mutate: async (_source, update) => {
++          claims++;
++          const copy = structuredClone(data);
++          try { await update(copy); }
++          finally { assert.equal(shipmentReads, oneAssemblyReads, `${change}: one full assembly inside authority`); }
++          throw stop;
++        },
++      };
++      await assert.rejects(runNkDirectEtrn({ ...f, base: trackedBase, store, authorize, client: new SabyClient(config, async () => { sends++; throw new Error('Provider must not run'); }) }), error => expectedError instanceof ApiError
++        ? error instanceof ApiError && error.status === expectedError.status && error.message === expectedError.message
++        : error === stop);
++      assert.equal(claims, 1); assert.equal(sends, 0);
++    }
++    assert.deepEqual(await f.store.read(f.source), original, 'The isolated authorization checks do not persist claims or alter frozen facts');
++  } finally { await f.close(); }
++});
++
++test('direct authority CPU comparison uses the same full financial snapshot and frozen synthetic grant', async () => {
++  const f = await fixture([false, true]);
++  try {
++    await f.start();
++    const original = await f.store.read(f.source);
++    const template = currentSnapshot(f.base, original).shipments[0];
++    const base = { ...f.base, shipments: Array.from({ length: 2000 }, (_, index) => ({
++      ...template, id: `performance-source-${index}`, fields: Object.fromEntries(Object.entries(template.fields).map(([key, value]) => [key, key.startsWith('trip_') ? null : value])),
++    })) };
++    const expected = authorizeNkDirectEtrn(base, original, f.tripId, f.config);
++    const stop = new Error('Isolated comparison stops before persistence and provider calls');
++    let currentMs = 0;
++    const store: OperationsStorage = {
++      read: async () => structuredClone(original),
++      mutate: async (_source, update) => {
++        const copy = structuredClone(original), started = performance.now();
++        const result = update(copy);
++        currentMs = performance.now() - started;
++        await result;
++        throw stop;
++      },
++    };
++    const oldTimes: number[] = [], newTimes: number[] = [];
++    for (let index = 0; index < 15; index++) {
++      const oldData = structuredClone(original), started = performance.now();
++      currentSnapshot(base, oldData); f.authorize();
++      const oldResult = authorizeNkDirectEtrn(base, oldData, f.tripId, f.config);
++      const oldMs = performance.now() - started;
++      assert.deepEqual(oldResult, expected);
++      await assert.rejects(runNkDirectEtrn({ ...f, base, store, client: new SabyClient(f.config, async () => { throw new Error('Provider must not run'); }) }), error => error === stop);
++      if (index >= 3) { oldTimes.push(oldMs); newTimes.push(currentMs); }
++    }
++    const stats = (values: number[]) => { const sorted = [...values].sort((a, b) => a - b); return { medianMs: sorted[Math.floor(sorted.length / 2)], p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1] }; };
++    console.log('NK_DIRECT_AUTHORITY_BENCH', JSON.stringify({ old: stats(oldTimes), current: stats(newTimes), samples: oldTimes.length, syntheticShipments: 2000, isolated: true, providerCalls: 0 }));
++    assert.deepEqual(await f.store.read(f.source), original);
++  } finally { await f.close(); }
++});
+ 
+ test('loading recovery queues one unchanged authenticated departure after required details are saved', async () => {
+   const f = await fixture([false, true], false, true, undefined, false);
+diff --git a/tests/api-request-performance.test.ts b/tests/api-request-performance.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/api-request-performance.test.ts
+@@ -0,0 +1,156 @@
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import { createServer, request as httpRequest } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { test, type TestContext } from 'node:test';
++import { activeUsers, publicUser, type StoredUser } from '../server/auth';
++import { scopeSnapshot } from '../server/auth-scope';
++import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
++import { OperationsStore } from '../server/operations-store';
++import { readOperator } from '../server/operator';
++import { currentSnapshot } from '../server/shipment-operations';
++import { readWork, workCompanyIds } from '../server/work-operations';
++
++const base = await loadSnapshot(resolve('data/local-xlsx-final'));
++const source = base.provenance.sourceSha256;
++const digest = (value: string) => createHash('sha256').update(value).digest('hex');
++
++class CountingStore extends OperationsStore {
++  reads = 0;
++  readStarted?: () => void;
++  override async read(sourceSha256: string) {
++    this.reads++;
++    const data = await super.read(sourceSha256);
++    this.readStarted?.();
++    return data;
++  }
++}
++
++async function fixture(t: TestContext) {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-api-perf-'));
++  const store = new CountingStore(directory);
++  const external = new OperationsStore(directory);
++  const empty = await external.read(source);
++  const snapshot = currentSnapshot(base, empty);
++  const managerId = snapshot.directories!.managers[0].id;
++  const users: StoredUser[] = [
++    { id: 'owner', role: 'director', managerId: null },
++    { id: 'admin', role: 'admin', managerId: null },
++    { id: 'legacy', role: 'manager', managerId },
++    { id: 'employee', role: 'employee', managerId, sections: ['shipments', 'work', 'operator'] },
++    { id: 'logistician', role: 'logistician', managerId, sections: ['trips'] },
++    { id: 'work-only', role: 'employee', managerId, sections: ['work'] },
++    { id: 'empty', role: 'employee', managerId, sections: [] },
++    { id: 'driver', role: 'driver', managerId: null, driverId: empty.directories!.drivers[0].id, sections: [] },
++  ].map(row => ({ name: row.id, login: row.id, active: true, version: 1, salt: '0'.repeat(32), passwordHash: '0'.repeat(128), ...row } as StoredUser));
++  const tokens = new Map(users.map(user => [user.id, digest(`test-session-${user.id}`)]));
++  await external.mutate(source, data => {
++    data.accounts = { users, sessions: users.map(user => ({ userId: user.id, hash: digest(tokens.get(user.id)!), expiresAt: Date.now() + 600_000 })), attempts: {} };
++    return { result: null, changed: true };
++  });
++  const middleware = createSnapshotMiddleware(resolve('data/local-xlsx-final'), { operationsStore: store });
++  const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  t.after(async () => { await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); });
++  const cookie = (id = 'owner') => `artel_session=${tokens.get(id)}`;
++  const get = async (path: string, id = 'owner') => {
++    store.reads = 0;
++    const response = await fetch(url + path, { headers: { cookie: cookie(id) } });
++    return { status: response.status, body: await response.json(), reads: store.reads };
++  };
++  return { store, external, users, url, cookie, get };
++}
++
++test('synchronous authenticated pages use one fresh store view and keep response data equivalent', async t => {
++  const f = await fixture(t);
++  const data = await f.external.read(source), snapshot = currentSnapshot(base, data);
++  for (const path of ['/api/auth/session', '/api/auth/users', '/api/work', '/api/operator', '/api/snapshot', '/api/shipments', '/api/directories', '/api/china', '/api/push/config']) {
++    const response = await f.get(path);
++    assert.equal(response.status, 200, path);
++    assert.equal(response.reads, 1, `${path} must not parse the full store repeatedly`);
++    if (path === '/api/snapshot') assert.deepEqual(response.body, JSON.parse(JSON.stringify(snapshot)));
++    if (path === '/api/operator') assert.deepEqual(response.body, JSON.parse(JSON.stringify(readOperator(data, publicUser(f.users[0]), snapshot.directories))));
++    if (path === '/api/work') {
++      const actor = publicUser(f.users[0]);
++      assert.deepEqual(response.body, JSON.parse(JSON.stringify(readWork(data, scopeSnapshot(snapshot, actor, 'work', workCompanyIds(data, actor)), new URLSearchParams(), actor, activeUsers(data)))));
++    }
++    if (path === '/api/auth/users') assert.deepEqual(response.body.staff, {
++      managers: snapshot.directories!.managers.map(({ id, name }) => ({ id, name })),
++      drivers: snapshot.directories!.drivers.filter(row => !snapshot.directories!.deletedEntries?.drivers?.includes(row.id)).map(({ id, name }) => ({ id, name })),
++    });
++  }
++});
++
++test('navigation counts equal full financial snapshot scope across current and legacy roles without exposing records', async t => {
++  const f = await fixture(t);
++  for (const user of f.users.filter(row => row.role !== 'driver')) {
++    const full = await f.get('/api/snapshot', user.id);
++    const navigation = await f.get('/api/navigation', user.id);
++    assert.equal(navigation.status, 200, user.id);
++    assert.equal(navigation.reads, 1, user.id);
++    assert.deepEqual(navigation.body, { shipmentCount: full.body.overview.shipmentCount }, user.id);
++    if (user.id === 'employee') assert.ok(navigation.body.shipmentCount > 0 && navigation.body.shipmentCount < base.shipments.length, 'the scoped fixture contains both visible and hidden shipments');
++  }
++  assert.equal((await f.get('/api/navigation', 'driver')).status, 403);
++  assert.equal((await f.get('/api/logistics/navigation')).status, 403, 'the separate logistics audience keeps its closed route list');
++  assert.equal((await fetch(f.url + '/api/navigation')).status, 401);
++  assert.equal((await fetch(f.url + '/api/navigation', { method: 'POST', headers: { cookie: f.cookie() } })).status, 405);
++});
++
++test('subsequent reads immediately observe external session revocation and changed section access', async t => {
++  const f = await fixture(t);
++  assert.equal((await f.get('/api/work', 'employee')).status, 200);
++  await f.external.mutate(source, data => {
++    data.accounts!.users.find(row => row.id === 'employee')!.sections = [];
++    return { changed: true, result: null };
++  });
++  assert.equal((await f.get('/api/work', 'employee')).status, 403);
++  assert.deepEqual((await f.get('/api/navigation', 'employee')).body, { shipmentCount: 0 });
++  await f.external.mutate(source, data => {
++    data.accounts!.sessions = data.accounts!.sessions.filter(row => row.userId !== 'employee');
++    return { changed: true, result: null };
++  });
++  assert.equal((await f.get('/api/navigation', 'employee')).status, 401);
++  assert.equal((await f.get('/api/auth/session', 'employee')).body.user, null);
++});
++
++test('work write rechecks the live session inside the mutation after waiting for a slow request body', async t => {
++  const f = await fixture(t);
++  let started!: () => void;
++  const initialRead = new Promise<void>(done => { started = done; });
++  f.store.readStarted = started;
++  const body = JSON.stringify({ title: 'Must not be saved after revocation' });
++  const response = new Promise<number>((done, reject) => {
++    const request = httpRequest(f.url + '/api/work/tasks', { method: 'POST', headers: { cookie: f.cookie('employee'), 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, reply => { reply.resume(); reply.on('end', () => done(reply.statusCode!)); });
++    request.on('error', reject);
++    request.write(body.slice(0, 1));
++    void (async () => {
++      await initialRead;
++      f.store.readStarted = undefined;
++      await f.external.mutate(source, data => {
++        data.accounts!.sessions = data.accounts!.sessions.filter(row => row.userId !== 'employee');
++        return { changed: true, result: null };
++      });
++      request.end(body.slice(1));
++    })().catch(reject);
++  });
++  assert.equal(await response, 401);
++  assert.equal((await f.external.read(source)).work?.tasks.length ?? 0, 0);
++});
++
++test('financial output and store bytes remain unchanged after lightweight navigation and catalog reads', async t => {
++  const f = await fixture(t);
++  const before = await readFile(f.store.path, 'utf8');
++  const financial = (await f.get('/api/snapshot')).body;
++  for (const id of ['owner', 'legacy', 'employee']) {
++    await f.get('/api/navigation', id);
++    await f.get('/api/operator', id);
++  }
++  await f.get('/api/auth/users');
++  assert.deepEqual((await f.get('/api/snapshot')).body, financial);
++  assert.equal(await readFile(f.store.path, 'utf8'), before);
++});
+diff --git a/tests/operations-store-write-performance.test.ts b/tests/operations-store-write-performance.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/operations-store-write-performance.test.ts
+@@ -0,0 +1,64 @@
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { test } from 'node:test';
++import { decodeOperations, encodeOperations, OperationsStore, StoreError, type OperationsData } from '../server/operations-store';
++
++const source = 'write-performance-synthetic';
++const oldEncoding = (data: OperationsData) => JSON.stringify({
++  sha256: createHash('sha256').update(JSON.stringify(data)).digest('hex'), data,
++});
++const initial = (): OperationsData => ({ schemaVersion: 1, sourceSha256: source, revision: 2, companies: [], shipments: {} });
++
++test('single serialization preserves the existing envelope bytes and checksum for supported JSON values', () => {
++  const data = initial();
++  const fixtures = [data, decodeOperations(oldEncoding(data), source), {
++    ...data,
++    syntheticMetadata: {
++      unicode: 'Кириллица 🛢️ العربية', escape: '"\\\n', negative: -0,
++      values: [null, true, false, 1.25], ...JSON.parse('{"__proto__":{"kept":true}}'),
++      nested: { constructor: 'retained' },
++    },
++  } as OperationsData];
++  for (const fixture of fixtures) {
++    const before = oldEncoding(fixture);
++    assert.equal(encodeOperations(fixture), before);
++    assert.deepEqual(decodeOperations(encodeOperations(fixture), source), decodeOperations(before, source));
++  }
++});
++
++test('single validation retains expected-source rejection and leaves the saved store unchanged', async t => {
++  const directory = await mkdtemp(join(tmpdir(), 'artel-write-performance-'));
++  t.after(() => rm(directory, { recursive: true, force: true }));
++  const store = new OperationsStore(directory), raw = encodeOperations(initial());
++  await writeFile(store.path, raw, { mode: 0o600 });
++  await assert.rejects(store.mutate(source, data => {
++    data.sourceSha256 = 'another-source';
++    return { changed: true, result: null };
++  }), StoreError);
++  assert.equal(await readFile(store.path, 'utf8'), raw);
++  await assert.rejects(store.mutate(source, data => {
++    data.revision = Number.NaN;
++    return { changed: true, result: null };
++  }), StoreError);
++  assert.equal(await readFile(store.path, 'utf8'), raw);
++  assert.throws(() => encodeOperations(initial(), 'another-source'), StoreError);
++});
++
++test('successful transaction keeps canonical saved bytes and independent returned references', async t => {
++  const directory = await mkdtemp(join(tmpdir(), 'artel-write-performance-'));
++  t.after(() => rm(directory, { recursive: true, force: true }));
++  const store = new OperationsStore(directory);
++  await writeFile(store.path, encodeOperations(initial()), { mode: 0o600 });
++  const returned = await store.mutate(source, data => {
++    data.shipments.synthetic = { version: 1, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', fields: { note: 'Сохранено 🛢️' } };
++    return { changed: true, result: data.shipments.synthetic };
++  });
++  const saved = await readFile(store.path, 'utf8');
++  assert.equal(saved, oldEncoding(JSON.parse(saved).data));
++  returned.fields.note = 'caller mutation';
++  assert.equal((await store.read(source)).shipments.synthetic.fields.note, 'Сохранено 🛢️');
++  assert.equal((await store.read(source)).revision, 3);
++});
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -1,4 +1,5 @@
+ import { pageCatalog, enabledPages, type PageId } from './page-catalog'
++import { apiFetch as fetch } from './workspace-api'
+ import { hasPageAccess } from './page-access'
+ import { lockPageScroll, useDialogMotion } from './useDialogMotion'
+ import { NotificationMenu } from './DriverNotifications'
+@@ -59,6 +60,8 @@
+   const canManage=isAdministrator(user)
+   const availablePages = pages.filter(item => hasPageAccess(user, item.id))
+   const [data,setData] = useState<Snapshot | null>(null)
++  const [snapshotPage,setSnapshotPage] = useState<Page | null>(null)
++  const [shipmentCount,setShipmentCount] = useState<number | undefined>(undefined)
+   const [error,setError] = useState('')
+   const [page,setPage] = useState<Page>(() => location.hash || /^\/invoices(?:\/|$)/.test(location.pathname) ? getPage() : availablePages[0]?.id ?? 'overview')
+   const [menu,setMenu] = useState(false)
+@@ -96,8 +99,33 @@
+     return () => navigator.serviceWorker?.removeEventListener('message', openInvoice)
+   }, [user])
+   const snapshotRequest = useRef(0)
+-  const fetchData = () => { const request=++snapshotRequest.current;setError(''); return fetch('/api/snapshot?shipments=omit' + (page === 'directories' && hasSection(user, 'directories') ? '&context=directories' : ''),{cache:'no-store'}).then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(snapshot=>{if(request===snapshotRequest.current)setData(snapshot)}).catch(e => {if(request===snapshotRequest.current)setError(e.message)}) }
+-  useEffect(() => { setData(null); void fetchData() }, [page])
++  const snapshotController = useRef<AbortController | null>(null)
++  const requiresSnapshot = ['accounts', 'shipments', 'directories', 'trips', 'payments'].includes(page)
++  const snapshotReady = !!data && snapshotPage === page
++  const fetchData = () => {
++    const request = ++snapshotRequest.current
++    snapshotController.current?.abort()
++    const controller = new AbortController()
++    snapshotController.current = controller
++    setError('')
++    return fetch('/api/snapshot?shipments=omit' + (page === 'directories' && hasSection(user, 'directories') ? '&context=directories' : ''), { cache: 'no-store', signal: controller.signal })
++      .then(r => { if (!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json() })
++      .then(snapshot => { if (request === snapshotRequest.current && !controller.signal.aborted) { setData(snapshot); setSnapshotPage(page); setShipmentCount(snapshot.overview.shipmentCount) } })
++      .catch(e => { if (request === snapshotRequest.current && !controller.signal.aborted) setError(e.message) })
++  }
++  useEffect(() => {
++    setError(''); setSnapshotPage(null)
++    if (!hasPageAccess(user, page)) return
++    if (requiresSnapshot) { void fetchData(); return () => snapshotController.current?.abort() }
++    // These pages fetch their own scoped data. The sidebar count must neither
++    // build a financial snapshot nor delay mounting the page and its first GET.
++    const controller = new AbortController()
++    void fetch('/api/navigation', { cache: 'no-store', signal: controller.signal })
++      .then(async response => { if (!response.ok) throw new Error('Navigation unavailable'); return response.json() })
++      .then(result => { if (!controller.signal.aborted) setShipmentCount(result.shipmentCount) })
++      .catch(() => { if (!controller.signal.aborted) setShipmentCount(undefined) })
++    return () => controller.abort()
++  }, [page, user.version])
+   useEffect(() => {
+     const handle = () => {
+       const replacement = location.hash === '#companies' ? '#shipments' : location.hash === '#settlements' ? '#overview' : null
+@@ -125,28 +153,28 @@
+         </div>
+         <a className="brand" href="#overview" aria-label="Артэль — обзор" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артэль</span></a>
+       </div>
+-      <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={data && p.id === 'shipments' ? data.overview.shipmentCount : undefined}/>)}</nav>
++      <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={p.id === 'shipments' ? shipmentCount : undefined}/>)}</nav>
+       <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
+       <nav aria-label="Управление">{availablePages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
+       <div className="sidebar-bottom"><div className="sidebar-profile sidebar-user-controls"><span title={user.name}>{user.name}</span>{notificationKind && <NotificationMenu userId={user.id} kind={notificationKind} sidebar/>}<button className="button sidebar-account-action" aria-label="Выйти" title="Выйти" onClick={onLogout}><LogOut size={18} aria-hidden="true"/></button></div>{page === 'shipments' && <button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button>}</div>
+     </aside>
+     <div className="workspace-main" inert={menu}>
+-      <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'invoices' || !data || error || !hasPageAccess(user, page)) && (page !== 'overview' || !data || error || !hasPageAccess(user, page)) && <div className="page-heading page-heading-compact"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
+-      {page === 'shipments' && (!data || error || !hasPageAccess(user, page)) && <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>}
+-      {!hasPageAccess(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : !data ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <PageLoadBoundary key={page}><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем раздел…</p></div>}><div key={page} className="page-content">
++      <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'invoices' || !hasPageAccess(user, page)) && (page !== 'overview' || !hasPageAccess(user, page)) && <div className="page-heading page-heading-compact"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
++      {page === 'shipments' && (!snapshotReady || error || !hasPageAccess(user, page)) && <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>}
++      {!hasPageAccess(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : requiresSnapshot && !snapshotReady ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <PageLoadBoundary key={page}><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем раздел…</p></div>}><div key={page} className="page-content">
+       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
+       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
+       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
+       {page === 'invoices' && <InvoicePage user={user} menuOpen={menu} onOpenMenu={() => setMenu(true)}/>}
+       {page === 'operator' && <OperatorPage key={user.id} creatorName={user.name}/>}
+-      {page === 'accounts' && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
++      {page === 'accounts' && data && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
+       {page === 'work' && <WorkPage/>}
+       {page === 'cabinet-balances' && <CabinetBalances/>}
+       {page === 'payroll' && <PayrollPage/>}
+-      {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+-      {page === 'directories' && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => canManage || ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
+-      {page === 'trips' && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
+-      {page === 'payments' && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
++      {page === 'shipments' && data && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
++      {page === 'directories' && data && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => canManage || ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
++      {page === 'trips' && data && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
++      {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
+       </div></Suspense></PageLoadBoundary>}
+       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}
+       </main>
+diff --git a/web/src/AuthGate.tsx b/web/src/AuthGate.tsx
+--- a/web/src/AuthGate.tsx
++++ b/web/src/AuthGate.tsx
+@@ -94,9 +94,15 @@
+       });
+       const value = await response.json();
+       if (!response.ok) throw new Error(value.error || 'Не удалось войти.');
++      if (!value.user?.id) throw new Error('Не удалось подтвердить вход. Повторите попытку.');
++      // Login/setup commits the session and returns the same public user as
++      // /auth/session. Do not put a second store read on the login critical path.
++      // Ignore a focus/timer session response started before this login finished.
++      sessionRequest.current++;
++      setSession(previous => ({ user: value.user as AccountUser, needsSetup: false, setupTokenRequired: previous?.setupTokenRequired ?? false }));
++      setChecking(false);
+       setForm(emptyForm);
+       setShowPassword(false);
+-      await refresh();
+     } catch (e) {
+       setError((e as Error).message);
+     } finally {

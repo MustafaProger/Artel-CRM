@@ -1,0 +1,747 @@
+diff --git a/ops/production/entrypoint.sh b/ops/production/entrypoint.sh
+--- a/ops/production/entrypoint.sh
++++ b/ops/production/entrypoint.sh
+@@ -27,5 +27,6 @@
+ # the first read replays a durable interrupted multi-file transaction.
+ rm -f -- "$ARTEL_STORE_DIR/work-storage/transaction.lock" \
+   "$ARTEL_STORE_DIR/work-storage/core-queue.lock" \
+-  "$ARTEL_STORE_DIR/work-storage/work-queue.lock"
++  "$ARTEL_STORE_DIR/work-storage/work-queue.lock" \
++  "$ARTEL_STORE_DIR/work-storage/trip-requests-queue.lock"
+ exec "$@"
+diff --git a/ops/production/storage-invariants.md b/ops/production/storage-invariants.md
+--- a/ops/production/storage-invariants.md
++++ b/ops/production/storage-invariants.md
+@@ -53,9 +53,11 @@
+ all CRM writers stopped. Merge composes current data; never restore an old
+ premigration snapshot over newer writes.
+ 
+-The same lifetime lease fences work-storage/{transaction,core-queue,work-queue}.lock.
++The same lifetime lease fences work-storage/{transaction,core-queue,work-queue,trip-requests-queue}.lock.
+ The entrypoint removes only stale lock files after acquiring the lease and keeps
+ commit.json for redo recovery. Core and Work share one consistency latch; Work
+ has a separate admission queue. A mixed transaction may increment the composed
+ revision by two. Total partition size is conservatively bounded for a <=64MiB
+ flat export. Backup, audit and deployment tools must be layout-aware.
++
++Trip requests have their own FIFO admission lock, but still commit the core file under the shared transaction latch. There is no third data partition, pointer change, or alternate backup format. Trip consumption uses the ordinary core transaction and races cancellation under the same latch.
+diff --git a/scripts/check-task-request-dates.mjs b/scripts/check-task-request-dates.mjs
+--- a/scripts/check-task-request-dates.mjs
++++ b/scripts/check-task-request-dates.mjs
+@@ -54,9 +54,9 @@
+    const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block',timezoneId:'America/Los_Angeles'});await authenticateContext(context,runtime.base,cookie);
+    await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.origin===runtime.base)return route.continue();if(u.hostname.endsWith('openstreetmap.org'))return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#edf2e8"/></svg>'});report.externalRequests.push(u.origin);return route.abort()});
+    const page=await context.newPage();page.on('pageerror',e=>report.errors.push(e.message));await page.clock.install({time:new Date('2026-10-28T20:59:00Z')});await page.goto(runtime.base+'/#work');
+-   const checkbox=page.getByRole('checkbox',{name:'Выполнена: Проверить документы',exact:true});await expect(checkbox).not.toBeChecked();await checkbox.focus();await checkbox.press('Space');await expect(checkbox).toBeChecked();await expect(page.getByRole('dialog')).toHaveCount(0);
++   const checkbox=page.getByRole('checkbox',{name:'Выполнена: Проверить документы',exact:true});await expect(checkbox).not.toBeChecked();await checkbox.focus();await checkbox.press('Space');await expect(checkbox).toBeChecked();await expect(checkbox).toBeEnabled();await expect(page.getByRole('dialog')).toHaveCount(0);
+    let saved=(await api('/api/work')).work.tasks.find(r=>r.id===task.id);assert.equal(saved.status,'done');assert.equal(saved.dueDate,'2026-10-27');
+-   await checkbox.click();await expect(checkbox).not.toBeChecked();
++   await checkbox.click();await expect(checkbox).not.toBeChecked();await expect(checkbox).toBeEnabled();
+    check(engine+': checkbox keyboard completion/reopen persisted; separate from editor');
+    await page.route('**/api/work/tasks/*',route=>route.request().method()==='PATCH'?route.fulfill({status:409,json:{error:'QA: задача изменена'}}):route.continue());
+    await checkbox.click();await expect(page.getByRole('alert')).toContainText('QA: задача изменена');await expect(checkbox).not.toBeChecked();await page.unroute('**/api/work/tasks/*');
+diff --git a/scripts/check-trips-performance.mjs b/scripts/check-trips-performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/check-trips-performance.mjs
+@@ -0,0 +1,89 @@
++// Real source/built CRM and API, synthetic data, loopback only. Tiles are a local visual fixture.
++import assert from 'node:assert/strict';
++import {mkdir,writeFile,readFile} from 'node:fs/promises';
++import {dirname,resolve} from 'node:path';
++import {randomUUID} from 'node:crypto';
++import {chromium,webkit,expect} from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import {integrationRuntime} from '../tests/helpers/trip-saby-integration.ts';
++import {startOperatorQaServer} from './qa-operator-runtime.mjs';
++import {authenticateContext} from './qa-auth.mjs';
++import {migrateWorkStorage,WorkPartition} from '../server/work-partition.ts';
++import {normalizeTbank} from '../server/banking/adapters.ts';
++import {emptyBanking} from '../server/banking/domain.ts';
++import {fixtureConfig,fixtureDay,accountNumber,tbankRow} from '../tests/banking-fixtures.ts';
++const root=resolve(import.meta.dirname,'..'),baseline=process.argv.includes('--baseline'),review=process.argv.includes('--review');
++const output=resolve(process.env.TRIPS_QA_OUTPUT??'../trips-ui',process.env.ARTEL_OPERATOR_QA_BUILT==='1'?'built':'source');await mkdir(output,{recursive:true});
++const report={synthetic:true,baseline,passed:false,checks:[],measurements:[],axe:[],external:[],errors:[],tilesStubbed:true};
++const check=name=>{report.checks.push(name);console.log('PASS',name)};
++const f=await integrationRuntime();let runtime;
++try {
++ await f.store.mutate(f.source,d=>{
++  d.banking=emptyBanking();const c=fixtureConfig();d.banking.operations=Array.from({length:3500},(_,i)=>normalizeTbank(c,{number:accountNumber,currency:'RUB'},fixtureDay,tbankRow(`perf-${i}`)));
++  for(const a of d.directories.addresses){a.latitude='55.7';a.longitude='37.6';}for(const a of d.directories.oilDepots){a.latitude='55.71';a.longitude='37.61';}
++  return{changed:true,result:null};
++ });
++ await migrateWorkStorage(dirname(f.store.path),f.source);
++ runtime=await startOperatorQaServer({root,snapshotDirectory:f.snapshotDirectory,operationsDirectory:dirname(f.store.path),port:review?5194:0});const {cookie}=await runtime.bootstrap();
++ const api=async(path,method='GET',body)=>{const r=await fetch(runtime.base+path,{method,headers:{Cookie:cookie,Origin:runtime.base,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const v=await r.json();assert.ok(r.ok,JSON.stringify(v));return v};
++ const date=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
++ const input=()=>({companyId:'customer',addressId:'delivery',quantityLitres:'1000',salePricePerLitre:'61.25',executionDate:date,comment:'Синтетическая заявка',idempotencyKey:randomUUID()});
++ await api('/api/trip-requests','POST',input());
++ if(review){
++  assert.equal(runtime.mode,'source');runtime.server.middlewares.stack.unshift({route:'',handle(req,res,next){
++   if(req.url==='/__preview'){res.writeHead(302,{'Set-Cookie':`${cookie}; HttpOnly; SameSite=Strict; Path=/`,Location:'/#trips'});res.end();return;}
++   if(req.url?.startsWith('/api/maps/yandex/tiles?')){res.writeHead(200,{'Content-Type':'image/svg+xml'});res.end('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#eaf0e5"/><text x="40" y="140" fill="#68796a">Локальная карта QA</text></svg>');return;}
++   next();
++  }});console.log('REVIEW '+runtime.base+'/__preview');await new Promise(done=>{process.once('SIGTERM',done);process.once('SIGINT',done)});
++ }else{
++ const original=await f.store.read(f.source);const part=new WorkPartition(f.store.path),workBefore=await readFile(part.workPath,'utf8');
++ for(const [engine,launcher] of (baseline?[['chromium',chromium]]:[['chromium',chromium],['webkit',webkit]])){
++  const browser=await launcher.launch();try{
++   const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block',reducedMotion:'reduce'});await authenticateContext(context,runtime.base,cookie);
++   await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.origin!==runtime.base){report.external.push(u.origin);return route.abort();}if(u.pathname==='/api/maps/yandex/tiles')return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#eaf0e5"/></svg>'});return route.continue()});
++   const page=await context.newPage(),calls=[];page.on('pageerror',e=>report.errors.push(e.message));page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))calls.push({path:new URL(r.url()).pathname,method:r.method()})});
++   let t=performance.now();await page.goto(runtime.base+'/#trips');await expect(page.locator('.trip-request-card')).toHaveCount(1);report.measurements.push({engine,phase:'cold',action:'ready',uiMs:performance.now()-t});
++   if(!baseline){assert.equal(calls.filter(c=>c.path==='/api/shipment-trips').length,0);assert.equal(calls.filter(c=>c.path==='/api/snapshot').length,0);check(engine+': initial requests avoid financial snapshot and trip list');}
++   t=performance.now();await page.reload();await expect(page.locator('.trip-request-card')).toHaveCount(1);report.measurements.push({engine,phase:'reload',action:'ready',uiMs:performance.now()-t});
++   const tabs=page.locator('.trips-section-tabs'),choose=async(label,name)=>{const box=page.getByRole('dialog').getByRole('combobox',{name:new RegExp('^'+label)});await box.fill(name);await page.getByRole('listbox').getByRole('option').first().click()};
++   const create=async(phase)=>{
++    const before=(await api('/api/trip-requests')).requests.length;await page.getByRole('button',{name:'Новая заявка',exact:true}).click();await choose('Компания','ПолучательТестовый');await choose('Место доставки','Доставка');await page.getByLabel('Количество литров, л',{exact:false}).fill('1234');
++    const mark=calls.length;let ack;
++    const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/trip-requests'&&r.request().method()==='POST').then(async r=>{const v=await r.json();assert.equal(r.status(),201);ack=performance.now();return v.request});
++    const start=performance.now();await page.getByRole('button',{name:'Сохранить заявку',exact:true}).click();const saved=await response;await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.locator('.trip-request-card')).toHaveCount(before+1);
++    report.measurements.push({engine,phase,action:'create',ackMs:ack-start,uiMs:performance.now()-start,followupGets:calls.slice(mark).filter(c=>c.method==='GET').map(c=>c.path)});
++    if(!baseline)assert.equal(calls.slice(mark).filter(c=>c.method==='GET').length,0);
++    return saved;
++   };
++   const remove=async(saved,phase)=>{
++    const count=await page.locator('.trip-request-card').count();const card=page.locator('.trip-request-card').filter({hasText:'1 234'.replace(' ','\u00a0')});await card.getByRole('button',{name:/Удалить заявку:/}).click();let ack;
++    const mark=calls.length,response=page.waitForResponse(r=>r.request().method()==='DELETE'&&r.url().includes(saved.id)).then(async r=>{await r.json();assert.equal(r.status(),200);ack=performance.now()});
++    const start=performance.now();await page.getByRole('dialog').getByRole('button',{name:'Удалить заявку',exact:true}).click();await response;await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.locator('.trip-request-card')).toHaveCount(count-1);
++    report.measurements.push({engine,phase,action:'delete',ackMs:ack-start,uiMs:performance.now()-start,followupGets:calls.slice(mark).filter(c=>c.method==='GET').map(c=>c.path)});if(!baseline)assert.equal(calls.slice(mark).filter(c=>c.method==='GET').length,0);
++   };
++   const map=async(phase)=>{const mark=calls.length,start=performance.now();await tabs.getByRole('button',{name:'Карта',exact:true}).click();await expect(page.locator('.trip-map-marker')).toHaveCount(1);await expect(page.locator('.trip-map-canvas canvas').first()).toBeVisible();await expect(page.getByText('Загружаем карту…',{exact:true})).toHaveCount(0);report.measurements.push({engine,phase,action:'map-markers-and-canvas',uiMs:performance.now()-start,requests:calls.slice(mark)});if(!baseline)assert.equal(calls.slice(mark).filter(c=>c.path==='/api/shipment-trips').length,0);await tabs.getByRole('button',{name:'Заявки',exact:true}).click();await expect(page.locator('.trip-request-card')).toHaveCount(1)};
++   let saved=await create('cold');await remove(saved,'cold');await map('cold');
++   if(engine==='chromium' && process.env.QA_SKIP_WARM!=='1'){console.log('Waiting one minute on requests for warm measurements');await new Promise(done=>setTimeout(done,60000));saved=await create('after-60s');await remove(saved,'after-60s');await map('after-60s');}
++   check(engine+': real persisted create/delete and map, cold/warm metrics');
++   if(!baseline){
++    let releaseAck,ackStarted,ackSettled;const ackGate=new Promise(done=>releaseAck=done),ackSeen=new Promise(done=>ackStarted=done),ackComplete=new Promise(done=>ackSettled=done);
++    await page.route('**/api/trip-requests',async route=>{if(route.request().method()==='POST'){const response=await route.fetch();ackStarted();await ackGate;await route.fulfill({response});ackSettled();return;}return route.continue()});
++    const pendingCreate=create('held-ack');await ackSeen;await expect(page.locator('.trip-request-card')).toHaveCount(1);await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('button',{name:'Сохранить заявку',exact:true})).toBeDisabled();releaseAck();saved=await pendingCreate;await ackComplete;await page.unroute('**/api/trip-requests');await remove(saved,'held-ack');check(engine+': no success before acknowledged server response');
++    // A saved response must remain visible when an older list finishes later.
++    let release,seen,settled;const completed=new Promise(done=>settled=done);const gate=new Promise(done=>release=done),started=new Promise(done=>seen=done);let hold=true;
++    await page.route('**/api/trip-requests',async route=>{if(route.request().method()==='GET'&&hold){hold=false;const response=await route.fetch();seen();await gate;await route.fulfill({response});settled();return;}return route.continue()});
++    await page.getByRole('button',{name:'Новая заявка',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).click();await started;
++    saved=await create('stale-get');release();await completed;await page.unroute('**/api/trip-requests');await expect(page.locator('.trip-request-card')).toHaveCount(2);await remove(saved,'stale-get');check(engine+': delayed older GET cannot undo acknowledged create');
++    // Keep the record until DELETE is acknowledged; fail visibly and preserve the dialog.
++    await page.locator('.trip-request-card').getByRole('button',{name:/Удалить заявку:/}).click();
++    await page.route('**/api/trip-requests/*',route=>route.request().method()==='DELETE'?route.fulfill({status:409,json:{error:'QA: заявка уже изменилась'}}):route.continue());await page.getByRole('dialog').getByRole('button',{name:'Удалить заявку',exact:true}).click();await expect(page.getByRole('alert')).toContainText('QA: заявка уже изменилась');await expect(page.locator('.trip-request-card')).toHaveCount(1);await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).click();await page.unroute('**/api/trip-requests/*');check(engine+': conflicting DELETE preserves record and shows failure');
++    for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:1000});await expect(page.locator('.trip-request-card')).toHaveCount(1);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));const axe=await new AxeBuilder({page}).include('.trips-page').analyze();assert.equal(axe.violations.length,0,JSON.stringify(axe.violations));report.axe.push({engine,width,violations:0});await page.screenshot({path:resolve(output,`${engine}-${width}.png`)});}
++    await tabs.getByRole('button',{name:'Рейсы',exact:true}).click();await expect(page.locator('.trip-card')).toHaveCount(1);await tabs.getByRole('button',{name:'Заявки',exact:true}).click();await expect(page.locator('.trip-request-card')).toHaveCount(1);check(engine+': lazy trip list and responsive/axe pass');
++   }
++   await context.close();
++  }finally{await browser.close()}
++ }
++ const after=await f.store.read(f.source);for(const key of ['banking','shipments','directories','accounts','tripExecutions','tripNumbers','saby'])assert.deepEqual(after[key],original[key]);assert.equal(await readFile(part.workPath,'utf8'),workBefore);
++ await runtime.replaceMiddleware();assert.equal((await api('/api/trip-requests')).requests.length,1);check('restart, banking/directories/previous trips/Work exact');assert.deepEqual(report.external,[]);assert.deepEqual(report.errors,[]);report.passed=true;
++ }
++}finally{await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await runtime?.server.close();await f.close();}
+diff --git a/scripts/profile-trips-performance.mjs b/scripts/profile-trips-performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile-trips-performance.mjs
+@@ -0,0 +1,47 @@
++// Synthetic HTTP acknowledgements; denies providers and never opens a live store.
++import assert from 'node:assert/strict';
++import {createServer} from 'node:http';
++import {writeFile,stat} from 'node:fs/promises';
++import {resolve,dirname} from 'node:path';
++import {randomUUID} from 'node:crypto';
++import {performance} from 'node:perf_hooks';
++import {integrationRuntime} from '../tests/helpers/trip-saby-integration.ts';
++import {createSnapshotMiddleware} from '../server/local-api.ts';
++import {migrateWorkStorage} from '../server/work-partition.ts';
++import {normalizeTbank} from '../server/banking/adapters.ts';
++import {emptyBanking} from '../server/banking/domain.ts';
++import {fixtureConfig,fixtureDay,accountNumber,tbankRow} from '../tests/banking-fixtures.ts';
++const output=resolve(process.argv[2]??'qa/trips-performance.json'), rounds=Number(process.env.ROUNDS??10);
++const f=await integrationRuntime(), report={synthetic:true,externalCalls:0,rounds,samples:[]};
++const deny=async()=>{report.externalCalls++;throw Error('No external calls');};
++try {
++ await f.store.mutate(f.source,d=>{
++  d.banking=emptyBanking(); const c=fixtureConfig();d.banking.operations=Array.from({length:3500},(_,i)=>normalizeTbank(c,{number:accountNumber,currency:'RUB'},fixtureDay,tbankRow(`perf-${i}`)));
++  const rows=Object.values(d.shipments);for(let i=0;i<89;i++)for(const [j,r] of rows.entries()) d.shipments[`shipment-local-perf-${i}-${j}`]={...structuredClone(r),fields:{...r.fields,trip_id:`shipment-trip-abcdef-${i}`}};
++  for(const a of d.directories.addresses){a.latitude='55.7';a.longitude='37.6';}return{changed:true,result:null};
++ });
++ const {currentSnapshot}=await import('../server/shipment-operations.ts');currentSnapshot(f.base,await f.store.read(f.source));
++ const api=createSnapshotMiddleware(f.snapshotDirectory,{operationsStore:f.store,tripRequestGeocoder:deny,sabyWorkflowMonitoringEnabled:false,bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},bankRequest:deny,sberRequest:deny,fetcher:deny,pushSender:deny,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false}});
++ const server=createServer((q,s)=>api(q,s,()=>{s.writeHead(404);s.end()}));await new Promise(r=>server.listen(0,'127.0.0.1',r));const url=`http://127.0.0.1:${server.address().port}`;
++ try {
++ const setup=await fetch(url+'/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'Synthetic',login:'qa.perf',password:randomUUID()})});assert.ok(setup.ok,await setup.text());const cookie=setup.headers.get('set-cookie').split(';')[0];await migrateWorkStorage(dirname(f.store.path),f.source);
++ report.coreBytes=(await stat(resolve(dirname(f.store.path),'work-storage/core/operations.json'))).size;
++ const originalRead=f.store.read.bind(f.store),originalMutate=f.store.mutate.bind(f.store);let trace;
++ f.store.read=async(...a)=>{const t=performance.now();const r=await originalRead(...a);if(trace){trace.reads++;trace.readMs+=performance.now()-t;}return r;};
++ const mutationMethod=f.store.mutateTripRequests?'mutateTripRequests':'mutate';
++ const originalRequestMutate=f.store[mutationMethod].bind(f.store);
++ f.store[mutationMethod]=async(source,fn)=>{const t=performance.now();let called,ended;const r=await originalRequestMutate(source,async d=>{called=performance.now();const result=await fn(d);ended=performance.now();return result;});if(trace){trace.admissionLoadMs=called-t;trace.callbackMs=ended-called;trace.commitMs=performance.now()-ended;}return r;};
++ const call=async(path,method='GET',body)=>{const t=performance.now();trace={reads:0,readMs:0};const r=await fetch(url+path,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const data=await r.json();assert.ok(r.ok,JSON.stringify(data));const metrics={...trace,ms:performance.now()-t};trace=null;return{data,metrics};};
++ const protectedBefore=JSON.stringify((await originalRead(f.source)).banking.operations.slice(1));
++ for(const load of ['idle','six-background-writes'])for(let i=0;i<rounds;i++){
++  const run=async(name,path,method,body)=>{const t=performance.now();const jobs=load==='idle'?[]:Array.from({length:6},(_,j)=>originalMutate(f.source,d=>{d.banking.operations[0].updatedAt=new Date(Date.now()+j).toISOString();return{changed:true,result:null}}));const r=await call(path,method,body);await Promise.all(jobs);report.samples.push({load,name,round:i,...r.metrics,batchMs:performance.now()-t});return r.data;};
++  const r=(await run('create','/api/trip-requests','POST',{companyId:'customer',addressId:'delivery',quantityLitres:'1000',executionDate:'2026-10-29',comment:'Synthetic',idempotencyKey:randomUUID()})).request;
++  await run('list','/api/trip-requests');
++  await run('delete',`/api/trip-requests/${r.id}`,'DELETE',{version:r.version});
++ }
++ assert.equal(JSON.stringify((await originalRead(f.source)).banking.operations.slice(1)),protectedBefore);assert.equal(report.externalCalls,0);
++ const pct=(a,p)=>a.sort((a,b)=>a-b)[Math.ceil(a.length*p)-1];report.summary=[];
++ for(const load of ['idle','six-background-writes'])for(const name of ['create','list','delete']){const a=report.samples.filter(s=>s.load===load&&s.name===name);report.summary.push({load,name,count:a.length,medianMs:pct(a.map(s=>s.ms),.5),p95Ms:pct(a.map(s=>s.ms),.95),reads:a[0].reads,medianCallbackMs:pct(a.map(s=>s.callbackMs??0),.5),medianCommitMs:pct(a.map(s=>s.commitMs??0),.5)});}
++ report.passed=true;await writeFile(output,JSON.stringify(report,null,2));console.log(JSON.stringify(report.summary,null,2));
++ }finally{await new Promise(r=>server.close(r))}
++}finally{await f.close()}
+diff --git a/scripts/verify_trip_request_recovery_ui.mjs b/scripts/verify_trip_request_recovery_ui.mjs
+--- a/scripts/verify_trip_request_recovery_ui.mjs
++++ b/scripts/verify_trip_request_recovery_ui.mjs
+@@ -91,9 +91,8 @@
+       await current.call('/api/shipment-trips', 'POST', current.tripBody([committed]));
+       // A legitimate catalog change after consumption hides the company from active lookup.
+       await current.store.mutate(current.source, data => { data.companies.find(row => row.id === 'qa-client').directoryArchived = true; return { result: null, changed: true }; });
+-      const refreshed = page.waitForResponse(response => response.url() === current.base + '/api/trip-requests' && response.request().method() === 'GET');
+-      await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await refreshed;
+-      await expect(dialog.getByRole('combobox', { name: /^Место доставки/ })).toHaveValue('');
++      // Focus refresh was deliberately removed from TripsPage. Retry must still
++      // replay the stored body after authoritative server-side catalog archival.
+       await dialog.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
+       await expect(dialog).toHaveCount(0);
+       assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1]);
+@@ -102,11 +101,11 @@
+       assert.equal(Object.keys(stored.tripRequests).length, 1); assert.equal(stored.tripRequests[committed.id].status, 'consumed');
+       assert.equal(stored.tripRequests[committed.id].latitude, '55.712345');
+       assert.equal(stored.directories.addresses[0].latitude, undefined);
+-      check(`${engine}: lost creation reply replays byte-identical selected point after catalog disappears; consumed request is not duplicated and directory is unchanged`);
++      check(`${engine}: lost creation reply replays byte-identical selected point after company archival; consumed request is not duplicated and directory is unchanged`);
+       await context.close();
+     }
+     await current.close(); current = await fixture();
+-    for (const mode of ['same-point', 'different-point', 'omitted-point']) {
++    for (const mode of ['same-point', 'different-point', 'omitted-point', 'different-date']) {
+       const source = await current.newRequest(`PATCH recovery ${mode}`);
+       const { page, context } = await openPage(browser, current);
+       await page.goto(current.base + '/#trips');
+@@ -119,7 +118,7 @@
+         if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+         bodies.push(route.request().postData());
+         const submitted = route.request().postDataJSON();
+-        const actual = bodies.length === 1 && mode !== 'same-point' ? { ...submitted, latitude: '55.8', longitude: '37.9' } : submitted;
++        const actual = bodies.length === 1 && mode === 'different-date' ? { ...submitted, executionDate: '2099-11-01' } : bodies.length === 1 && mode !== 'same-point' ? { ...submitted, latitude: '55.8', longitude: '37.9' } : submitted;
+         const response = await route.fetch({ postData: JSON.stringify(actual) });
+         if (bodies.length === 1) { assert.equal(response.status(), 200); await route.abort('failed'); }
+         else await route.fulfill({ response });
+@@ -132,15 +131,16 @@
+         await expect(dialog.getByRole('button', { name: 'Загрузить актуальную заявку', exact: true })).toBeVisible();
+         await expect(dialog).toBeVisible();
+         await dialog.getByRole('button', { name: 'Загрузить актуальную заявку', exact: true }).click();
+-        await expect(dialog.getByText('Точка выбрана: 55.800000, 37.900000', { exact: true })).toBeVisible();
++        if (mode === 'different-date') await expect(dialog.getByLabel('Дата выполнения', { exact: true })).toHaveValue('2099-11-01');
++        else await expect(dialog.getByText('Точка выбрана: 55.800000, 37.900000', { exact: true })).toBeVisible();
+         await expect(dialog.getByRole('button', { name: 'Сохранить заявку', exact: true })).toBeDisabled();
+         await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
+         await expect(dialog).toHaveCount(0);
+       }
+       assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1]);
+       const stored = (await current.store.read(current.source)).tripRequests[source.id];
+-      assert.equal(stored.latitude, mode === 'same-point' ? '55.712345' : '55.8');
+-      assert.equal(new URL(stored.mapUrl).searchParams.get('pt'), mode === 'same-point' ? '37.623456,55.712345' : '37.9,55.8');
++      assert.equal(stored.latitude, ['same-point', 'different-date'].includes(mode) ? '55.712345' : '55.8');
++      assert.equal(new URL(stored.mapUrl).searchParams.get('pt'), ['same-point', 'different-date'].includes(mode) ? '37.623456,55.712345' : '37.9,55.8');
+       check(`${engine}: lost PATCH ${mode} replays identical body; recovery validates point and navigation URL alongside litres/comment`);
+       await context.close();
+     }
+diff --git a/server/local-api.ts b/server/local-api.ts
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -40,7 +40,7 @@
+ import { deleteDirectoryEntry } from './directory-deletion';
+ import { lookupCheckoCompany, validInn } from './checko';
+ import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
+-import { currentShipmentAccess, currentWorkSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
++import { currentShipmentAccess, currentWorkSnapshot, currentTripRequestSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
+ import { buildSettlements } from './settlements';
+ import { buildOrganizationSettlements, organizationSettlementsForActor } from './organization-settlements';
+ import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
+@@ -693,6 +693,12 @@
+       const tripRequestMatch = pathname.match(/^\/api\/trip-requests(?:\/([^/]+))?$/);
+       if (tripRequestMatch) {
+         const id = tripRequestMatch[1] ? decodeURIComponent(tripRequestMatch[1]) : undefined;
++        if (id === 'context') {
++          if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
++          const full = currentTripRequestSnapshot(base, requestData);
++          const scoped = actor ? scopeSnapshot(full, authorized(requestData)) : full;
++          return write(response, 200, JSON.stringify({ companies: scoped.companies, directories: scoped.directories }));
++        }
+         if (id === 'map-config') {
+           if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+           return write(response, 200, JSON.stringify(readTripRequestsMapConfig(options.yandexTilesEnvironment)));
+@@ -705,21 +711,21 @@
+           if (retry !== undefined && retry !== true) throw new ApiError(400, 'Некорректный запрос повтора поиска адреса.');
+           if (fingerprint !== undefined && (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint))) throw new ApiError(400, 'Некорректный идентификатор поиска адреса.');
+           const stored = await operations.read(base.provenance.sourceSha256);
+-          const target = tripRequestGeocodeTarget(stored, currentSnapshot(base, stored, false), actor ? authorized(stored) : null, identity);
++          const target = tripRequestGeocodeTarget(stored, currentTripRequestSnapshot(base, stored), actor ? authorized(stored) : null, identity);
+           if (version !== undefined && version !== target.version) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
+           const currentFingerprint = createHash('sha256').update(target.fingerprint).digest('hex');
+           if (fingerprint !== undefined && fingerprint !== currentFingerprint) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
+           // Provider latency must never hold the business-store mutation lock.
+           const location = target.location ?? await locations.poll(target.address, 5000, retry === true);
+           const fresh = await operations.read(base.provenance.sourceSha256);
+-          const latest = tripRequestGeocodeTarget(fresh, currentSnapshot(base, fresh, false), actor ? authorized(fresh) : null, identity);
++          const latest = tripRequestGeocodeTarget(fresh, currentTripRequestSnapshot(base, fresh), actor ? authorized(fresh) : null, identity);
+           if (latest.fingerprint !== target.fingerprint) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
+           return write(response, 200, JSON.stringify(location.status === 'pending' ? { ...location, fingerprint: currentFingerprint } : location));
+         }
+         if (!id && request.method === 'GET') {
+-          const stored = await operations.read(base.provenance.sourceSha256);
++          const stored = requestData;
+           const currentActor = actor ? authorized(stored) : null;
+-          const snapshot = currentSnapshot(base, stored, false);
++          const snapshot = currentTripRequestSnapshot(base, stored);
+           const catalog = tripRequestCatalog(snapshot);
+           const requests = await Promise.all(listTripRequests(stored, snapshot, currentActor).map(async row => {
+             const target = tripRequestGeocodeTarget(stored, snapshot, currentActor, { requestId: row.id });
+@@ -733,9 +739,10 @@
+         }
+         if (!(id ? ['PATCH', 'DELETE'] : ['POST']).includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
+         const body = await jsonBody(request, request.method === 'DELETE');
+-        const saved = await operations.mutate<Record<string, unknown>>(base.provenance.sourceSha256, async data => {
++        const mutateRequest = operations.mutateTripRequests?.bind(operations) ?? operations.mutate.bind(operations);
++        const saved = await mutateRequest<Record<string, unknown>>(base.provenance.sourceSha256, async data => {
+           const currentActor = actor ? authorized(data) : null;
+-          const snapshot = currentSnapshot(base, data, false);
++          const snapshot = currentTripRequestSnapshot(base, data);
+           if (request.method === 'DELETE') return { result: cancelTripRequest(data, snapshot, currentActor, id!, body), changed: true };
+           const place = !id && snapshot.directories?.addresses.find(row => row.id === body.addressId && row.companyId === body.companyId && row.kind === 'delivery');
+           const known = place ? await locations.read(typeof body.address === 'string' ? body.address : place.address || place.name) : null;
+diff --git a/server/operations-store.ts b/server/operations-store.ts
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -222,7 +222,7 @@
+   return encoded;
+ }
+ 
+-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork'>>;
++export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests'>>;
+ 
+ export class LegacyOperationsStore {
+   readonly path: string;
+@@ -330,6 +330,11 @@
+   override async mutate<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update) : super.mutate(source, update);
+   }
++  /** Separate FIFO admission only; the same core file, latch, validation and WAL
++   * still commit requests and trip consumption atomically with the rest of CRM. */
++  async mutateTripRequests<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
++    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, false, true) : super.mutate(source, update);
++  }
+   async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
+   }
+diff --git a/server/shipment-operations.ts b/server/shipment-operations.ts
+--- a/server/shipment-operations.ts
++++ b/server/shipment-operations.ts
+@@ -279,6 +279,32 @@
+ export function currentWorkSnapshot(base: Snapshot, store: OperationsData): Snapshot {
+   const assembled = currentShipmentData(base, store, false);
+   return { ...assembled.base, companies: assembled.companies, shipments: assembled.shipments, directories: assembled.directories };
++}
++
++/** Requests need the shared directory and historical role inference, not financial
++ * recalculation. Keep the same structural/reference validation as other views. */
++export function currentTripRequestSnapshot(base: Snapshot, store: OperationsData): Snapshot {
++  const snapshot = currentWorkSnapshot(base, store);
++  const canonicalManagers = new Map(snapshot.managers.map(manager => [normalizeName(manager.label), manager.label]));
++  for (const row of snapshot.shipments) if (row.manager) {
++    const key = normalizeName(row.manager);
++    if (!canonicalManagers.has(key)) canonicalManagers.set(key, row.manager.trim());
++    row.manager = canonicalManagers.get(key)!;
++  }
++  const companies = snapshot.companies.map(company => ({ ...company, roles: [...company.roles], shipmentIds: [] as string[], paymentIds: [] as string[], managerLabels: [] as string[] }));
++  const byId = new Map(companies.map(company => [company.id, company]));
++  for (const row of snapshot.shipments) for (const role of ['customer', 'supplier', 'carrier'] as const) {
++    const company = byId.get(row[`${role}Id`] ?? '');
++    if (!company) continue;
++    if (!company.roles.includes(role)) company.roles.push(role);
++    if (!company.shipmentIds.includes(row.id)) company.shipmentIds.push(row.id);
++    if (role === 'customer' && row.manager && !company.managerLabels.includes(row.manager)) company.managerLabels.push(row.manager);
++  }
++  for (const payment of snapshot.payments) {
++    const company = byId.get(payment.counterpartyId ?? '');
++    if (company) { company.paymentIds.push(payment.id); if (!company.roles.includes('payment_counterparty')) company.roles.push('payment_counterparty'); }
++  }
++  return { ...snapshot, companies };
+ }
+ 
+ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBankSettlements = true): Snapshot {
+diff --git a/server/work-partition.ts b/server/work-partition.ts
+--- a/server/work-partition.ts
++++ b/server/work-partition.ts
+@@ -127,8 +127,8 @@
+     return { core, work, data: compose(core, work), coreSize: coreStat.size, workSize: Buffer.byteLength(workRaw) };
+   }
+   read(source: string) { return partitionLock(this.latch, async () => (await this.load(source)).data); }
+-  mutate<T>(source: string, update: Update<T>, workOnly = false): Promise<T> {
+-    const admission = resolve(this.directory, workOnly ? 'work-queue.lock' : 'core-queue.lock');
++  mutate<T>(source: string, update: Update<T>, workOnly = false, requestsQueue = false): Promise<T> {
++    const admission = resolve(this.directory, workOnly ? 'work-queue.lock' : requestsQueue ? 'trip-requests-queue.lock' : 'core-queue.lock');
+     return partitionLock(admission, () => partitionLock(this.latch, async () => {
+       const before = await this.load(source);
+       // Only the restricted Work route needs a full-domain fingerprint guard.
+diff --git a/tests/api-trip-requests.test.ts b/tests/api-trip-requests.test.ts
+--- a/tests/api-trip-requests.test.ts
++++ b/tests/api-trip-requests.test.ts
+@@ -717,3 +717,80 @@
+     assert.equal(disk.tripRequests?.[dated.id].executionDate, null);
+   } finally { await f.close(); }
+ });
++
++test('request projection and trips context preserve the existing catalog and permission scopes', async () => {
++  const { currentSnapshot, currentTripRequestSnapshot } = await import('../server/shipment-operations');
++  const { tripRequestCatalog } = await import('../server/trip-requests');
++  const { scopeSnapshot } = await import('../server/auth-scope');
++  const f = await fixture(); try {
++    // Historical shipment roles must still make a company available in the shared queue.
++    await f.store.mutate(f.source, data => { data.companies.find(row => row.id === 'customer')!.roles = []; return { changed: true, result: null }; });
++    const data = await f.store.read(f.source), full = currentSnapshot(f.base, data, false), lean = currentTripRequestSnapshot(f.base, data);
++    assert.deepEqual(tripRequestCatalog(lean), tripRequestCatalog(full));
++    for (const credential of [f.admin, f.one.cookie, f.two.cookie]) {
++      const session = await f.request('/api/auth/session', 'GET', undefined, credential);
++      const actor = data.accounts!.users.find(user => user.id === session.body.user.id)!;
++      const expected = scopeSnapshot(full, actor);
++      const context = await f.request('/api/trip-requests/context', 'GET', undefined, credential);
++      assert.equal(context.status, 200); assert.deepEqual(context.body, JSON.parse(JSON.stringify({ companies: expected.companies, directories: expected.directories })));
++      assert.equal(Object.hasOwn(context.body, 'payments'), false);
++    }
++    const denied = await f.employee('context-denied', 'no-trips-manager', []);
++    assert.equal((await f.request('/api/trip-requests/context', 'GET', undefined, denied.cookie)).status, 403);
++    assert.equal((await f.request('/api/trip-requests/context')).status, 401);
++    assert.equal((await f.request('/api/trip-requests/context', 'POST', {}, f.admin)).status, 405);
++  } finally { await f.close(); }
++});
++
++test('partitioned requests preserve Work, history, idempotency, trip consumption and restart/export', async () => {
++  const { migrateWorkStorage, mergeWorkStorage, WorkPartition } = await import('../server/work-partition');
++  const f = await fixture(); try {
++    await migrateWorkStorage(dirname(f.store.path), f.source);
++    const part = new WorkPartition(f.store.path), before = await f.store.read(f.source), work = await readFile(part.workPath, 'utf8');
++    const input = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', salePricePerLitre: '61.25', executionDate: '2026-10-30', idempotencyKey: randomUUID() };
++    const created = await f.request('/api/trip-requests', 'POST', input, f.one.cookie);
++    assert.equal(created.status, 201); const request = created.body.request;
++    assert.equal((await f.request('/api/trip-requests', 'POST', input, f.one.cookie)).body.request.id, request.id);
++    assert.equal((await f.request('/api/trip-requests/' + request.id, 'DELETE', { version: 99 }, f.one.cookie)).status, 409);
++    const consumed = await f.request('/api/shipment-trips', 'POST', f.tripBody([request]), f.one.cookie);
++    assert.equal(consumed.status, 201, JSON.stringify(consumed.body));
++    assert.equal((await f.request('/api/trip-requests/' + request.id, 'DELETE', { version: request.version }, f.one.cookie)).status, 409);
++    const cancelled = await f.create(2); assert.equal((await f.request('/api/trip-requests/' + cancelled.id, 'DELETE', { version: cancelled.version }, f.two.cookie)).status, 200);
++    const after = await new OperationsStore(dirname(f.store.path)).read(f.source);
++    assert.equal(after.tripRequests![request.id].status, 'consumed'); assert.equal(after.tripRequests![cancelled.id].status, 'cancelled');
++    assert.equal(after.tripRequests![request.id].executionDate, input.executionDate);
++    assert.deepEqual(after.directories, before.directories); assert.deepEqual(after.accounts, before.accounts);
++    for (const [id, row] of Object.entries(before.shipments)) assert.deepEqual(after.shipments[id], row);
++    assert.equal(await readFile(part.workPath, 'utf8'), work);
++    await mergeWorkStorage(dirname(f.store.path), f.source); assert.deepEqual(await f.store.read(f.source), after);
++  } finally { await f.close(); }
++});
++
++test('separate request admission reauthorizes revoked accounts inside the transaction', async () => {
++  const { migrateWorkStorage } = await import('../server/work-partition');
++  const f = await fixture(); try {
++    await migrateWorkStorage(dirname(f.store.path), f.source);
++    const original = f.store.mutateTripRequests.bind(f.store);
++    f.store.mutateTripRequests = async (source, update) => {
++      await f.store.mutate(source, data => { const user = data.accounts!.users.find(row => row.id === f.one.user.id)!; user.active = false; user.version++; return { changed: true, result: null }; });
++      return original(source, update);
++    };
++    const before = (await f.store.read(f.source)).tripRequests;
++    const response = await f.request('/api/trip-requests', 'POST', { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', idempotencyKey: randomUUID() }, f.one.cookie);
++    assert.equal(response.status, 401); assert.deepEqual((await f.store.read(f.source)).tripRequests, before);
++  } finally { await f.close(); }
++});
++
++test('request cancellation racing trip consumption has a single atomic winner on the split store', async () => {
++  const { migrateWorkStorage } = await import('../server/work-partition');
++  const f = await fixture(); try {
++    await migrateWorkStorage(dirname(f.store.path), f.source); const row = await f.create();
++    const [trip, cancelled] = await Promise.all([f.request('/api/shipment-trips', 'POST', f.tripBody([row]), f.one.cookie), f.request('/api/trip-requests/' + row.id, 'DELETE', { version: row.version }, f.two.cookie)]);
++    assert.ok(trip.status === 201 && cancelled.status === 409 || trip.status === 409 && cancelled.status === 200, JSON.stringify([trip, cancelled]));
++    const stored = await f.store.read(f.source), saved = stored.tripRequests![row.id];
++    assert.equal(saved.version, row.version + 1);
++    assert.equal(saved.status, trip.status === 201 ? 'consumed' : 'cancelled');
++    if (saved.status === 'consumed') assert.equal(stored.shipments[saved.shipmentId!].fields.source_request_id, row.id);
++    else assert.equal(Object.values(stored.shipments).filter(shipment => shipment.fields.source_request_id === row.id).length, 0);
++  } finally { await f.close(); }
++});
+diff --git a/tests/production-entrypoint.sh b/tests/production-entrypoint.sh
+--- a/tests/production-entrypoint.sh
++++ b/tests/production-entrypoint.sh
+@@ -23,7 +23,7 @@
+ # A stale transaction marker from an already dead process must be recovered.
+ printf '%s' 'stale' > "$ARTEL_STORE_DIR/operations.json.lock"
+ mkdir "$ARTEL_STORE_DIR/work-storage"
+-for name in transaction core-queue work-queue; do
++for name in transaction core-queue work-queue trip-requests-queue; do
+   printf '%s' 'stale' > "$ARTEL_STORE_DIR/work-storage/$name.lock"
+ done
+ printf '%s' 'durable-redo' > "$ARTEL_STORE_DIR/work-storage/commit.json"
+@@ -31,7 +31,7 @@
+   const fs = require("node:fs");
+   const lock = process.env.ARTEL_STORE_DIR + "/operations.json.lock";
+   if (fs.existsSync(lock)) throw new Error("stale lock was not recovered");
+-  for (const name of ["transaction", "core-queue", "work-queue"]) {
++  for (const name of ["transaction", "core-queue", "work-queue", "trip-requests-queue"]) {
+     const path = process.env.ARTEL_STORE_DIR + "/work-storage/" + name + ".lock";
+     if (fs.existsSync(path)) throw new Error("stale partition lock was not recovered");
+     fs.writeFileSync(path, "live-partition-transaction");
+@@ -58,7 +58,7 @@
+ test "$status" -eq 75
+ test ! -e "$ARTEL_TEST_MARKER"
+ test "$(cat "$ARTEL_STORE_DIR/operations.json.lock")" = 'live-transaction'
+-for name in transaction core-queue work-queue; do
++for name in transaction core-queue work-queue trip-requests-queue; do
+   test "$(cat "$ARTEL_STORE_DIR/work-storage/$name.lock")" = 'live-partition-transaction'
+ done
+ 
+@@ -70,7 +70,7 @@
+ test -e "$ARTEL_STORE_DIR/operations.json.lock"
+ "$entrypoint" sh -c '
+   test ! -e "$ARTEL_STORE_DIR/operations.json.lock"
+-  for name in transaction core-queue work-queue; do
++  for name in transaction core-queue work-queue trip-requests-queue; do
+     test ! -e "$ARTEL_STORE_DIR/work-storage/$name.lock"
+   done
+   test "$(cat "$ARTEL_STORE_DIR/work-storage/commit.json")" = durable-redo
+diff --git a/tests/work-partition.test.ts b/tests/work-partition.test.ts
+--- a/tests/work-partition.test.ts
++++ b/tests/work-partition.test.ts
+@@ -161,3 +161,24 @@
+     assert.equal((await stat(f.part.core.path)).size, 64 * 1024 * 1024 - 4096);
+   } finally { await f.close(); }
+ });
++
++test('request admission bypasses waiting core work, stays FIFO and shares the Work transaction latch', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source);
++    const pointer = await readFile(f.store.path, 'utf8'), workBytes = await readFile(f.part.workPath, 'utf8');
++    const order: string[] = []; let release!: () => void, started!: () => void;
++    const gate = new Promise<void>(done => release = done), running = new Promise<void>(done => started = done);
++    const first = f.store.mutate(source, async () => { started(); await gate; order.push('active'); return { changed: false, result: null }; });
++    await running;
++    const core = Array.from({ length: 8 }, (_, i) => f.store.mutate(source, () => { order.push(`core-${i}`); return { changed: true, result: null }; }));
++    const requests = Array.from({ length: 4 }, (_, i) => f.store.mutateTripRequests(source, () => { order.push(`request-${i}`); return { changed: true, result: null }; }));
++    await delay(20); assert.deepEqual(order, []); release();
++    await Promise.all([first, ...core, ...requests]);
++    assert.equal(order[0], 'active'); assert.ok(order.indexOf('request-0') < order.indexOf('core-2'));
++    assert.deepEqual(order.filter(x => x.startsWith('request')), Array.from({ length: 4 }, (_, i) => `request-${i}`));
++    assert.ok(order.indexOf('core-1') < order.indexOf('request-3'), 'request burst must not starve core');
++    assert.equal(await readFile(f.store.path, 'utf8'), pointer); assert.equal(await readFile(f.part.workPath, 'utf8'), workBytes);
++    const logical = await f.store.read(source); await mergeWorkStorage(f.directory, source);
++    assert.deepEqual(await new LegacyOperationsStore(f.directory).read(source), logical);
++  } finally { await f.close(); }
++});
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -15,7 +15,7 @@
+ const CabinetBalances = lazy(() => import('./CabinetBalances'))
+ const OverviewPage = lazy(() => import('./OverviewPage'))
+ const ShipmentsPage = lazy(() => import('./ShipmentsPage'))
+-const TripsPage = lazy(() => import('./TripsPage'))
++const TripsWorkspace = lazy(() => import('./TripsWorkspace'))
+ const DirectoriesPage = lazy(() => import('./DirectoriesPage'))
+ const DocumentsPage = lazy(() => import('./DocumentsPage'))
+ const WorkPage = lazy(() => import('./WorkPage'))
+@@ -101,7 +101,7 @@
+   }, [user])
+   const snapshotRequest = useRef(0)
+   const snapshotController = useRef<AbortController | null>(null)
+-  const requiresSnapshot = ['accounts', 'shipments', 'directories', 'trips', 'payments'].includes(page)
++  const requiresSnapshot = ['accounts', 'shipments', 'directories', 'payments'].includes(page)
+   const snapshotReady = !!data && snapshotPage === page
+   const fetchData = () => {
+     const request = ++snapshotRequest.current
+@@ -175,7 +175,7 @@
+       {page === 'payroll' && <PayrollPage/>}
+       {page === 'shipments' && data && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+       {page === 'directories' && data && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => canManage || ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
+-      {page === 'trips' && data && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
++      {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} canManagePlaces={canManage && hasSection(user, 'directories')}/>}
+       {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
+       </div></Suspense></PageLoadBoundary>}
+       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}
+diff --git a/web/src/TripRequestEditor.tsx b/web/src/TripRequestEditor.tsx
+--- a/web/src/TripRequestEditor.tsx
++++ b/web/src/TripRequestEditor.tsx
+@@ -27,7 +27,7 @@
+ }
+ 
+ export default function TripRequestEditor({ request, companies, directories, onClose: onDismiss, onSaved }: {
+-  request?: TripRequest; companies: Company[]; directories: Directories; onClose: () => void; onSaved: () => void
++  request?: TripRequest; companies: Company[]; directories: Directories; onClose: () => void; onSaved: (request: TripRequest) => void
+ }) {
+   const dialog = useRef<HTMLDialogElement>(null), errorElement = useRef<HTMLDivElement>(null), busy = useRef(false)
+   const idempotencyKey = useRef(crypto.randomUUID()), retryBody = useRef<string | null>(null)
+@@ -91,7 +91,7 @@
+       const payload = request ? { version, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, executionDate: executionDate || null, comment: comment.trim(), ...point } : { idempotencyKey: idempotencyKey.current, companyId, addressId, ...(addressChanged ? { address: normalizeAddress(deliveryAddress) } : {}), quantityLitres: litres, salePricePerLitre: price, executionDate: executionDate || null, comment: comment.trim(), ...point }
+       body = JSON.stringify(payload)
+     }
+-    const submitted = JSON.parse(body) as { quantityLitres: string; salePricePerLitre: string | null; comment: string; address?: string; latitude?: string; longitude?: string }
++    const submitted = JSON.parse(body) as { quantityLitres: string; salePricePerLitre: string | null; comment: string; executionDate?: string | null; address?: string; latitude?: string; longitude?: string }
+     retryBody.current = body; busy.current = true; setSaving(true); setError('')
+     try {
+       const response = await fetch(request ? `/api/trip-requests/${encodeURIComponent(request.id)}` : '/api/trip-requests', { method: request ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(20000) })
+@@ -101,7 +101,7 @@
+           const read = await fetch('/api/trip-requests', { signal: AbortSignal.timeout(10000) })
+           if (read.ok) {
+             const latest = ((await read.json()).requests as TripRequest[]).find(item => item.id === request.id)
+-            if (latest?.quantityLitres === submitted.quantityLitres && (latest.salePricePerLitre ?? null) === submitted.salePricePerLitre && latest.comment === submitted.comment && matchesSubmittedPoint(latest, submitted, savedRequest!)) { await complete(onSaved); return }
++            if (latest?.quantityLitres === submitted.quantityLitres && (latest.salePricePerLitre ?? null) === submitted.salePricePerLitre && latest.comment === submitted.comment && (latest.executionDate ?? null) === (submitted.executionDate ?? null) && matchesSubmittedPoint(latest, submitted, savedRequest!)) { await complete(() => onSaved(latest)); return }
+             if (latest) setLatestRequest(latest); else setUnavailable(true)
+           }
+         }
+@@ -109,7 +109,7 @@
+         else setUncertain(true)
+         throw new Error(result.error || 'Не удалось сохранить заявку.')
+       }
+-      await complete(onSaved)
++      await complete(() => onSaved(result.request))
+     } catch (reason) {
+       if (retryBody.current) setUncertain(true)
+       setError(reason instanceof Error ? reason.message : 'Не удалось получить ответ сервера.')
+diff --git a/web/src/TripRequestsPanel.tsx b/web/src/TripRequestsPanel.tsx
+--- a/web/src/TripRequestsPanel.tsx
++++ b/web/src/TripRequestsPanel.tsx
+@@ -12,8 +12,8 @@
+ import { number } from './utils'
+ import './trip-requests.css'
+ 
+-export default function TripRequestsPanel({ requests, loading, error, companies, directories, onReload, onChanged }: {
+-  requests: TripRequest[]; loading: boolean; error: string; companies: Company[]; directories: Directories; onReload: () => void; onChanged: () => void
++export default function TripRequestsPanel({ requests, loading, error, companies, directories, onReload, onSaved, onDeleted }: {
++  requests: TripRequest[]; loading: boolean; error: string; companies: Company[]; directories: Directories; onReload: () => void; onSaved: (request: TripRequest) => void; onDeleted: (id: string) => void
+ }) {
+   const [query, setQuery] = useState(''), [editor, setEditor] = useState<{ request?: TripRequest } | null>(null), [deleting, setDeleting] = useState<TripRequest | null>(null)
+   const [notice, setNotice] = useState('')
+@@ -42,8 +42,8 @@
+       })}</div>
+       {!visible.length && !error && <div className="panel trips-empty"><ClipboardList size={30}/><h2>{query ? 'Заявки не найдены' : 'Заявок пока нет'}</h2><p>{query ? 'Измените поисковый запрос.' : 'Создайте заявку, чтобы выбрать её при заполнении рейса.'}</p>{!query && <button type="button" className="button primary" onClick={() => setEditor({})}><Plus size={17}/>Создать заявку</button>}</div>}
+     </>}
+-    {editor && <TripRequestEditor request={editor.request} companies={companies} directories={directories} onClose={() => { setEditor(null); onReload() }} onSaved={() => { setEditor(null); setNotice(editor.request ? 'Заявка обновлена.' : 'Заявка создана. Её можно добавить в рейс.'); onChanged() }}/>}
+-    {deleting && <DeleteRequestDialog request={deleting} onClose={() => { setDeleting(null); onReload() }} onDeleted={() => { setDeleting(null); setNotice('Заявка удалена.'); onChanged() }}/>}
++    {editor && <TripRequestEditor request={editor.request} companies={companies} directories={directories} onClose={() => { setEditor(null); onReload() }} onSaved={saved => { setEditor(null); setNotice(editor.request ? 'Заявка обновлена.' : 'Заявка создана. Её можно добавить в рейс.'); onSaved(saved) }}/>}
++    {deleting && <DeleteRequestDialog request={deleting} onClose={() => { setDeleting(null); onReload() }} onDeleted={() => { const id = deleting.id; setDeleting(null); setNotice('Заявка удалена.'); onDeleted(id) }}/>}
+   </section>
+ }
+ 
+diff --git a/web/src/TripsPage.tsx b/web/src/TripsPage.tsx
+--- a/web/src/TripsPage.tsx
++++ b/web/src/TripsPage.tsx
+@@ -31,10 +31,11 @@
+   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
+   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
+   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
+-  const [refresh, setRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
++  const [refresh, setRefresh] = useState(0), [requestRefresh, setRequestRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
+   const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyId, setSabyId] = useState<string | null>(null), [notice, setNotice] = useState('')
+   const [automation, setAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
+   useEffect(() => {
++    if (view !== 'trips' && view !== 'process') return
+     const controller = new AbortController()
+     setLoading(true); setError('')
+     fetch('/api/shipment-trips', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы'); return result })
+@@ -42,21 +43,36 @@
+       .catch(reason => { if (!controller.signal.aborted) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
+       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+     return () => controller.abort()
+-  }, [refresh])
++  }, [refresh, view])
++  const requestGeneration = useRef(0)
+   useEffect(() => {
++    const generation = ++requestGeneration.current
+     const controller = new AbortController()
+     setRequestsLoading(true); setRequestsError('')
+     void fetch('/api/trip-requests', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить заявки.'); return result })
+-      .then(result => { if (!controller.signal.aborted) { setRequests(result.requests); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
+-      .catch(reason => { if (!controller.signal.aborted) { setRequestsError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
+-      .finally(() => { if (!controller.signal.aborted) setRequestsLoading(false) })
++      .then(result => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequests(result.requests); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
++      .catch(reason => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequestsError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
++      .finally(() => { if (!controller.signal.aborted && generation === requestGeneration.current) setRequestsLoading(false) })
+     return () => controller.abort()
+-  }, [refresh])
++  }, [requestRefresh])
+   useEffect(() => {
+     if (view !== 'process') return
+     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') setRefresh(value => value + 1) }, 30000)
+     return () => window.clearInterval(timer)
+   }, [view])
++  // Apply only acknowledged server results. In-flight older lists cannot undo a save.
++  const requestSaved = (saved: TripRequest) => {
++    requestGeneration.current++
++    setRequests(previous => saved.status === 'active' ? [...previous.filter(row => row.id !== saved.id), saved] : previous.filter(row => row.id !== saved.id))
++    setRequestsLoading(false); setRequestsError('')
++  }
++  const requestDeleted = (id: string) => {
++    requestGeneration.current++
++    setRequests(previous => previous.filter(row => row.id !== id))
++    setRequestsLoading(false); setRequestsError('')
++  }
++  const reloadRequests = () => setRequestRefresh(value => value + 1)
++  const reloadAll = () => { setRefresh(value => value + 1); reloadRequests() }
+   const [deleting, setDeleting] = useState<string | null>(null)
+   const directories = data.directories
+   const companyNames = useMemo(() => new Map([...requestCompanies, ...data.companies].map(company => [company.id, company.name])), [data.companies, requestCompanies])
+@@ -67,12 +83,12 @@
+   const filtered = view !== 'trips' ? [] : trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
+   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
+   return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
+-    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { setView(item.id); setNotice(''); setRefresh(value => value + 1) }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
++    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { if (item.id === view) return; setView(item.id); setNotice(''); reloadRequests() }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
+     {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} error={error} onReload={() => setRefresh(value => value + 1)}/>}
+-    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={() => setRefresh(value => value + 1)} onChanged={() => { setRefresh(value => value + 1); onChanged() }}/>}
+-    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}{requestsLoading && !requests.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <Suspense fallback={<p role="status">Загружаем карту…</p>}><TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/></Suspense>}</section>}
++    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={reloadRequests} onSaved={requestSaved} onDeleted={requestDeleted}/>}
++    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={reloadRequests}>Повторить загрузку</button></div>}{requestsLoading && !requestCompanies.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <Suspense fallback={<p role="status">Загружаем карту…</p>}><TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/></Suspense>}</section>}
+     {view === 'trips' && <><div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Номер рейса, клиент, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
+-    {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку заявок</button></div>}
++    {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={reloadRequests}>Повторить загрузку заявок</button></div>}
+     {notice && <p className="directory-notice" role="status">{notice}</p>}
+     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}
+     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем рейсы…</div> : <>
+@@ -91,9 +107,9 @@
+       {!!filtered.length && <div className="pagination"><span>Рейсов: {filtered.length}</span><div><button className="icon-button" aria-label="Предыдущая страница рейсов" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={18}/></button><span>{currentPage + 1} / {lastPage + 1}</span><button className="icon-button" aria-label="Следующая страница рейсов" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}><ChevronRight size={18}/></button></div></div>}
+     </>}
+     </>}
+-    {mapRequest && <TripRequestEditor request={mapRequest} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => { setMapRequest(null); setRefresh(value => value + 1) }} onSaved={() => { setMapRequest(null); setRefresh(value => value + 1); onChanged() }}/>}
+-    {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); setRefresh(value => value + 1); onChanged() }}/> }
+-    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={() => setRefresh(value => value + 1)} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); setRefresh(value => value + 1); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
++    {mapRequest && <TripRequestEditor request={mapRequest} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => { setMapRequest(null); reloadRequests() }} onSaved={saved => { setMapRequest(null); requestSaved(saved) }}/>}
++    {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); reloadAll(); onChanged() }}/> }
++    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={reloadRequests} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); reloadAll(); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
+   </div>
+ }
+ 
+diff --git a/web/src/TripsWorkspace.tsx b/web/src/TripsWorkspace.tsx
+new file mode 100644
+--- /dev/null
++++ b/web/src/TripsWorkspace.tsx
+@@ -0,0 +1,25 @@
++import { useEffect, useState } from 'react'
++import type { DirectoryData } from './model'
++import { apiFetch } from './workspace-api'
++import TripsPage from './TripsPage'
++
++/** This page needs operational directories, never a financial dashboard snapshot. */
++export default function TripsWorkspace({ canManagePlaces }: { canManagePlaces: boolean }) {
++  const [data, setData] = useState<DirectoryData | null>(null)
++  const [error, setError] = useState('')
++  const [revision, setRevision] = useState(0)
++  useEffect(() => {
++    const controller = new AbortController()
++    setError('')
++    void apiFetch('/api/trip-requests/context', { signal: controller.signal }).then(async response => {
++      const result = await response.json()
++      if (!response.ok) throw new Error(result.error || 'Не удалось загрузить справочники рейсов.')
++      if (!controller.signal.aborted) setData(result)
++    }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') })
++    return () => controller.abort()
++  }, [revision])
++  return <>
++    {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRevision(value => value + 1)}>Повторить загрузку справочников</button></div>}
++    {data ? <TripsPage data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <p role="status">Загружаем справочники рейсов…</p>}
++  </>
++}

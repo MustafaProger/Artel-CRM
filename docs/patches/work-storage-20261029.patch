@@ -1,0 +1,1198 @@
+diff --git a/ops/production/Dockerfile b/ops/production/Dockerfile
+--- a/ops/production/Dockerfile
++++ b/ops/production/Dockerfile
+@@ -4,6 +4,7 @@
+ RUN command -v flock >/dev/null
+ COPY --chown=node:node app-dist/ ./app-dist/
+ COPY --chown=node:node server-render/production.mjs ./server-render/production.mjs
++COPY --chown=node:node server-render/export-operations.mjs server-render/work-storage.mjs server-render/grant-invoice-access.mjs ./server-render/
+ COPY ops/production/entrypoint.sh /usr/local/bin/artel-entrypoint
+ RUN chmod 0555 /usr/local/bin/artel-entrypoint
+ USER node
+diff --git a/ops/production/backup.py b/ops/production/backup.py
+--- a/ops/production/backup.py
++++ b/ops/production/backup.py
+@@ -21,6 +21,19 @@
+     # OperationsStore replaces whole files atomically, so this read is a single revision.
+     raw = (ROOT / 'data/operations/operations.json').read_bytes()
+     envelope = json.loads(raw)
++    storage_layout = 'legacy'
++    if envelope.get('format') == 'artel-work-partition-v1':
++        # Do not archive independently copied files: they could straddle a commit.
++        # Exporter uses the runtime's consistency latch and replays any journal.
++        exported = subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
++                                   'exec', '-T', 'crm', 'node', '/app/server-render/export-operations.mjs'],
++                                  capture_output=True, timeout=120)
++        if exported.returncode:
++            raise RuntimeError('Consistent partition export failed; no backup published')
++        raw = exported.stdout
++        envelope = json.loads(raw)
++        storage_layout = 'partitioned-flattened'
++
+     if not isinstance(envelope.get('data'), dict) or not isinstance(envelope.get('sha256'), str):
+         raise RuntimeError('Invalid operations envelope; no backup published')
+     # Use JavaScript serialization, exactly as OperationsStore does; never put data in argv/logs.
+@@ -36,7 +49,7 @@
+     with tempfile.TemporaryDirectory(prefix='.backup-', dir=destination) as temporary:
+         folder = Path(temporary)
+         (folder / 'operations.json').write_bytes(raw)
+-        manifest = {'createdAt': stamp, 'revision': envelope['data']['revision'],
++        manifest = {'createdAt': stamp, 'storageLayout': storage_layout, 'revision': envelope['data']['revision'],
+                     'operationsSha256': hashlib.sha256(raw).hexdigest()}
+         (folder / 'manifest.json').write_text(json.dumps(manifest))
+         archive = folder / 'backup.tar.gz'
+diff --git a/ops/production/entrypoint.sh b/ops/production/entrypoint.sh
+--- a/ops/production/entrypoint.sh
++++ b/ops/production/entrypoint.sh
+@@ -23,4 +23,9 @@
+ # same-container maintenance must use OperationsStore transaction locking, and
+ # container teardown must kill those exec processes before the next startup.
+ rm -f -- "$ARTEL_STORE_DIR/operations.json.lock"
++# The same lifetime lease fences all split-store writers. Preserve commit.json:
++# the first read replays a durable interrupted multi-file transaction.
++rm -f -- "$ARTEL_STORE_DIR/work-storage/transaction.lock" \
++  "$ARTEL_STORE_DIR/work-storage/core-queue.lock" \
++  "$ARTEL_STORE_DIR/work-storage/work-queue.lock"
+ exec "$@"
+diff --git a/scripts/build-server.mjs b/scripts/build-server.mjs
+--- a/scripts/build-server.mjs
++++ b/scripts/build-server.mjs
+@@ -24,3 +24,10 @@
+   banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
+   logLevel: 'info',
+ });
++
++for (const name of ['export-operations', 'work-storage']) await build({
++  entryPoints: [`scripts/${name}.ts`], outfile: `server-render/${name}.mjs`,
++  bundle: true, platform: 'node', format: 'esm', target: 'node22', sourcemap: false,
++  banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
++  logLevel: 'info',
++});
+diff --git a/scripts/check-work-response.mjs b/scripts/check-work-response.mjs
+--- a/scripts/check-work-response.mjs
++++ b/scripts/check-work-response.mjs
+@@ -1,3 +1,5 @@
++import {OperationsStore} from '../server/operations-store.ts';
++import {migrateWorkStorage} from '../server/work-partition.ts';
+ import {chromium,webkit,expect} from '@playwright/test';
+ import AxeBuilder from '@axe-core/playwright';
+ import assert from 'node:assert/strict';
+@@ -10,7 +12,8 @@
+ import {authenticateContext} from './qa-auth.mjs';
+ const root=resolve(import.meta.dirname,'..'),out=resolve(root,'../ui',process.env.ARTEL_OPERATOR_QA_BUILT==='1'?'built':'source');
+ const temporary=await mkdtemp(resolve(tmpdir(),'artel-work-response-')),snapshotDirectory=resolve(temporary,'snapshot'),operationsDirectory=resolve(temporary,'store');
+-await mkdir(out,{recursive:true});await writeTripsQaSnapshot(snapshotDirectory);
++await mkdir(out,{recursive:true});const fixtureSource=await writeTripsQaSnapshot(snapshotDirectory);
++if(process.env.ARTEL_TEST_WORK_PARTITION==='1'){await new OperationsStore(operationsDirectory).mutate(fixtureSource,()=>({result:null,changed:true}));await migrateWorkStorage(operationsDirectory,fixtureSource);}
+ const report={passed:false,synthetic:true,checks:[],axe:[],errors:[],externalRequests:[],timings:[]};
+ const check=n=>{report.checks.push(n);console.log('PASS',n)};
+ let runtime;
+@@ -49,6 +52,19 @@
+  const a=await new AxeBuilder({page}).include('.work-page').analyze();report.axe.push({engine,width,violations:a.violations});assert.equal(a.violations.length,0);await page.screenshot({path:resolve(out,`${engine}-${width}.png`)});check(`${engine}: ${width} alignment/focus/layout/axe`);
+  }
+  await page.getByRole('button',{name:'Задача: Проверить документы',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByLabel('Срок задачи',{exact:true})).toHaveCount(0);await page.getByRole('button',{name:'Отмена',exact:true}).click();check(engine+': editor still works separately');
++
++ let editorGets=0;await page.route('**/api/work',async route=>{editorGets++;await route.continue()});
++ await page.getByRole('button',{name:'Новая задача',exact:true}).click();await page.getByLabel('Название',{exact:true}).fill('Проверка отдельного хранилища');
++ let releaseCreate,createStarted;const createGate=new Promise(r=>releaseCreate=r),createSeen=new Promise(r=>createStarted=r);
++ await page.route('**/api/work/tasks',async route=>{createStarted();await createGate;await route.continue()});
++ await page.getByRole('button',{name:'Сохранить',exact:true}).click();await createSeen;await expect(page.getByRole('button',{name:'Сохранение…',exact:true})).toBeDisabled();
++ releaseCreate();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'Задача: Проверка отдельного хранилища',exact:true})).toBeVisible();
++ assert.equal(editorGets,0,'Editor must apply POST response without another GET');await page.unroute('**/api/work/tasks');
++ await page.getByRole('button',{name:'Задача: Проверка отдельного хранилища',exact:true}).click();await page.getByLabel('Название',{exact:true}).fill('Исправленная задача');await page.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
++ await page.getByRole('button',{name:'Задача: Исправленная задача',exact:true}).click();await page.getByRole('button',{name:'В архив задач',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'Задача: Исправленная задача',exact:true})).toHaveCount(0);
++ await page.getByRole('button',{name:'Архив задач',exact:true}).click();await page.getByRole('button',{name:'Задача: Исправленная задача',exact:true}).click();await page.getByRole('button',{name:'Вернуть в работу',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
++ await page.getByRole('button',{name:'Задачи',exact:true}).click();await page.getByRole('button',{name:'Задача: Исправленная задача',exact:true}).click();await page.getByRole('button',{name:'Удалить',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'Задача: Исправленная задача',exact:true})).toHaveCount(0);
++ assert.equal(editorGets,0);await page.unroute('**/api/work');check(engine+': editor create/edit/archive/restore/delete from response without follow-up GET');
+  await ctx.close();
+  }finally{await browser.close()}}
+  assert.deepEqual(report.errors,[]);assert.deepEqual(report.externalRequests,[]);report.passed=true;
+diff --git a/scripts/export-operations.ts b/scripts/export-operations.ts
+new file mode 100644
+--- /dev/null
++++ b/scripts/export-operations.ts
+@@ -0,0 +1,12 @@
++// Consistent private snapshot for backups/audits; stdout contains sensitive data.
++// Pipe directly into protected storage. Never log this output or pass it in argv.
++import { readFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { OperationsStore, encodeOperations } from '../server/operations-store';
++const directory = process.env.ARTEL_STORE_DIR;
++const snapshot = process.env.ARTEL_SNAPSHOT_DIR;
++if (!directory || !snapshot) throw new Error('Explicit store and snapshot directories required');
++const manifest = JSON.parse(await readFile(resolve(snapshot, 'manifest.json'), 'utf8'));
++const source = manifest.meta?.source_sha256;
++if (typeof source !== 'string' || !/^[a-f0-9]{64}$/.test(source)) throw new Error('Invalid source manifest');
++process.stdout.write(encodeOperations(await new OperationsStore(resolve(directory)).read(source), source));
+diff --git a/scripts/grant-invoice-access.ts b/scripts/grant-invoice-access.ts
+--- a/scripts/grant-invoice-access.ts
++++ b/scripts/grant-invoice-access.ts
+@@ -1,7 +1,7 @@
+ import { createHash } from 'node:crypto';
+ import { readFile } from 'node:fs/promises';
+ import { resolve } from 'node:path';
+-import { OperationsStore, decodeOperations } from '../server/operations-store';
++import { OperationsStore, decodeOperations, encodeOperations } from '../server/operations-store';
+ import { grantInvoiceAccess } from '../server/invoice-permission-grant';
+ 
+ // Run only under the production entrypoint lifetime lock while CRM is stopped.
+@@ -12,10 +12,11 @@
+ const expected = option('--expected-sha256');
+ if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error('Invalid expected store checksum');
+ const store = new OperationsStore(resolve(process.env.ARTEL_STORE_DIR));
+-const raw = await readFile(store.path, 'utf8');
++const originalRaw = await readFile(store.path, 'utf8');
++const originalEnvelope = JSON.parse(originalRaw);
++const source = originalEnvelope.data?.sourceSha256 ?? originalEnvelope.sourceSha256;
++const raw = originalEnvelope.format === 'artel-work-partition-v1' ? encodeOperations(await store.read(source), source) : originalRaw;
+ if (createHash('sha256').update(raw).digest('hex') !== expected) throw new Error('CRM store changed after review');
+-const envelope = JSON.parse(raw);
+-const source = envelope.data?.sourceSha256;
+ const before = decodeOperations(raw, source);
+ const mapping: unknown = JSON.parse(await readFile(option('--mapping'), 'utf8'));
+ const preview = structuredClone(before);
+diff --git a/scripts/profile-work-partition.mjs b/scripts/profile-work-partition.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile-work-partition.mjs
+@@ -0,0 +1,62 @@
++// Synthetic loopback comparison; no live store, integration credentials or provider calls.
++import assert from 'node:assert/strict';
++import {createServer} from 'node:http';
++import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
++import {tmpdir} from 'node:os';
++import {resolve} from 'node:path';
++import {randomUUID} from 'node:crypto';
++import {performance} from 'node:perf_hooks';
++import {writeTripsQaSnapshot} from './qa-trips-runtime.mjs';
++import {bootstrapQaAuth} from './qa-auth.mjs';
++import {createSnapshotMiddleware} from '../server/local-api.ts';
++import {OperationsStore,LegacyOperationsStore,encodeOperations} from '../server/operations-store.ts';
++import {migrateWorkStorage} from '../server/work-partition.ts';
++import {normalizeTbank} from '../server/banking/adapters.ts';
++import {emptyBanking} from '../server/banking/domain.ts';
++import {fixtureConfig,fixtureDay,accountNumber,tbankRow} from '../tests/banking-fixtures.ts';
++const output=resolve(process.argv[2]??'../benchmark.json');
++const rounds=15;const operations=3500;
++const root=await mkdtemp(resolve(tmpdir(),'work-perf-'));const snapshot=resolve(root,'snapshot');const source=await writeTripsQaSnapshot(snapshot);
++const report={synthetic:true,rounds,bankOperations:operations,externalCalls:0,models:[],results:[]};
++const deny=async()=>{report.externalCalls++;throw Error('No external calls');};
++const percentile=(a,p)=>[...a].sort((a,b)=>a-b)[Math.ceil(a.length*p)-1];
++try {
++ for(const mode of ['legacy','partitioned','partitioned','legacy']) {
++  const directory=resolve(root,randomUUID());await mkdir(directory);const store=mode==='legacy'?new LegacyOperationsStore(directory):new OperationsStore(directory);
++  await store.mutate(source,d=>{d.banking=emptyBanking();const c=fixtureConfig();d.banking.operations=Array.from({length:operations},(_,i)=>normalizeTbank(c,{number:accountNumber,currency:'RUB'},fixtureDay,tbankRow(`perf-${i}`)));return{result:null,changed:true}});
++  const api=createSnapshotMiddleware(snapshot,{operationsStore:store,bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},bankRequest:deny,sberRequest:deny,fetcher:deny,pushSender:deny,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false}});
++  const server=createServer((q,s)=>api(q,s,()=>{s.writeHead(404);s.end()}));await new Promise(r=>server.listen(0,'127.0.0.1',r));const url=`http://127.0.0.1:${server.address().port}`;const {cookie}=await bootstrapQaAuth(url);
++  const request=async(path,method='GET',body)=>{const t=performance.now();const r=await fetch(url+path,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const data=await r.json();assert.ok(r.ok,JSON.stringify(data));return{ms:performance.now()-t,data}};
++  for(let i=0;i<4;i++)await request('/api/work/tasks','POST',{requestId:randomUUID(),title:`Task ${i}`});
++  await request('/api/work/notes','POST',{title:'Note',content:'Synthetic'});
++  const logical=await store.read(source);report.models.push({mode,storeBytes:Buffer.byteLength(encodeOperations(logical)),workBytes:Buffer.byteLength(JSON.stringify(logical.work))});
++  if(mode==='partitioned')await migrateWorkStorage(directory,source);
++  const protectedBefore=JSON.stringify((await store.read(source)).banking.operations.slice(1));
++  const samples=[];
++  try{
++   for(const load of ['idle','six-background-writes']) {
++    for(let i=0;i<rounds;i++) {
++     const run=async(name,path,method,body)=>{
++      const start=performance.now();
++      const jobs=load==='idle'?[]:Array.from({length:6},(_,j)=>store.mutate(source,d=>{d.banking.operations[0].updatedAt=new Date(Date.now()+j).toISOString();return{result:null,changed:true}}));
++      const r=await request(path,method,body);await Promise.all(jobs);samples.push({load,name,round:i,ms:r.ms,batchMs:performance.now()-start});return r.data;
++     };
++     let task=(await run('create','/api/work/tasks','POST',{requestId:randomUUID(),title:`Round ${i}`})).entry;
++     task=(await run('done',`/api/work/tasks/${task.id}`,'PATCH',{version:task.version,status:'done'})).entry;
++     task=(await run('todo',`/api/work/tasks/${task.id}`,'PATCH',{version:task.version,status:'todo'})).entry;
++     task=(await run('edit',`/api/work/tasks/${task.id}`,'PATCH',{version:task.version,title:`Edited ${i}`})).entry;
++     await run('delete',`/api/work/tasks/${task.id}`,'DELETE',{version:task.version});
++    }
++   }
++   assert.equal(JSON.stringify((await store.read(source)).banking.operations.slice(1)),protectedBefore);
++   report.results.push({mode,samples});await writeFile(output,JSON.stringify(report,null,2));console.log('finished',mode);
++  }finally{await new Promise(r=>server.close(r))}
++ }
++ report.summary=[];
++ for(const mode of ['legacy','partitioned'])for(const load of ['idle','six-background-writes'])for(const name of ['create','done','todo','edit','delete']){
++  const values=report.results.filter(r=>r.mode===mode).flatMap(r=>r.samples).filter(s=>s.load===load&&s.name===name).map(s=>s.ms);
++  report.summary.push({mode,load,name,count:values.length,medianMs:percentile(values,.5),p95Ms:percentile(values,.95),maxMs:Math.max(...values)});
++ }
++ report.backgroundSummary=['legacy','partitioned'].map(mode=>{const values=report.results.filter(r=>r.mode===mode).flatMap(r=>r.samples).filter(s=>s.load==='six-background-writes').map(s=>s.batchMs);return {mode,count:values.length,medianBatchMs:percentile(values,.5),p95BatchMs:percentile(values,.95)}});
++ assert.equal(report.externalCalls,0);report.passed=true;await writeFile(output,JSON.stringify(report,null,2));console.log(JSON.stringify(report.summary,null,2));
++}finally{await rm(root,{recursive:true,force:true})}
+diff --git a/scripts/work-storage.ts b/scripts/work-storage.ts
+new file mode 100644
+--- /dev/null
++++ b/scripts/work-storage.ts
+@@ -0,0 +1,13 @@
++import { resolve } from 'node:path';
++import { writeFile } from 'node:fs/promises';
++import { OperationsStore, encodeOperations } from '../server/operations-store';
++import { migrateWorkStorage, mergeWorkStorage } from '../server/work-partition';
++const [action, directory, source, confirmation, output] = process.argv.slice(2);
++if (!['split', 'merge', 'export'].includes(action) || !directory || !/^[a-f0-9]{64}$/.test(source ?? '')) throw new Error('Usage: tsx scripts/work-storage.ts split|merge|export DIRECTORY SOURCE_SHA --writers-stopped [EXPORT_PATH]');
++if (confirmation !== '--writers-stopped') throw new Error('Stop all writers first; explicit --writers-stopped is required.');
++if (action === 'export') {
++  if (!output) throw new Error('Export path required');
++  const data = await new OperationsStore(resolve(directory)).read(source);
++  await writeFile(resolve(output), encodeOperations(data, source), { flag: 'wx', mode: 0o600 });
++  console.log(JSON.stringify({ exported: true, revision: data.revision }));
++} else console.log(JSON.stringify(await (action === 'split' ? migrateWorkStorage : mergeWorkStorage)(resolve(directory), source)));
+diff --git a/server/local-api.ts b/server/local-api.ts
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -319,6 +319,8 @@
+   invoiceBridge?: InvoiceBridge;
+   pushConfig?: PushConfig;
+   pushSender?: PushSender;
++  /** Persistent host wakeup; durable task outbox is committed before invocation. */
++  workNotificationWakeup?: () => void;
+   cronSecret?: string;
+   pushIntervalSeconds?: number;
+   /** Only isolated domain tests may disable authentication. Runtime always requires it. */
+@@ -931,7 +933,8 @@
+         }
+         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
+         const body=await jsonBody(request, false, 3 * 1024 * 1024);
+-        const result=await operations.mutate(base.provenance.sourceSha256,data=>{
++        const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
++        const result=await transact(base.provenance.sourceSha256,data=>{
+           const currentActor=authorized(data);
+           const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
+           return {result,changed:result.changed};
+@@ -939,6 +942,11 @@
+         // A status-only edit cannot create an assignment; do not wait for the push queue.
+         const statusOnly = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status');
+         if (workMatch[1] === 'tasks' && result.entry && !statusOnly && pushReady(config)) {
++          if (options.workNotificationWakeup) {
++            write(response,result.created?201:200,JSON.stringify(result));
++            try { options.workNotificationWakeup(); } catch { /* Durable outbox is retried by the scheduler. */ }
++            return;
++          }
+           // Await the attempt within the request so serverless runtimes do not drop it.
+           // The saved event remains available to the scheduler if delivery fails.
+           try { await dispatchTaskAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.entry.id); }
+@@ -1257,7 +1265,7 @@
+       write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
+     })().catch((error: unknown) => {
+       if (error instanceof ApiError) return write(response, error.status, JSON.stringify({ error: error.message }));
+-      if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось проверить хранилище операций. Данные не изменены; проверьте data/local-operations/operations.json и файл блокировки."}');
++      if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось прочитать данные или подтвердить сохранение. Обновите раздел перед повтором. Если ошибка повторяется, обратитесь к администратору."}');
+       cache = undefined;
+       write(response, 500, '{"error":"Не удалось прочитать или проверить локальные данные. Исходный экспорт и сохранённые операции не изменены."}');
+     });
+diff --git a/server/operations-store.ts b/server/operations-store.ts
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -1,3 +1,4 @@
++import { WorkPartition, isWorkPartition } from './work-partition';
+ import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
+ import { validateDocumentArchive } from './document-archive';
+ import { validateOperator } from './operator';
+@@ -221,12 +222,18 @@
+   return encoded;
+ }
+ 
+-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup'>>;
+-
+-export class OperationsStore {
++export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork'>>;
++
++export class LegacyOperationsStore {
+   readonly path: string;
+   #readCache?: { bytes: Buffer; raw: string; sourceSha256: string };
+   constructor(directory: string) { this.path = resolve(directory, 'operations.json'); }
++
++  /** Internal write path only: raw must already have passed encode/decodeOperations
++   * and have been committed to this store. read() still compares actual bytes. */
++  rememberCommittedEncoding(raw: string, sourceSha256: string) {
++    this.#readCache = { bytes: Buffer.from(raw), raw, sourceSha256 };
++  }
+ 
+   async backup(data: OperationsData): Promise<string> {
+     const folder = resolve(dirname(this.path), 'backups');
+@@ -302,7 +309,7 @@
+             try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
+             await rename(temporary, this.path);
+             // encodeOperations already validated these exact bytes; keep callers isolated.
+-            this.#readCache = { bytes: Buffer.from(encoded), raw: encoded, sourceSha256 };
++            this.rememberCommittedEncoding(encoded, sourceSha256);
+           } finally { await unlink(temporary).catch(() => undefined); }
+         }
+         return result;
+@@ -312,3 +319,18 @@
+     try { return await pending; } finally { if (queues.get(this.path) === pending) queues.delete(this.path); }
+   }
+ }
++
++/** Transparent adapter keeps directories, employee checks and schedulers on the
++ * same logical snapshot. Physical partitioning is an explicit offline operation. */
++export class OperationsStore extends LegacyOperationsStore {
++  private partition = new WorkPartition(this.path);
++  override async read(source: string): Promise<OperationsData> {
++    return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
++  }
++  override async mutate<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
++    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update) : super.mutate(source, update);
++  }
++  async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
++    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
++  }
++}
+diff --git a/server/production.ts b/server/production.ts
+--- a/server/production.ts
++++ b/server/production.ts
+@@ -149,7 +149,9 @@
+     subject: env.VAPID_SUBJECT ?? '', schedule: env.PUSH_SCHEDULE_ENABLED === 'true',
+   };
+   const invoiceBridge = await configuredInvoiceBridge(env);
++  let wakeWorkNotifications = () => {};
+   const middleware = createSnapshotMiddleware(snapshotDirectory, {
++    workNotificationWakeup: () => { setImmediate(() => wakeWorkNotifications()); },
+     operationsStore: store, secureCookies: true, requireAuthentication: true,
+     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
+     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
+@@ -209,6 +211,7 @@
+     const timer = setInterval(tick, interval);
+     timer.unref(); timers.push(timer);
+     if (immediate) tick();
++    return tick;
+   }
+   let stopPromise: Promise<void> | undefined;
+   return {
+@@ -224,7 +227,7 @@
+         schedule(BANK_SYNC_TICK_MS, () => dispatchBanks(store, base.provenance.sourceSha256, bankEnvironment, transports.bankRequest, transports.sberRequest), true);
+       }
+       if (env.ARTEL_CABINET_ENCRYPTION_KEY && env.ARTEL_CABINET_SYNC_ENABLED !== 'false') schedule(60_000, () => refreshDueCabinets(store, base.provenance.sourceSha256, env));
+-      if (pushReady(push)) schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
++      if (pushReady(push)) wakeWorkNotifications = schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
+       if (invoiceBridge) schedule(5000, () => syncInvoiceEvents(invoiceBridge, store, base.provenance.sourceSha256), true);
+       if (sabyEnabled) {
+         schedule(SABY_WORKFLOW_TICK_MS, () => sabyScheduler.tick(), true);
+diff --git a/server/work-partition.ts b/server/work-partition.ts
+new file mode 100644
+--- /dev/null
++++ b/server/work-partition.ts
+@@ -0,0 +1,204 @@
++import { createHash, randomUUID } from 'node:crypto';
++import { mkdir, open, rename, unlink, stat } from 'node:fs/promises';
++import { dirname, resolve } from 'node:path';
++import { LegacyOperationsStore, StoreError, decodeOperations, encodeOperations, type OperationsData } from './operations-store';
++import { validateWorkData } from './work-operations';
++import { validatePush, type PushData } from './push';
++
++const format = 'artel-work-partition-v1';
++const queues = new Map<string, Promise<unknown>>();
++const hash = (s: string) => createHash('sha256').update(s).digest('hex');
++const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
++const json = (v: unknown) => JSON.stringify(v);
++export type Update<T> = (data: OperationsData) => { result: T; changed: boolean } | Promise<{ result: T; changed: boolean }>;
++interface WorkState { format: typeof format; sourceSha256: string; revision: number; work?: OperationsData['work']; taskAssignments?: PushData['taskAssignments']; pushPresent?: true }
++
++/** Separate FIFO admission queues, with one consistency latch for reads/commits.
++ * Lock files are deliberately not stolen after a timeout. Recovery after SIGKILL
++ * requires stopped writers and explicit operator removal of abandoned locks. */
++export async function partitionLock<T>(path: string, action: () => Promise<T>): Promise<T> {
++  const previous = queues.get(path) ?? Promise.resolve();
++  const pending = previous.catch(() => undefined).then(async () => {
++    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
++    let file;
++    for (let n = 0; n < 500; n++) {
++      try { file = await open(path, 'wx', 0o600); break; }
++      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; await new Promise(r => setTimeout(r, 10)); }
++    }
++    if (!file) throw new StoreError('Work storage busy; check stopped-writer recovery');
++    try { await file.writeFile(json({ pid: process.pid })); return await action(); }
++    finally { await file.close(); await unlink(path); }
++  });
++  queues.set(path, pending);
++  try { return await pending; } finally { if (queues.get(path) === pending) queues.delete(path); }
++}
++export async function atomicFile(path: string, bytes: string) {
++  const temporary = `${path}.${randomUUID()}.tmp`;
++  try {
++    const file = await open(temporary, 'wx', 0o600);
++    try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
++    await rename(temporary, path); await syncDirectory(dirname(path));
++  }
++  finally { await unlink(temporary).catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }); }
++}
++async function syncDirectory(path: string) { const d = await open(path, 'r'); try { await d.sync(); } finally { await d.close(); } }
++function envelope(data: unknown) { const raw = json(data); return json({ sha256: hash(raw), data }); }
++function encodeWork(data: WorkState) { const raw = envelope(data); if (Buffer.byteLength(raw) > 64 * 1024 * 1024) throw new StoreError('Work storage too large'); return raw; }
++function unseal(raw: string): unknown {
++  const e: unknown = JSON.parse(raw);
++  if (!object(e) || e.sha256 !== hash(json(e.data))) throw new StoreError('Work storage checksum mismatch');
++  return e.data;
++}
++async function boundedRead(path: string, limit = 64 * 1024 * 1024) {
++  const file = await open(path, 'r');
++  try { if ((await file.stat()).size > limit) throw new StoreError('Work storage too large'); return await file.readFile('utf8'); }
++  finally { await file.close(); }
++}
++function validateState(v: unknown, source: string): asserts v is WorkState {
++  if (!object(v) || v.format !== format || v.sourceSha256 !== source || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0) throw new StoreError('Invalid Work partition');
++  if (v.pushPresent !== undefined && v.pushPresent !== true) throw new StoreError('Invalid push presence');
++  validateWorkData(v.work);
++  validatePush({ devices: [], deliveries: {}, ...(v.taskAssignments === undefined ? {} : { taskAssignments: v.taskAssignments as PushData['taskAssignments'] }) });
++}
++function strip(data: OperationsData): OperationsData {
++  const core = { ...data }; delete core.work;
++  if (core.push) {
++    core.push = { ...core.push }; delete core.push.taskAssignments;
++    // Assignment creation can initialize the push shell; it is represented by
++    // the outbox in work.json, not an unnecessary write to the core database.
++    if (Object.keys(core.push).length === 2 && core.push.devices.length === 0 && Object.keys(core.push.deliveries).length === 0) delete core.push;
++  }
++  return core;
++}
++function extract(data: OperationsData, revision: number): WorkState {
++  return { format, sourceSha256: data.sourceSha256, revision, ...(data.work === undefined ? {} : { work: data.work }), ...(data.push?.taskAssignments === undefined ? {} : { taskAssignments: data.push.taskAssignments }), ...(data.push === undefined ? {} : { pushPresent: true }) };
++}
++function compose(core: OperationsData, work: WorkState): OperationsData {
++  return { ...core, revision: core.revision + work.revision, ...(work.work === undefined ? {} : { work: work.work }), ...(work.pushPresent || work.taskAssignments !== undefined ? { push: { ...(core.push ?? { devices: [], deliveries: {} }), ...(work.taskAssignments === undefined ? {} : { taskAssignments: work.taskAssignments }) } } : {}) };
++}
++
++/** A tiny pointer replaces operations.json only on explicit offline migration.
++ * Old binaries reject it rather than bootstrapping an empty Work workspace. */
++export async function isWorkPartition(path: string, source: string): Promise<boolean> {
++  let file;
++  try { file = await open(path, 'r'); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
++  try {
++    const bytes = Buffer.alloc(512); const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
++    const prefix = bytes.subarray(0, bytesRead).toString('utf8');
++    if (!prefix.startsWith('{"format":"artel-work-partition')) return false;
++    const value: unknown = JSON.parse(prefix);
++    if (!object(value) || value.format !== format || value.sourceSha256 !== source || value.partition !== 'work-storage' || (await file.stat()).size !== bytesRead) throw new StoreError('Invalid Work storage pointer');
++    return true;
++  } finally { await file.close(); }
++}
++
++export class WorkPartition {
++  readonly directory: string;
++  readonly core: LegacyOperationsStore;
++  readonly workPath: string;
++  readonly journalPath: string;
++  readonly latch: string;
++  constructor(readonly rootPath: string) {
++    this.directory = resolve(dirname(rootPath), 'work-storage');
++    this.core = new LegacyOperationsStore(resolve(this.directory, 'core'));
++    this.workPath = resolve(this.directory, 'work.json');
++    this.journalPath = resolve(this.directory, 'commit.json');
++    this.latch = resolve(this.directory, 'transaction.lock');
++  }
++  private async recover(source: string) {
++    let raw;
++    try { raw = await boundedRead(this.journalPath, 256 * 1024 * 1024); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return; throw e; }
++    const journal = unseal(raw);
++    if (!object(journal) || journal.sourceSha256 !== source || typeof journal.core !== 'string' || typeof journal.work !== 'string') throw new StoreError('Invalid partition commit journal');
++    const core = decodeOperations(journal.core, source); const work = unseal(journal.work); validateState(work, source);
++    if (core.work !== undefined || core.push?.taskAssignments !== undefined) throw new StoreError('Duplicate Work in core journal');
++    await atomicFile(this.core.path, journal.core); await atomicFile(this.workPath, journal.work);
++    this.core.rememberCommittedEncoding(journal.core, source);
++    await unlink(this.journalPath); await syncDirectory(this.directory);
++  }
++  private async load(source: string) {
++    await this.recover(source);
++    // The legacy store's missing-file bootstrap must never apply to a partition.
++    const coreStat = await stat(this.core.path);
++    if (!coreStat.isFile()) throw new StoreError('Missing partition core');
++    const core = await this.core.read(source); const workRaw = await boundedRead(this.workPath);
++    const work = unseal(workRaw); validateState(work, source);
++    if (core.work !== undefined || core.push?.taskAssignments !== undefined) throw new StoreError('Work has more than one source');
++    return { core, work, data: compose(core, work), coreSize: coreStat.size, workSize: Buffer.byteLength(workRaw) };
++  }
++  read(source: string) { return partitionLock(this.latch, async () => (await this.load(source)).data); }
++  mutate<T>(source: string, update: Update<T>, workOnly = false): Promise<T> {
++    const admission = resolve(this.directory, workOnly ? 'work-queue.lock' : 'core-queue.lock');
++    return partitionLock(admission, () => partitionLock(this.latch, async () => {
++      const before = await this.load(source);
++      // Only the restricted Work route needs a full-domain fingerprint guard.
++      // Ordinary CRM transactions retain the legacy changed=true write contract;
++      // serializing the core twice here would slow every other writer.
++      const coreBefore = workOnly ? json(strip(before.core)) : undefined;
++      const workBefore = json(before.work);
++      const { result, changed } = await update(before.data);
++      if (!changed) return result;
++      if (before.data.sourceSha256 !== source) throw new StoreError('Wrong source in partition update');
++      const core = strip(before.data); core.revision = before.core.revision;
++      const work = extract(before.data, before.work.revision);
++      const coreChanged = !workOnly || json(core) !== coreBefore;
++      const workChanged = json(work) !== workBefore;
++      if (workOnly && coreChanged) throw new StoreError('Work transaction tried to change another domain');
++      validateState(work, source);
++      if (coreChanged) core.revision++;
++      if (workChanged) work.revision++;
++      const coreBytes = coreChanged ? encodeOperations(core, source) : undefined;
++      const workBytes = workChanged ? encodeWork(work) : undefined;
++      // Keep a flat backup/rollback export within the existing 64 MiB limit.
++      // Separate envelopes overestimate the composed payload; reserve extra
++      // headroom for framing/revision growth instead of serializing core again.
++      if ((coreBytes ? Buffer.byteLength(coreBytes) : before.coreSize) + (workBytes ? Buffer.byteLength(workBytes) : before.workSize) + 4096 > 64 * 1024 * 1024) throw new StoreError('Combined storage is too large for a safe backup/rollback');
++      if (coreBytes && workBytes) {
++        // WAL contains complete validated redo images. Readers replay it under
++        // the same latch; a failed HTTP response can mean committed/unknown.
++        await atomicFile(this.journalPath, envelope({ sourceSha256: source, core: coreBytes, work: workBytes }));
++        await this.recover(source);
++      } else if (coreBytes) {
++        await atomicFile(this.core.path, coreBytes);
++        this.core.rememberCommittedEncoding(coreBytes, source);
++      }
++      else if (workBytes) await atomicFile(this.workPath, workBytes);
++      return result;
++    }));
++  }
++}
++
++/** Offline only. The caller must stop every writer, including maintenance jobs.
++ * Pointer installation is last; failures before it leave the legacy source live.
++ * Existing orphan directories are refused instead of overwriting evidence. */
++export async function migrateWorkStorage(directory: string, source: string) {
++  const legacy = new LegacyOperationsStore(directory);
++  if (await isWorkPartition(legacy.path, source)) { await new WorkPartition(legacy.path).read(source); return { changed: false, mode: 'partitioned' }; }
++  return partitionLock(`${legacy.path}.lock`, async () => {
++    if (!(await stat(legacy.path)).isFile()) throw new StoreError('Missing legacy source');
++    const data = await legacy.read(source);
++    const partition = new WorkPartition(legacy.path);
++    await mkdir(partition.directory, { mode: 0o700 });
++    await mkdir(dirname(partition.core.path), { mode: 0o700 });
++    const backup = await legacy.backup(data);
++    await atomicFile(partition.core.path, encodeOperations(strip(data), source));
++    await atomicFile(partition.workPath, encodeWork(extract(data, 0)));
++    const assembled = await partition.read(source);
++    // Compare the logical snapshot, including historical Work/outbox content.
++    if (json(strip(assembled)) !== json(strip(data)) || json(extract(assembled, 0)) !== json(extract(data, 0))) throw new StoreError('Migration verification failed');
++    await atomicFile(legacy.path, json({ format, sourceSha256: source, partition: 'work-storage' }));
++    return { changed: true, mode: 'partitioned', backup };
++  });
++}
++/** Rollback exports the CURRENT combined state; never restores the old backup. */
++export async function mergeWorkStorage(directory: string, source: string) {
++  const legacy = new LegacyOperationsStore(directory);
++  if (!await isWorkPartition(legacy.path, source)) return { changed: false, mode: 'legacy' };
++  const partition = new WorkPartition(legacy.path);
++  return partitionLock(`${legacy.path}.lock`, async () => {
++    const data = await partition.read(source);
++    const backup = await legacy.backup(data);
++    await atomicFile(legacy.path, encodeOperations(data, source));
++    return { changed: true, mode: 'legacy', backup };
++  });
++}
+diff --git a/tests/api-directory-deletion.test.ts b/tests/api-directory-deletion.test.ts
+--- a/tests/api-directory-deletion.test.ts
++++ b/tests/api-directory-deletion.test.ts
+@@ -1,5 +1,6 @@
++import { migrateWorkStorage } from '../server/work-partition';
+ import assert from 'node:assert/strict';
+-import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import { mkdtemp, rm } from 'node:fs/promises';
+ import { tmpdir } from 'node:os';
+ import { resolve } from 'node:path';
+ import { test } from 'node:test';
+@@ -7,7 +8,7 @@
+ import type { AddressInfo } from 'node:net';
+ import { randomBytes } from 'node:crypto';
+ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+-import { OperationsStore, type OperationsData } from '../server/operations-store';
++import { OperationsStore, type OperationsData, encodeOperations } from '../server/operations-store';
+ import { currentSnapshot } from '../server/shipment-operations';
+ import { clearOperations } from '../server/reset-operations';
+ import { deleteDirectoryEntry } from '../server/directory-deletion';
+@@ -25,6 +26,7 @@
+     return { result, changed: true };
+   });
+   if (clear) await mutate((_, data) => clearOperations(base, data));
++  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') { await store.mutate(base.provenance.sourceSha256, () => ({result:null,changed:true})); await migrateWorkStorage(directory,base.provenance.sourceSha256); }
+   const snapshot = async () => currentSnapshot(base, await new OperationsStore(directory).read(base.provenance.sourceSha256));
+   const remove = (kind: string, id: string, version = 0) => mutate((snapshot, data) => deleteDirectoryEntry(kind, id, { version }, snapshot, data));
+   return { store, snapshot, mutate, remove, close: () => rm(directory, { recursive: true, force: true }) };
+@@ -172,10 +174,10 @@
+   try {
+     const entry = (await runtime.snapshot()).directories!.products[0];
+     await runtime.mutate((snapshot, data) => updateDirectoryEntry('products', entry.id, { version: 0, name: 'Версионный товар' }, snapshot, data));
+-    const before = await readFile(runtime.store.path, 'utf8');
++    const before = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
+     await assert.rejects(runtime.remove('products', entry.id, 0), /уже изменена/);
+     await assert.rejects(runtime.mutate((snapshot, data) => deleteDirectoryEntry('products', entry.id, { version: 1, force: true }, snapshot, data)), /Неизвестное поле/);
+-    assert.equal(await readFile(runtime.store.path, 'utf8'), before);
++    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), before);
+     const results = await Promise.allSettled([runtime.remove('products', entry.id, 1), runtime.remove('products', entry.id, 1)]);
+     assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+     assert.equal(results.filter(result => result.status === 'rejected').length, 1);
+diff --git a/tests/api-permissions.test.ts b/tests/api-permissions.test.ts
+--- a/tests/api-permissions.test.ts
++++ b/tests/api-permissions.test.ts
+@@ -1,3 +1,4 @@
++import { migrateWorkStorage } from '../server/work-partition';
+ import { enabledPages } from '../web/src/page-catalog';
+ import { availablePagesFor, hasPageAccess } from '../web/src/page-access';
+ import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
+@@ -5,7 +6,7 @@
+ import { test } from 'node:test';
+ import { createServer } from 'node:http';
+ import type { AddressInfo } from 'node:net';
+-import { mkdtemp, rm, readFile } from 'node:fs/promises';
++import { mkdtemp, rm } from 'node:fs/promises';
+ import { tmpdir } from 'node:os';
+ import { resolve } from 'node:path';
+ import { randomUUID } from 'node:crypto';
+@@ -22,6 +23,7 @@
+   const directory = await mkdtemp(resolve(tmpdir(), 'artel-permissions-'));
+   const store = new OperationsStore(directory);
+   await store.mutate(base.provenance.sourceSha256, data => { data.sourceOperationsCleared = true; return { changed: true, result: null }; });
++  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(directory,base.provenance.sourceSha256);
+   const middleware = createSnapshotMiddleware(undefined, { operationsStore: store });
+   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
+   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+@@ -114,13 +116,13 @@
+     assert.equal(a.status, 201, JSON.stringify(a.body)); assert.equal(b.status, 201, JSON.stringify(b.body));
+     const aid = a.body.shipment.id, bid = b.body.shipment.id;
+     assert.equal(a.body.shipment.fields.manager_id, f.users[0].managerId);
+-    const before = await readFile(f.store.path, 'utf8');
++    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
+     assert.equal((await f.aidar('/api/shipments/' + bid)).status, 404);
+     assert.equal((await f.aidar('/api/shipments/' + bid, 'PATCH', { version: 999, fields: { manager_id: f.users[0].managerId } })).status, 404);
+     assert.equal((await f.aidar('/api/shipments/' + aid, 'PATCH', { version: 1, fields: { manager_id: f.users[1].managerId } })).status, 403);
+     assert.equal((await f.aidar('/api/shipments', 'POST', { fields: f.azs(f.users[1].managerId!) })).status, 403);
+     assert.equal((await f.aidar('/api/shipments/' + bid, 'DELETE', { version: 1 })).status, 403);
+-    assert.equal(await readFile(f.store.path, 'utf8'), before);
++    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
+     for (const query of ['', '?manager=all&limit=1&offset=0&sort=customer_amount&direction=desc', '?companyId=' + f.snapshot.companies[0].id, '?managerId=' + f.users[1].managerId]) {
+       const r = await f.aidar('/api/shipments' + query); assert.equal(r.status, 200);
+       assert.deepEqual(r.body.items.map((row: Shipment) => row.id), [aid]); assert.equal(r.body.total, 1); assert.equal(r.body.summary.revenue.total, '100000');
+@@ -146,14 +148,14 @@
+   const f = await fixture(); try {
+     const created = await f.director('/api/directories', 'POST', { kind: 'companies', name: 'Unassigned protected customer', roles: ['customer'], addresses: [] });
+     assert.equal(created.status, 201); const customerId = created.body.entry.id;
+-    const before = await readFile(f.store.path, 'utf8');
++    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
+     const fields = { ...f.azs(), customer_id: customerId, customer_amount: '0' };
+     assert.equal((await f.aidar('/api/shipments', 'POST', { fields })).status, 403);
+     const catalog = f.snapshot.directories!;
+     const truck = { date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: catalog.products[0].id, purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: catalog.drivers[0].id, additional_costs: '0' };
+     const customer = { customer_id: customerId, payment_form_id: catalog.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '0' };
+     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields: truck, customers: [{ fields: customer }] })).status, 403);
+-    assert.equal(await readFile(f.store.path, 'utf8'), before);
++    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
+     const directoryCompany = (await f.aidar('/api/snapshot')).body.companies.find((company: { id: string }) => company.id === customerId);
+     assert.equal(directoryCompany, undefined, 'Unassigned customer is not an own customer');
+     assert.ok(!(await f.aidar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
+@@ -177,11 +179,11 @@
+     const own = (await f.aidar('/api/shipments')).body.items[0];
+     assert.equal(own.tripReadOnly, true); assert.equal(own.fields.trip_total_tonnes, null); assert.equal(own.fields.trip_additional_costs, null);
+     assert.equal((await f.aidar('/api/shipment-trips/' + trip.id)).status, 403);
+-    const before = await readFile(f.store.path, 'utf8');
++    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
+     assert.equal((await f.aidar('/api/shipment-trips/' + trip.id, 'PATCH', { fields, customers: [customer(0)], versions: { [own.id]: own.version } })).status, 403);
+     assert.equal((await f.aidar('/api/shipments/' + trip.customers[1].id, 'PATCH', { version: 1, fields: {} })).status, 404);
+     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(1)] })).status, 403);
+-    assert.equal(await readFile(f.store.path, 'utf8'), before);
++    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
+     const ownBody = { fields, customers: [customer(0), customer(0)] };
+     await prepareTripRequestFixture(f.store, base, ownBody);
+     const created = await f.aidar('/api/shipment-trips', 'POST', ownBody); assert.equal(created.status, 201, JSON.stringify(created.body));
+diff --git a/tests/api-push.test.ts b/tests/api-push.test.ts
+--- a/tests/api-push.test.ts
++++ b/tests/api-push.test.ts
+@@ -1,3 +1,4 @@
++import { migrateWorkStorage } from '../server/work-partition';
+ import assert from 'node:assert/strict';
+ import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
+ import { createServer, type IncomingMessage } from 'node:http';
+@@ -21,11 +22,12 @@
+   const key = createECDH('prime256v1'); key.generateKeys();
+   return { endpoint: `https://fcm.googleapis.com/fcm/send/${name}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
+ }
+-async function fixture(sender: PushSender = async () => {}) {
++async function fixture(sender: PushSender = async () => {}, deferred = false) {
++  let wakeups = 0;
+   const folder = await mkdtemp(resolve(tmpdir(), 'artel-push-'));
+   const store = new OperationsStore(folder);
+   const cronSecret = randomBytes(32).toString('hex');
+-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store, pushConfig: config, pushSender: sender, cronSecret });
++  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store, pushConfig: config, pushSender: sender, ...(deferred ? {workNotificationWakeup: () => { wakeups++; }} : {}), cronSecret });
+   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
+   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+@@ -45,7 +47,8 @@
+   const second = await director('/api/auth/users', 'POST', { login: 'push-manager', name: 'Manager QA', role: 'manager', managerId: employee.body.entry.id, password });
+   assert.equal(second.status, 201);
+   assert.equal((await manager('/api/auth/login', 'POST', { login: 'push-manager', password })).status, 200);
+-  return { store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,
++  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(folder, base.provenance.sourceSha256);
++  return { wakeups: () => wakeups, store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,
+     close: async () => { await new Promise<void>(done => server.close(() => done())); await rm(folder, { recursive: true, force: true }); } };
+ }
+ 
+@@ -400,3 +403,21 @@
+   assert.equal(status.status,'failed');assert.equal(status.failure,'provider_unavailable');
+  }finally{release();await f.close()}
+ });
++
++
++test('deferred Work response persists assignment before wakeup and dispatches durably after restart without duplicates', async () => {
++  let sent = 0;
++  const f = await fixture(async () => { sent++; }, true);
++  try {
++    assert.equal((await f.manager('/api/push/subscription', 'POST', {subscription: subscription(), explicit: true})).status, 200);
++    const created = await f.director('/api/work/tasks', 'POST', {title:'Задача без ожидания push', assigneeId:f.users[1].id, requestId:randomUUID()});
++    assert.equal(created.status, 201); assert.equal(sent, 0); assert.equal(f.wakeups(), 1);
++    const reloaded = new OperationsStore(resolve(f.store.path, '..'));
++    assert.equal((await reloaded.read(base.provenance.sourceSha256)).push?.taskAssignments?.[created.body.entry.id].assigneeId, f.users[1].id);
++    await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;});
++    assert.equal(sent, 1);
++    await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;}); assert.equal(sent, 1);
++    assert.equal((await f.manager(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', {version:1,status:'done'})).status, 200);
++    assert.equal(f.wakeups(), 1);
++  } finally {await f.close();}
++});
+diff --git a/tests/api-work.test.ts b/tests/api-work.test.ts
+--- a/tests/api-work.test.ts
++++ b/tests/api-work.test.ts
+@@ -1,13 +1,14 @@
++import { migrateWorkStorage } from '../server/work-partition';
+ import assert from 'node:assert/strict';
+ import { randomUUID } from 'node:crypto';
+-import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import { mkdtemp, rm } from 'node:fs/promises';
+ import { createServer } from 'node:http';
+ import type { AddressInfo } from 'node:net';
+ import { tmpdir } from 'node:os';
+ import { resolve } from 'node:path';
+ import { test } from 'node:test';
+ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+-import { OperationsStore, StoreError, decodeOperations } from '../server/operations-store';
++import { OperationsStore, StoreError, decodeOperations, encodeOperations } from '../server/operations-store';
+ import { currentSnapshot } from '../server/shipment-operations';
+ import { readWork, validateWorkData } from '../server/work-operations';
+ import { emptyWork, type WorkCompanyRecord, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+@@ -44,6 +45,7 @@
+   }
+   const snapshot = (await director('/api/snapshot')).body as Snapshot;
+   assert.equal((await director('/api/directories', 'POST', { kind: 'customerManagers', companyId: snapshot.companies[0].id, managerId: users[1].managerId })).status, 201);
++  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(directory, base.provenance.sourceSha256);
+   return { directory, store, director, alice, bob, anonymous, users, snapshot, close: async () => { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(directory, { recursive: true, force: true }); } };
+ }
+ 
+@@ -81,9 +83,9 @@
+     const created = await runtime.alice('/api/work/tasks', 'POST', payload); assert.equal(created.status, 201);
+     const task = created.body.entry as WorkTask;
+     assert.equal(task.assigneeId, runtime.users[1].id);
+-    const original = await readFile(runtime.store.path, 'utf8');
++    const original = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
+     const duplicate = await runtime.alice('/api/work/tasks', 'POST', payload); assert.equal(duplicate.status, 200); assert.equal(duplicate.body.entry.id, task.id);
+-    assert.equal(await readFile(runtime.store.path, 'utf8'), original);
++    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), original);
+     assert.equal((await runtime.alice('/api/work/tasks', 'POST', { ...payload, title: 'Другие данные' })).status, 409);
+     for (const fields of [{ title: '' }, { title: 'x'.repeat(201) }, { status: 'imagined-stage' }, { dueDate: '2026-02-30' }, { reminderAt: '2026-09-10T25:00:00Z' }, { reminderAt: '2026-09-10T10:00' }, { companyId: 'missing-company' }, { assigneeId: 'missing-user' }, { createdBy: runtime.users[0].id }]) {
+       const response = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, ...fields });
+@@ -91,12 +93,12 @@
+     }
+     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { title: 'Без версии' })).status, 400);
+     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', {})).status, 400);
+-    assert.equal(await readFile(runtime.store.path, 'utf8'), original);
++    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), original);
+     const result = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'done', dueDate: null, reminderAt: null }); assert.equal(result.status, 200);
+-    const changed = await readFile(runtime.store.path, 'utf8');
++    const changed = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
+     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'doing' })).status, 409);
+     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 1 })).status, 409);
+-    assert.equal(await readFile(runtime.store.path, 'utf8'), changed);
++    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), changed);
+     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 2, archived: true })).status, 200);
+     const archived = (await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).work!.tasks[0];
+     assert.ok(archived.archivedAt);
+@@ -218,10 +220,10 @@
+       const content = kind === 'tasks' ? { title: 'Scope check' } : { question: 'Scope check' };
+       for (const [key] of cases) {
+         const allowed = ['client', 'supplier', 'both'].includes(key);
+-        const before = await readFile(f.store.path, 'utf8');
++        const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
+         const result = await f.director(`/api/work/${kind}`, 'POST', { ...content, companyId: `scope-${key}` });
+         assert.equal(result.status, allowed ? 201 : 400, `${kind}/${key}`);
+-        if (!allowed) assert.equal(await readFile(f.store.path, 'utf8'), before);
++        if (!allowed) assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
+       }
+     }
+     const legacy = (await f.director('/api/work/tasks', 'POST', { title: 'Legacy scope', companyId: 'scope-client', assigneeId: f.users[1].id })).body.entry as WorkTask;
+@@ -277,3 +279,19 @@
+     console.log('WORK_PROJECTION_BENCH', JSON.stringify({ slow, fast, equal:true, sourceShipments:base.shipments.length, isolated:true }));
+   } finally { await f.close(); }
+ });
++
++test('partitioned Work retains shared company labels and does not change trips/directories business responses', async () => {
++  const f = await setup();
++  try {
++    const paths = ['/api/directories', '/api/shipment-trips'];
++    const before = await Promise.all(paths.map(path => f.director(path)));
++    const company = f.snapshot.companies.find(row => row.roles.includes('customer'))!;
++    const task = await f.director('/api/work/tasks', 'POST', {title:'Связь со справочником',companyId:company.id}); assert.equal(task.status,201);
++    assert.equal((await f.director(`/api/work/tasks/${task.body.entry.id}`,'PATCH',{version:1,status:'done'})).status,200);
++    const normalize = (value: unknown): unknown => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key])=>key!=='revision').map(([key,v])=>[key,normalize(v)])) : value;
++    for(let i=0;i<paths.length;i++) assert.deepEqual(normalize(await f.director(paths[i])), normalize(before[i]));
++    await f.store.mutate(base.provenance.sourceSha256, d=>{const updated={...company,name:'Общее новое название'};const index=d.companies.findIndex(row=>row.id===company.id);if(index<0)d.companies.push(updated);else d.companies[index]=updated;return{result:null,changed:true}});
++    const work=(await f.director('/api/work')).body as WorkResponse;
++    assert.equal(work.companies.find(row=>row.id===company.id)?.name,'Общее новое название');assert.equal(work.work.tasks.find(row=>row.id===task.body.entry.id)?.companyId,company.id);
++  } finally {await f.close();}
++});
+diff --git a/tests/production-entrypoint.sh b/tests/production-entrypoint.sh
+--- a/tests/production-entrypoint.sh
++++ b/tests/production-entrypoint.sh
+@@ -22,10 +22,21 @@
+ 
+ # A stale transaction marker from an already dead process must be recovered.
+ printf '%s' 'stale' > "$ARTEL_STORE_DIR/operations.json.lock"
++mkdir "$ARTEL_STORE_DIR/work-storage"
++for name in transaction core-queue work-queue; do
++  printf '%s' 'stale' > "$ARTEL_STORE_DIR/work-storage/$name.lock"
++done
++printf '%s' 'durable-redo' > "$ARTEL_STORE_DIR/work-storage/commit.json"
+ "$entrypoint" node -e '
+   const fs = require("node:fs");
+   const lock = process.env.ARTEL_STORE_DIR + "/operations.json.lock";
+   if (fs.existsSync(lock)) throw new Error("stale lock was not recovered");
++  for (const name of ["transaction", "core-queue", "work-queue"]) {
++    const path = process.env.ARTEL_STORE_DIR + "/work-storage/" + name + ".lock";
++    if (fs.existsSync(path)) throw new Error("stale partition lock was not recovered");
++    fs.writeFileSync(path, "live-partition-transaction");
++  }
++  if (fs.readFileSync(process.env.ARTEL_STORE_DIR + "/work-storage/commit.json", "utf8") !== "durable-redo") throw new Error("redo journal was changed");
+   fs.fstatSync(9);
+   fs.writeFileSync(lock, "live-transaction");
+   fs.writeFileSync(process.env.ARTEL_TEST_MARKER, "");
+@@ -47,6 +58,9 @@
+ test "$status" -eq 75
+ test ! -e "$ARTEL_TEST_MARKER"
+ test "$(cat "$ARTEL_STORE_DIR/operations.json.lock")" = 'live-transaction'
++for name in transaction core-queue work-queue; do
++  test "$(cat "$ARTEL_STORE_DIR/work-storage/$name.lock")" = 'live-partition-transaction'
++done
+ 
+ # Kernel locks vanish even on SIGKILL; the stable lockfile inode remains.
+ kill -KILL "$holder_pid"
+@@ -56,6 +70,10 @@
+ test -e "$ARTEL_STORE_DIR/operations.json.lock"
+ "$entrypoint" sh -c '
+   test ! -e "$ARTEL_STORE_DIR/operations.json.lock"
++  for name in transaction core-queue work-queue; do
++    test ! -e "$ARTEL_STORE_DIR/work-storage/$name.lock"
++  done
++  test "$(cat "$ARTEL_STORE_DIR/work-storage/commit.json")" = durable-redo
+   : > "$ARTEL_TEST_MARKER"
+ '
+ test -e "$ARTEL_TEST_MARKER"
+diff --git a/tests/work-partition-tools.test.ts b/tests/work-partition-tools.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/work-partition-tools.test.ts
+@@ -0,0 +1,83 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { execFile as execFileCallback } from 'node:child_process';
++import { promisify } from 'node:util';
++import { mkdtemp, mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { OperationsStore, decodeOperations } from '../server/operations-store';
++import { emptyWork } from '../web/src/work-model';
++const execFile = promisify(execFileCallback);
++const source = 'c'.repeat(64);
++const cli = resolve('server-render/work-storage.mjs');
++const exporter = resolve('server-render/export-operations.mjs');
++async function fixture() {
++  const root = await mkdtemp(resolve(tmpdir(), 'work-tools-'));
++  const directory = resolve(root, 'data/operations');
++  const snapshot = resolve(root, 'data/snapshot');
++  await mkdir(snapshot, { recursive: true });
++  await writeFile(resolve(snapshot, 'manifest.json'), JSON.stringify({ meta: { source_sha256: source } }));
++  const store = new OperationsStore(directory);
++  await store.mutate(source, d => { d.work = emptyWork(); return { result: null, changed: true }; });
++  const env = { ...process.env, ARTEL_STORE_DIR: directory, ARTEL_SNAPSHOT_DIR: snapshot };
++  return { root, directory, snapshot, store, env, close: () => rm(root, { recursive: true, force: true }) };
++}
++test('built migration/export/merge tools preserve current state and refuse missing stop confirmation', async () => {
++  const f = await fixture(); try {
++    const original = await readFile(f.store.path);
++    await assert.rejects(execFile(process.execPath, [cli, 'split', f.directory, source]));
++    assert.deepEqual(await readFile(f.store.path), original);
++    await execFile(process.execPath, [cli, 'split', f.directory, source, '--writers-stopped']);
++    await f.store.mutateWork(source, d => { d.work!.notes.push({ id: 'new-note', title: 'После переноса', content: 'Сохранить при возврате', assigneeId: 'employee', createdBy: 'employee', updatedBy: 'employee', createdAt: '2026-10-29T10:00:00Z', updatedAt: '2026-10-29T10:00:00Z', version: 1, attachments: [], comments: [] }); return { result: null, changed: true }; });
++    const current = await f.store.read(source);
++    const exported = await execFile(process.execPath, [exporter], { env: f.env });
++    assert.deepEqual(decodeOperations(exported.stdout, source), current);
++    const output = resolve(f.root, 'export.json');
++    await execFile(process.execPath, [cli, 'export', f.directory, source, '--writers-stopped', output]);
++    assert.deepEqual(decodeOperations(await readFile(output, 'utf8'), source), current);
++    await assert.rejects(execFile(process.execPath, [cli, 'export', f.directory, source, '--writers-stopped', output]));
++    await execFile(process.execPath, [cli, 'merge', f.directory, source, '--writers-stopped']);
++    assert.deepEqual(decodeOperations(await readFile(f.store.path, 'utf8'), source), current);
++  } finally { await f.close(); }
++});
++test('backup script exports a valid flat snapshot for either layout and refuses damaged Work', async () => {
++  const f = await fixture(); try {
++    const binary = resolve(f.root, 'bin'); await mkdir(binary);
++    // Replace Docker transport with actual local Node tools; no daemon or network.
++    await writeFile(resolve(binary, 'docker'), `#!/usr/bin/env python3\nimport os,sys,subprocess\na=sys.argv[1:]\ni=a.index('node')\nargs=a[i+1:]\nif args and args[0]=='/app/server-render/export-operations.mjs': args[0]=os.environ['TEST_EXPORTER']\nsys.exit(subprocess.call([os.environ['TEST_NODE']]+args))\n`, { mode: 0o700 });
++    const backup = (await readFile('ops/production/backup.py', 'utf8')).replace("ROOT = Path('/opt/artel-crm')", `ROOT = Path(${JSON.stringify(f.root)})`);
++    const script = resolve(f.root, 'backup.py'); await writeFile(script, backup);
++    const env = { ...f.env, PATH: `${binary}:${process.env.PATH}`, TEST_NODE: process.execPath, TEST_EXPORTER: exporter };
++    for (const mode of ['legacy', 'partitioned-flattened']) {
++      if (mode !== 'legacy') await execFile(process.execPath, [cli, 'split', f.directory, source, '--writers-stopped']);
++      await execFile('python3', [script], { env });
++      const archive = (await readdir(resolve(f.root, 'backups'))).filter(n => n.endsWith('.tar.gz')).sort().at(-1)!;
++      const extraction = await execFile('python3', ['-c', "import sys,tarfile,json; t=tarfile.open(sys.argv[1]); print(json.dumps({'manifest':json.load(t.extractfile('backup-manifest.json')),'raw':t.extractfile('data/operations/operations.json').read().decode()}))", resolve(f.root, 'backups', archive)]);
++      const result = JSON.parse(extraction.stdout);
++      assert.equal(result.manifest.storageLayout, mode);
++      assert.deepEqual(decodeOperations(result.raw, source), await f.store.read(source));
++    }
++    const before = (await readdir(resolve(f.root, 'backups'))).sort();
++    await writeFile(resolve(f.directory, 'work-storage/work.json'), '{}');
++    await assert.rejects(execFile('python3', [script], { env }));
++    assert.deepEqual((await readdir(resolve(f.root, 'backups'))).sort(), before);
++  } finally { await f.close(); }
++});
++
++test('three separate Node processes commit 30 updates without lost revisions', async () => {
++  const f = await fixture(); try {
++    await execFile(process.execPath, [cli, 'split', f.directory, source, '--writers-stopped']);
++    const before = (await f.store.read(source)).revision;
++    const code = `import {OperationsStore} from ${JSON.stringify(resolve('server/operations-store.ts'))};
++      const store=new OperationsStore(process.env.ARTEL_STORE_DIR);
++      for(let i=0;i<10;i++)await store.mutateWork('${source}',d=>{
++        d.work.notes.push({id:process.pid+'-'+i,title:'Parallel',content:'Synthetic',assigneeId:'employee',createdBy:'employee',updatedBy:'employee',createdAt:'2026-10-29T10:00:00Z',updatedAt:'2026-10-29T10:00:00Z',version:1});
++        return {result:null,changed:true};
++      });`;
++    await Promise.all(Array.from({ length: 3 }, () => execFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { env: f.env })));
++    const after = await f.store.read(source);
++    assert.equal(after.work!.notes.length, 30);
++    assert.equal(new Set(after.work!.notes.map(n => n.id)).size, 30);
++    assert.equal(after.revision, before + 30);
++  } finally { await f.close(); }
++});
+diff --git a/tests/work-partition.test.ts b/tests/work-partition.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/work-partition.test.ts
+@@ -0,0 +1,163 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { mkdtemp, readFile, writeFile, rm, stat } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { createHash } from 'node:crypto';
++import { OperationsStore, LegacyOperationsStore, encodeOperations } from '../server/operations-store';
++import { WorkPartition, migrateWorkStorage, mergeWorkStorage } from '../server/work-partition';
++import { emptyWork } from '../web/src/work-model';
++const source = 'a'.repeat(64);
++const seal = (data: unknown) => JSON.stringify({ sha256: createHash('sha256').update(JSON.stringify(data)).digest('hex'), data });
++const delay = (n: number) => new Promise(r => setTimeout(r, n));
++async function fixture() {
++  const directory = await mkdtemp(resolve(tmpdir(), 'work-partition-'));
++  const store = new OperationsStore(directory);
++  await store.mutate(source, data => {
++    data.work = { ...emptyWork(), tasks: [{ id: 'task-1', title: 'Синтетическая задача', description: 'Описание', status: 'todo', companyId: null, dueDate: null, reminderAt: '2026-11-01T10:00:00Z', assigneeId: 'employee-1', createdBy: 'employee-1', updatedBy: 'employee-1', createdAt: '2026-10-01T10:00:00Z', updatedAt: '2026-10-01T10:00:00Z', version: 1, attachments: [{ id: 'file-1', name: 'example.txt', size: 3, data: 'YWJj', authorId: 'employee-1', createdAt: '2026-10-01T10:00:00Z' }], comments: [{ id: 'comment-1', text: 'Комментарий', authorId: 'employee-1', createdAt: '2026-10-01T10:00:00Z' }] }] };
++    data.push = { devices: [], deliveries: {}, taskAssignments: { 'task-1': { version: 1, assigneeId: 'employee-1', at: Date.now() } } };
++    return { result: null, changed: true };
++  });
++  return { directory, store, part: new WorkPartition(store.path), close: () => rm(directory, { recursive: true, force: true }) };
++}
++test('offline split is exact and idempotent; legacy binaries fail closed; fresh readers see one source', async () => {
++  const f = await fixture(); try {
++    const before = await f.store.read(source);
++    assert.equal((await migrateWorkStorage(f.directory, source)).changed, true);
++    assert.deepEqual(await new OperationsStore(f.directory).read(source), before);
++    assert.equal((await migrateWorkStorage(f.directory, source)).changed, false);
++    await assert.rejects(new LegacyOperationsStore(f.directory).read(source));
++    const core = await f.part.core.read(source); assert.equal(core.work, undefined); assert.equal(core.push?.taskAssignments, undefined);
++    const disk = JSON.parse(await readFile(f.part.workPath, 'utf8')).data;
++    assert.deepEqual(disk.work, before.work); assert.deepEqual(disk.taskAssignments, before.push?.taskAssignments);
++  } finally { await f.close(); }
++});
++test('Work commit changes only work.json; core/rights/directories bytes and inode stay exact', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source); const core = await readFile(f.part.core.path); const inode = (await stat(f.part.core.path)).ino;
++    await f.store.mutateWork(source, data => { data.work!.tasks[0].status = 'done'; data.work!.tasks[0].version++; delete data.push!.taskAssignments!['task-1']; return { result: null, changed: true }; });
++    assert.deepEqual(await readFile(f.part.core.path), core); assert.equal((await stat(f.part.core.path)).ino, inode);
++    assert.equal((await f.store.read(source)).work!.tasks[0].status, 'done');
++  } finally { await f.close(); }
++});
++test('Work domain guard rejects accidental writes to accounts/core and preserves both files', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source); const before = encodeOperations(await f.store.read(source));
++    await assert.rejects(f.store.mutateWork(source, d => { d.sourceOperationsCleared = true; d.work!.tasks[0].status = 'done'; return { result: null, changed: true }; }), /another domain/);
++    assert.equal(encodeOperations(await f.store.read(source)), before);
++  } finally { await f.close(); }
++});
++test('mixed core/Work commit is visible atomically, advances revision and persists across instances', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source); const before = (await f.store.read(source)).revision;
++    await f.store.mutate(source, d => { d.sourceOperationsCleared = true; d.work!.tasks[0].status = 'done'; return { result: null, changed: true }; });
++    const result = await new OperationsStore(f.directory).read(source); assert.equal(result.sourceOperationsCleared, true); assert.equal(result.work!.tasks[0].status, 'done'); assert.ok(result.revision > before);
++    await assert.rejects(stat(f.part.journalPath), { code: 'ENOENT' });
++  } finally { await f.close(); }
++});
++test('validated redo journal recovers an interrupted two-file commit without losing new tasks', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source);
++    const core = await f.part.core.read(source); core.sourceOperationsCleared = true; core.revision++;
++    const work = JSON.parse(await readFile(f.part.workPath, 'utf8')).data; work.revision++; work.work.tasks[0].title = 'Новая подтверждённая запись';
++    const coreBytes = encodeOperations(core), workBytes = seal(work);
++    await writeFile(f.part.journalPath, seal({ sourceSha256: source, core: coreBytes, work: workBytes }));
++    await writeFile(f.part.core.path, coreBytes); // crash after first rename
++    const restored = await new OperationsStore(f.directory).read(source);
++    assert.equal(restored.sourceOperationsCleared, true); assert.equal(restored.work!.tasks[0].title, 'Новая подтверждённая запись');
++    await assert.rejects(stat(f.part.journalPath), { code: 'ENOENT' });
++  } finally { await f.close(); }
++});
++test('damaged/missing Work, journal and wrong-source pointers fail closed instead of empty bootstrap', async () => {
++  for (const target of ['work', 'journal', 'missing', 'source']) {
++    const f = await fixture(); try {
++      await migrateWorkStorage(f.directory, source); const core = await readFile(f.part.core.path);
++      if (target === 'missing') await rm(f.part.workPath);
++      else if (target === 'work') await writeFile(f.part.workPath, '{"data":{}}');
++      else if (target === 'journal') await writeFile(f.part.journalPath, '{"data":{}}');
++      await assert.rejects(f.store.read(target === 'source' ? 'b'.repeat(64) : source));
++      await assert.rejects(f.store.mutateWork(target === 'source' ? 'b'.repeat(64) : source, d => { d.work = emptyWork(); return { result: null, changed: true }; }));
++      assert.deepEqual(await readFile(f.part.core.path), core);
++    } finally { await f.close(); }
++  }
++});
++test('rollback merges CURRENT Work changes, not the premigration backup, and is idempotent', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source);
++    await f.store.mutateWork(source, d => { d.work!.tasks[0].title = 'После переноса'; d.work!.tasks[0].version++; return { result: null, changed: true }; });
++    const before = await f.store.read(source);
++    assert.equal((await mergeWorkStorage(f.directory, source)).changed, true);
++    assert.deepEqual(await new LegacyOperationsStore(f.directory).read(source), before);
++    assert.equal((await mergeWorkStorage(f.directory, source)).changed, false);
++  } finally { await f.close(); }
++});
++test('Work bypasses the queued core backlog but respects an in-flight shared transaction', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source); const order: string[] = []; let release!: () => void; let started!: () => void;
++    const running = new Promise<void>(r => started = r); const gate = new Promise<void>(r => release = r);
++    const first = f.store.mutate(source, async () => { started(); await gate; order.push('core-first'); return { result: null, changed: false }; }); await running;
++    const backlog = Array.from({ length: 8 }, (_, i) => f.store.mutate(source, async () => { await delay(10); order.push(`core-${i}`); return { result: null, changed: false }; }));
++    const work = f.store.mutateWork(source, d => { order.push('work'); d.work!.tasks[0].version++; return { result: null, changed: true }; });
++    await delay(30); assert.deepEqual(order, []); release(); await Promise.all([first, work, ...backlog]);
++    assert.ok(order.indexOf('work') < 3, order.join(',')); assert.equal((await f.store.read(source)).work!.tasks[0].version, 2);
++  } finally { await f.close(); }
++});
++test('multiple instances serialize 20 Work updates without losing writes', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source);
++    await Promise.all(Array.from({ length: 20 }, () => new OperationsStore(f.directory).mutateWork(source, d => { d.work!.tasks[0].version++; return { result: null, changed: true }; })));
++    assert.equal((await f.store.read(source)).work!.tasks[0].version, 21);
++  } finally { await f.close(); }
++});
++test('missing source cannot be migrated and orphan storage is never overwritten', async () => {
++  const f = await fixture(); try {
++    await rm(f.store.path); await assert.rejects(migrateWorkStorage(f.directory, source));
++  } finally { await f.close(); }
++});
++
++test('core access change wins before a waiting Work mutation rechecks fresh authority', async () => {
++  const f=await fixture();try {
++    await migrateWorkStorage(f.directory,source);let started!:()=>void,release!:()=>void;
++    const gate=new Promise<void>(r=>release=r),ready=new Promise<void>(r=>started=r);
++    const revoke=f.store.mutate(source,async d=>{started();await gate;d.sourceOperationsCleared=true;return{result:null,changed:true}});await ready;
++    const work=f.store.mutateWork(source,d=>{if(d.sourceOperationsCleared)throw new Error('authority revoked');d.work!.tasks[0].status='done';return{result:null,changed:true}});
++    const refused=assert.rejects(work,/authority revoked/);await delay(20);release();await Promise.all([revoke,refused]);assert.equal((await f.store.read(source)).work!.tasks[0].status,'todo');
++  }finally{await f.close();}
++});
++
++test('split and merge preserve an explicitly empty push shell as well as absent optional data', async () => {
++  for (const present of [false, true]) {
++    const f = await fixture(); try {
++      await f.store.mutate(source, d => { delete d.work; if (present) d.push = { devices: [], deliveries: {} }; else delete d.push; return { result: null, changed: true }; });
++      const before = await f.store.read(source);
++      await migrateWorkStorage(f.directory, source);
++      assert.deepEqual(await f.store.read(source), before);
++      await mergeWorkStorage(f.directory, source);
++      assert.deepEqual(await f.store.read(source), before);
++    } finally { await f.close(); }
++  }
++});
++
++test('cached committed core never hides a later corrupted on-disk file', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source);
++    await f.store.mutate(source, d => { d.sourceOperationsCleared = true; return { result: null, changed: true }; });
++    assert.equal((await f.store.read(source)).sourceOperationsCleared, true);
++    await writeFile(f.part.core.path, '{}');
++    await assert.rejects(f.store.read(source));
++    await assert.rejects(f.store.mutateWork(source, d => { d.work!.tasks[0].version++; return { result: null, changed: true }; }));
++  } finally { await f.close(); }
++});
++
++test('Work refuses growth beyond the flat backup size bound before replacing either file', async () => {
++  const f = await fixture(); try {
++    await migrateWorkStorage(f.directory, source);
++    const raw = await readFile(f.part.core.path, 'utf8');
++    // Valid JSON whitespace creates a near-limit physical core without fake entities.
++    await writeFile(f.part.core.path, raw + ' '.repeat(64 * 1024 * 1024 - 4096 - Buffer.byteLength(raw)));
++    const before = await readFile(f.part.workPath);
++    await assert.rejects(f.store.mutateWork(source, d => { d.work!.tasks[0].description = 'x'.repeat(10000); return { result: null, changed: true }; }), /safe backup/);
++    assert.deepEqual(await readFile(f.part.workPath), before);
++    assert.equal((await stat(f.part.core.path)).size, 64 * 1024 * 1024 - 4096);
++  } finally { await f.close(); }
++});
+diff --git a/web/src/WorkPage.tsx b/web/src/WorkPage.tsx
+--- a/web/src/WorkPage.tsx
++++ b/web/src/WorkPage.tsx
+@@ -27,10 +27,11 @@
+   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+   const request = useRef<AbortController | null>(null), active = useRef(true);
+   const completing = useRef(new Set<string>());
++  const editorSaving = useRef(false);
+   const [pendingTasks, setPendingTasks] = useState<Record<string, WorkTask['status']>>({});
+   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
+   const refresh = useCallback(async (visible = false) => {
+-    if (completing.current.size) return;
++    if (completing.current.size || editorSaving.current) return;
+     request.current?.abort();
+     const controller = new AbortController();
+     request.current = controller;
+@@ -141,23 +142,22 @@
+           <section className="panel work-notes"><header className="work-section-heading"><h2>Заметки</h2><button className="icon-button" aria-label="Добавить заметку" onClick={() => setEditor({ kind: 'notes' })}><Plus size={18}/></button></header>{data.work.notes.length ? <div className="work-note-list">{data.work.notes.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(note => <button className="work-note" key={note.id} onClick={() => setEditor({ kind: 'notes', entry: note })} aria-label={`Заметка: ${note.title}`}><strong>{note.title}</strong><p>{note.content}</p><small>{userName(note.assigneeId)}</small></button>)}</div> : <p className="work-empty">Заметок пока нет.</p>}</section>
+         </aside>
+       </div>
+-      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onClose={() => setEditor(null)} onSaved={(action, entry) => {
++      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }} onClose={() => setEditor(null)} onSaved={(action, entry) => {
+         request.current?.abort();
+         const key = editor.kind === 'companies' ? 'companyRecords' : editor.kind;
+         setData(previous => {
+           if (!previous) return previous;
+           const remaining = previous.work[key].filter(row => row.id !== editor.entry?.id && row.id !== entry?.id);
+-          return { ...previous, work: { ...previous.work, [key]: entry ? [...remaining, entry] : remaining } };
++          return { ...previous, work: { ...previous.work, [key]: entry && (!filter || entry.assigneeId === (filter === 'mine' ? previous.currentUser.id : filter)) ? [...remaining, entry] : remaining } };
+         });
+         setEditor(null);
+         setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : 'Сохранено. Назначение доступно сотруднику в разделе «Работа».');
+-        void refresh();
+       }}/>}
+     </>}
+   </div>;
+ }
+ 
+-function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
++function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
+   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
+   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
+   const [requestId] = useState(() => crypto.randomUUID());
+@@ -173,7 +173,7 @@
+   const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
+     if (inFlight.current) return;
+     if (method !== 'DELETE' && !dialog.current?.querySelector('form')?.reportValidity()) return;
+-    inFlight.current = true; setSaving(true); setError('');
++    inFlight.current = true; onSaving(true); setSaving(true); setError('');
+     try {
+       let body: Record<string, unknown> = { version: entry?.version };
+       if (method !== 'DELETE') {
+@@ -188,7 +188,7 @@
+       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить запись.');
+       await complete(() => onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry));
+     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
+-    finally { inFlight.current = false; setSaving(false); }
++    finally { inFlight.current = false; onSaving(false); setSaving(false); }
+   };
+   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number } = {}) => <label className="work-field"><span>{label}{options.required ? ' *' : ''}</span>{options.multiline ? <textarea aria-label={label} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;
+   const heading = editor.kind === 'tasks' ? entry ? 'Задача' : 'Новая задача' : editor.kind === 'companies' ? 'Работа с компанией' : entry ? 'Заметка' : 'Новая заметка';

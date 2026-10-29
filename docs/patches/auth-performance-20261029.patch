@@ -1,0 +1,1468 @@
+diff --git a/scripts/preview_auth_performance.mjs b/scripts/preview_auth_performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/preview_auth_performance.mjs
+@@ -0,0 +1,44 @@
++// Local disposable review, with synthetic accounts and no service credentials.
++import { resolve } from 'node:path';
++import { mkdtemp, rm } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { randomUUID } from 'node:crypto';
++for (const key of Object.keys(process.env)) if (/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key)) delete process.env[key];
++process.env.SABY_WORKFLOW_ENABLED = 'false';
++process.env.ARTEL_CABINET_SYNC_ENABLED = 'false';
++process.env.ARTEL_GEOCODER_ENABLED = 'false';
++process.env.ARTEL_BANK_SYNC_ENABLED = 'false';
++process.env.ARTEL_BANK_REQUESTS_ENABLED = 'false';
++process.env.PUSH_SCHEDULE_ENABLED = 'false';
++const { writeTripsQaSnapshot, startTripsQaServer } = await import('./qa-trips-runtime.mjs');
++const { OperationsStore } = await import('../server/operations-store.ts');
++const { migrateWorkStorage } = await import('../server/work-partition.ts');
++const root = resolve(import.meta.dirname, '..');
++const directory = await mkdtemp(resolve(tmpdir(), 'artel-auth-review-'));
++const snapshotDirectory = resolve(directory, 'snapshot'), operationsDirectory = resolve(directory, 'store');
++const source = await writeTripsQaSnapshot(snapshotDirectory);
++const nativeFetch = globalThis.fetch;
++globalThis.fetch = (input, init) => {
++  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
++  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') return Promise.reject(new Error('External network disabled in auth preview'));
++  return nativeFetch(input, init);
++};
++const runtime = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory, port: 5195 });
++const credentials = { login: 'qa.auth', password: 'Local-auth-review-2026' };
++const setup = await fetch(runtime.base + '/api/auth/setup', {
++  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Учебный пользователь', ...credentials }),
++});
++if (!setup.ok) throw new Error('Synthetic setup failed');
++const cookie = setup.headers.get('set-cookie').split(';')[0], user = (await setup.json()).user;
++const created = await fetch(runtime.base + '/api/work/tasks', {
++  method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
++  body: JSON.stringify({ requestId: randomUUID(), title: 'Проверка входа и выхода — учебная задача', assigneeId: user.id }),
++});
++if (!created.ok) throw new Error('Synthetic task setup failed');
++const store = new OperationsStore(operationsDirectory);
++await store.mutate(source, data => { data.accounts.sessions = []; return { changed: true, result: null }; });
++await migrateWorkStorage(operationsDirectory, source);
++console.log(JSON.stringify({ preview: 'http://localhost:5195/#work', syntheticOnly: true, ...credentials }));
++for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
++  await runtime.server.close(); await rm(directory, { recursive: true, force: true }); process.exit(0);
++});
+diff --git a/scripts/profile-auth-performance.mjs b/scripts/profile-auth-performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile-auth-performance.mjs
+@@ -0,0 +1,89 @@
++// Synthetic loopback HTTP measurements. Never opens production data or contacts providers.
++// Usage: ROUNDS=10 SOURCE_ROOT=/path/to/source node --import tsx scripts/profile-auth-performance.mjs report.json
++import assert from 'node:assert/strict';
++import crypto from 'node:crypto';
++import {syncBuiltinESMExports} from 'node:module';
++import {AsyncLocalStorage} from 'node:async_hooks';
++import {createServer} from 'node:http';
++import {readFile,writeFile,stat,mkdir} from 'node:fs/promises';
++import {resolve,dirname} from 'node:path';
++import {fileURLToPath,pathToFileURL} from 'node:url';
++import {performance} from 'node:perf_hooks';
++const root=resolve(process.env.SOURCE_ROOT??resolve(dirname(fileURLToPath(import.meta.url)),'..'));
++const output=resolve(process.argv[2]??'auth-performance.json'),rounds=Number(process.env.ROUNDS??10);
++assert.ok(Number.isSafeInteger(rounds)&&rounds>0&&rounds<=100);
++for(const key of Object.keys(process.env))if(/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key))delete process.env[key];
++const scope=new AsyncLocalStorage(),originalScrypt=crypto.scrypt;
++crypto.scrypt=(...args)=>{const trace=scope.getStore(),start=performance.now(),callback=args.pop();return Reflect.apply(originalScrypt,crypto,[...args,(...result)=>{if(trace){trace.kdfCount++;trace.kdfMs+=performance.now()-start;}callback(...result);}]);};syncBuiltinESMExports();
++const moduleAt=path=>import(pathToFileURL(resolve(root,path)).href);
++const [{integrationRuntime},{createSnapshotMiddleware},{OperationsStore},{migrateWorkStorage},{normalizeTbank},{emptyBanking},fixtures,{passwordFields},{syncInvoiceEvents}]=await Promise.all([
++ moduleAt('tests/helpers/trip-saby-integration.ts'),moduleAt('server/local-api.ts'),moduleAt('server/operations-store.ts'),moduleAt('server/work-partition.ts'),moduleAt('server/banking/adapters.ts'),moduleAt('server/banking/domain.ts'),moduleAt('tests/banking-fixtures.ts'),moduleAt('server/auth.ts'),moduleAt('server/invoice-bridge.ts'),
++]);
++const harnessSha256=crypto.createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex');
++const f=await integrationRuntime(),password='Synthetic-auth-performance-password-only',loginName='qa.auth.perf';
++const report={syntheticOnly:true,sourceRoot:root,harnessSha256,rounds,externalCalls:0,coreLoad:'3500 synthetic bank operations and 180 synthetic shipment records',backgroundModel:'6 concurrent full-core bank metadata writes; models common queue contention, not provider network time or complete bank/Saby jobs',samples:[],workerSamples:[],coldSamples:[]};
++const deny=async()=>{report.externalCalls++;throw Error('External providers disabled');};
++const emptyTrace=()=>({reads:[],mutations:[],kdfCount:0,kdfMs:0});
++const percentile=(a,p)=>[...a].sort((a,b)=>a-b)[Math.ceil(a.length*p)-1];
++const save=async()=>{await mkdir(dirname(output),{recursive:true});await writeFile(output,JSON.stringify(report,null,2));};
++let server;
++try{
++ const credentials=await passwordFields(password);
++ await f.store.mutate(f.source,d=>{
++  d.accounts={users:[{id:'synthetic-auth-user',name:'Synthetic auth user',login:loginName,role:'director',managerId:null,active:true,version:1,...credentials}],sessions:[],attempts:{}};
++  d.banking=emptyBanking();const c=fixtures.fixtureConfig();d.banking.operations=Array.from({length:3500},(_,i)=>normalizeTbank(c,{number:fixtures.accountNumber,currency:'RUB'},fixtures.fixtureDay,fixtures.tbankRow(`auth-perf-${i}`)));
++  const rows=Object.values(d.shipments);for(let i=0;i<89;i++)for(const [j,r] of rows.entries())d.shipments[`shipment-local-auth-${i}-${j}`]={...structuredClone(r),fields:{...r.fields,trip_id:`shipment-trip-abcdef-${i}`}};
++  return{changed:true,result:null};
++ });
++ await migrateWorkStorage(dirname(f.store.path),f.source);
++ report.coreBytes=(await stat(resolve(dirname(f.store.path),'work-storage/core/operations.json'))).size;
++ const store=new OperationsStore(dirname(f.store.path));
++ const originalRead=store.read.bind(store),originalMutate=store.mutate.bind(store);
++ for(const name of ['read','readAuth','readSession','readAuthContext'])if(typeof store[name]==='function'){
++  const original=store[name].bind(store);store[name]=async(...a)=>{const trace=scope.getStore(),start=performance.now();try{return await original(...a);}finally{if(trace)trace.reads.push({method:name,ms:performance.now()-start});}};
++ }
++ for(const name of ['mutate','mutateAuth','mutateAuthentication'])if(typeof store[name]==='function'){
++  const original=store[name].bind(store);store[name]=async(source,update)=>{const trace=scope.getStore(),start=performance.now();let entered,finished;try{return await original(source,async d=>{entered=performance.now();try{return await update(d);}finally{finished=performance.now();}});}finally{if(trace)trace.mutations.push({method:name,admissionLoadMs:entered===undefined?null:entered-start,callbackMs:finished===undefined?null:finished-entered,commitMs:finished===undefined?null:performance.now()-finished,totalMs:performance.now()-start});}};
++ }
++ const traces=new Map();let sequence=0;
++ const api=createSnapshotMiddleware(f.snapshotDirectory,{operationsStore:store,operationsDirectory:dirname(f.store.path),sabyWorkflowMonitoringEnabled:false,cabinetEnvironment:{},geocoderEnvironment:{},bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},bankRequest:deny,sberRequest:deny,fetcher:deny,pushSender:deny,tripRequestGeocoder:deny,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false}});
++ server=createServer((req,res)=>{const trace=emptyTrace();trace.serverStart=performance.now();res.on('finish',()=>{trace.serverMs=performance.now()-trace.serverStart;delete trace.serverStart;});traces.set(req.headers['x-synthetic-trace'],trace);scope.run(trace,()=>api(req,res,()=>{res.writeHead(404);res.end()}));});
++ await new Promise(done=>server.listen(0,'127.0.0.1',done));const origin=`http://127.0.0.1:${server.address().port}`;
++ let cookie='';
++ const call=async(path,method='GET',body,expected=200)=>{
++  const key=String(++sequence),start=performance.now();const response=await fetch(origin+path,{method,signal:AbortSignal.timeout(20000),headers:{cookie,'Content-Type':'application/json','x-synthetic-trace':key},...(body?{body:JSON.stringify(body)}:{})});const data=await response.json();
++  assert.equal(response.status,expected,JSON.stringify(data));const setCookie=response.headers.get('set-cookie');if(setCookie)cookie=setCookie.split(';')[0];
++  const metrics={httpMs:performance.now()-start,...traces.get(key)};traces.delete(key);return{data,metrics};
++ };
++ const coldLogin=await call('/api/auth/login','POST',{login:loginName,password});report.coldSamples.push({name:'first-login-after-new-store-and-new-HTTP-runtime',...coldLogin.metrics});
++ const coldSession=await call('/api/auth/session');assert.equal(coldSession.data.user.id,'synthetic-auth-user');report.coldSamples.push({name:'first-session-read-after-login',...coldSession.metrics});
++ await call('/api/auth/logout','POST',{});
++ const protectedBefore=JSON.stringify((await originalRead(f.source)).banking.operations.map(({updatedAt,...business})=>business));
++ const bridgeCalls=[];
++ const bridge={service:async(path,body)=>{bridgeCalls.push({path,at:performance.now(),sessionHash:body?.sessionHash});if(path==='/internal/crm/sessions/revoke')return{ok:true};assert.equal(path,'/internal/crm/events');return{events:[],hasMore:false};}};
++ const propagate=async()=>{const start=performance.now(),trace=emptyTrace(),pending=Object.keys((await originalRead(f.source)).push?.invoiceRevocations??{});await scope.run(trace,()=>syncInvoiceEvents(bridge,store,f.source));const fresh=await originalRead(f.source);assert.equal(Object.keys(fresh.push?.invoiceRevocations??{}).length,0);for(const hash of pending)assert.ok(bridgeCalls.some(c=>c.sessionHash===hash));return{dispatchAndCleanupMs:performance.now()-start,revocations:pending.length,...trace};};
++ await propagate();
++ // Warm preparation is excluded from controlled samples. The two explicit cold rows remain separately reported.
++ for(const load of ['idle','six-background-writes'])for(let round=0;round<rounds;round++){
++  const run=async(name,path,method='GET',body)=>{
++   const start=performance.now();
++   const jobs=load==='idle'?[]:Array.from({length:6},(_,j)=>originalMutate(f.source,d=>{d.banking.operations[0].updatedAt=new Date(Date.now()+j).toISOString();return{changed:true,result:null};}));
++   const result=await call(path,method,body);await Promise.all(jobs);report.samples.push({load,name,round,...result.metrics,batchMs:performance.now()-start});return result;
++  };
++  const login=await run('login','/api/auth/login','POST',{login:loginName,password});assert.equal(login.data.user.id,'synthetic-auth-user');
++  const session=await run('session','/api/auth/session');assert.equal(session.data.user.id,'synthetic-auth-user');
++  const oldCookie=cookie;await run('logout','/api/auth/logout','POST',{});cookie=oldCookie;
++  const denied=await call('/api/work','GET',undefined,401);assert.equal(denied.data.user,undefined);
++  cookie='';
++  report.workerSamples.push({load,round,...await propagate()});
++  await save();
++ }
++ assert.equal(JSON.stringify((await originalRead(f.source)).banking.operations.map(({updatedAt,...business})=>business)),protectedBefore);assert.equal(report.externalCalls,0);
++ report.summary=[];
++ for(const load of ['idle','six-background-writes'])for(const name of ['login','session','logout']){
++  const rows=report.samples.filter(s=>s.load===load&&s.name===name),values=key=>rows.map(s=>s[key]);
++  report.summary.push({load,name,count:rows.length,medianHttpMs:percentile(values('httpMs'),.5),p95HttpMs:percentile(values('httpMs'),.95),medianServerMs:percentile(values('serverMs'),.5),medianKdfMs:percentile(values('kdfMs'),.5),medianReadMs:percentile(rows.map(s=>s.reads.reduce((sum,r)=>sum+r.ms,0)),.5),medianAdmissionLoadMs:percentile(rows.map(s=>s.mutations.reduce((sum,r)=>sum+(r.admissionLoadMs??0),0)),.5),medianCommitMs:percentile(rows.map(s=>s.mutations.reduce((sum,r)=>sum+(r.commitMs??0),0)),.5),medianBatchMs:percentile(values('batchMs'),.5),readMethods:[...new Set(rows.flatMap(s=>s.reads.map(r=>r.method)))],mutationMethods:[...new Set(rows.flatMap(s=>s.mutations.map(r=>r.method)))]});
++ }
++ report.workerStub={calls:bridgeCalls.length,revocations:bridgeCalls.filter(c=>c.path==='/internal/crm/sessions/revoke').length,medianDispatchAndCleanupMs:percentile(report.workerSamples.map(s=>s.dispatchAndCleanupMs),.5),productionPollingIntervalNotMeasured:true};
++ report.passed=true;await save();console.log(JSON.stringify({coreBytes:report.coreBytes,coldSamples:report.coldSamples,summary:report.summary,workerStub:report.workerStub},null,2));
++}finally{if(server){server.closeAllConnections();await new Promise(done=>server.close(done));}await f.close();crypto.scrypt=originalScrypt;syncBuiltinESMExports();}
+diff --git a/scripts/profile-auth-ui.mjs b/scripts/profile-auth-ui.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile-auth-ui.mjs
+@@ -0,0 +1,93 @@
++// Browser-clock auth readiness with real loopback middleware, synthetic split storage and real scrypt.
++// SOURCE_ROOT=/path/to/source MODE=built|source ROUNDS=3 node --import tsx scripts/profile-auth-ui.mjs report.json
++import assert from 'node:assert/strict';
++import {createServer} from 'node:http';
++import {createHash} from 'node:crypto';
++import {readFile,writeFile,mkdir,stat} from 'node:fs/promises';
++import {resolve,dirname,relative,extname,sep} from 'node:path';
++import {fileURLToPath,pathToFileURL} from 'node:url';
++import {performance} from 'node:perf_hooks';
++import {chromium,webkit,expect as baseExpect} from '@playwright/test';
++import {createServer as createViteServer} from 'vite';
++import react from '@vitejs/plugin-react';
++const root=resolve(process.env.SOURCE_ROOT??resolve(dirname(fileURLToPath(import.meta.url)),'..')),mode=process.env.MODE??'built',engine=process.env.ENGINE??'chromium',rounds=Number(process.env.ROUNDS??3);
++const output=resolve(process.argv[2]??'auth-ui.json'),expect=baseExpect.configure({timeout:20000});
++assert.ok(['built','source'].includes(mode)&&['chromium','webkit'].includes(engine)&&Number.isSafeInteger(rounds)&&rounds>0);
++for(const key of Object.keys(process.env))if(/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key))delete process.env[key];
++const moduleAt=path=>import(pathToFileURL(resolve(root,path)).href);
++const [{integrationRuntime},{createSnapshotMiddleware},{OperationsStore},{migrateWorkStorage},{normalizeTbank},{emptyBanking},fixtures,{passwordFields}]=await Promise.all([
++ moduleAt('tests/helpers/trip-saby-integration.ts'),moduleAt('server/local-api.ts'),moduleAt('server/operations-store.ts'),moduleAt('server/work-partition.ts'),moduleAt('server/banking/adapters.ts'),moduleAt('server/banking/domain.ts'),moduleAt('tests/banking-fixtures.ts'),moduleAt('server/auth.ts'),
++]);
++const harnessSha256=createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex');
++const f=await integrationRuntime(),password='Synthetic-auth-performance-password-only',loginName='qa.auth.perf';
++const report={syntheticOnly:true,sourceRoot:root,harnessSha256,mode,engine,rounds,externalCalls:0,externalBrowserRequests:[],errors:[],samples:[],api:[],notes:['MODE=built means compiled frontend assets with source middleware; actual production backend bundle is verified by separate safety QA.', 'Browser elapsed is document Performance API from click/navigation to DOM readiness; excludes Playwright click dispatch overhead.','Server time is incoming request to response finish and excludes browser assets/React rendering.','Six concurrent metadata writes model shared-store queue pressure; no real bank/Saby provider latency.','Cold browser context has no cookies/cache. Initial server fixture is synthetic and filesystem caches are not forcibly evicted.','Push provider disabled; no push subscription/native browser delay included in these timings.']};
++let phase='setup',server,vite,browser;
++const originalFetch=globalThis.fetch;
++globalThis.fetch=(input,init)=>{const url=new URL(typeof input==='string'||input instanceof URL?input:input.url);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'){report.externalCalls++;throw Error('No provider access');}return originalFetch(input,init);};
++const deny=async()=>{report.externalCalls++;throw Error('No provider access');};
++const save=async()=>{await mkdir(dirname(output),{recursive:true});await writeFile(output,JSON.stringify(report,null,2));};
++try{
++ const credentials=await passwordFields(password),now='2026-10-29T10:00:00.000Z',userId='synthetic-auth-user';
++ await f.store.mutate(f.source,d=>{
++  d.accounts={users:[{id:userId,name:'Synthetic auth user',login:loginName,role:'director',managerId:null,active:true,version:1,...credentials}],sessions:[],attempts:{}};
++  d.banking=emptyBanking();const c=fixtures.fixtureConfig();d.banking.operations=Array.from({length:3500},(_,i)=>normalizeTbank(c,{number:fixtures.accountNumber,currency:'RUB'},fixtures.fixtureDay,fixtures.tbankRow(`auth-perf-${i}`)));
++  const rows=Object.values(d.shipments);for(let i=0;i<89;i++)for(const [j,r] of rows.entries())d.shipments[`shipment-local-auth-${i}-${j}`]={...structuredClone(r),fields:{...r.fields,trip_id:`shipment-trip-abcdef-${i}`}};
++  d.work={tasks:[{id:'synthetic-auth-task',version:1,title:'Синтетическая задача проверки входа',description:'Только локальные тестовые данные',status:'todo',companyId:null,dueDate:null,reminderAt:null,assigneeId:userId,createdBy:userId,updatedBy:userId,createdAt:now,updatedAt:now}],companyRecords:[],notes:[]};
++  return{changed:true,result:null};
++ });
++ await migrateWorkStorage(dirname(f.store.path),f.source);report.coreBytes=(await stat(resolve(dirname(f.store.path),'work-storage/core/operations.json'))).size;
++ const store=new OperationsStore(dirname(f.store.path));
++ const api=createSnapshotMiddleware(f.snapshotDirectory,{operationsStore:store,operationsDirectory:dirname(f.store.path),sabyWorkflowMonitoringEnabled:false,cabinetEnvironment:{},geocoderEnvironment:{},bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},bankRequest:deny,sberRequest:deny,fetcher:deny,pushSender:deny,tripRequestGeocoder:deny,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false}});
++ const middleware=(req,res,next)=>{if(req.url?.startsWith('/api/')){const row={phase,path:req.url.split('?')[0],method:req.method},start=performance.now();res.on('finish',()=>{row.serverMs=performance.now()-start;row.status=res.statusCode;report.api.push(row);});}return api(req,res,next);};
++ const publicRoot=resolve(root,'app-dist'),types={'.js':'text/javascript','.css':'text/css','.html':'text/html','.png':'image/png','.svg':'image/svg+xml','.webmanifest':'application/manifest+json'};
++ if(mode==='source'){
++  vite=await createViteServer({configFile:false,envDir:false,cacheDir:resolve(f.directory,'vite-cache'),root:resolve(root,'web'),plugins:[react(),{name:'auth-synthetic-api',configureServer(instance){instance.middlewares.use(middleware);}}],server:{host:'127.0.0.1',port:0,cors:false,fs:{strict:true,allow:[resolve(root,'web'),resolve(root,'node_modules'),resolve(f.directory,'vite-cache')]}}});await vite.listen();
++ }else{
++  server=createServer((req,res)=>middleware(req,res,async()=>{try{const path=new URL(req.url,'http://localhost').pathname,file=resolve(publicRoot,`.${path==='/'?'/index.html':path}`),rel=relative(publicRoot,file);if(rel==='..'||rel.startsWith(`..${sep}`))throw Error('Outside public root');const data=await readFile(file);res.writeHead(200,{'Content-Type':types[extname(file)]??'application/octet-stream','Cache-Control':'no-cache'});res.end(data);}catch{res.writeHead(404);res.end();}}));await new Promise(done=>server.listen(0,'127.0.0.1',done));
++ }
++ const origin=`http://127.0.0.1:${(vite?.httpServer??server).address().port}`;
++ browser=await (engine==='webkit'?webkit:chromium).launch({headless:true});
++ const protectedBefore=JSON.stringify((await store.read(f.source)).banking.operations.map(({updatedAt,...business})=>business));
++ for(let round=0;round<rounds;round++){
++  const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',serviceWorkers:'block'});
++  await context.route('**/*',route=>{if(new URL(route.request().url()).origin===origin)return route.continue();report.externalBrowserRequests.push(route.request().url());return route.abort();});
++  await context.addInitScript(()=>{
++   window.__authTiming={actions:[],formReady:null,workReady:null};
++   const visible=element=>!!element&&element.getClientRects().length>0;
++   const scan=()=>{const data=window.__authTiming,form=document.querySelector('.auth-submit'),work=document.querySelector('.work-task-row');
++    const formReady=visible(form)&&!form.disabled,workReady=visible(work);
++    if(formReady&&data.formReady===null)data.formReady=performance.now();if(workReady&&data.workReady===null)data.workReady=performance.now();
++    const action=data.actions.at(-1);if(action&&!action.end&&((action.kind==='login'&&workReady)||(action.kind==='logout'&&formReady))){action.end=performance.now();action.ms=action.end-action.start;}
++   };
++   document.addEventListener('click',event=>{if(event.target.closest('.auth-submit'))window.__authTiming.actions.push({kind:'login',start:performance.now()});else if(event.target.closest('button[aria-label="Выйти"]'))window.__authTiming.actions.push({kind:'logout',start:performance.now()});},true);
++   new MutationObserver(scan).observe(document,{childList:true,subtree:true,attributes:true});document.addEventListener('DOMContentLoaded',scan);
++  });
++  const page=await context.newPage();page.on('pageerror',error=>report.errors.push({round,message:error.message}));
++  const collect=async(name,load,navigation=false)=>{
++   const browserData=await page.evaluate(()=>({timing:window.__authTiming,resources:performance.getEntriesByType('resource').filter(r=>new URL(r.name).pathname.startsWith('/api/')).map(r=>({path:new URL(r.name).pathname,start:r.startTime,durationMs:r.duration,requestStart:r.requestStart,responseStart:r.responseStart,responseEnd:r.responseEnd}))}));
++   const action=browserData.timing.actions.at(-1),ms=navigation?(name==='cold-form'?browserData.timing.formReady:browserData.timing.workReady):action?.ms;
++   assert.ok(Number.isFinite(ms)&&ms>=0,JSON.stringify({name,browserData}));
++   report.samples.push({round,name,load,browserMs:ms,...browserData,serverRequests:report.api.filter(r=>r.phase===phase)});await save();
++  };
++  phase=`${round}-cold-form`;await page.goto(origin+'/#work');await expect(page.getByRole('button',{name:'Войти',exact:true})).toBeEnabled();await collect('cold-form','idle',true);
++  const login=async(load,name)=>{
++   await page.getByLabel('Логин',{exact:true}).fill(loginName);await page.getByLabel('Пароль',{exact:true}).fill(password);phase=`${round}-${load}-${name}`;
++   const jobs=load==='idle'?[]:Array.from({length:6},(_,j)=>store.mutate(f.source,d=>{d.banking.operations[0].updatedAt=new Date(Date.now()+j).toISOString();return{changed:true,result:null};}));
++   await page.getByRole('button',{name:'Войти',exact:true}).click();await expect(page.locator('.work-task-row')).toBeVisible();await expect(page.getByRole('button',{name:'Новая задача',exact:true})).toBeEnabled();await collect(name,load);await Promise.all(jobs);
++  };
++  const logout=async(load,name)=>{
++   phase=`${round}-${load}-${name}`;const jobs=load==='idle'?[]:Array.from({length:6},(_,j)=>store.mutate(f.source,d=>{d.banking.operations[0].updatedAt=new Date(Date.now()+j).toISOString();return{changed:true,result:null};}));
++   const oldCookies=await context.cookies();await page.getByRole('button',{name:'Выйти',exact:true}).click();await expect(page.getByRole('button',{name:'Войти',exact:true})).toBeEnabled();await collect(name,load);await Promise.all(jobs);
++   const old=oldCookies.find(c=>c.name==='artel_session');assert.ok(old);const denied=await fetch(origin+'/api/work',{headers:{cookie:`${old.name}=${old.value}`}});assert.equal(denied.status,401);
++  };
++  await login('idle','cold-login');
++  phase=`${round}-reload`;await page.reload();await expect(page.locator('.work-task-row')).toBeVisible();await expect(page.getByRole('button',{name:'Новая задача',exact:true})).toBeEnabled();await collect('reload','idle',true);
++  await logout('idle','warm-logout');await login('idle','warm-login');
++  await logout('six-background-writes','loaded-logout');await login('six-background-writes','loaded-login');
++  await context.close();
++ }
++ assert.equal(JSON.stringify((await store.read(f.source)).banking.operations.map(({updatedAt,...business})=>business)),protectedBefore);assert.equal(report.externalCalls,0);assert.deepEqual(report.externalBrowserRequests,[]);assert.deepEqual(report.errors,[]);
++ const percentile=(a,p)=>[...a].sort((a,b)=>a-b)[Math.ceil(a.length*p)-1];report.summary=[];
++ for(const name of [...new Set(report.samples.map(s=>s.name))]){const rows=report.samples.filter(s=>s.name===name);report.summary.push({name,count:rows.length,medianBrowserMs:percentile(rows.map(s=>s.browserMs),.5),minBrowserMs:Math.min(...rows.map(s=>s.browserMs)),maxBrowserMs:Math.max(...rows.map(s=>s.browserMs)),authRequests:rows.map(s=>s.serverRequests.filter(r=>r.path.startsWith('/api/auth/')).map(({path,serverMs,status})=>({path,serverMs,status})))});}
++ report.passed=true;await save();console.log(JSON.stringify({summary:report.summary,apiCount:report.api.length,externalCalls:report.externalCalls,errors:report.errors},null,2));
++}finally{await browser?.close();await vite?.close();if(server){server.closeAllConnections();await new Promise(done=>server.close(done));}await f.close();globalThis.fetch=originalFetch;await save();}
+diff --git a/scripts/profile_backend_login_interleaving.mjs b/scripts/profile_backend_login_interleaving.mjs
+--- a/scripts/profile_backend_login_interleaving.mjs
++++ b/scripts/profile_backend_login_interleaving.mjs
+@@ -11,6 +11,8 @@
+ crypto.scrypt=(...args)=>{derivations++;if(!holding)return Reflect.apply(original,crypto,args);pending.push(()=>Reflect.apply(original,crypto,args));for(const waiter of waiters)waiter();};syncBuiltinESMExports();
+ const {createSnapshotMiddleware,loadSnapshot}=await import('../server/local-api.ts');
+ const {OperationsStore}=await import('../server/operations-store.ts');
++const {migrateWorkStorage}=await import('../server/work-partition.ts');
++const partitioned=process.argv.includes('--partitioned');
+ const {emptyDirectories}=await import('../server/directory-operations.ts');
+ const {prepareLogin}=await import('../server/auth.ts');
+ const {writeTripsQaSnapshot}=await import('./qa-trips-runtime.mjs');
+@@ -31,12 +33,12 @@
+ const release=()=>{holding=false;const jobs=pending.splice(0);jobs.forEach(run=>run());};
+ const checks=[];
+ try{
+- await reset();holding=true;const pendingLogins=Array.from({length:4},()=>login('target.user','wrong'));await waitPending(4);
++ await reset();if(partitioned)await migrateWorkStorage(resolve(temporary,'store'),source);holding=true;const pendingLogins=Array.from({length:4},()=>login('target.user','wrong'));await waitPending(4);
+  const before=performance.now();const work=await call('/api/work/tasks/task','PATCH',{version:1,status:'done'});assert.equal(work.status,200);const workMs=performance.now()-before;assert.equal(pending.length,4,'Work must finish while all KDFs remain held');
+  assert.equal((await call('/api/auth/session')).status,200);assert.equal((await login('overflow.user')).status,429);assert.equal(pending.length,4);release();assert.deepEqual((await Promise.all(pendingLogins)).map(r=>r.status),[401,401,401,401]);
+  let fresh=await store.read(source);assert.equal(fresh.accounts.attempts[digest('artel:auth:user:target.user')].count,4);assert.equal(fresh.work.tasks[0].status,'done');checks.push('held KDFs do not hold Work mutation; four-login gate retained');
+  const next=await Promise.all([login('target.user','wrong'),login('target.user','wrong')]);assert.deepEqual(next.map(r=>r.status).sort(),[401,429]);fresh=await store.read(source);assert.equal(fresh.accounts.attempts[digest('artel:auth:user:target.user')].count,5);assert.equal((await login()).status,429);checks.push('parallel failed attempts serialize to5 and fresh limit blocks correct password');
+- const mutations={password:row=>{row.passwordHash='0'.repeat(128)},salt:row=>{row.salt='d'.repeat(32)},version:row=>{row.version++},role:row=>{row.role='manager'},login:row=>{row.login='renamed.user'},id:row=>{row.id='replacement-target'},active:row=>{row.active=false},deleted:row=>{row.active=false;row.deletedAt=instant;row.deletedBy='owner'},sections:row=>{row.sections=[]}};
++ const mutations={password:row=>{row.passwordHash='0'.repeat(128)},salt:row=>{row.salt='d'.repeat(32)},version:row=>{row.version++},role:row=>{row.role='manager'},login:row=>{row.login='renamed.user'},id:row=>{row.id='replacement-target'},active:row=>{row.active=false},deleted:row=>{row.active=false;row.deletedAt=instant;row.deletedBy='owner'},sections:row=>{row.sections=[]},directoryGrants:row=>{row.directoryGrants=['suppliers']}};
+  for(const [name,mutate] of Object.entries(mutations)){await reset();holding=true;const attempt=login();await waitPending(1);await store.mutate(source,data=>{mutate(data.accounts.users[1]);return{changed:true,result:null};});release();const response=await attempt;assert.equal(response.status,401,name);assert.equal(response.headers.get('set-cookie'),null,name);assert.equal((await store.read(source)).accounts.sessions.length,1,name);checks.push(`fresh ${name} revocation rejects stale proof`);}
+  for(const name of ['driver-binding','driver-archived']){await reset(true);holding=true;const attempt=login('target.user',password,true);await waitPending(1);await store.mutate(source,data=>{if(name==='driver-binding')data.accounts.users[1].driverId='driver-two';else data.directories.deletedEntries={drivers:['driver']};return{changed:true,result:null};});release();assert.equal((await attempt).status,401,name);assert.equal((await store.read(source)).accounts.sessions.length,1);checks.push(name+' checked fresh');}
+  await reset();holding=true;const attempt=login();await waitPending(1);await store.mutate(source,data=>{data.accounts.attempts[digest('artel:auth:user:target.user')]={count:5,until:Date.now()+900000};return{changed:true,result:null};});release();assert.equal((await attempt).status,429);checks.push('attempt limit committed during derivation takes precedence');
+@@ -44,5 +46,5 @@
+  await reset();await store.mutate(source,data=>{data.accounts.users[1].sections=[];return{changed:true,result:null};});assert.equal((await login('target.user',password,true)).status,403);checks.push('logistics audience access rechecked at completion');
+  await reset();for(const name of ['target.user','unknown.user']){const count=derivations;await login(name,'wrong');assert.equal(derivations-count,1);}checks.push('known and unknown HTTP credentials each perform exactly one KDF');
+  await reset();const data=await store.read(source),finish=await prepareLogin(data,{login:'target.user',password});const abandoned=structuredClone(data),retry=structuredClone(data);assert.equal(finish(abandoned).status,200);assert.equal(finish(retry).status,200);assert.equal(retry.accounts.sessions.length,2);const revokedRetry=structuredClone(data);revokedRetry.accounts.users[1].role='manager';assert.equal(finish(revokedRetry).status,401);assert.equal(revokedRetry.accounts.sessions.length,1);checks.push('CAS callback retry discards abandoned session and checks identity anew');
+- console.log(JSON.stringify({passed:true,syntheticOnly:true,workPatchWhileFourKdfsHeldMs:workMs,checks,derivations}));
++ console.log(JSON.stringify({passed:true,syntheticOnly:true,storage:partitioned?'partitioned':'legacy',workPatchWhileFourKdfsHeldMs:workMs,checks,derivations}));
+ }finally{release();server.closeAllConnections();await new Promise(done=>server.close(done));crypto.scrypt=original;syncBuiltinESMExports();await rm(temporary,{recursive:true,force:true});}
+diff --git a/scripts/verify_auth_performance.mjs b/scripts/verify_auth_performance.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/verify_auth_performance.mjs
+@@ -0,0 +1,262 @@
++// Isolated loopback auth QA: real middleware + synthetic credentials/data only.
++import assert from 'node:assert/strict';
++import { randomUUID } from 'node:crypto';
++import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { pathToFileURL } from 'node:url';
++import { createServer, request as httpRequest } from 'node:http';
++import { chromium, webkit, expect as baseExpect } from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++const root = resolve(process.env.ARTEL_AUTH_QA_ROOT || resolve(import.meta.dirname, '..'));
++const output = resolve(process.env.ARTEL_AUTH_QA_OUTPUT || resolve(root, '.local/auth-ui'), process.argv.includes('--built') ? 'built' : 'source');
++const built = process.argv.includes('--built'), baseline = process.argv.includes('--baseline');
++// Production resolves app-dist from cwd. Root overrides must select BOTH the
++// backend bundle and its corresponding compiled frontend, never a mixed pair.
++const originalCwd = process.cwd();
++process.chdir(root);
++for (const key of Object.keys(process.env)) if (/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key)) delete process.env[key];
++process.env.SABY_WORKFLOW_ENABLED = 'false';
++process.env.ARTEL_CABINET_SYNC_ENABLED = 'false';
++process.env.ARTEL_BANK_SYNC_ENABLED = 'false';
++process.env.ARTEL_BANK_REQUESTS_ENABLED = 'false';
++process.env.ARTEL_GEOCODER_ENABLED = 'false';
++process.env.PUSH_SCHEDULE_ENABLED = 'false';
++const expect = baseExpect.configure({ timeout: 10000 });
++const temp = await mkdtemp(resolve(tmpdir(), 'artel-auth-performance-'));
++const snapshotDirectory = resolve(temp, 'snapshot'), operationsDirectory = resolve(temp, 'store');
++const report = { passed: false, baseline, built, sourceRoot: root, staticRoot: resolve(root, 'app-dist'), syntheticOnly: true, externalRequests: [], checks: [], timings: [], serverRequests: [], browserRequests: [], errors: [], screenshots: [], accessibility: [], interceptedAuth: [] };
++await mkdir(output, { recursive: true });
++await mkdir(operationsDirectory, { recursive: true });
++const { writeTripsQaSnapshot, startTripsQaServer } = await import(pathToFileURL(resolve(root, 'scripts/qa-trips-runtime.mjs')));
++const sourceHash = await writeTripsQaSnapshot(snapshotDirectory);
++const { migrateWorkStorage } = await import(pathToFileURL(resolve(root, 'server/work-partition.ts')));
++const { OperationsStore } = await import(pathToFileURL(resolve(root, 'server/operations-store.ts')));
++await new OperationsStore(operationsDirectory).mutate(sourceHash, data => { data.sourceOperationsCleared = true; return { result: null, changed: true }; });
++const originalFetch = globalThis.fetch;
++globalThis.fetch = (input, init) => {
++  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
++  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') { report.externalRequests.push(url.origin); throw new Error('Synthetic QA forbids external requests'); }
++  return originalFetch(input, init);
++};
++const check = (engine, name) => { report.checks.push({ engine, name }); console.log('PASS', engine, name); };
++const delay = milliseconds => new Promise(done => setTimeout(done, milliseconds));
++const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
++let runtime, browser;
++const trackServer = server => server.prependListener('request', (request, response) => {
++  if (!request.url?.startsWith('/api/')) return;
++  const start = performance.now();
++  response.once('finish', () => report.serverRequests.push({ method: request.method, path: request.url.split('?')[0], status: response.statusCode, milliseconds: performance.now() - start }));
++});
++try {
++  let setupToken;
++  if (built) {
++    const { createProductionRuntime } = await import(pathToFileURL(resolve(root, 'server-render/production.mjs')));
++    setupToken = randomUUID();
++    const environment = { ARTEL_PUBLIC_ORIGIN: 'https://auth-qa.local.test', ARTEL_LISTEN_HOST: '127.0.0.1', PORT: '0', ARTEL_SNAPSHOT_DIR: snapshotDirectory, ARTEL_STORE_DIR: operationsDirectory, ARTEL_SETUP_TOKEN: setupToken, ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false', ARTEL_CABINET_SYNC_ENABLED: 'false', ARTEL_GEOCODER_ENABLED: 'false', SABY_WORKFLOW_ENABLED: 'false', PUSH_SCHEDULE_ENABLED: 'false' };
++    const production = await createProductionRuntime(environment); trackServer(production.server); await production.start();
++    const proxy = createServer((request, response) => {
++      const headers = { ...request.headers, host: 'auth-qa.local.test' }; if (headers.origin) headers.origin = environment.ARTEL_PUBLIC_ORIGIN;
++      const upstream = httpRequest({ host: '127.0.0.1', port: production.server.address().port, path: request.url, method: request.method, headers }, result => {
++        if (result.headers['set-cookie']) assert.ok(result.headers['set-cookie'].every(value => /; Secure(?:;|$)/i.test(value)));
++        response.writeHead(result.statusCode, result.headers); result.pipe(response);
++      });
++      upstream.on('error', () => { response.writeHead(502); response.end(); }); request.pipe(upstream);
++    });
++    await new Promise(done => proxy.listen(0, '127.0.0.1', done));
++    runtime = { base: `http://127.0.0.1:${proxy.address().port}`, close: async () => { await production.stop(); await new Promise(done => proxy.close(done)); } };
++  } else {
++    const server = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory }); trackServer(server.server.httpServer);
++    runtime = { base: server.base, close: () => server.server.close() };
++  }
++  const password = randomUUID(), login = 'qa.auth.performance';
++  const setup = await fetch(runtime.base + '/api/auth/setup', { method: 'POST', headers: { Origin: runtime.base, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Учебный директор', login, password, ...(setupToken ? { setupToken } : {}) }) });
++  assert.equal(setup.status, 200); await setup.json();
++  await migrateWorkStorage(operationsDirectory, sourceHash);
++  report.partitionedStore = true;
++  for (const [engine, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
++    browser = await launcher.launch({ headless: true });
++    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
++    await context.route('**/*', route => { const url = new URL(route.request().url()); return url.origin === runtime.base ? route.continue() : (report.externalRequests.push(url.origin), route.abort()); });
++    await context.addInitScript(() => {
++      const original = window.fetch.bind(window);
++      window.fetch = (input, init) => {
++        const path = typeof input === 'string' ? input : input.url;
++        if (window.__delayNextWork401 && /^\/api\/work(?:\?|$)/.test(path)) {
++          window.__delayNextWork401 = false;
++          return new Promise(done => { window.__releaseOld401 = () => done(new Response('{"error":"Expired synthetic request"}', { status: 401, headers: { 'Content-Type': 'application/json' } })); });
++        }
++        return original(input, init);
++      };
++    });
++    const page = await context.newPage();
++    const trackPage = target => {
++      target.on('pageerror', error => report.errors.push({ engine, message: error.message }));
++      target.on('requestfinished', request => {
++        if (!request.url().includes('/api/')) return;
++        const time = request.timing();
++        report.browserRequests.push({ engine, method: request.method(), path: new URL(request.url()).pathname, milliseconds: time.responseEnd, responseStartMs: time.responseStart });
++      });
++    };
++    trackPage(page);
++    const audit = async (name, width) => {
++      await page.setViewportSize({ width, height: 1000 });
++      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
++      const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
++      report.accessibility.push({ engine, name, width, violations: result.violations.map(item => ({ id: item.id, nodes: item.nodes.map(node => node.target) })) });
++      assert.deepEqual(result.violations.map(item => item.id), [], `${engine} ${name} ${width} accessibility`);
++      const file = resolve(output, `${engine}-${name}-${width}.png`); await page.screenshot({ path: file, fullPage: true }); report.screenshots.push(file);
++    };
++    const ready = target => expect(target.getByRole('button', { name: 'Новая задача', exact: true })).toBeEnabled();
++    const form = target => expect(target.getByLabel('Логин', { exact: true })).toBeVisible();
++    const signIn = async (target, candidate = password) => {
++      await form(target); await target.getByLabel('Логин', { exact: true }).fill(login); await target.getByLabel('Пароль', { exact: true }).fill(candidate);
++      await target.getByRole('button', { name: 'Войти', exact: true }).click();
++    };
++    const cookie = async () => (await context.cookies()).filter(value => value.name === 'artel_session').map(value => `${value.name}=${value.value}`).join('; ');
++    const api = async (path, token = '') => fetch(runtime.base + path, { headers: { Origin: runtime.base, ...(token ? { Cookie: token } : {}) } });
++    const forward = async (route, expectedCookie) => {
++      // WebKit interception can omit Cookie from allHeaders; route.fetch also
++      // uses API-client Secure rules on HTTP loopback. Forward this isolated
++      // browser context's real stored cookie explicitly for fault injection.
++      const headers = await route.request().allHeaders();
++      const browserCookie = await cookie();
++      headers.cookie = browserCookie;
++      const response = await route.fetch({ headers });
++      report.interceptedAuth.push({ engine, path: new URL(route.request().url()).pathname, cookiePresent: !!headers.cookie, cookieMatches: expectedCookie === undefined ? null : headers.cookie?.split('; ').includes(expectedCookie) === true, status: response.status() });
++      if (expectedCookie !== undefined) { assert.ok(headers.cookie?.split('; ').includes(expectedCookie), 'Forwarded browser cookie matches captured synthetic session'); assert.equal(response.status(), 200, 'Fault injection must follow a committed successful logout'); }
++      return response;
++    };
++
++    // No injected delay in these measurements. UI includes automation overhead;
++    // serverRequests separately records request->response finish in the middleware.
++    for (let sample = 0; sample < 3; sample++) {
++      let start = performance.now(); await page.goto(runtime.base + '/#work'); await form(page);
++      report.timings.push({ engine, sample, action: 'anonymous-load', milliseconds: performance.now() - start });
++      await page.getByLabel('Логин', { exact: true }).fill(login); await page.getByLabel('Пароль', { exact: true }).fill(password);
++      const count = report.serverRequests.length;
++      start = performance.now(); await page.getByRole('button', { name: 'Войти', exact: true }).click(); await ready(page);
++      report.timings.push({ engine, sample, action: 'login-to-work-ready', milliseconds: performance.now() - start });
++      assert.equal(report.serverRequests.slice(count).filter(row => row.path === '/api/auth/session').length, 0, 'No follow-up session GET on successful login');
++      start = performance.now(); await page.reload(); await ready(page);
++      report.timings.push({ engine, sample, action: 'authenticated-reload', milliseconds: performance.now() - start });
++      const token = await cookie(); start = performance.now(); await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await form(page);
++      report.timings.push({ engine, sample, action: 'logout-to-login-ready', milliseconds: performance.now() - start });
++      assert.equal((await api('/api/snapshot', token)).status, 401);
++    }
++    check(engine, 'Real login/reload/logout and revoked raw cookie; no duplicate session GET on login');
++    // Explicit fault injection: same 1200ms push registration on both revisions.
++    await signIn(page); await ready(page);
++    await page.evaluate(() => { window.__pushCalls = 0; navigator.serviceWorker.getRegistration = async () => { window.__pushCalls++; await new Promise(done => setTimeout(done, 1200)); return undefined; }; });
++    let start = performance.now(); await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await form(page);
++    const pushMs = performance.now() - start;
++    report.timings.push({ engine, action: 'logout-injected-push-1200ms', milliseconds: pushMs, nativeCalls: await page.evaluate(() => window.__pushCalls) });
++    if (!baseline) assert.equal(await page.evaluate(() => window.__pushCalls), 0, 'Logout never invokes native push operations');
++    if (baseline) { await context.close(); await browser.close(); browser = undefined; continue; }
++    check(engine, 'Native push registration/unsubscribe excluded from logout critical path');
++    await page.reload(); await form(page);
++    for (const width of [320, 390, 1440]) await audit('login', width);
++    await signIn(page, 'incorrect-local-password'); await expect(page.getByRole('alert')).toBeVisible(); await expect(page.locator('.app-shell')).toHaveCount(0);
++    await page.route('**/api/auth/login', route => route.abort('failed'), { times: 1 }); await signIn(page); await expect(page.getByRole('alert')).toBeVisible();
++    await signIn(page); await ready(page);
++    check(engine, 'Wrong password and network login failure remain unauthenticated; retry succeeds');
++    await page.route('**/api/auth/logout', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Synthetic outage"}' }), { times: 1 });
++    await page.getByRole('button', { name: 'Выйти', exact: true }).click();
++    await expect(page.getByRole('alert')).toContainText('Не удалось подтвердить выход'); await ready(page);
++    const stillValid = await cookie(); assert.equal((await api('/api/work', stillValid)).status, 200);
++    for (const width of [320, 390, 1440]) await audit('logout-error', width);
++    await page.getByRole('button', { name: 'Повторить выход', exact: true }).click(); await form(page);
++    assert.equal((await api('/api/work', stillValid)).status, 401);
++    check(engine, 'Failed logout visible on desktop/mobile; session kept until confirmed retry; old token rejected');
++    await signIn(page); await ready(page);
++    const pending = deferred(), release = deferred(); let logoutCount = 0;
++    await page.route('**/api/auth/logout', async route => { logoutCount++; const response = await forward(route); pending.resolve(); await release.promise; await route.fulfill({ response }); }, { times: 1 });
++    await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await pending.promise;
++    await expect(page.getByRole('status')).toContainText('Завершаем сеанс');
++    await page.evaluate(() => { [...document.querySelectorAll('button')].find(button => button.textContent === 'Выйти')?.click(); });
++    assert.equal(logoutCount, 1); assert.equal(await page.locator('.auth-session-workspace').getAttribute('inert'), '');
++    for (const width of [320, 390, 1440]) await audit('logout-pending', width);
++    release.resolve(); await form(page); check(engine, 'Pending logout is visible/inert and duplicate action does not send another POST');
++    await signIn(page); await ready(page); const lostCookie = await cookie();
++    await page.route('**/api/auth/logout', async route => { await forward(route, lostCookie); await route.abort('failed'); }, { times: 1 });
++    await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await expect(page.getByRole('alert')).toContainText('Не удалось подтвердить выход');
++    assert.equal((await api('/api/work', lostCookie)).status, 401, 'Committed logout revokes raw cookie even if response is lost');
++    await page.getByRole('button', { name: 'Повторить выход', exact: true }).click(); await form(page);
++    check(engine, 'Committed logout with lost response is explicit; retry accepts confirmed 401 and closes UI');
++
++    // Late response from the old workspace must not expire a newly signed-in UI.
++    await signIn(page); await ready(page);
++    await page.evaluate(() => { window.__delayNextWork401 = true; });
++    await page.getByRole('button', { name: 'Обновить работу', exact: true }).click(); await page.waitForFunction(() => typeof window.__releaseOld401 === 'function');
++    await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await form(page); await signIn(page); await ready(page);
++    await page.evaluate(() => window.__releaseOld401()); await delay(100); await ready(page);
++    assert.ok((await api('/api/auth/session', await cookie()).then(response => response.json())).user);
++    check(engine, 'Delayed 401 from previous workspace cannot clear a newer login');
++    const other = await context.newPage(); trackPage(other); await other.goto(runtime.base + '/#work'); await ready(other);
++    await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await form(page); await form(other);
++    check(engine, 'Confirmed logout invalidates another tab without waiting for focus or a timer');
++    // Session refresh started before login: capture anonymous response then delay it.
++    const sessionStarted = deferred(), sessionRelease = deferred();
++    await page.route('**/api/auth/session', async route => { const response = await forward(route); sessionStarted.resolve(); await sessionRelease.promise; await route.fulfill({ response }).catch(() => undefined); }, { times: 1 });
++    await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await sessionStarted.promise;
++    await signIn(page); await ready(page); sessionRelease.resolve(); await delay(100); await ready(page);
++    check(engine, 'Old anonymous session response cannot replace successful login');
++    // Web Locks serialize shared-cookie mutations, including delayed response delivery.
++    assert.equal(await page.evaluate(() => !!navigator.locks), true);
++    await ready(other);
++    const logoutStarted = deferred(), logoutRelease = deferred();
++    await page.route('**/api/auth/logout', async route => { const response = await forward(route); logoutStarted.resolve(); await logoutRelease.promise; await route.fulfill({ response }); }, { times: 1 });
++    await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await logoutStarted.promise;
++    await other.reload(); await form(other); let otherLogins = 0; other.on('request', request => { if (new URL(request.url()).pathname === '/api/auth/login') otherLogins++; });
++    await signIn(other); await delay(100); assert.equal(otherLogins, 0, 'New login waits for logout cookie response');
++    logoutRelease.resolve(); await ready(other); await ready(page); assert.equal(otherLogins, 1);
++    assert.ok((await api('/api/auth/session', await cookie()).then(response => response.json())).user);
++    check(engine, 'Parallel tabs: delayed logout cannot erase following login cookie');
++    // Reverse order: hold a successful login response while another tab requests
++    // logout. The latter waits for the new cookie, then revokes that exact login.
++    const loginStarted = deferred(), loginRelease = deferred();
++    const anonymous = route => route.fulfill({ status: 200, contentType: 'application/json', body: '{"user":null,"needsSetup":false,"setupTokenRequired":false}' });
++    await page.route('**/api/auth/session', anonymous);
++    await page.reload(); await form(page); await page.unroute('**/api/auth/session', anonymous);
++    await page.route('**/api/auth/login', async route => { const response = await forward(route); loginStarted.resolve(); await loginRelease.promise; await route.fulfill({ response }); }, { times: 1 });
++    await signIn(page); await loginStarted.promise;
++    let reverseLogouts = 0; other.on('request', request => { if (new URL(request.url()).pathname === '/api/auth/logout') reverseLogouts++; });
++    await other.getByRole('button', { name: 'Выйти', exact: true }).click(); await delay(100); assert.equal(reverseLogouts, 0);
++    const reverseDone = other.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/logout');
++    loginRelease.resolve(); await (await reverseDone).finished(); await form(page); await form(other); assert.equal(reverseLogouts, 1);
++    assert.equal((await api('/api/auth/session', await cookie()).then(response => response.json())).user, null);
++    check(engine, 'Parallel tabs: delayed login completes before following logout revokes the new session');
++    // Two same-turn form submissions create one login, even before React rerenders.
++    let repeatLogins = 0; page.on('request', request => { if (new URL(request.url()).pathname === '/api/auth/login') repeatLogins++; });
++    await page.getByLabel('Логин', { exact: true }).fill(login); await page.getByLabel('Пароль', { exact: true }).fill(password);
++    await page.evaluate(() => { document.querySelector('form').requestSubmit(); document.querySelector('form').requestSubmit(); });
++    await ready(page); assert.equal(repeatLogins, 1); await ready(other);
++    check(engine, 'Parallel same-turn login submissions send exactly one POST');
++
++    // CRM and logistics have independent cookies, broadcasts and lock names.
++    if (built) {
++      // Logistics frontend is deliberately not in the production build (Vite
++      // config); test its independent cookie/API here, full UI in source mode.
++      assert.equal(await page.evaluate(async credentials => (await fetch('/api/logistics/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) })).status, { login, password }), 200);
++      await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await form(page); await form(other);
++      assert.ok(await page.evaluate(async () => (await fetch('/api/logistics/auth/session').then(response => response.json())).user));
++      check(engine, 'CRM logout leaves independent logistics API session active; logistics UI is source-only');
++    } else {
++      const logistics = await context.newPage(); trackPage(logistics); await logistics.goto(runtime.base + '/logistics/'); await form(logistics); await signIn(logistics);
++      await expect(logistics.locator('.logistics-shell')).toBeVisible();
++      await page.getByRole('button', { name: 'Выйти', exact: true }).click(); await form(page); await form(other);
++      await expect(logistics.locator('.logistics-shell')).toBeVisible();
++      assert.ok(await logistics.evaluate(async () => (await fetch('/api/logistics/auth/session').then(response => response.json())).user));
++      check(engine, 'CRM logout leaves independently authenticated logistics workspace active');
++    }
++    await context.close(); await browser.close(); browser = undefined;
++  }
++  assert.deepEqual(report.errors, []); assert.deepEqual(report.externalRequests, []);
++  report.passed = true;
++} finally {
++  await browser?.close(); await runtime?.close(); globalThis.fetch = originalFetch;
++  await rm(temp, { recursive: true, force: true });
++  await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2));
++  console.log(JSON.stringify({ passed: report.passed, baseline, built, checks: report.checks.length, output }));
++  process.chdir(originalCwd);
++}
+diff --git a/server/local-api.ts b/server/local-api.ts
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -65,7 +65,7 @@
+ import { prepareTripSaby } from './trip-saby-preparation';
+ import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
+ import { createTripSabyScheduler, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
+-import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
++import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushDisplayBinding, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+ import { validPushWorkflow } from './push-cron-auth';
+ import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
+ import { invoiceRequestBody, invoiceRouteAllowed, requireInvoiceAccount, type InvoiceBridge } from './invoice-bridge';
+@@ -520,11 +520,15 @@
+         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
+         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
+         const body = await jsonBody(request);
++        // Session changes use interactive admission, with the unchanged atomic
++        // callback below. Setup and account administration keep the core queue.
++        const mutateAuth = (pathname === '/api/auth/login' || pathname === '/api/auth/logout') && operations.mutateAuth
++          ? operations.mutateAuth.bind(operations) : operations.mutate.bind(operations);
+         const result = await gateLogin(pathname === '/api/auth/login', async () => {
+           // requestData supplies credentials only; completion rechecks its exact
+           // identity and all authority in the fresh transaction after derivation.
+           const completeLogin = pathname === '/api/auth/login' ? await prepareLogin(requestData, body, logistics ? 'logistics' : undefined) : undefined;
+-          return operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
++          return mutateAuth<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
+           if(pathname === '/api/auth/login'){
+             let changed=false;
+             const result=completeLogin!(data,()=>{changed=true;});
+@@ -772,7 +776,7 @@
+         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
+         if (pathname === '/api/push/config' && request.method === 'GET') {
+           const data = requestData;
+-          return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300 }));
++          return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300, displayBinding: pushDisplayBinding(pushSessionHash(request)) }));
+         }
+         if (pathname === '/api/push/test-status') {
+           if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+@@ -805,7 +809,7 @@
+           });
+           const sendTest = async () => {
+           try {
+-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
++            await (options.pushSender ?? sendPush)(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
+           } catch (error) {
+             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
+             // A browser receipt is stronger evidence than a sender timeout after delivery.
+diff --git a/server/operations-store.ts b/server/operations-store.ts
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -223,7 +223,7 @@
+   return encoded;
+ }
+ 
+-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests'>>;
++export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth'>>;
+ 
+ export class LegacyOperationsStore {
+   readonly path: string;
+@@ -343,6 +343,12 @@
+     tripRequestQueues.set(this.path, pending);
+     try { return await pending; } finally { if (tripRequestQueues.get(this.path) === pending) tripRequestQueues.delete(this.path); }
+   }
++  /** Login/logout share the existing interactive FIFO with trip requests. They
++   * bypass queued background core work, but retain the same fresh read, latch,
++   * validation and durable commit. No separate session store or lock is added. */
++  mutateAuth<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
++    return this.mutateTripRequests(source, update);
++  }
+   async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
+   }
+diff --git a/server/push.ts b/server/push.ts
+--- a/server/push.ts
++++ b/server/push.ts
+@@ -28,6 +28,9 @@
+ export const pushReady = (config: PushConfig) => !!(config.publicKey && config.privateKey && config.subject && config.schedule);
+ const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+ export const pushSessionHash = (request: IncomingMessage) => hash(sessionToken(request) ?? '');
++/** Display identity only: this domain-separated digest cannot authorize a
++ * request and never exposes the session cookie or its stored hash. */
++export const pushDisplayBinding = (sessionHash: string) => hash(`artel:push-display:v1:${sessionHash}`);
+ export function validCron(request: IncomingMessage, secret = process.env.CRON_SECRET) {
+   const actual = request.headers.authorization ?? '';
+   const expected = `Bearer ${secret}`;
+@@ -256,7 +259,7 @@
+         const trip = item.event === 'trip-assignment';
+         const invoice = item.event === 'invoice-ready';
+         const body = operator ? (completed ? 'Ваше задание выполнено оператором. Откройте операторскую, чтобы посмотреть результат.' : 'Добавлено новое задание. Откройте операторскую, чтобы посмотреть подробности.') : invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».' : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.' : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
+-        await sender(device, JSON.stringify({ title: operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль') : trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator` : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices` : trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
++        await sender(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль') : trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator` : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices` : trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
+         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });
+       } catch (error) {
+         const status = (error as { statusCode?: number }).statusCode;
+diff --git a/tests/api-auth.test.ts b/tests/api-auth.test.ts
+--- a/tests/api-auth.test.ts
++++ b/tests/api-auth.test.ts
+@@ -1,11 +1,11 @@
+ import assert from 'node:assert/strict';
+ import { test } from 'node:test';
+ import { createServer } from 'node:http';
+-import { mkdtemp, readFile, rm } from 'node:fs/promises';
++import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+ import { tmpdir } from 'node:os';
+ import { resolve } from 'node:path';
+ import type { AddressInfo } from 'node:net';
+-import { randomBytes } from 'node:crypto';
++import { createHash, randomBytes } from 'node:crypto';
+ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+ import { OperationsStore } from '../server/operations-store';
+ import { BlobOperationsStore } from '../server/blob-operations-store';
+@@ -14,10 +14,49 @@
+ import { scopeSnapshot } from '../server/auth-scope';
+ import { encodeOperations } from '../server/operations-store';
+ import type { AccountUser } from '../web/src/auth-model';
++import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
++
++/** Both visible and hidden records are synthetic, so scope checks cannot pass
++ * merely because the fixture contains no financial or shipment data. */
++async function authSnapshot(directory: string) {
++  await writeTripsQaSnapshot(directory);
++  const manifestPath = resolve(directory, 'manifest.json');
++  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
++  const labels = ['Z Synthetic Manager', 'A Synthetic Manager'];
++  const datasets = {
++    companies: ['other', 'own', 'supplier'].map((id, index) => ({
++      id: `synthetic-${id}`, display_name: `Synthetic ${id}`, source_roles: [id === 'supplier' ? 'supplier' : 'customer'],
++      manager_labels: index < 2 ? [labels[index]] : [], shipment_ids: [], payment_ids: [], quality_flags: [],
++    })),
++    shipments: labels.map((manager, index) => ({
++      id: `synthetic-shipment-${index}`, source: { sheet: 'Synthetic shipments', row: index + 3 }, cells: {},
++      customer_id: `synthetic-${index ? 'own' : 'other'}`, supplier_id: 'synthetic-supplier', quality_flags: [],
++      fields: { date: '2026-10-01', customer_name: index ? 'Synthetic own' : 'Synthetic other', supplier_name: 'Synthetic supplier',
++        manager_label: manager, quantity_litres: '1000', customer_amount: index ? '65000' : '99000', purchase_amount: '50000', product: 'Synthetic fuel', payment_form: 'б/нал' },
++    })),
++    manager_labels: labels.map((label, index) => ({ id: `synthetic-manager-${index}`, source_label: label, shipment_ids: [`synthetic-shipment-${index}`] })),
++    payments: [{ id: 'synthetic-payment', source: { sheet: 'Synthetic payments', row: 3 }, cells: {}, counterparty_id: 'synthetic-other',
++      fields: { date: '2026-10-01', counterparty_name: 'Synthetic other', purpose: 'Synthetic payment' }, normalized_amounts: { incoming_amount: '99000', outgoing_amount: null }, quality_flags: [] }],
++    stock_summaries: [{ id: 'synthetic-stock', source: { sheet: 'Synthetic stock', row: 3 }, cells: {}, counterparty_id: 'synthetic-supplier',
++      label: 'Synthetic stock', month: '2026-10', value_basis: 'synthetic', fields: { incoming_litres: '2000', outgoing_litres: '1000', balance_litres: '1000' } }],
++  };
++  for (const [name, data] of Object.entries(datasets)) {
++    const raw = JSON.stringify({ meta: manifest.meta, data });
++    await writeFile(resolve(directory, `${name}.json`), raw);
++    manifest.files[`${name}.json`] = { sha256: createHash('sha256').update(raw).digest('hex'), bytes: Buffer.byteLength(raw) };
++  }
++  await writeFile(manifestPath, JSON.stringify(manifest));
++  return loadSnapshot(directory);
++}
+ 
+ async function runtime(cloud=false){
+   const directory=await mkdtemp(resolve(tmpdir(),'artel-auth-'));
+-  const middleware=createSnapshotMiddleware(resolve('data/local-xlsx-final'),{operationsDirectory:directory,...(cloud?{authorizeRequest:request=>sameOrigin({method:request.method,headers:{...request.headers,host:'crm.example'}}),secureCookies:true,setupToken:'test-only-cloud-setup'}:{})});
++  const snapshotDirectory=resolve(directory,'snapshot'),base=await authSnapshot(snapshotDirectory);
++  const denied=async()=>{throw new Error('External providers are forbidden in synthetic auth tests');};
++  const middleware=createSnapshotMiddleware(snapshotDirectory,{operationsDirectory:directory,
++    bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},cabinetEnvironment:{},geocoderEnvironment:{},
++    bankRequest:denied,sberRequest:denied,fetcher:denied,pushSender:denied,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false},
++    ...(cloud?{authorizeRequest:request=>sameOrigin({method:request.method,headers:{...request.headers,host:'crm.example'}}),secureCookies:true,setupToken:'test-only-cloud-setup'}:{})});
+   const server=createServer((req,res)=>middleware(req,res,()=>{res.writeHead(404);res.end();}));
+   await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));
+   const url=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+@@ -25,7 +64,7 @@
+     const r=await fetch(url+path,{method,headers:{...(body?{'Content-Type':'application/json'}:{}),...(cloud?{host:'crm.example',origin:'https://crm.example'}:{}),...(cookie?{cookie}:{})},...(body?{body:JSON.stringify(body)}:{})});
+     return {status:r.status,body:await r.json(),cookie:r.headers.get('set-cookie')};
+   };
+-  return {directory,request,store:new OperationsStore(directory),close:async()=>{await new Promise<void>(done=>server.close(()=>done()));await rm(directory,{recursive:true,force:true});}};
++  return {directory,base,request,store:new OperationsStore(directory),close:async()=>{await new Promise<void>(done=>server.close(()=>done()));await rm(directory,{recursive:true,force:true});}};
+ }
+ 
+ test('login uses server sessions; credentials never returned; logout, password changes, last director and brute-force limits enforced',async()=>{
+@@ -61,7 +100,7 @@
+ 
+ test('manager financial scope does not leak global aggregates or other shipment IDs and cannot alter assignments',async()=>{
+   const r=await runtime();try{
+-    const base=await loadSnapshot();
++    const base=r.base;
+     const password=randomBytes(20).toString('hex');
+     const setup=await r.request('/api/auth/setup','POST',{name:'Director',login:'director',password});const cookie=setup.cookie!.split(';')[0];
+     const snap=(await r.request('/api/snapshot','GET',undefined,cookie)).body;
+@@ -69,6 +108,8 @@
+     const account=await r.request('/api/auth/users','POST',{name:'Manager',login:'manager',password,role:'manager',managerId},cookie);assert.equal(account.status,201);
+     const signed=await r.request('/api/auth/login','POST',{login:'manager',password});const managerCookie=signed.cookie!.split(';')[0];
+     const scoped=(await r.request('/api/snapshot','GET',undefined,managerCookie)).body;
++    assert.equal(snap.shipments.length,2);assert.equal(snap.payments.length,1);assert.equal(snap.stocks.length,1);
++    assert.equal(scoped.shipments.length,1);assert.equal(scoped.shipments[0].id,'synthetic-shipment-1');
+     assert.equal(scoped.payments.length,0);assert.equal(scoped.stocks.length,0);assert.equal(scoped.overview.incoming.total,null);
+     assert.equal((await r.request('/api/auth/users','POST',{name:'Intruder',login:'intruder',password,role:'director'},managerCookie)).status,403);
+     assert.equal((await r.request('/api/directories','POST',{kind:'products',name:'A closed catalog denies editing'},managerCookie)).status,403);
+@@ -88,7 +129,7 @@
+ });
+ 
+ test('a fresh cloud store instance retains users and sessions in the same protected envelope',async()=>{
+-  const base=await loadSnapshot();const local=await runtime();try{
++  const local=await runtime(),base=local.base;try{
+     await local.request('/api/auth/setup','POST',{name:'Cloud user',login:'clouduser',password:randomBytes(20).toString('hex')});
+     const data=await local.store.read(base.provenance.sourceSha256);let raw=encodeOperations(data);
+     const client={get:async()=>({statusCode:200,stream:new Response(raw).body,blob:{etag:'1'}}),put:async(_p:string,body:unknown)=>{raw=String(body);return{etag:'2'};}};
+@@ -115,7 +156,7 @@
+     assert.equal((await r.request(path, 'DELETE', { ...body, confirmationName: 'wrong' }, cookie)).status, 400);
+     assert.equal((await r.request(path, 'DELETE', { ...body, active: false }, cookie)).status, 400);
+     assert.equal((await r.request(path, 'DELETE', { ...body, version: user.version + 1 }, cookie)).status, 409);
+-    const base = await loadSnapshot();
++    const base = r.base;
+     const before = await r.store.read(base.provenance.sourceSha256);
+     assert.equal((await r.request(path, 'DELETE', body, cookie)).status, 200);
+     const persisted = await new OperationsStore(r.directory).read(base.provenance.sourceSha256);
+diff --git a/tests/api-login-interleaving.test.ts b/tests/api-login-interleaving.test.ts
+--- a/tests/api-login-interleaving.test.ts
++++ b/tests/api-login-interleaving.test.ts
+@@ -4,12 +4,14 @@
+ import { resolve } from 'node:path';
+ import { test } from 'node:test';
+ 
+-test('HTTP login derives outside the global write queue and rejects every stale credential/permission proof', async () => {
++for (const partitioned of [false, true]) test(`HTTP login derives outside the global write queue and rejects every stale credential/permission proof (${partitioned ? 'partitioned' : 'legacy'})`, async () => {
+   // A fresh process captures the held crypto implementation before auth is imported.
+   // No test hooks, credentials or timing-dependent sleeps enter production code.
+-  const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', resolve('scripts/profile_backend_login_interleaving.mjs')], { timeout: 45000, maxBuffer: 1024 * 1024 });
++  const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', resolve('scripts/profile_backend_login_interleaving.mjs'), ...(partitioned ? ['--partitioned'] : [])], { timeout: 45000, maxBuffer: 1024 * 1024 });
+   const result = JSON.parse(stdout.trim());
+   assert.equal(result.passed, true);
+   assert.equal(result.syntheticOnly, true);
+-  assert.equal(result.checks.length, 18);
++  assert.equal(result.storage, partitioned ? 'partitioned' : 'legacy');
++  assert.equal(result.checks.length, 19);
++  assert.ok(result.checks.includes('fresh directoryGrants revocation rejects stale proof'));
+ });
+diff --git a/tests/api-login-security.test.ts b/tests/api-login-security.test.ts
+--- a/tests/api-login-security.test.ts
++++ b/tests/api-login-security.test.ts
+@@ -10,6 +10,7 @@
+ import { login } from '../server/auth';
+ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+ import { OperationsStore, type OperationsData, type OperationsStorage } from '../server/operations-store';
++import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
+ 
+ const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+ const globalKey = digest('artel:auth:global-login-limit:v2');
+@@ -154,8 +155,10 @@
+ 
+ test('login API does not rewrite storage for unchanged throttled requests and keeps its public response', async () => {
+   const directory = await mkdtemp(resolve(tmpdir(), 'artel-login-security-'));
+-  const store = new OperationsStore(directory), base = await loadSnapshot();
+-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store });
++  const snapshotDirectory = resolve(directory, 'snapshot');
++  await writeTripsQaSnapshot(snapshotDirectory);
++  const store = new OperationsStore(directory), base = await loadSnapshot(snapshotDirectory);
++  const middleware = createSnapshotMiddleware(snapshotDirectory, { operationsStore: store });
+   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
+   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/auth/login`;
+@@ -186,7 +189,9 @@
+ 
+ test('four pending logins bound the transaction queue without blocking authenticated reads; slots recover after failure', async () => {
+   const directory = await mkdtemp(resolve(tmpdir(), 'artel-login-gate-'));
+-  const store = new OperationsStore(directory), base = await loadSnapshot();
++  const snapshotDirectory = resolve(directory, 'snapshot');
++  await writeTripsQaSnapshot(snapshotDirectory);
++  const store = new OperationsStore(directory), base = await loadSnapshot(snapshotDirectory);
+   const token = 'c'.repeat(64);
+   const accounts = fixture(true).accounts;
+   accounts.sessions.push({ userId: accounts.users[0].id, hash: digest(token), expiresAt: Date.now() + 60000 });
+@@ -204,7 +209,7 @@
+       return store.mutate(source, update);
+     },
+   };
+-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: guardedStore, operationsDirectory: directory });
++  const middleware = createSnapshotMiddleware(snapshotDirectory, { operationsStore: guardedStore, operationsDirectory: directory });
+   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
+   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+diff --git a/tests/auth-admission.test.ts b/tests/auth-admission.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/auth-admission.test.ts
+@@ -0,0 +1,133 @@
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { test } from 'node:test';
++import { OperationsStore, type OperationsStorage } from '../server/operations-store';
++import { WorkPartition, migrateWorkStorage } from '../server/work-partition';
++import { createSnapshotMiddleware } from '../server/local-api';
++import { syncInvoiceEvents } from '../server/invoice-bridge';
++import { InvoiceBridge } from '../server/invoice-bridge';
++import { emptyWork } from '../web/src/work-model';
++import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
++
++const source = 'a'.repeat(64);
++const digest = (value: string) => createHash('sha256').update(value).digest('hex');
++const delay = (ms: number) => new Promise(done => setTimeout(done, ms));
++
++test('auth and trip admission share FIFO across instances, bypass core backlog and allow core/Work progress', async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'auth-admission-'));
++  const store = new OperationsStore(directory), other = new OperationsStore(directory);
++  let release!: () => void;
++  const pending: Promise<unknown>[] = [];
++  try {
++    await store.mutate(source, data => { data.work = emptyWork(); return { result: null, changed: true }; });
++    await migrateWorkStorage(directory, source);
++    const part = new WorkPartition(store.path), pointer = await readFile(store.path), workBefore = await readFile(part.workPath);
++    const order: string[] = [];
++    let started!: () => void;
++    const gate = new Promise<void>(done => release = done), running = new Promise<void>(done => started = done);
++    pending.push(store.mutate(source, async () => { started(); await gate; order.push('active'); return { result: null, changed: false }; }));
++    await running;
++    pending.push(...Array.from({ length: 8 }, (_, i) => store.mutate(source, () => { order.push(`core-${i}`); return { result: null, changed: true }; })));
++    const expected = ['auth-0', 'request-1', 'auth-2', 'auth-3', 'request-4', 'auth-5'];
++    pending.push(...expected.map((name, i) => (i % 2 ? other : store)[name.startsWith('auth') ? 'mutateAuth' : 'mutateTripRequests'](source, () => {
++      order.push(name); return { result: name, changed: true };
++    })));
++    pending.push(store.mutateWork(source, () => { order.push('work'); return { result: null, changed: false }; }));
++    await delay(30);
++    assert.deepEqual(order, [], 'No admission may bypass the active transaction latch');
++    release(); await Promise.all(pending);
++    assert.equal(order[0], 'active');
++    assert.deepEqual(order.filter(name => /^(auth|request)-/.test(name)), expected);
++    const coresBefore = (name: string) => order.slice(0, order.indexOf(name)).filter(row => row.startsWith('core-')).length;
++    assert.ok(coresBefore('auth-0') < 3, JSON.stringify(order));
++    assert.ok(coresBefore('auth-5') >= 2, 'An auth burst must allow background transactions to advance');
++    assert.ok(order.indexOf('work') < order.indexOf('auth-5'), 'Work retains independent admission');
++    assert.deepEqual(await readFile(store.path), pointer);
++    assert.deepEqual(await readFile(part.workPath), workBefore);
++  } finally { release?.(); await Promise.allSettled(pending); await rm(directory, { recursive: true, force: true }); }
++});
++
++test('shared auth FIFO recovers from pointer, source and callback failures without losing later calls', async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'auth-admission-errors-'));
++  const store = new OperationsStore(directory), other = new OperationsStore(directory);
++  try {
++    await store.mutate(source, () => ({ result: null, changed: true }));
++    await migrateWorkStorage(directory, source);
++    const order: number[] = [];
++    const pending = Array.from({ length: 12 }, (_, i) => (i % 2 ? other : store).mutateAuth(i === 3 ? 'b'.repeat(64) : source, () => {
++      order.push(i);
++      if (i === 7) throw new Error('synthetic callback failure');
++      return { result: i, changed: false };
++    }));
++    const results = await Promise.allSettled(pending);
++    assert.deepEqual(order, Array.from({ length: 12 }, (_, i) => i).filter(i => i !== 3));
++    assert.deepEqual(results.flatMap((result, i) => result.status === 'rejected' ? [i] : []), [3, 7]);
++    const pointer = await readFile(store.path);
++    await writeFile(store.path, '{"format":"artel-work-partition-v1"}');
++    await assert.rejects(store.mutateAuth(source, () => { throw new Error('callback must not run'); }), /Invalid Work storage pointer/);
++    await writeFile(store.path, pointer);
++    assert.equal(await other.mutateAuth(source, () => ({ result: 'recovered', changed: false })), 'recovered');
++  } finally { await rm(directory, { recursive: true, force: true }); }
++});
++
++for (const authAdmission of [false, true]) test(`HTTP session changes preserve revocation and fallback (${authAdmission ? 'partitioned admission' : 'legacy adapter'})`, async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'auth-admission-http-'));
++  const snapshotDirectory = resolve(directory, 'snapshot');
++  const sourceHash = await writeTripsQaSnapshot(snapshotDirectory);
++  const store = new OperationsStore(resolve(directory, 'store'));
++  const counts = { core: 0, auth: 0 };
++  const adapter: OperationsStorage = {
++    read: hash => store.read(hash),
++    mutate: (hash, update) => { counts.core++; return store.mutate(hash, update); },
++    ...(authAdmission ? { mutateAuth: ((hash, update) => { counts.auth++; return store.mutateAuth(hash, update); }) as OperationsStore['mutateAuth'] } : {}),
++  };
++  const denied = async () => { throw new Error('External providers are forbidden'); };
++  const api = createSnapshotMiddleware(snapshotDirectory, { operationsStore: adapter, operationsDirectory: resolve(directory, 'store'),
++    bankEnvironment: { ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false' }, cabinetEnvironment: {}, geocoderEnvironment: {},
++    bankRequest: denied, sberRequest: denied, fetcher: denied, pushSender: denied,
++    pushConfig: { publicKey: '', privateKey: '', subject: '', schedule: false } });
++  const server = createServer((request, response) => api(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  const request = (path: string, body?: unknown, cookie?: string) => fetch(url + path, { method: body === undefined ? 'GET' : 'POST',
++    headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
++  try {
++    const credentials = { login: 'synthetic.owner', password: 'Synthetic-auth-admission-password' };
++    const setup = await request('/api/auth/setup', { ...credentials, name: 'Synthetic owner' });
++    assert.equal(setup.status, 200); assert.equal(counts.core, 1); assert.equal(counts.auth, 0);
++    await setup.json();
++    if (authAdmission) await migrateWorkStorage(resolve(directory, 'store'), sourceHash);
++    const before = await store.read(sourceHash);
++    const signed = await request('/api/auth/login', credentials);
++    assert.equal(signed.status, 200);
++    const signedBody = await signed.json(), cookie = signed.headers.get('set-cookie')!.split(';')[0];
++    assert.deepEqual(Object.keys(signedBody).sort(), ['status', 'user']);
++    assert.equal(counts.auth, authAdmission ? 1 : 0);
++    assert.equal(counts.core, authAdmission ? 1 : 2);
++    const sessionHash = digest(cookie.slice(cookie.indexOf('=') + 1));
++    const responses = await Promise.all([request('/api/auth/logout', {}, cookie), request('/api/auth/logout', {}, cookie)]);
++    assert.deepEqual(responses.map(response => response.status).sort(), [200, 401], 'The first logout commits; the second confirms the session is already absent');
++    await Promise.all(responses.map(response => response.json()));
++    assert.equal((await request('/api/work', undefined, cookie)).status, 401);
++    assert.equal((await (await request('/api/auth/session', undefined, cookie)).json()).user, null);
++    const after = await new OperationsStore(resolve(directory, 'store')).read(sourceHash);
++    assert.deepEqual(after.accounts!.users, before.accounts!.users);
++    assert.deepEqual(after.accounts!.sessions, before.accounts!.sessions);
++    assert.ok(after.push?.invoiceRevocations?.[sessionHash], 'Worker revocation is durable in the same commit');
++    assert.equal(counts.auth, authAdmission ? 3 : 0);
++    const sent: string[] = [];
++    const bridge = new InvoiceBridge('http://invoices:4318', Buffer.alloc(32, 7), async (target, options) => {
++      sent.push(String(target));
++      if (String(target).endsWith('/sessions/revoke')) assert.deepEqual(JSON.parse(String(options?.body instanceof Uint8Array ? Buffer.from(options.body).toString() : options?.body)), { sessionHash });
++      return new Response(JSON.stringify(String(target).endsWith('/events') ? { events: [], hasMore: false } : {}), { status: 200 });
++    });
++    await syncInvoiceEvents(bridge, store, sourceHash);
++    assert.deepEqual(sent, ['http://invoices:4318/internal/crm/sessions/revoke', 'http://invoices:4318/internal/crm/events']);
++    assert.equal((await store.read(sourceHash)).push?.invoiceRevocations?.[sessionHash], undefined);
++  } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); }
++});
+diff --git a/tests/auth-push-worker.test.ts b/tests/auth-push-worker.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/auth-push-worker.test.ts
+@@ -0,0 +1,60 @@
++import assert from 'node:assert/strict';
++import { readFile } from 'node:fs/promises';
++import { test } from 'node:test';
++import vm from 'node:vm';
++
++const source = await readFile(new URL('../web/public/sw.js', import.meta.url), 'utf8');
++const binding = 'a'.repeat(64);
++const payload = { title: 'Учебное событие', body: 'Учебный текст', url: '/#driver-trip/synthetic-trip', tag: 'synthetic-record', displayBinding: binding, probe: { id: 'synthetic-probe', token: 'b'.repeat(40) } };
++async function push(value: unknown, mode = 'authorized') {
++  const listeners: Record<string, (event: unknown) => void> = {};
++  const notifications: { title: string; options: { body: string; tag: string; data: { url: string } } }[] = [];
++  const requests: { url: string; init: RequestInit }[] = [], messages: unknown[] = [];
++  let pending: Promise<void> | undefined;
++  const context = {
++    self: { location: { origin: 'https://synthetic.invalid' }, addEventListener: (type: string, listener: (event: unknown) => void) => { listeners[type] = listener; }, registration: { showNotification: async (title: string, options: typeof notifications[number]['options']) => { notifications.push({ title, options }); } }, clients: { matchAll: async () => [{ postMessage: (message: unknown) => messages.push(message) }] } },
++    URL, AbortController,
++    setTimeout: (callback: () => void) => { if (mode === 'timeout') queueMicrotask(callback); return 1; }, clearTimeout: () => undefined,
++    fetch: async (url: string, init: RequestInit) => {
++      requests.push({ url, init });
++      if (url.endsWith('/test-receipt')) return { ok: true };
++      if (mode === 'network') throw new Error('Synthetic offline');
++      if (mode === 'timeout') return new Promise((_, reject) => init.signal!.addEventListener('abort', () => reject(new Error('Synthetic timeout'))));
++      if (mode === 'revoked') return { ok: false, status: 401 };
++      return { ok: true, json: async () => mode === 'malformed' ? null : { displayBinding: mode === 'other-account' ? 'c'.repeat(64) : binding } };
++    },
++  };
++  vm.runInNewContext(source, context);
++  listeners.push({ data: { json: () => value }, waitUntil: (promise: Promise<void>) => { pending = promise; } });
++  await pending;
++  return { notifications, requests, messages };
++}
++test('current bound session may display event and link, notify driver UI and acknowledge probe', async () => {
++  const result = await push(payload);
++  assert.equal(result.notifications[0].title, payload.title);
++  assert.equal(result.notifications[0].options.body, payload.body);
++  assert.equal(result.notifications[0].options.data.url, payload.url);
++  assert.equal(result.messages.length, 1);
++  assert.equal(result.requests.length, 2);
++  assert.equal(result.requests[0].init.credentials, 'same-origin');
++  assert.equal(result.requests[0].init.cache, 'no-store');
++  assert.equal(result.requests[0].init.redirect, 'error');
++  assert.equal(result.requests[1].init.credentials, 'omit');
++});
++for (const mode of ['revoked', 'other-account', 'network', 'timeout', 'malformed']) test(`queued push under ${mode} hides event/link and never reports private delivery`, async () => {
++  const result = await push(payload, mode);
++  assert.equal(result.notifications.length, 1);
++  assert.equal(result.notifications[0].title, 'Артэль CRM');
++  assert.equal(result.notifications[0].options.data.url, '/#work');
++  assert.equal(result.notifications[0].options.tag, 'artel-reminder');
++  assert.ok(!result.notifications[0].options.body.includes(payload.body));
++  assert.deepEqual(result.messages, []);
++  assert.equal(result.requests.length, 1);
++});
++for (const value of [{ ...payload, displayBinding: undefined }, { ...payload, displayBinding: 'bad' }, null]) test(`legacy/malformed push ${JSON.stringify(value?.displayBinding)} is generic without a network lookup`, async () => {
++  const result = await push(value);
++  assert.equal(result.notifications[0].title, 'Артэль CRM');
++  assert.equal(result.notifications[0].options.data.url, '/#work');
++  assert.deepEqual(result.requests, []);
++  assert.deepEqual(result.messages, []);
++});
+diff --git a/tests/push-display-binding.test.ts b/tests/push-display-binding.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/push-display-binding.test.ts
+@@ -0,0 +1,85 @@
++import assert from 'node:assert/strict';
++import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
++import { mkdtemp, rm } from 'node:fs/promises';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { test } from 'node:test';
++import { createSnapshotMiddleware } from '../server/local-api';
++import { OperationsStore } from '../server/operations-store';
++import { dispatchReminders, pushDisplayBinding, type PushConfig } from '../server/push';
++import { migrateWorkStorage } from '../server/work-partition';
++import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
++
++const hash = (value: string) => createHash('sha256').update(value).digest('hex');
++const config: PushConfig = { publicKey: 'synthetic', privateKey: 'synthetic', subject: 'https://crm.synthetic.test', schedule: true };
++const subscription = () => {
++  const key = createECDH('prime256v1'); key.generateKeys();
++  return { endpoint: `https://fcm.googleapis.com/fcm/send/synthetic-${randomUUID()}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
++};
++
++for (const partitioned of [false, true]) test(`push display binding follows the authenticated session, never grants access and covers scheduled/test pushes (${partitioned ? 'partitioned' : 'legacy'})`, async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'push-display-'));
++  const snapshot = resolve(directory, 'snapshot'), storeDirectory = resolve(directory, 'store');
++  const source = await writeTripsQaSnapshot(snapshot), store = new OperationsStore(storeDirectory);
++  const payloads: { displayBinding: string; probe?: { id: string; token: string }; url: string }[] = [];
++  const denied = async () => { throw new Error('External providers are forbidden'); };
++  const api = createSnapshotMiddleware(snapshot, { operationsStore: store, operationsDirectory: storeDirectory,
++    bankEnvironment: { ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false' }, cabinetEnvironment: {}, geocoderEnvironment: {},
++    bankRequest: denied, sberRequest: denied, fetcher: denied, pushConfig: config,
++    pushSender: async (_device, payload) => { payloads.push(JSON.parse(payload)); } });
++  const server = createServer((request, response) => api(request, response, () => { response.writeHead(404); response.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  const request = (path: string, body?: unknown, cookie?: string) => fetch(url + path, {
++    method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
++    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
++  });
++  try {
++    const credentials = { login: 'synthetic.owner', password: 'Synthetic-push-display-password' };
++    const setup = await request('/api/auth/setup', { ...credentials, name: 'Synthetic owner' });
++    assert.equal(setup.status, 200);
++    const owner = (await setup.json()).user, cookie = setup.headers.get('set-cookie')!.split(';')[0];
++    if (partitioned) await migrateWorkStorage(storeDirectory, source);
++    const sessionToken = cookie.slice(cookie.indexOf('=') + 1), sessionHash = hash(sessionToken);
++    const first = await request('/api/push/config', undefined, cookie), firstConfig = await first.json();
++    assert.equal(first.status, 200); assert.equal(first.headers.get('cache-control'), 'no-store');
++    assert.equal(firstConfig.displayBinding, pushDisplayBinding(sessionHash));
++    assert.match(firstConfig.displayBinding, /^[a-f0-9]{64}$/);
++    assert.notEqual(firstConfig.displayBinding, sessionHash);
++    assert.equal(JSON.stringify(firstConfig).includes(sessionToken), false);
++    assert.equal(JSON.stringify(firstConfig).includes(sessionHash), false);
++    assert.equal((await request('/api/push/config')).status, 401);
++    assert.equal((await request('/api/push/config', undefined, `artel_session=${firstConfig.displayBinding}`)).status, 401, 'Display binding is never an authentication token');
++    const sub = subscription();
++    assert.equal((await request('/api/push/subscription', { subscription: sub, explicit: true }, cookie)).status, 200);
++    assert.equal((await request('/api/push/test', { endpoint: sub.endpoint }, cookie)).status, 200);
++    assert.equal(payloads.length, 1); assert.equal(payloads[0].displayBinding, firstConfig.displayBinding);
++    const probe = payloads[0].probe!;
++    assert.equal((await request('/api/push/test-receipt', { probeId: probe.id, token: probe.token })).status, 200);
++    assert.equal((await (await request(`/api/push/test-status?probeId=${probe.id}`, undefined, cookie)).json()).status, 'confirmed');
++    const jobId = randomUUID();
++    await store.mutate(source, data => {
++      data.push!.invoiceEvents = { [`invoice-ready:${jobId}`]: { userId: owner.id, jobId, occurredAt: Date.now() } };
++      return { result: null, changed: true };
++    });
++    const delivered = await dispatchReminders(store, source, config, async (_device, payload) => { payloads.push(JSON.parse(payload)); });
++    assert.equal(delivered.sent, 1); assert.equal(payloads[1].displayBinding, firstConfig.displayBinding); assert.match(payloads[1].url, /#invoices$/);
++    const logout = await request('/api/auth/logout', {}, cookie); assert.equal(logout.status, 200); await logout.json();
++    assert.equal((await request('/api/push/config', undefined, cookie)).status, 401);
++    assert.equal((await store.read(source)).push!.devices.length, 0);
++    const login = await request('/api/auth/login', credentials); assert.equal(login.status, 200); await login.json();
++    const newCookie = login.headers.get('set-cookie')!.split(';')[0];
++    const next = await (await request('/api/push/config', undefined, newCookie)).json();
++    assert.notEqual(next.displayBinding, firstConfig.displayBinding, 'Queued payload from the same user’s previous login cannot pass display check');
++    assert.equal((await request('/api/push/subscription', { subscription: sub, explicit: false }, newCookie)).status, 409, 'Retained browser transport cannot silently re-enable a removed server device');
++    await store.mutate(source, data => {
++      const user = data.accounts!.users.find(row => row.id === owner.id)!;
++      data.accounts!.users.push({ ...user, id: 'synthetic-other-director', login: 'synthetic.other' });
++      user.active = false;
++      return { result: null, changed: true };
++    });
++    assert.equal((await request('/api/push/config', undefined, newCookie)).status, 401);
++  } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); }
++});
+diff --git a/web/public/sw.js b/web/public/sw.js
+--- a/web/public/sw.js
++++ b/web/public/sw.js
+@@ -3,13 +3,29 @@
+ self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+ self.addEventListener('push', event => {
+   let payload = {};
+-  try { payload = event.data?.json() ?? {}; } catch { /* Still show a visible notification. */ }
++  try { const value = event.data?.json(); if (value && typeof value === 'object') payload = value; } catch { /* Still show a generic visible notification. */ }
+   event.waitUntil((async () => {
+-    await self.registration.showNotification(payload.title || 'Артэль CRM', {
+-      body: payload.body || 'У вас новое напоминание. Откройте CRM.',
++    // A queued push may arrive after logout or a different account's login.
++    // Native transport can be reused; only the currently authorized session may
++    // reveal this payload's event/link or acknowledge its delivery probe.
++    let authorized = false;
++    if (typeof payload.displayBinding === 'string' && /^[a-f0-9]{64}$/.test(payload.displayBinding)) {
++      const controller = new AbortController();
++      const timeout = setTimeout(() => controller.abort(), 5000);
++      try {
++        const response = await fetch(new URL('/api/push/config', self.location.origin).href, {
++          credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
++        });
++        if (response.ok) authorized = (await response.json()).displayBinding === payload.displayBinding;
++      } catch { /* Offline, revoked and unconfirmed sessions receive generic text. */ }
++      finally { clearTimeout(timeout); }
++    }
++    await self.registration.showNotification(authorized ? payload.title || 'Артэль CRM' : 'Артэль CRM', {
++      body: authorized ? payload.body || 'У вас новое напоминание. Откройте CRM.' : 'Новое уведомление. Войдите в CRM, чтобы проверить актуальные данные.',
+       icon: '/icons/icon-192.png?v=20260911', badge: '/icons/icon-192.png?v=20260911',
+-      tag: payload.tag || 'artel-reminder', data: { url: payload.url || '/#work' },
++      tag: authorized ? payload.tag || 'artel-reminder' : 'artel-reminder', data: { url: authorized ? payload.url || '/#work' : '/#work' },
+     });
++    if (!authorized) return;
+     if (typeof payload.url === 'string' && payload.url.startsWith('/#driver-trip/')) {
+       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+       for (const client of windows) client.postMessage({ type: 'artel-driver-trip-assigned' });
+diff --git a/web/src/AuthGate.tsx b/web/src/AuthGate.tsx
+--- a/web/src/AuthGate.tsx
++++ b/web/src/AuthGate.tsx
+@@ -1,8 +1,9 @@
+-import { apiFetch as fetch, logisticsSessionExpiredEvent, sessionExpiredEvent } from './workspace-api';
++import { advanceAuthEpoch, apiFetch as fetch, logisticsSessionExpiredEvent, sessionExpiredEvent } from './workspace-api';
+ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+ import { ArrowRight, Eye, EyeOff, KeyRound, LoaderCircle, LockKeyhole, ShieldCheck, Truck, UserRound } from 'lucide-react';
+ import type { AccountUser, SessionState } from './auth-model';
+-import { currentPushEndpoint, disconnectPushDevice } from './push-client';
++import { currentPushEndpoint } from './push-client';
++import { watchVisibleRefresh } from './visible-refresh';
+ import './auth.css';
+ 
+ const emptyForm = { name: '', login: '', password: '', setupToken: '' };
+@@ -20,97 +21,198 @@
+   const logistics = workspace === 'logistics';
+   const [session, setSession] = useState<SessionState | null>(null);
+   const [error, setError] = useState('');
+-  const [busy, setBusy] = useState(false);
++  const [logoutError, setLogoutError] = useState('');
++  const [operation, setOperation] = useState<'login' | 'logout' | null>(null);
++  const busy = operation !== null;
+   const [checking, setChecking] = useState(true);
+   const [showPassword, setShowPassword] = useState(false);
+   const [form, setForm] = useState(emptyForm);
+   const sessionRequest = useRef(0);
+-
++  const sessionController = useRef<AbortController | null>(null);
++  const operationRef = useRef<'login' | 'logout' | null>(null);
++  const refreshAfterAction = useRef(false);
++  const currentSession = useRef<SessionState | null>(null);
++  const pushEndpoint = useRef<{ userId: string; endpoint: string } | null>(null);
++  const channel = useRef<BroadcastChannel | null>(null);
++  const lastChange = useRef('');
++  const audience = logistics ? 'logistics' : 'crm';
++  const changeKey = `artel:auth-change:${audience}`;
++
++  const invalidateReads = useCallback(() => {
++    sessionRequest.current++;
++    sessionController.current?.abort();
++    sessionController.current = null;
++  }, []);
++  const applySession = useCallback((value: SessionState | null) => {
++    const old = currentSession.current?.user, next = value?.user;
++    if (old?.id !== next?.id || old?.version !== next?.version) advanceAuthEpoch(audience);
++    currentSession.current = value;
++    setSession(value);
++  }, [audience]);
++  const clearSession = useCallback(() => {
++    advanceAuthEpoch(audience);
++    applySession(currentSession.current ? { ...currentSession.current, user: null } : null);
++    setShowPassword(false);
++    setForm(emptyForm);
++    setLogoutError('');
++  }, [applySession, audience]);
+   const refresh = useCallback(async () => {
++    // A focus/visibility burst shares one read. Auth mutations apply their own
++    // confirmed response; a cross-tab change schedules a fresh check afterwards.
++    if (operationRef.current || sessionController.current) return;
+     const generation = ++sessionRequest.current;
++    const controller = new AbortController();
++    sessionController.current = controller;
++    const timer = window.setTimeout(() => controller.abort(), 15000);
+     setChecking(true);
+     try {
+-      const response = await fetch('/api/auth/session');
++      const response = await fetch('/api/auth/session', { cache: 'no-store', signal: controller.signal });
+       if (generation !== sessionRequest.current) return;
+       if (!response.ok) {
+-        if (response.status === 401) setSession(value => value ? { ...value, user: null } : value);
++        if (response.status === 401) clearSession();
+         throw new Error('Не удалось проверить доступ.');
+       }
+       const current = await response.json() as SessionState;
+       if (generation !== sessionRequest.current) return;
+-      setSession(current);
++      applySession(current);
+       setError('');
+     } catch (e) {
+-      if (generation === sessionRequest.current) setError((e as Error).message);
++      if (generation === sessionRequest.current) setError(controller.signal.aborted ? 'Не удалось проверить доступ. Повторите загрузку.' : (e as Error).message);
+     } finally {
++      window.clearTimeout(timer);
++      if (sessionController.current === controller) sessionController.current = null;
+       if (generation === sessionRequest.current) setChecking(false);
+     }
+-  }, [logistics]);
++  }, [applySession, clearSession]);
+ 
+   useEffect(() => {
+     void refresh();
+-    const focus = () => { void refresh(); };
+-    window.addEventListener('focus', focus);
+-    const timer = setInterval(focus, 60000);
+-    return () => { window.removeEventListener('focus', focus); clearInterval(timer); };
+-  }, [refresh]);
+-
+-  useEffect(() => {
+-    const expired = () => { sessionRequest.current++; setChecking(false); setSession(value => value ? { ...value, user: null } : value); };
++    const stop = watchVisibleRefresh(() => { void refresh(); }, 60000);
++    return () => { stop(); invalidateReads(); };
++  }, [refresh, invalidateReads]);
++
++  useEffect(() => {
++    const expired = () => { invalidateReads(); setChecking(false); clearSession(); };
+     const event = logistics ? logisticsSessionExpiredEvent : sessionExpiredEvent;
+     window.addEventListener(event, expired);
+     return () => window.removeEventListener(event, expired);
+-  }, [logistics]);
+-
++  }, [logistics, invalidateReads, clearSession]);
++
++  useEffect(() => {
++    const changed = (value: unknown) => {
++      if (typeof value !== 'string' || !value || value === lastChange.current) return;
++      lastChange.current = value;
++      invalidateReads();
++      clearSession();
++      setChecking(true);
++      if (operationRef.current) refreshAfterAction.current = true;
++      else void refresh();
++    };
++    if (typeof BroadcastChannel !== 'undefined') {
++      channel.current = new BroadcastChannel(changeKey);
++      channel.current.onmessage = event => changed(event.data);
++    }
++    const storage = (event: StorageEvent) => { if (event.key === changeKey) changed(event.newValue); };
++    window.addEventListener('storage', storage);
++    return () => { channel.current?.close(); channel.current = null; window.removeEventListener('storage', storage); };
++  }, [changeKey, clearSession, invalidateReads, refresh]);
++
++  // Resolve the optional endpoint while the workspace is open, never while the
++  // user waits to log out. Session-bound server revocation is authoritative.
++  useEffect(() => {
++    pushEndpoint.current = null;
++    const userId = session?.user?.id;
++    if (logistics || !userId || session.user?.role === 'driver') return;
++    let active = true;
++    void currentPushEndpoint(true).then(endpoint => { if (active && endpoint) pushEndpoint.current = { userId, endpoint }; }).catch(() => undefined);
++    return () => { active = false; };
++  }, [logistics, session?.user?.id, session?.user?.role]);
++
++  const notifyTabs = () => {
++    const nonce = `${Date.now()}:${Math.random()}`;
++    lastChange.current = nonce;
++    try { channel.current?.postMessage(nonce); } catch { /* The storage event is an independent fallback. */ }
++    try { localStorage.setItem(changeKey, nonce); } catch { /* BroadcastChannel still works when storage is unavailable. */ }
++  };
++  const begin = (next: 'login' | 'logout') => {
++    if (operationRef.current) return false;
++    operationRef.current = next;
++    setOperation(next);
++    setError('');
++    setLogoutError('');
++    invalidateReads();
++    advanceAuthEpoch(audience);
++    return true;
++  };
++  const finish = () => {
++    operationRef.current = null;
++    setOperation(null);
++    if (refreshAfterAction.current) { refreshAfterAction.current = false; void refresh(); }
++  };
++  const authRequest = async (path: string, body: unknown, signal: AbortSignal) => {
++    const send = async () => {
++      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
++      return { response, value: await response.json() as { user?: AccountUser; error?: string } };
++    };
++    // Cookies are shared across tabs. Serialize response delivery as well as the
++    // POST so a delayed logout cannot erase a newer login's cookie. Browsers
++    // without Web Locks retain server revocation + cross-tab revalidation.
++    return navigator.locks ? navigator.locks.request(`artel:auth-mutation:${audience}`, { mode: 'exclusive', signal }, send) : send();
++  };
+   const logout = async () => {
+-    const usesPush = !logistics && session?.user?.role !== 'driver';
+-    setBusy(true);
++    if (!begin('logout')) return;
++    const controller = new AbortController();
++    const timer = window.setTimeout(() => controller.abort(), 15000);
+     try {
+-      const response = await fetch('/api/auth/logout', {
+-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify(usesPush ? { pushEndpoint: await currentPushEndpoint().catch(() => null) } : {}),
+-      });
+-      if (!response.ok && response.status !== 401) throw new Error('Не удалось завершить сеанс.');
+-      if (usesPush) await disconnectPushDevice().catch(() => undefined);
+-      sessionRequest.current++;
+-      setShowPassword(false);
+-      setSession(value => value ? { ...value, user: null } : value);
+-    } catch (e) {
+-      setError((e as Error).message);
++      const endpoint = pushEndpoint.current;
++      const { response } = await authRequest('/api/auth/logout', endpoint?.userId === currentSession.current?.user?.id ? { pushEndpoint: endpoint?.endpoint } : {}, controller.signal);
++      if (!response.ok && response.status !== 401) throw new Error('Не удалось подтвердить выход. Проверьте соединение и повторите.');
++      // Do not unsubscribe the browser transport: it can hang or finish after a
++      // new login and remove its subscription. The server has revoked access and
++      // unlinked this session's devices before returning success.
++      invalidateReads();
++      clearSession();
++      setChecking(false);
++      notifyTabs();
++    } catch {
++      setLogoutError('Не удалось подтвердить выход. Проверьте соединение и повторите.');
++      if (!currentSession.current?.user) setError('Не удалось подтвердить выход. Проверьте соединение и повторите.');
+     } finally {
+-      setBusy(false);
++      window.clearTimeout(timer);
++      finish();
+     }
+   };
+ 
+   const submit = async (event: FormEvent<HTMLFormElement>) => {
+     event.preventDefault();
+-    if (busy || !session || logistics && session.needsSetup) return;
+-    setBusy(true);
+-    setError('');
++    if (!session || logistics && session.needsSetup || !begin('login')) return;
++    const controller = new AbortController();
++    const timer = window.setTimeout(() => controller.abort(), 15000);
+     try {
+       const payload = session.needsSetup ? form : { login: form.login, password: form.password };
+-      const response = await fetch(`/api/auth/${session.needsSetup ? 'setup' : 'login'}`, {
+-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+-      });
+-      const value = await response.json();
++      const { response, value } = await authRequest(`/api/auth/${session.needsSetup ? 'setup' : 'login'}`, payload, controller.signal);
+       if (!response.ok) throw new Error(value.error || 'Не удалось войти.');
+       if (!value.user?.id) throw new Error('Не удалось подтвердить вход. Повторите попытку.');
+-      // Login/setup commits the session and returns the same public user as
+-      // /auth/session. Do not put a second store read on the login critical path.
+-      // Ignore a focus/timer session response started before this login finished.
+-      sessionRequest.current++;
+-      setSession(previous => ({ user: value.user as AccountUser, needsSetup: false, setupTokenRequired: previous?.setupTokenRequired ?? false }));
++      invalidateReads();
++      advanceAuthEpoch(audience);
++      applySession({ user: value.user as AccountUser, needsSetup: false, setupTokenRequired: currentSession.current?.setupTokenRequired ?? false });
+       setChecking(false);
+       setForm(emptyForm);
+       setShowPassword(false);
++      notifyTabs();
+     } catch (e) {
+-      setError((e as Error).message);
++      setError(controller.signal.aborted ? 'Не удалось подтвердить вход. Проверьте соединение и повторите.' : (e as Error).message);
+     } finally {
+-      setBusy(false);
+-    }
+-  };
+-
+-  if (session?.user) return children(session.user, () => { if (!busy) void logout(); });
++      window.clearTimeout(timer);
++      finish();
++    }
++  };
++
++  if (session?.user) return <>
++    <div className="auth-session-workspace" inert={operation === 'logout'}>{children(session.user, () => { void logout(); })}</div>
++    {operation === 'logout' ? <div className="auth-session-notice" role="status"><LoaderCircle className="auth-spinner" size={20} aria-hidden="true"/><span>Завершаем сеанс…</span></div>
++      : (logoutError || error) && <div className="auth-session-notice auth-session-error" role="alert"><span>{logoutError || error}</span><button type="button" className="button" onClick={() => logoutError ? void logout() : void refresh()}>{logoutError ? 'Повторить выход' : 'Проверить доступ'}</button><button type="button" className="button" onClick={() => { setError(''); setLogoutError(''); }}>Закрыть</button></div>}
++  </>;
+ 
+   const needsSetup = !logistics && session?.needsSetup;
+   return <main className="auth-screen">
+@@ -178,7 +280,7 @@
+             </div>}
+             {error && <p className="auth-error" role="alert">{error}</p>}
+             <button className="auth-submit" type="submit">
+-              <span>{busy ? (needsSetup ? 'Создаём…' : 'Входим…') : needsSetup ? 'Создать директора' : 'Войти'}</span>
++              <span>{operation === 'logout' ? 'Завершаем сеанс…' : busy ? (needsSetup ? 'Создаём…' : 'Входим…') : needsSetup ? 'Создать директора' : 'Войти'}</span>
+               {busy ? <LoaderCircle className="auth-spinner" size={20} aria-hidden="true" /> : <ArrowRight size={20} aria-hidden="true" />}
+             </button>
+           </fieldset>
+diff --git a/web/src/auth.css b/web/src/auth.css
+--- a/web/src/auth.css
++++ b/web/src/auth.css
+@@ -227,3 +227,9 @@
+   .account-panel .panel-heading { align-items: stretch; flex-direction: column; gap: 12px; }
+   .account-form input, .account-form select { font-size: 16px; }
+ }
++
++.auth-session-workspace { display: contents; }
++.auth-session-notice { position: fixed; z-index: 10000; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; width: max-content; max-width: calc(100vw - 32px); padding: 14px 18px; border: 1px solid #d8dce4; border-radius: 16px; background: #fff; color: #202632; box-shadow: 0 8px 32px #17263a24; font-size: 14px; }
++.auth-session-notice > span { min-width: 0; overflow-wrap: anywhere; }
++.auth-session-error { border-color: #b64040; }
++.auth-session-notice .button { min-height: 44px; }
+diff --git a/web/src/push-client.ts b/web/src/push-client.ts
+--- a/web/src/push-client.ts
++++ b/web/src/push-client.ts
+@@ -99,9 +99,12 @@
+     await (await worker?.pushManager.getSubscription())?.unsubscribe();
+   }
+ }
+-export async function currentPushEndpoint() {
++export async function currentPushEndpoint(updateWorker = false) {
+   if (!('serviceWorker' in navigator)) return null;
+   const worker = await navigator.serviceWorker.getRegistration('/');
++  // Updating an existing worker needs no notification permission or subscription.
++  // It runs while the workspace is open and never delays auth or endpoint lookup.
++  if (updateWorker && worker) void worker.update().catch(() => undefined);
+   return (await worker?.pushManager.getSubscription())?.endpoint ?? null;
+ }
+ export function applicationKey(value: string) {
+diff --git a/web/src/workspace-api.ts b/web/src/workspace-api.ts
+--- a/web/src/workspace-api.ts
++++ b/web/src/workspace-api.ts
+@@ -11,11 +11,17 @@
+ 
+ export const sessionExpiredEvent = 'artel:session-expired'
+ export const logisticsSessionExpiredEvent = 'artel:logistics-session-expired'
++type AuthAudience = 'crm' | 'logistics'
++const authEpoch: Record<AuthAudience, number> = { crm: 0, logistics: 0 }
++/** Old requests must not clear the UI after a newer login or another-tab change. */
++export function advanceAuthEpoch(audience: AuthAudience) { authEpoch[audience]++ }
+ 
+ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+   const target = typeof input === 'string' ? apiUrl(input) : input
++  const audience = typeof target === 'string' && /^\/api\/logistics(?:\/|$)/.test(target) ? 'logistics' : 'crm'
++  const epoch = authEpoch[audience]
+   const response = await globalThis.fetch(target, init)
+-  if (response.status === 401 && typeof target === 'string' && /^\/api\//.test(target) && !/^\/api\/(?:logistics\/)?auth\//.test(target)) window.dispatchEvent(new Event(isLogisticsWorkspace() ? logisticsSessionExpiredEvent : sessionExpiredEvent))
++  if (epoch === authEpoch[audience] && response.status === 401 && typeof target === 'string' && /^\/api\//.test(target) && !/^\/api\/(?:logistics\/)?auth\//.test(target)) window.dispatchEvent(new Event(audience === 'logistics' ? logisticsSessionExpiredEvent : sessionExpiredEvent))
+   return response
+ }
+ 

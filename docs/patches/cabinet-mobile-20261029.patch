@@ -1,0 +1,44 @@
+--- a/web/src/CabinetBalances.tsx
++++ b/web/src/CabinetBalances.tsx
+@@ -47,7 +47,7 @@
+         <div className="cabinet-section-heading"><h3>Ваши кабинеты</h3><span>{data.connections.length}</span></div>
+         {!data.connections.length && <div className="panel cabinet-empty"><Building2 size={32}/><h3>Добавьте первый кабинет</h3><p>Выберите сервис и укажите данные для входа. Здесь появятся его счета и остатки.</p><button className="button primary" disabled={!data.credentialStorageReady} onClick={() => setEditor('choose')}><Plus size={16}/>Добавить кабинет</button></div>}
+         {cabinetProviders.filter(provider => data.connections.some(connection => connection.provider === provider.id)).map(provider => <article className="panel cabinet-card" key={provider.id} aria-label={provider.name}>
+-          <header className="cabinet-provider-header"><div className="cabinet-provider-title"><ProviderMark provider={provider.id}/><h3>{provider.name}</h3></div><a className="cabinet-external" href={provider.url} target="_blank" rel="noopener noreferrer">Открыть сайт<ExternalLink size={15}/></a></header>
++          <header className="cabinet-provider-header"><div className="cabinet-provider-title"><ProviderMark provider={provider.id}/><h3>{provider.name}</h3></div><a className="cabinet-external" href={provider.url} target="_blank" rel="noopener noreferrer" aria-label={`Открыть сайт ${provider.name}`} title={`Открыть сайт ${provider.name}`}><span>Открыть сайт</span><ExternalLink size={15} aria-hidden="true"/></a></header>
+           {data.connections.filter(connection => connection.provider === provider.id).map(connection => {
+             const stale = cabinetConnectionStale(connection);
+             const managed = connection.refreshMode === 'server_browser';
+@@ -60,9 +60,9 @@
+ 
+               </div>)}</div> : <p className="cabinet-pending">{managed ? 'Серверное подключение ожидает первого успешного чтения.' : automatic(provider.id) ? 'Остатки ещё не получены. Первое обновление — в течение минуты после добавления.' : 'Автоматическое получение остатков пока недоступно. Доступ сохранён для настройки подключения.'}</p>}
+               {connection.error && <p className="cabinet-sync-error" role="status">{connection.error}</p>}
+-              <footer className="cabinet-connection-footer"><span>{connection.lastSuccessAt ? `${managed ? 'Прочитано в кабинете' : stale ? 'Последнее обновление' : 'Обновлено'} ${date(connection.lastSuccessAt)} МСК` : 'Успешных обновлений пока нет'}</span><div>
++              <footer className={`cabinet-connection-footer${managed ? ' is-managed' : ''}`}><span>{connection.lastSuccessAt ? `${managed ? 'Прочитано в кабинете' : stale ? 'Последнее обновление' : 'Обновлено'} ${date(connection.lastSuccessAt)} МСК` : 'Успешных обновлений пока нет'}</span><div>
+                 {provider.id === 'natcar' && <button className="button cabinet-organizations-button" disabled={syncing.includes(connection.id)} onClick={() => setOrganizationEditor(connection)}><Building2 size={16}/>Организации</button>}
+-                {managed && <span>Автоматически каждые 5 минут</span>}
++                {managed && <span className="cabinet-auto-refresh">Автообновление каждые 5 минут</span>}
+                 {automatic(provider.id) && <button className="button cabinet-refresh" aria-label={syncing.includes(connection.id) ? 'Обновление…' : 'Обновить'} title="Обновить остатки" aria-busy={syncing.includes(connection.id)} disabled={syncing.includes(connection.id)} onClick={() => void synchronize(connection.id)}><RefreshCw size={15} aria-hidden="true"/><span>{syncing.includes(connection.id) ? 'Обновление…' : 'Обновить'}</span></button>}
+               </div></footer>
+             </section>;
+--- a/web/src/cabinet-balances.css
++++ b/web/src/cabinet-balances.css
+@@ -67,3 +67,18 @@
+   .cabinet-refresh > span { display: none; }
+   .cabinet-organizations-button { grid-column: 1 / -1; grid-row: 2; justify-self: start; }
+ }
++
++/* Managed connections have a status note instead of a refresh button. */
++.cabinet-auto-refresh { font-size: 12px; line-height: 1.5; color: var(--cabinet-muted); }
++.cabinet-connection-footer.is-managed { align-items: flex-start; gap: 6px 16px; }
++.cabinet-connection-footer.is-managed > span { line-height: 1.5; }
++.cabinet-connection-footer.is-managed > div { min-width: 0; }
++.cabinet-external { flex-shrink: 0; white-space: nowrap; }
++.cabinet-external svg { flex-shrink: 0; }
++@media (max-width: 425px) {
++  .cabinet-external { width: 44px; justify-content: center; }
++  .cabinet-external > span { display: none; }
++  .cabinet-provider-title h3 { font-size: 18px; }
++  .cabinet-connection-footer.is-managed { grid-template-columns: minmax(0, 1fr); }
++  .cabinet-connection-footer.is-managed > div { display: flex; grid-column: 1; grid-row: 2; }
++}
