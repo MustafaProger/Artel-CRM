@@ -1,4 +1,4 @@
-import { archiveView, createArchiveEntry, validateDocumentArchive } from '../server/document-archive';
+import { archiveView, createArchiveEntry, validateDocumentArchive, deleteArchiveEntry } from '../server/document-archive';
 import type { OperationsData } from '../server/operations-store';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -92,12 +92,34 @@ test('archive permissions, upload validation, persistence and protected download
     assert.equal((await admin(`/api/documents/entries/${cardFiles[1].id}/file`)).status, 404);
     assert.equal(await (await admin(`/api/documents/entries/${cardFiles[0].id}/file`)).text(), 'new');
     assert.equal((await employee('/api/documents/cards', cardBody)).status, 201);
+    const beforeDelete = await (await admin('/api/documents')).json();
+    assert.equal((await anonymous(cardPath, { version: 2 }, 'DELETE')).status, 401);
+    assert.equal((await employee(cardPath, { version: 1 }, 'DELETE')).status, 409);
+    assert.deepEqual(await (await admin('/api/documents')).json(), beforeDelete);
+    assert.equal((await employee(cardPath, { version: 2 }, 'DELETE')).status, 200);
+    assert.equal((await admin(`/api/documents/entries/${cardFiles[0].id}/file`)).status, 404);
+    assert.equal((await employee(cardPath, { version: 2 }, 'DELETE')).status, 404);
+    const survivor = (await (await admin('/api/documents/cards', { name: 'Сохранить', categoryId: secondCategory.id, files: cardBody.files })).json()).entry;
+    const beforeCategoryDelete = await (await admin('/api/documents')).json();
+    assert.equal((await employee(`/api/documents/categories/${category.id}`, {}, 'DELETE')).status, 200);
+    const afterCategoryDelete = await (await admin('/api/documents')).json();
+    assert.deepEqual(afterCategoryDelete.categories, beforeCategoryDelete.categories.filter((c: { id: string }) => c.id !== category.id));
+    assert.deepEqual(afterCategoryDelete.items, beforeCategoryDelete.items.filter((i: { categoryId: string }) => i.categoryId !== category.id));
+    assert.deepEqual(afterCategoryDelete.documents, beforeCategoryDelete.documents.filter((d: { categoryId: string }) => d.categoryId !== category.id));
+    assert.equal((await admin(url)).status, 404);
+    assert.equal((await admin(`/api/documents/categories/${category.id}`, {}, 'DELETE')).status, 404);
+    assert.equal((await employee(cardPath, { ...cardBody, version: 2 }, 'PATCH')).status, 404);
     await admin(`/api/auth/users/${user.id}`, { name: user.name, login: user.login, role: user.role, managerId: user.managerId, version: user.version, sections: [] }, 'PATCH');
     assert.equal((await employee(url)).status, 401);
     await employee('/api/auth/login', { login: 'archive-employee', password: 'Local-test-archive-2026!' });
     assert.equal((await employee(url)).status, 403);
     assert.equal((await employee(cardPath, { ...cardBody, version: 2 }, 'PATCH')).status, 403);
     assert.equal((await employee('/api/documents/cards', cardBody)).status, 403);
+    assert.equal((await employee(`/api/documents/categories/${secondCategory.id}`, {}, 'DELETE')).status, 403);
+    assert.equal((await employee(`/api/documents/cards/${survivor.id}`, { version: 1 }, 'DELETE')).status, 403);
+    assert.deepEqual(await (await admin('/api/documents')).json(), afterCategoryDelete);
+    assert.equal((await admin(`/api/documents/categories/${secondCategory.id}`, {}, 'DELETE')).status, 200);
+    assert.deepEqual(await (await admin('/api/documents')).json(), { categories: [], items: [], documents: [] });
   } finally { await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -118,4 +140,8 @@ test('legacy documents keep bytes and become accessible through a stable item wi
   assert.equal(data.documentArchive!.documents[0].data, 'YWJj');
   assert.equal(data.documentArchive!.documents[0].itemId, view.items[0].id);
   assert.equal(data.documentArchive!.items!.length, 2);
+  deleteArchiveEntry(data, 'cards', view.items[0].id, { version: 1 });
+  validateDocumentArchive(data.documentArchive);
+  assert.equal(data.documentArchive!.documents.length, 0);
+  assert.equal(data.documentArchive!.items!.length, 1);
 });

@@ -109,3 +109,21 @@ export function saveArchiveCard(data: OperationsData, input: unknown, actorId: s
   archive.documents = [...otherFiles, ...files];
   return entry;
 }
+
+/** Delete the selected scope and its bytes together in the store transaction. */
+export function deleteArchiveEntry(data: OperationsData, kind: 'categories' | 'cards', id: string, input: unknown) {
+  const archive = data.documentArchive;
+  if (!archive) throw new ApiError(404, 'Документ или категория уже удалены.');
+  if (kind === 'categories') {
+    if (!archive.categories.some(c => c.id === id)) throw new ApiError(404, 'Категория уже удалена.');
+    archive.documents = archive.documents.filter(d => d.categoryId !== id);
+    archive.items = (archive.items ?? []).filter(i => i.categoryId !== id);
+    archive.categories = archive.categories.filter(c => c.id !== id);
+  } else {
+    const item = archiveView(archive).items.find(i => i.id === id);
+    if (!item) throw new ApiError(404, 'Документ уже удалён.');
+    if (!input || typeof input !== 'object' || (input as { version?: unknown }).version !== (item.version ?? 1)) throw new ApiError(409, 'Документ уже изменён. Закройте окно и перезагрузите страницу перед удалением.');
+    archive.documents = archive.documents.filter(d => (d.itemId ?? `legacy-${d.categoryId}`) !== id);
+    archive.items = (archive.items ?? []).filter(i => i.id !== id);
+  }
+}

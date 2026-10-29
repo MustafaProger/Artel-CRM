@@ -1,7 +1,7 @@
 import type { ShipmentAccessContext } from './shipment-operations';
 import { directoryMutation } from './directory-access';
 import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
-import { archiveView, createArchiveEntry, saveArchiveCard } from './document-archive';
+import { archiveView, createArchiveEntry, saveArchiveCard, deleteArchiveEntry } from './document-archive';
 import { readOperator, mutateOperator } from './operator';
 import { readTripNumbers } from './trip-numbering';
 import { cabinetRoutes } from './cabinet-connections';
@@ -904,6 +904,16 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           if (!file) throw new ApiError(404, 'Документ не найден.');
           response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="document"; filename*=UTF-8''${encodeURIComponent(file.fileName).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
           response.end(Buffer.from(file.data, 'base64')); return;
+        }
+        if (request.method === 'DELETE') {
+          if (!match[2] || match[3] || (match[1] !== 'categories' && match[1] !== 'cards')) throw new ApiError(405, 'Метод не поддерживается.');
+          const body = await jsonBody(request, false, 8192);
+          const result = await operations.mutate(base.provenance.sourceSha256, data => {
+            requireSection(authorized(data), 'documents');
+            deleteArchiveEntry(data, match[1] as 'categories' | 'cards', match[2], body);
+            return { result: { archive: archiveView(data.documentArchive) }, changed: true };
+          });
+          return write(response, 200, JSON.stringify(result));
         }
         const card = match[1] === 'cards';
         if (match[3] || (card ? !((request.method === 'POST' && !match[2]) || (request.method === 'PATCH' && match[2])) : request.method !== 'POST' || !match[1] || match[2])) throw new ApiError(405, 'Метод не поддерживается.');

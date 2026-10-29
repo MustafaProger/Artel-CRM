@@ -1,0 +1,218 @@
+--- a/server/document-archive.ts
++++ b/server/document-archive.ts
+@@ -109,3 +109,21 @@
+   archive.documents = [...otherFiles, ...files];
+   return entry;
+ }
++
++/** Delete the selected scope and its bytes together in the store transaction. */
++export function deleteArchiveEntry(data: OperationsData, kind: 'categories' | 'cards', id: string, input: unknown) {
++  const archive = data.documentArchive;
++  if (!archive) throw new ApiError(404, 'Документ или категория уже удалены.');
++  if (kind === 'categories') {
++    if (!archive.categories.some(c => c.id === id)) throw new ApiError(404, 'Категория уже удалена.');
++    archive.documents = archive.documents.filter(d => d.categoryId !== id);
++    archive.items = (archive.items ?? []).filter(i => i.categoryId !== id);
++    archive.categories = archive.categories.filter(c => c.id !== id);
++  } else {
++    const item = archiveView(archive).items.find(i => i.id === id);
++    if (!item) throw new ApiError(404, 'Документ уже удалён.');
++    if (!input || typeof input !== 'object' || (input as { version?: unknown }).version !== (item.version ?? 1)) throw new ApiError(409, 'Документ уже изменён. Закройте окно и перезагрузите страницу перед удалением.');
++    archive.documents = archive.documents.filter(d => (d.itemId ?? `legacy-${d.categoryId}`) !== id);
++    archive.items = (archive.items ?? []).filter(i => i.id !== id);
++  }
++}
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -1,7 +1,7 @@
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { directoryMutation } from './directory-access';
+ import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
+-import { archiveView, createArchiveEntry, saveArchiveCard } from './document-archive';
++import { archiveView, createArchiveEntry, saveArchiveCard, deleteArchiveEntry } from './document-archive';
+ import { readOperator, mutateOperator } from './operator';
+ import { readTripNumbers } from './trip-numbering';
+ import { cabinetRoutes } from './cabinet-connections';
+@@ -902,6 +902,16 @@
+           if (!file) throw new ApiError(404, 'Документ не найден.');
+           response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="document"; filename*=UTF-8''${encodeURIComponent(file.fileName).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+           response.end(Buffer.from(file.data, 'base64')); return;
++        }
++        if (request.method === 'DELETE') {
++          if (!match[2] || match[3] || (match[1] !== 'categories' && match[1] !== 'cards')) throw new ApiError(405, 'Метод не поддерживается.');
++          const body = await jsonBody(request, false, 8192);
++          const result = await operations.mutate(base.provenance.sourceSha256, data => {
++            requireSection(authorized(data), 'documents');
++            deleteArchiveEntry(data, match[1] as 'categories' | 'cards', match[2], body);
++            return { result: { archive: archiveView(data.documentArchive) }, changed: true };
++          });
++          return write(response, 200, JSON.stringify(result));
+         }
+         const card = match[1] === 'cards';
+         if (match[3] || (card ? !((request.method === 'POST' && !match[2]) || (request.method === 'PATCH' && match[2])) : request.method !== 'POST' || !match[1] || match[2])) throw new ApiError(405, 'Метод не поддерживается.');
+--- /dev/null
++++ b/web/src/DocumentDeleteDialog.tsx
+@@ -0,0 +1,27 @@
++import { useId, useRef, useState } from 'react'
++import { useDialogMotion } from './useDialogMotion'
++import { documentsRequest } from './documents-api'
++import type { DocumentArchiveView } from './documents-model'
++
++export default function DocumentDeleteDialog({ kind, id, name, version, onClose, onDeleted }: {
++  kind: 'categories' | 'cards'; id: string; name: string; version?: number;
++  onClose: () => void; onDeleted: (archive: DocumentArchiveView) => void
++}) {
++  const dialog = useRef<HTMLDialogElement>(null), titleId = useId(), descriptionId = useId(), lock = useRef(false)
++  const { close, complete } = useDialogMotion(dialog, onClose)
++  const [busy, setBusy] = useState(false), [error, setError] = useState('')
++  const remove = async () => {
++    if (lock.current) return
++    lock.current = true; setBusy(true); setError('')
++    try {
++      const result = await documentsRequest<{ archive: DocumentArchiveView }>(`/${kind}/${id}`, { version: version ?? 1 }, 'DELETE')
++      await complete(() => onDeleted(result.archive))
++    } catch (e) { setError((e as Error).message) } finally { lock.current = false; setBusy(false) }
++  }
++  return <dialog ref={dialog} className="archive-delete-dialog" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={event => { event.preventDefault(); event.stopPropagation(); if (!lock.current) close() }}>
++    <h2 id={titleId}>{kind === 'categories' ? 'Удалить категорию?' : 'Удалить документ?'}</h2>
++    <p id={descriptionId}>{kind === 'categories' ? `Категория «${name}», все её документы и прикреплённые файлы будут удалены.` : `Документ «${name}» и все его прикреплённые файлы будут удалены.`} Отменить удаление нельзя.</p>
++    {error && <p className="archive-error" role="alert">{error}</p>}
++    <div className="archive-actions"><button autoFocus className="button" disabled={busy} onClick={close}>Отмена</button><button className="button archive-danger" disabled={busy} onClick={() => void remove()}>{busy ? 'Удаляем…' : 'Удалить'}</button></div>
++  </dialog>
++}
+--- a/web/src/DocumentEditor.tsx
++++ b/web/src/DocumentEditor.tsx
+@@ -1,16 +1,19 @@
+ import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+ import { Download, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react'
+ import { useDialogMotion } from './useDialogMotion'
++import DocumentDeleteDialog from './DocumentDeleteDialog'
+ import { documentsRequest } from './documents-api'
+ import { documentExpired, documentMaxBytes, type ArchiveItem, type DocumentArchiveView, type DocumentCategory } from './documents-model'
+ 
+ type DraftFile = { key: string; id?: string; title: string; expiresOn: string; fileName: string; file?: File; removed?: boolean }
+-export default function DocumentEditor({ kind, category, item, files, onClose, onSaved }: {
++export default function DocumentEditor({ kind, category, item, files, onClose, onSaved, onDeleted }: {
+   kind: 'category' | 'card'; category?: DocumentCategory; item?: ArchiveItem; files: DocumentArchiveView['documents']; onClose: () => void;
++  onDeleted: (archive: DocumentArchiveView) => void;
+   onSaved: (archive: DocumentArchiveView, categoryId: string) => void
+ }) {
+   const dialog = useRef<HTMLDialogElement>(null), titleId = useId(), lock = useRef(false), backdropDown = useRef(false)
+   const { close, complete } = useDialogMotion(dialog, onClose)
++  const [deleting, setDeleting] = useState(false)
+   const [name, setName] = useState(item?.name ?? '')
+   const [rows, setRows] = useState<DraftFile[]>(() => files.map(f => ({ key: f.id, id: f.id, title: f.title, expiresOn: f.expiresOn ?? '', fileName: f.fileName })))
+   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+@@ -67,8 +70,9 @@
+       </div>
+       <footer className="archive-drawer-footer">
+         {error && <p className="archive-error" role="alert">{error}</p>}
+-        {discard ? <div className="archive-discard" role="alert"><p>Есть несохранённые изменения.</p><div className="archive-actions"><button className="button" type="button" onClick={() => setDiscard(false)}>Продолжить редактирование</button><button className="button" type="button" onClick={close}>Не сохранять</button></div></div> : <div className="archive-actions"><button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>}
++        {discard ? <div className="archive-discard" role="alert"><p>Есть несохранённые изменения.</p><div className="archive-actions"><button className="button" type="button" onClick={() => setDiscard(false)}>Продолжить редактирование</button><button className="button" type="button" onClick={close}>Не сохранять</button></div></div> : <div className="archive-actions">{item && <button className="button archive-remove archive-delete-item" type="button" disabled={busy} onClick={() => setDeleting(true)}><Trash2 size={18}/>Удалить</button>}<button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>}
+       </footer>
+     </form>
++    {deleting && item && <DocumentDeleteDialog kind="cards" id={item.id} name={item.name} version={item.version} onClose={() => setDeleting(false)} onDeleted={next => { setDeleting(false); void complete(() => onDeleted(next)) }}/ >}
+   </dialog>
+ }
+--- a/web/src/DocumentsPage.tsx
++++ b/web/src/DocumentsPage.tsx
+@@ -1,11 +1,13 @@
+ import { useEffect, useState } from 'react'
+-import { ChevronRight, Folder, Plus, RefreshCw } from 'lucide-react'
++import { ChevronRight, Folder, Plus, Trash2 } from 'lucide-react'
+ import ScrollableSegments from './ScrollableSegments'
+ import DocumentEditor from './DocumentEditor'
++import DocumentDeleteDialog from './DocumentDeleteDialog'
+ import { documentsRequest } from './documents-api'
+ import { documentExpired, moscowToday, type ArchiveItem, type DocumentArchiveView } from './documents-model'
+ import './documents.css'
+ export default function DocumentsPage() {
++  const [deletingCategory, setDeletingCategory] = useState(false)
+   const [archive, setArchive] = useState<DocumentArchiveView>({ categories: [], items: [], documents: [] })
+   const [categoryId, setCategoryId] = useState(''), [query, setQuery] = useState('')
+   const [editor, setEditor] = useState<{ kind: 'category' | 'card'; item?: ArchiveItem } | null>(null)
+@@ -19,13 +21,14 @@
+     {!!archive.categories.length && <ScrollableSegments className="directory-tabs archive-category-tabs" label="Категории документов" value={category?.id ?? ''}>{archive.categories.map(c => <button className={`button ${c.id === category?.id ? 'primary' : ''}`} aria-pressed={c.id === category?.id} key={c.id} onClick={() => { setCategoryId(c.id); setQuery(''); setNotice(''); setError('') }}>{c.name}</button>)}</ScrollableSegments>}
+     <div className="archive-controls">
+       <label className="archive-search">Поиск<input type="search" placeholder="Наименование документа" value={query} disabled={!category} onChange={e => setQuery(e.target.value)}/></label>
+-      <div className="archive-actions archive-main-actions"><button className="button" disabled={loading} onClick={() => void reload()} aria-label="Обновить документы" title="Обновить"><RefreshCw size={18}/></button><button className="button" disabled={loading} onClick={event => open({ kind: 'category' }, event.currentTarget)}><Plus size={18}/>Добавить категорию</button><button className="button primary" disabled={loading || !category} onClick={event => open({ kind: 'card' }, event.currentTarget)}><Plus size={18}/>Добавить документ</button></div>
++      <div className="archive-actions archive-main-actions"><button className="button archive-remove" disabled={loading || !category} onClick={event => { event.currentTarget.focus(); setDeletingCategory(true) }} aria-label="Удалить категорию" title="Удалить категорию"><Trash2 size={18}/></button><button className="button" disabled={loading} onClick={event => open({ kind: 'category' }, event.currentTarget)}><Plus size={18}/>Добавить категорию</button><button className="button primary" disabled={loading || !category} onClick={event => open({ kind: 'card' }, event.currentTarget)}><Plus size={18}/>Добавить документ</button></div>
+     </div>
+     {error && <p className="archive-error" role="alert">{error}</p>}{notice && <p className="archive-notice" role="status">{notice}</p>}
+     {loading ? <p role="status">Загружаем документы…</p> : !category ? <div className="archive-empty"><Folder size={32}/><h2>Создайте первую категорию</h2></div> : <div className="archive-list">{items.length ? items.map(i => {
+       const files = archive.documents.filter(d => d.itemId === i.id), expired = files.filter(d => documentExpired(d.expiresOn, today)).length
+       return <button className="archive-item" key={i.id} aria-haspopup="dialog" onClick={event => open({ kind: 'card', item: i }, event.currentTarget)}><Folder size={23} aria-hidden="true"/><span className="archive-item-info"><strong>{i.name}</strong><span>Файлов: {files.length}{expired > 0 && <span className="archive-item-expired"> · Просрочено: {expired}</span>}</span></span><ChevronRight size={20} aria-hidden="true"/></button>
+     }) : <div className="archive-empty"><Folder size={32}/><h2>{query ? 'Ничего не найдено' : 'Документов пока нет'}</h2><p>{query ? 'Измените поисковый запрос.' : 'Нажмите «Добавить документ», укажите наименование и прикрепите файлы.'}</p></div>}</div>}
+-    {editor && <DocumentEditor kind={editor.kind} category={category} item={editor.item} files={archive.documents.filter(d => d.itemId === editor.item?.id)} onClose={() => setEditor(null)} onSaved={(next, id) => { setArchive(next); setCategoryId(id); setQuery(''); setEditor(null); setNotice('Сохранено') }}/ >}
++    {deletingCategory && category && <DocumentDeleteDialog kind="categories" id={category.id} name={category.name} onClose={() => setDeletingCategory(false)} onDeleted={next => { setArchive(next); setCategoryId(next.categories[0]?.id ?? ''); setQuery(''); setError(''); setDeletingCategory(false); setNotice('Категория и все её документы удалены') }}/ >}
++    {editor && <DocumentEditor kind={editor.kind} category={category} item={editor.item} files={archive.documents.filter(d => d.itemId === editor.item?.id)} onClose={() => setEditor(null)} onDeleted={next => { setArchive(next); setEditor(null); setNotice('Документ удалён'); setError('') }} onSaved={(next, id) => { setArchive(next); setCategoryId(id); setQuery(''); setEditor(null); setNotice('Сохранено') }}/ >}
+   </section>
+ }
+--- a/web/src/documents.css
++++ b/web/src/documents.css
+@@ -27,3 +27,13 @@
+ .archive-drawer .archive-file-edit{background:#fff3cd;border:1px solid #e2c56f;color:#775516}.archive-drawer .archive-file-edit:hover{background:#ffe8a3}
+ .archive-drawer .archive-file-download{background:#e3f2e9;border:1px solid #aacfb8;color:#176849}.archive-drawer .archive-file-download:hover{background:#cee8da}
+ .archive-file-done{justify-self:end}
++
++.archive-drawer-footer .archive-delete-item{margin-right:auto}
++.archive-delete-dialog{width:min(440px,calc(100vw - 32px));max-height:calc(100dvh - 32px);box-sizing:border-box;border:1px solid var(--line,#e4e7ec);border-radius:20px;padding:24px;color:var(--text,#243c34);background:var(--surface,#fff);overflow:auto}
++.archive-delete-dialog::backdrop{background:#182e2459}
++.archive-delete-dialog h2{margin:0 0 16px;font-size:20px}
++.archive-delete-dialog p{font-size:14px;line-height:1.6;overflow-wrap:anywhere}
++.archive-delete-dialog .archive-actions{justify-content:flex-end;margin-top:20px}
++.archive-delete-dialog .button{min-height:44px}
++.archive-delete-dialog .archive-danger{background:#b42318;color:white;border-color:#b42318}
++@media(max-width:380px){.archive-drawer-footer>.archive-actions{gap:8px}.archive-drawer-footer>.archive-actions>.button{padding-inline:10px;font-size:13px}.archive-drawer-footer .archive-delete-item{gap:5px}}
+--- a/tests/api-documents.test.ts
++++ b/tests/api-documents.test.ts
+@@ -1,4 +1,4 @@
+-import { archiveView, createArchiveEntry, validateDocumentArchive } from '../server/document-archive';
++import { archiveView, createArchiveEntry, validateDocumentArchive, deleteArchiveEntry } from '../server/document-archive';
+ import type { OperationsData } from '../server/operations-store';
+ import assert from 'node:assert/strict';
+ import { test } from 'node:test';
+@@ -92,12 +92,34 @@
+     assert.equal((await admin(`/api/documents/entries/${cardFiles[1].id}/file`)).status, 404);
+     assert.equal(await (await admin(`/api/documents/entries/${cardFiles[0].id}/file`)).text(), 'new');
+     assert.equal((await employee('/api/documents/cards', cardBody)).status, 201);
++    const beforeDelete = await (await admin('/api/documents')).json();
++    assert.equal((await anonymous(cardPath, { version: 2 }, 'DELETE')).status, 401);
++    assert.equal((await employee(cardPath, { version: 1 }, 'DELETE')).status, 409);
++    assert.deepEqual(await (await admin('/api/documents')).json(), beforeDelete);
++    assert.equal((await employee(cardPath, { version: 2 }, 'DELETE')).status, 200);
++    assert.equal((await admin(`/api/documents/entries/${cardFiles[0].id}/file`)).status, 404);
++    assert.equal((await employee(cardPath, { version: 2 }, 'DELETE')).status, 404);
++    const survivor = (await (await admin('/api/documents/cards', { name: 'Сохранить', categoryId: secondCategory.id, files: cardBody.files })).json()).entry;
++    const beforeCategoryDelete = await (await admin('/api/documents')).json();
++    assert.equal((await employee(`/api/documents/categories/${category.id}`, {}, 'DELETE')).status, 200);
++    const afterCategoryDelete = await (await admin('/api/documents')).json();
++    assert.deepEqual(afterCategoryDelete.categories, beforeCategoryDelete.categories.filter((c: { id: string }) => c.id !== category.id));
++    assert.deepEqual(afterCategoryDelete.items, beforeCategoryDelete.items.filter((i: { categoryId: string }) => i.categoryId !== category.id));
++    assert.deepEqual(afterCategoryDelete.documents, beforeCategoryDelete.documents.filter((d: { categoryId: string }) => d.categoryId !== category.id));
++    assert.equal((await admin(url)).status, 404);
++    assert.equal((await admin(`/api/documents/categories/${category.id}`, {}, 'DELETE')).status, 404);
++    assert.equal((await employee(cardPath, { ...cardBody, version: 2 }, 'PATCH')).status, 404);
+     await admin(`/api/auth/users/${user.id}`, { name: user.name, login: user.login, role: user.role, managerId: user.managerId, version: user.version, sections: [] }, 'PATCH');
+     assert.equal((await employee(url)).status, 401);
+     await employee('/api/auth/login', { login: 'archive-employee', password: 'Local-test-archive-2026!' });
+     assert.equal((await employee(url)).status, 403);
+     assert.equal((await employee(cardPath, { ...cardBody, version: 2 }, 'PATCH')).status, 403);
+     assert.equal((await employee('/api/documents/cards', cardBody)).status, 403);
++    assert.equal((await employee(`/api/documents/categories/${secondCategory.id}`, {}, 'DELETE')).status, 403);
++    assert.equal((await employee(`/api/documents/cards/${survivor.id}`, { version: 1 }, 'DELETE')).status, 403);
++    assert.deepEqual(await (await admin('/api/documents')).json(), afterCategoryDelete);
++    assert.equal((await admin(`/api/documents/categories/${secondCategory.id}`, {}, 'DELETE')).status, 200);
++    assert.deepEqual(await (await admin('/api/documents')).json(), { categories: [], items: [], documents: [] });
+   } finally { await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); }
+ });
+ 
+@@ -118,4 +140,8 @@
+   assert.equal(data.documentArchive!.documents[0].data, 'YWJj');
+   assert.equal(data.documentArchive!.documents[0].itemId, view.items[0].id);
+   assert.equal(data.documentArchive!.items!.length, 2);
++  deleteArchiveEntry(data, 'cards', view.items[0].id, { version: 1 });
++  validateDocumentArchive(data.documentArchive);
++  assert.equal(data.documentArchive!.documents.length, 0);
++  assert.equal(data.documentArchive!.items!.length, 1);
+ });
