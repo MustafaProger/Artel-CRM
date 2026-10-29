@@ -1,3 +1,4 @@
+import { validateDocumentArchive } from './document-archive';
 import { validateOperator } from './operator';
 import type { OperatorData } from '../web/src/operator-model';
 import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
@@ -56,6 +57,7 @@ export interface OperationsData {
   tripSaby?: TripSabyData;
   /** Explicit reset: source operations must never be imported again. */
   sourceOperationsCleared?: boolean;
+  documentArchive?: import('../web/src/documents-model').DocumentArchive;
   work?: WorkData;
   china?: ChinaData;
   operator?: OperatorData;
@@ -95,6 +97,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   try { validateCabinets(data.cabinets); } catch { throw new StoreError('Invalid cabinet storage'); }
   try { validateSber(data.sber as SberData | undefined); validateSber(data.sberArtel as SberData | undefined, sberConnections['sber-artel']); } catch { throw new StoreError('Invalid Sber storage'); }
   try { validatePush(data.push as PushData | undefined); } catch { throw new StoreError('Invalid push storage'); }
+  if (data.documentArchive !== undefined) validateDocumentArchive(data.documentArchive);
   if (data.work !== undefined) validateWorkData(data.work);
   if (data.accounts !== undefined) { try { validateAccounts(data.accounts as AccountsData); } catch { throw new StoreError('Invalid accounts'); } }
   if (data.schemaVersion === 2) {

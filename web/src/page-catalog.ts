@@ -13,6 +13,7 @@ export const pageCatalog = [
   {id:'payroll',title:'ЗП',icon:'Banknote',section:1,description:'',enabled:false},
   {id:'accounts',title:'Сотрудники и доступ',icon:'UsersRound',section:1,description:'Учётные записи и права сотрудников.',enabled:true},
   {id:'directories',title:'Справочники',icon:'BookOpen',section:1,description:'Клиенты, поставщики, нефтебазы, водители и автомобили.',enabled:true},
+  {id:'documents',title:'Документы',icon:'FileText',section:1,description:'Архив документов по категориям и срокам действия.',enabled:true},
 ] as const;
 export type PageId = typeof pageCatalog[number]['id'];
 export const enabledPages = pageCatalog.filter(page => page.enabled);

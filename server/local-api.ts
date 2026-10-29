@@ -1,3 +1,4 @@
+import { archiveView, createArchiveEntry, saveArchiveCard } from './document-archive';
 import { readOperator, mutateOperator } from './operator';
 import { readTripNumbers } from './trip-numbering';
 import { cabinetRoutes } from './cabinet-connections';
@@ -772,6 +773,29 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           return { result, changed: result.changed };
         });
         return write(response, result.created ? 201 : 200, JSON.stringify(result));
+      }
+      if (pathname === '/api/documents' || pathname.startsWith('/api/documents/')) {
+        const match = pathname.match(/^\/api\/documents(?:\/(categories|items|entries|cards)(?:\/([a-z0-9-]+)(\/file)?)?)?$/);
+        if (!match) throw new ApiError(404, 'Маршрут не найден.');
+        if (request.method === 'GET') {
+          const data = await operations.read(base.provenance.sourceSha256);
+          requireSection(authorized(data), 'documents');
+          if (!match[1]) return write(response, 200, JSON.stringify(archiveView(data.documentArchive)));
+          if (match[1] !== 'entries' || !match[2] || !match[3]) throw new ApiError(405, 'Метод не поддерживается.');
+          const file = data.documentArchive?.documents.find(d => d.id === match[2]);
+          if (!file) throw new ApiError(404, 'Документ не найден.');
+          response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="document"; filename*=UTF-8''${encodeURIComponent(file.fileName).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+          response.end(Buffer.from(file.data, 'base64')); return;
+        }
+        const card = match[1] === 'cards';
+        if (match[3] || (card ? !((request.method === 'POST' && !match[2]) || (request.method === 'PATCH' && match[2])) : request.method !== 'POST' || !match[1] || match[2])) throw new ApiError(405, 'Метод не поддерживается.');
+        const body = await jsonBody(request, false, (card ? 35 : 7) * 1024 * 1024);
+        const result = await operations.mutate(base.provenance.sourceSha256, data => {
+          const user = requireSection(authorized(data), 'documents');
+          const entry = card ? saveArchiveCard(data, body, user.id, match[2]) : createArchiveEntry(data, match[1], body, user.id);
+          return { result: { entry, archive: archiveView(data.documentArchive) }, changed: true };
+        });
+        return write(response, request.method === 'PATCH' ? 200 : 201, JSON.stringify(result));
       }
       const fileMatch = pathname.match(/^\/api\/work\/(tasks|companies)\/([^/]+)\/files\/([^/]+)$/);
       if (fileMatch) {

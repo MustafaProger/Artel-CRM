@@ -291,7 +291,7 @@ test('manager directory projection never exposes unrelated payment/summary custo
 
 test('enabled pages respect explicit grants without adding new rights to old managers', () => {
   const user: AccountUser = { id: 'qa', name: 'QA', login: 'qa', role: 'manager', managerId: 'qa', active: true, version: 1, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) };
-  assert.equal(enabledPages.length, 10);
+  assert.equal(enabledPages.length, 11);
   for (const id of ['stock', 'payroll'] as const) {
     assert.ok(effectiveSections(user).includes(id));
     assert.equal(hasPageAccess(user, id), false);
@@ -305,7 +305,7 @@ test('enabled pages respect explicit grants without adding new rights to old man
   }
   assert.equal(hasPageAccess(user, 'operator'), true);
   assert.equal(hasPageAccess({ ...user, sections: [] }, 'operator'), false);
-  assert.equal(availablePagesFor(user).length, 8);
+  assert.equal(availablePagesFor(user).length, 9);
   assert.equal(availablePagesFor({ ...user, role: 'director' }).length, enabledPages.length);
 });
 

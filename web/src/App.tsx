@@ -13,6 +13,7 @@ const OverviewPage = lazy(() => import('./OverviewPage'))
 const ShipmentsPage = lazy(() => import('./ShipmentsPage'))
 const TripsPage = lazy(() => import('./TripsPage'))
 const DirectoriesPage = lazy(() => import('./DirectoriesPage'))
+const DocumentsPage = lazy(() => import('./DocumentsPage'))
 const WorkPage = lazy(() => import('./WorkPage'))
 import AuthGate from './AuthGate'
 const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
@@ -21,7 +22,7 @@ const AccountManagement = lazy(() => import('./AccountManagement'))
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
 type Page = PageId
-const pageIcons = { LayoutDashboard, ClipboardList, Truck, Route, Wallet, Landmark, PackageCheck, Globe, Headphones, Banknote, UsersRound, BookOpen }
+const pageIcons = { FileText, LayoutDashboard, ClipboardList, Truck, Route, Wallet, Landmark, PackageCheck, Globe, Headphones, Banknote, UsersRound, BookOpen }
 const pages = pageCatalog.map(page => ({ ...page, icon: pageIcons[page.icon] }))
 const getPage = (): Page => location.hash === '#companies' ? 'shipments' : enabledPages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
@@ -109,6 +110,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
       {page === 'operator' && <OperatorPage/>}
       {page === 'accounts' && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
+      {page === 'documents' && <DocumentsPage/>}
       {page === 'work' && <WorkPage/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'payroll' && <PayrollPage/>}
