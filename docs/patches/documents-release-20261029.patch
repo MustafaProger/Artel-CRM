@@ -1,0 +1,535 @@
+--- a/scripts/verify_security_pages.mjs
++++ b/scripts/verify_security_pages.mjs
+@@ -55,7 +55,7 @@
+ };
+ const denied = async () => { throw new Error('Provider forbidden in synthetic security QA'); };
+ let runtime, browser;
+-const selectors = { overview: '.overview-page', work: '.work-page', shipments: '.shipments-workspace', trips: '.trips-page', payments: '.banking-page', 'cabinet-balances': '.cabinet-page', china: '.china-page', invoices: '.invoice-workspace', operator: '.operator-workspace', accounts: '.account-management', directories: '.directories-page' };
++const selectors = { documents: '.document-archive', overview: '.overview-page', work: '.work-page', shipments: '.shipments-workspace', trips: '.trips-page', payments: '.banking-page', 'cabinet-balances': '.cabinet-page', china: '.china-page', invoices: '.invoice-workspace', operator: '.operator-workspace', accounts: '.account-management', directories: '.directories-page' };
+ const invoiceFixture = {
+   integration: { status: 'read_only', message: 'Синтетический обработчик счетов', checkedAt: '2026-10-28T12:00:00Z' },
+   invoiceProfiles: [], invoiceCreation: { mode: 'live', connections: [] }, canPrepare: false,
+--- /dev/null
++++ b/server/document-archive.ts
+@@ -0,0 +1,111 @@
++import { randomUUID } from 'node:crypto';
++import { ApiError } from './api-error';
++import type { OperationsData } from './operations-store';
++import { documentMaxBytes, type DocumentArchive, type DocumentArchiveView } from '../web/src/documents-model';
++const fail = (message: string): never => { throw new ApiError(400, message); };
++function text(value: unknown, label: string, max = 200): string {
++  if (typeof value !== 'string' || !value.trim() || value.trim().length > max || Array.from(value).some(char => char.charCodeAt(0) < 32)) return fail(`Проверьте поле «${label}» (до ${max} символов).`);
++  return value.trim();
++}
++function expiry(value: unknown): string | null {
++  if (value == null || value === '') return null;
++  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value) return fail('Укажите существующую дату окончания.');
++  return value;
++}
++export function archiveView(archive: DocumentArchive = { categories: [], documents: [] }): DocumentArchiveView {
++  const items = [...(archive.items ?? [])];
++  for (const category of archive.categories) {
++    if (archive.documents.some(d => d.categoryId === category.id && !d.itemId)) items.push({ ...category, id: `legacy-${category.id}`, categoryId: category.id, name: 'Документы категории' });
++  }
++  return { categories: archive.categories, items, documents: archive.documents.map(({ data: _data, ...entry }) => ({ ...entry, itemId: entry.itemId ?? `legacy-${entry.categoryId}` })) };
++}
++export function validateDocumentArchive(value: unknown): asserts value is DocumentArchive {
++  if (!value || typeof value !== 'object') throw new Error('Invalid document archive');
++  const a = value as DocumentArchive;
++  if (!Array.isArray(a.categories) || !Array.isArray(a.documents) || (a.items !== undefined && !Array.isArray(a.items))) throw new Error('Invalid document archive');
++  const ids = new Set<string>();
++  for (const entry of [...a.categories, ...(a.items ?? []), ...a.documents]) {
++    if (!entry || typeof entry.id !== 'string' || ids.has(entry.id) || typeof entry.createdBy !== 'string' || !Number.isFinite(Date.parse(entry.createdAt))) throw new Error('Invalid document metadata');
++    ids.add(entry.id);
++  }
++  for (const c of a.categories) text(c.name, 'Категория');
++  for (const item of a.items ?? []) {
++    text(item.name, 'Название элемента');
++    if (item.version !== undefined && (!Number.isSafeInteger(item.version) || item.version < 1)) throw new Error('Invalid item version');
++    if (!a.categories.some(c => c.id === item.categoryId)) throw new Error('Invalid item category');
++  }
++  for (const d of a.documents) {
++    if (d.itemId !== undefined && !a.items?.some(i => i.id === d.itemId && i.categoryId === d.categoryId)) throw new Error('Invalid document item');
++    text(d.title, 'Название'); text(d.fileName, 'Файл'); expiry(d.expiresOn);
++    if (!a.categories.some(c => c.id === d.categoryId) || typeof d.data !== 'string' || d.size <= 0 || d.size > documentMaxBytes || Buffer.from(d.data, 'base64').length !== d.size || Buffer.from(d.data, 'base64').toString('base64') !== d.data) throw new Error('Invalid document file');
++  }
++}
++export function createArchiveEntry(data: OperationsData, kind: string, input: unknown, actorId: string) {
++  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('Некорректный запрос.');
++  const b = input as Record<string, unknown>;
++  const archive = data.documentArchive ??= { categories: [], documents: [] };
++  const normalized = archiveView(archive);
++  archive.items = normalized.items;
++  for (const doc of archive.documents) doc.itemId ??= `legacy-${doc.categoryId}`;
++  const metadata = { id: randomUUID(), createdAt: new Date().toISOString(), createdBy: actorId };
++  if (kind === 'categories') {
++    const name = text(b.name, 'Категория');
++    if (archive.categories.some(c => c.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) throw new ApiError(409, 'Такая категория уже есть.');
++    const entry = { ...metadata, name }; archive.categories.push(entry); return entry;
++  }
++  if (!archive.categories.some(c => c.id === b.categoryId)) return fail('Выберите существующую категорию.');
++  if (kind === 'items') {
++    const name = text(b.name, 'Название элемента');
++    if (archive.items.some(i => i.categoryId === b.categoryId && i.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) throw new ApiError(409, 'В этой категории уже есть такой элемент.');
++    const entry = { ...metadata, categoryId: b.categoryId as string, name, version: 1 }; archive.items.push(entry); return entry;
++  }
++  if (!archive.items.some(i => i.id === b.itemId && i.categoryId === b.categoryId)) return fail('Выберите элемент в этой категории.');
++  const title = text(b.title, 'Название'), fileName = text(b.fileName, 'Файл'), expiresOn = expiry(b.expiresOn);
++  if (typeof b.data !== 'string' || b.data.length > Math.ceil(documentMaxBytes / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(b.data)) return fail('Файл слишком большой или повреждён. Максимум 5 МБ.');
++  const bytes = Buffer.from(b.data, 'base64');
++  if (!bytes.length || bytes.length > documentMaxBytes || bytes.toString('base64') !== b.data) return fail('Выберите непустой файл до 5 МБ.');
++  if (archive.documents.reduce((sum, d) => sum + d.size, 0) + bytes.length > 24 * 1024 * 1024) throw new ApiError(413, 'Локальный архив заполнен (24 МБ).');
++  const entry = { ...metadata, categoryId: b.categoryId as string, itemId: b.itemId as string, title, fileName, expiresOn, size: bytes.length, data: b.data };
++  archive.documents.push(entry);
++  const item = archive.items.find(i => i.id === b.itemId)!; item.version = (item.version ?? 1) + 1;
++  return archiveView({ categories: [], documents: [entry] }).documents[0];
++}
++
++
++/** One transaction saves the card and all attachments, including staged removals. */
++export function saveArchiveCard(data: OperationsData, input: unknown, actorId: string, id?: string) {
++  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('Некорректный запрос.');
++  const b = input as Record<string, unknown>;
++  const archive = data.documentArchive ??= { categories: [], documents: [] };
++  archive.items = archiveView(archive).items;
++  for (const doc of archive.documents) doc.itemId ??= `legacy-${doc.categoryId}`;
++  const previous = id ? archive.items.find(i => i.id === id) : undefined;
++  if (id && !previous) throw new ApiError(404, 'Документ не найден.');
++  if (previous && b.version !== (previous.version ?? 1)) throw new ApiError(409, 'Документ уже изменён. Закройте окно и обновите список перед повторным редактированием.');
++  const name = text(b.name, 'Наименование');
++  const categoryId = previous?.categoryId ?? b.categoryId;
++  if (!archive.categories.some(c => c.id === categoryId) || (previous && b.categoryId !== previous.categoryId)) return fail('Выберите существующую категорию.');
++  if (archive.items.some(i => i.id !== id && i.categoryId === categoryId && i.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) throw new ApiError(409, 'В этой категории уже есть документ с таким наименованием.');
++  if (!Array.isArray(b.files) || b.files.length > 100) return fail('Добавьте не более 100 файлов в одну карточку.');
++  const itemId = id ?? randomUUID(), now = new Date().toISOString(), seen = new Set<string>();
++  const files = b.files.map(value => {
++    if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('Некорректный файл.');
++    const f = value as Record<string, unknown>;
++    const old = f.id ? archive.documents.find(d => d.id === f.id && d.itemId === itemId) : undefined;
++    if (f.id && (!old || seen.has(old.id))) return fail('Файл не принадлежит этой карточке или указан дважды.');
++    if (old) seen.add(old.id);
++    const title = text(f.title, 'Название файла'), expiresOn = expiry(f.expiresOn);
++    const fileName = f.data === undefined && old ? old.fileName : text(f.fileName, 'Файл');
++    const encoded = f.data === undefined && old ? old.data : f.data;
++    if (typeof encoded !== 'string' || !encoded.length || encoded.length > Math.ceil(documentMaxBytes / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return fail('Выберите непустой файл до 5 МБ.');
++    const bytes = Buffer.from(encoded, 'base64');
++    if (!bytes.length || bytes.length > documentMaxBytes || bytes.toString('base64') !== encoded) return fail('Файл повреждён или превышает 5 МБ.');
++    return { id: old?.id ?? randomUUID(), categoryId: categoryId as string, itemId, title, expiresOn, fileName, data: encoded, size: bytes.length, createdAt: old?.createdAt ?? now, createdBy: old?.createdBy ?? actorId };
++  });
++  const otherFiles = archive.documents.filter(d => d.itemId !== itemId);
++  if ([...otherFiles, ...files].reduce((total, f) => total + f.size, 0) > 24 * 1024 * 1024) throw new ApiError(413, 'Локальный архив заполнен (24 МБ).');
++  const entry = { id: itemId, categoryId: categoryId as string, name, createdAt: previous?.createdAt ?? now, createdBy: previous?.createdBy ?? actorId, updatedAt: now, updatedBy: actorId, version: (previous?.version ?? (previous ? 1 : 0)) + 1 };
++  archive.items = [...archive.items.filter(i => i.id !== itemId), entry];
++  archive.documents = [...otherFiles, ...files];
++  return entry;
++}
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -1,6 +1,7 @@
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { directoryMutation } from './directory-access';
+ import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
++import { archiveView, createArchiveEntry, saveArchiveCard } from './document-archive';
+ import { readOperator, mutateOperator } from './operator';
+ import { readTripNumbers } from './trip-numbering';
+ import { cabinetRoutes } from './cabinet-connections';
+@@ -888,6 +889,29 @@
+           return { result, changed: result.changed };
+         });
+         return write(response, result.created ? 201 : 200, JSON.stringify(result));
++      }
++      if (pathname === '/api/documents' || pathname.startsWith('/api/documents/')) {
++        const match = pathname.match(/^\/api\/documents(?:\/(categories|items|entries|cards)(?:\/([a-z0-9-]+)(\/file)?)?)?$/);
++        if (!match) throw new ApiError(404, 'Маршрут не найден.');
++        if (request.method === 'GET') {
++          const data = await operations.read(base.provenance.sourceSha256);
++          requireSection(authorized(data), 'documents');
++          if (!match[1]) return write(response, 200, JSON.stringify(archiveView(data.documentArchive)));
++          if (match[1] !== 'entries' || !match[2] || !match[3]) throw new ApiError(405, 'Метод не поддерживается.');
++          const file = data.documentArchive?.documents.find(d => d.id === match[2]);
++          if (!file) throw new ApiError(404, 'Документ не найден.');
++          response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="document"; filename*=UTF-8''${encodeURIComponent(file.fileName).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
++          response.end(Buffer.from(file.data, 'base64')); return;
++        }
++        const card = match[1] === 'cards';
++        if (match[3] || (card ? !((request.method === 'POST' && !match[2]) || (request.method === 'PATCH' && match[2])) : request.method !== 'POST' || !match[1] || match[2])) throw new ApiError(405, 'Метод не поддерживается.');
++        const body = await jsonBody(request, false, (card ? 35 : 7) * 1024 * 1024);
++        const result = await operations.mutate(base.provenance.sourceSha256, data => {
++          const user = requireSection(authorized(data), 'documents');
++          const entry = card ? saveArchiveCard(data, body, user.id, match[2]) : createArchiveEntry(data, match[1], body, user.id);
++          return { result: { entry, archive: archiveView(data.documentArchive) }, changed: true };
++        });
++        return write(response, request.method === 'PATCH' ? 200 : 201, JSON.stringify(result));
+       }
+       const fileMatch = pathname.match(/^\/api\/work\/(tasks|companies)\/([^/]+)\/files\/([^/]+)$/);
+       if (fileMatch) {
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -1,4 +1,5 @@
+ import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
++import { validateDocumentArchive } from './document-archive';
+ import { validateOperator } from './operator';
+ import { validTripDocumentPolicy } from './trip-document-mode';
+ import { operatorDiscount } from './operator-directories';
+@@ -60,6 +61,7 @@
+   tripSaby?: TripSabyData;
+   /** Explicit reset: source operations must never be imported again. */
+   sourceOperationsCleared?: boolean;
++  documentArchive?: import('../web/src/documents-model').DocumentArchive;
+   work?: WorkData;
+   china?: ChinaData;
+   operator?: OperatorData;
+@@ -100,6 +102,7 @@
+   try { validateCabinets(data.cabinets); } catch { throw new StoreError('Invalid cabinet storage'); }
+   try { validateSber(data.sber as SberData | undefined); validateSber(data.sberArtel as SberData | undefined, sberConnections['sber-artel']); } catch { throw new StoreError('Invalid Sber storage'); }
+   try { validatePush(data.push as PushData | undefined); } catch { throw new StoreError('Invalid push storage'); }
++  if (data.documentArchive !== undefined) validateDocumentArchive(data.documentArchive);
+   if (data.work !== undefined) validateWorkData(data.work);
+   if (data.accounts !== undefined) { try { validateAccounts(data.accounts as AccountsData); } catch { throw new StoreError('Invalid accounts'); } }
+   if (data.schemaVersion === 2) {
+--- a/server/permissions.ts
++++ b/server/permissions.ts
+@@ -10,6 +10,7 @@
+   return actor;
+ }
+ export function apiSection(path: string): SectionId | null {
++  if (/^\/api\/documents(\/|$)/.test(path)) return 'documents';
+   if (/^\/api\/trip-requests(\/|$)/.test(path)) return 'trips';
+   if (/^\/api\/settlements(\/|$)/.test(path)) return 'overview';
+   if (/^\/api\/shipment-trips(\/|$)/.test(path)) return null;
+--- /dev/null
++++ b/tests/api-documents.test.ts
+@@ -0,0 +1,121 @@
++import { archiveView, createArchiveEntry, validateDocumentArchive } from '../server/document-archive';
++import type { OperationsData } from '../server/operations-store';
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { mkdtemp, rm } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { resolve } from 'node:path';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { createSnapshotMiddleware } from '../server/local-api';
++import { documentExpired } from '../web/src/documents-model';
++
++test('document expiry is inclusive and optional', () => {
++  assert.equal(documentExpired(null, '2026-10-29'), false);
++  assert.equal(documentExpired('2026-10-29', '2026-10-29'), false);
++  assert.equal(documentExpired('2026-10-28', '2026-10-29'), true);
++  assert.equal(documentExpired('2026-10-30', '2026-10-29'), false);
++});
++test('archive permissions, upload validation, persistence and protected downloads', async () => {
++  const directory = await mkdtemp(resolve(tmpdir(), 'artel-documents-'));
++  const middleware = createSnapshotMiddleware(resolve('data/local-xlsx-final'), { operationsDirectory: directory });
++  const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
++  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  function client() {
++    let cookie = '';
++    return async (path: string, body?: unknown, method = body ? 'POST' : 'GET') => {
++      const r = await fetch(base + path, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
++      if (r.headers.get('set-cookie')) cookie = r.headers.get('set-cookie')!.split(';')[0];
++      return r;
++    };
++  }
++  const admin = client(), employee = client(), anonymous = client();
++  try {
++    assert.equal((await admin('/api/auth/setup', { login: 'archive-admin', name: 'Архив тест', password: 'Local-test-archive-2026!' })).status, 200);
++    const manager = (await (await admin('/api/directories', { kind: 'managers', name: 'Сотрудник архива' })).json()).entry;
++    let user = (await (await admin('/api/auth/users', { login: 'archive-employee', name: 'Сотрудник', password: 'Local-test-archive-2026!', role: 'employee', managerId: manager.id, sections: [] })).json()).user;
++    assert.ok(user?.id);
++    assert.equal((await employee('/api/auth/login', { login: 'archive-employee', password: 'Local-test-archive-2026!' })).status, 200);
++    assert.equal((await anonymous('/api/documents')).status, 401);
++    assert.equal((await employee('/api/documents')).status, 403);
++    assert.equal((await employee('/api/documents/categories', { name: 'Чужая' })).status, 403);
++    const category = (await (await admin('/api/documents/categories', { name: 'Договоры' })).json()).entry;
++    assert.ok(category.id);
++    assert.equal((await admin('/api/documents/categories', { name: 'договоры' })).status, 409);
++    const item = (await (await admin('/api/documents/items', { categoryId: category.id, name: 'Гена' })).json()).entry;
++    assert.ok(item.id);
++    assert.equal((await admin('/api/documents/items', { categoryId: category.id, name: 'гена' })).status, 409);
++    assert.equal((await employee('/api/documents/items', { categoryId: category.id, name: 'Нет доступа' })).status, 403);
++    const secondCategory = (await (await admin('/api/documents/categories', { name: 'Автомобили' })).json()).entry;
++    const payload = { categoryId: category.id, itemId: item.id, title: 'Тестовый договор', fileName: 'договор.txt', data: Buffer.from('Проверка точного файла').toString('base64'), expiresOn: '2026-10-28' };
++    assert.equal((await admin('/api/documents/entries', { ...payload, expiresOn: '2026-02-30' })).status, 400);
++    assert.equal((await admin('/api/documents/entries', { ...payload, data: '!!' })).status, 400);
++    assert.equal((await admin('/api/documents/entries', { ...payload, categoryId: 'missing' })).status, 400);
++    assert.equal((await admin('/api/documents/entries', { ...payload, itemId: 'missing' })).status, 400);
++    assert.equal((await admin('/api/documents/entries', { ...payload, categoryId: secondCategory.id })).status, 400);
++    const doc = (await (await admin('/api/documents/entries', payload)).json()).entry;
++    assert.ok(doc.id); assert.equal(doc.data, undefined);
++    const url = `/api/documents/entries/${doc.id}/file`;
++    assert.equal((await anonymous(url)).status, 401); assert.equal((await employee(url)).status, 403);
++    const downloaded = await admin(url); assert.equal(await downloaded.text(), 'Проверка точного файла'); assert.match(downloaded.headers.get('content-disposition')!, /^attachment/);
++    user = (await (await admin(`/api/auth/users/${user.id}`, { name: user.name, login: user.login, role: user.role, managerId: user.managerId, version: user.version, sections: ['documents'] }, 'PATCH')).json()).user;
++    assert.ok(user?.sections.includes('documents'));
++    await employee('/api/auth/login', { login: 'archive-employee', password: 'Local-test-archive-2026!' });
++    assert.equal((await employee('/api/documents')).status, 200);
++    assert.equal((await employee('/api/documents/entries', { ...payload, expiresOn: null })).status, 201);
++    const fresh = createSnapshotMiddleware(resolve('data/local-xlsx-final'), { operationsDirectory: directory });
++    const restart = createServer((req, res) => fresh(req, res, () => res.end()));
++    await new Promise<void>(done => restart.listen(0, '127.0.0.1', done));
++    try {
++      const login = await fetch(`http://127.0.0.1:${(restart.address() as AddressInfo).port}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login: 'archive-admin', password: 'Local-test-archive-2026!' }) });
++      const saved = await fetch(`http://127.0.0.1:${(restart.address() as AddressInfo).port}/api/documents`, { headers: { Cookie: login.headers.get('set-cookie')!.split(';')[0] } });
++      const a = await saved.json(); assert.equal(a.documents.length, 2); assert.equal(a.categories.length, 2); assert.equal(a.items.length, 1); assert.equal(a.items[0].name, 'Гена'); assert.ok(a.documents.every((d: { itemId: string }) => d.itemId === item.id)); assert.ok(a.documents.every((d: { data?: string }) => d.data === undefined));
++    } finally { await new Promise<void>(done => restart.close(() => done())); }
++    const cardBody = { name: 'Гена — карточка', categoryId: category.id, files: [
++      { title: 'Паспорт', fileName: 'passport.txt', data: 'YWJj', expiresOn: '2020-01-01' },
++      { title: 'СНИЛС', fileName: 'snils.txt', data: 'ZGVm', expiresOn: null }
++    ] };
++    const createdResponse = await employee('/api/documents/cards', cardBody);
++    assert.equal(createdResponse.status, 201);
++    const created = await createdResponse.json();
++    const cardId = created.entry.id, cardFiles = created.archive.documents.filter((d: { itemId: string }) => d.itemId === cardId);
++    assert.equal(cardFiles.length, 2); assert.equal(created.entry.version, 1);
++    const cardPath = `/api/documents/cards/${cardId}`;
++    const beforeInvalid = await (await admin('/api/documents')).json();
++    assert.equal((await employee(cardPath, { ...cardBody, version: 1, files: [{ ...cardBody.files[0], title: 'Не записывать' }, { ...cardBody.files[1], data: 'bad!' }] }, 'PATCH')).status, 400);
++    assert.deepEqual(await (await admin('/api/documents')).json(), beforeInvalid);
++    assert.equal((await employee(cardPath, { ...cardBody, version: 1, files: [{ id: doc.id, title: 'Чужой файл' }] }, 'PATCH')).status, 400);
++    const changed = await employee(cardPath, { ...cardBody, name: 'Геннадий', version: 1, files: [{ id: cardFiles[0].id, title: 'Новый паспорт', expiresOn: null, data: 'bmV3', fileName: 'new.txt' }] }, 'PATCH');
++    assert.equal(changed.status, 200); assert.equal((await changed.json()).entry.version, 2);
++    assert.equal((await employee(cardPath, { ...cardBody, version: 1 }, 'PATCH')).status, 409);
++    assert.equal((await admin(`/api/documents/entries/${cardFiles[1].id}/file`)).status, 404);
++    assert.equal(await (await admin(`/api/documents/entries/${cardFiles[0].id}/file`)).text(), 'new');
++    assert.equal((await employee('/api/documents/cards', cardBody)).status, 201);
++    await admin(`/api/auth/users/${user.id}`, { name: user.name, login: user.login, role: user.role, managerId: user.managerId, version: user.version, sections: [] }, 'PATCH');
++    assert.equal((await employee(url)).status, 401);
++    await employee('/api/auth/login', { login: 'archive-employee', password: 'Local-test-archive-2026!' });
++    assert.equal((await employee(url)).status, 403);
++    assert.equal((await employee(cardPath, { ...cardBody, version: 2 }, 'PATCH')).status, 403);
++    assert.equal((await employee('/api/documents/cards', cardBody)).status, 403);
++  } finally { await new Promise<void>(done => server.close(() => done())); await rm(directory, { recursive: true, force: true }); }
++});
++
++
++test('legacy documents keep bytes and become accessible through a stable item without a read-time write', () => {
++  const data: OperationsData = { schemaVersion: 1, sourceSha256: 'test', revision: 1, shipments: {}, companies: [], documentArchive: {
++    categories: [{ id: 'c', name: 'Прежняя категория', createdAt: '2026-10-29T07:00:00Z', createdBy: 'test' }],
++    documents: [{ id: 'd', categoryId: 'c', title: 'Прежний файл', expiresOn: null, fileName: 'old.txt', size: 3, data: 'YWJj', createdAt: '2026-10-29T07:00:00Z', createdBy: 'test' }]
++  } };
++  const before = JSON.stringify(data);
++  validateDocumentArchive(data.documentArchive);
++  const view = archiveView(data.documentArchive);
++  assert.equal(JSON.stringify(data), before);
++  assert.equal(view.items[0].id, view.documents[0].itemId);
++  assert.equal(view.items[0].name, 'Документы категории');
++  createArchiveEntry(data, 'items', { categoryId: 'c', name: 'Гена' }, 'test');
++  validateDocumentArchive(data.documentArchive);
++  assert.equal(data.documentArchive!.documents[0].data, 'YWJj');
++  assert.equal(data.documentArchive!.documents[0].itemId, view.items[0].id);
++  assert.equal(data.documentArchive!.items!.length, 2);
++});
+--- a/tests/api-permissions.test.ts
++++ b/tests/api-permissions.test.ts
+@@ -302,7 +302,7 @@
+ 
+ test('enabled pages respect explicit grants without adding new rights to old managers', () => {
+   const user: AccountUser = { id: 'qa', name: 'QA', login: 'qa', role: 'manager', managerId: 'qa', active: true, version: 1, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) };
+-  assert.equal(enabledPages.length, 11);
++  assert.equal(enabledPages.length, 12);
+   for (const id of ['stock', 'payroll'] as const) {
+     assert.ok(effectiveSections(user).includes(id));
+     assert.equal(hasPageAccess(user, id), false);
+@@ -316,7 +316,7 @@
+   }
+   assert.equal(hasPageAccess(user, 'operator'), true);
+   assert.equal(hasPageAccess({ ...user, sections: [] }, 'operator'), false);
+-  assert.equal(availablePagesFor(user).length, 9);
++  assert.equal(availablePagesFor(user).length, 10);
+   assert.equal(availablePagesFor({ ...user, role: 'director' }).length, enabledPages.length);
+ });
+ 
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -17,6 +17,7 @@
+ const ShipmentsPage = lazy(() => import('./ShipmentsPage'))
+ const TripsPage = lazy(() => import('./TripsPage'))
+ const DirectoriesPage = lazy(() => import('./DirectoriesPage'))
++const DocumentsPage = lazy(() => import('./DocumentsPage'))
+ const WorkPage = lazy(() => import('./WorkPage'))
+ import AuthGate from './AuthGate'
+ const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
+@@ -168,6 +169,7 @@
+       {page === 'invoices' && <InvoicePage user={user} menuOpen={menu} onOpenMenu={() => setMenu(true)}/>}
+       {page === 'operator' && <OperatorPage key={user.id} creatorName={user.name}/>}
+       {page === 'accounts' && data && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
++      {page === 'documents' && <DocumentsPage/>}
+       {page === 'work' && <WorkPage/>}
+       {page === 'cabinet-balances' && <CabinetBalances/>}
+       {page === 'payroll' && <PayrollPage/>}
+--- /dev/null
++++ b/web/src/DocumentEditor.tsx
+@@ -0,0 +1,74 @@
++import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
++import { Download, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react'
++import { useDialogMotion } from './useDialogMotion'
++import { documentsRequest } from './documents-api'
++import { documentExpired, documentMaxBytes, type ArchiveItem, type DocumentArchiveView, type DocumentCategory } from './documents-model'
++
++type DraftFile = { key: string; id?: string; title: string; expiresOn: string; fileName: string; file?: File; removed?: boolean }
++export default function DocumentEditor({ kind, category, item, files, onClose, onSaved }: {
++  kind: 'category' | 'card'; category?: DocumentCategory; item?: ArchiveItem; files: DocumentArchiveView['documents']; onClose: () => void;
++  onSaved: (archive: DocumentArchiveView, categoryId: string) => void
++}) {
++  const dialog = useRef<HTMLDialogElement>(null), titleId = useId(), lock = useRef(false), backdropDown = useRef(false)
++  const { close, complete } = useDialogMotion(dialog, onClose)
++  const [name, setName] = useState(item?.name ?? '')
++  const [rows, setRows] = useState<DraftFile[]>(() => files.map(f => ({ key: f.id, id: f.id, title: f.title, expiresOn: f.expiresOn ?? '', fileName: f.fileName })))
++  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
++  const toggleFile = (key: string) => setExpanded(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next })
++  const initial = useRef(JSON.stringify({ name: item?.name ?? '', rows }))
++  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [discard, setDiscard] = useState(false)
++  const dirty = initial.current !== JSON.stringify({ name, rows })
++  const dismiss = () => { if (lock.current) return; if (dirty) setDiscard(true); else close() }
++  useEffect(() => { if (!dirty) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn) }, [dirty])
++  const update = (key: string, change: Partial<DraftFile>) => setRows(current => current.map(row => row.key === key ? { ...row, ...change } : row))
++  const trapFocus = (event: KeyboardEvent<HTMLDialogElement>) => {
++    if (event.key !== 'Tab') return
++    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex="0"]')).filter(node => node.getClientRects().length > 0)
++    const first = controls[0], last = controls.at(-1)
++    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
++    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
++  }
++  const outside = (event: { clientX: number; clientY: number }) => { const b = dialog.current!.getBoundingClientRect(); return event.clientX < b.left || event.clientX > b.right || event.clientY < b.top || event.clientY > b.bottom }
++  const save = async (event: FormEvent) => {
++    event.preventDefault(); if (lock.current) return
++    lock.current = true; setBusy(true); setError(''); setDiscard(false)
++    try {
++      const attachments = kind === 'category' ? [] : await Promise.all(rows.filter(row => !row.removed).map(async row => {
++        if (row.file && (!row.file.size || row.file.size > documentMaxBytes)) throw new Error(`«${row.title || row.file.name}»: выберите непустой файл до 5 МБ.`)
++        if (!row.id && !row.file) throw new Error('Прикрепите файл к каждому добавленному документу.')
++        const encoded = row.file ? await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(row.file!) }) : undefined
++        return { id: row.id, title: row.title, expiresOn: row.expiresOn || null, ...(row.file ? { fileName: row.file.name, data: encoded } : {}) }
++      }))
++      const result = await documentsRequest<{ archive: DocumentArchiveView; entry: { id: string; categoryId?: string } }>(kind === 'category' ? '/categories' : `/cards${item ? `/${item.id}` : ''}`, kind === 'category' ? { name } : { name, categoryId: category?.id, version: item?.version ?? 1, files: attachments }, item ? 'PATCH' : 'POST')
++      await complete(() => onSaved(result.archive, kind === 'category' ? result.entry.id : category!.id))
++    } catch (e) { setError((e as Error).message) } finally { lock.current = false; setBusy(false) }
++  }
++  return <dialog ref={dialog} className="archive-drawer" aria-labelledby={titleId} onKeyDown={trapFocus} onCancel={event => { event.preventDefault(); dismiss() }} onPointerDown={event => { backdropDown.current = event.target === event.currentTarget && outside(event) }} onClick={event => { if (backdropDown.current && event.target === event.currentTarget && outside(event)) dismiss(); backdropDown.current = false }}>
++    <header className="archive-drawer-heading"><h2 id={titleId}>{kind === 'category' ? 'Новая категория' : item?.name ?? 'Новый документ'}</h2><button type="button" className="icon-button" aria-label="Закрыть окно" disabled={busy} onClick={dismiss}><X size={20}/></button></header>
++    <form onSubmit={save} className="archive-drawer-form">
++      <div className="archive-drawer-body">
++        {kind === 'card' && <p className="archive-category-name">{category?.name}</p>}
++        <label>{kind === 'category' ? 'Название категории' : 'Наименование'}<input autoFocus required maxLength={200} value={name} disabled={busy} onChange={event => setName(event.target.value)} placeholder={kind === 'category' ? 'Например, Водители' : 'Например, Гена'}/></label>
++        {kind === 'card' && <><div className="archive-files-heading"><h3>Документы</h3><button className="button" type="button" disabled={busy} onClick={() => setRows(current => [...current, { key: crypto.randomUUID(), title: '', expiresOn: '', fileName: '' }])}><Plus size={18}/>Добавить файл</button></div>
++          {!rows.length && <p className="archive-hint">Прикрепите паспорт, СНИЛС или другие документы. Для каждого можно указать название и срок.</p>}
++          <div className="archive-file-list">{rows.map((row, index) => row.removed ? <div className="archive-file-removed" key={row.key}><span>Будет удалён: {row.title || 'Новый файл'}</span><button className="button" type="button" disabled={busy} onClick={() => update(row.key, { removed: false })}><Undo2 size={16}/>Вернуть</button></div> : row.id && !expanded.has(row.key) ? <div className={`archive-file-row${documentExpired(row.expiresOn || null) ? ' is-expired' : ''}`} key={row.key}>
++            <div className="archive-file-summary"><strong>{row.title}</strong>{documentExpired(row.expiresOn || null) && <span>Срок истёк · {row.expiresOn!.split('-').reverse().join('.')}</span>}</div>
++            <button className="icon-button archive-file-edit" type="button" disabled={busy} aria-label={`Изменить ${row.title}`} aria-expanded={false} onClick={() => toggleFile(row.key)}><Pencil size={18}/></button>
++            <a className="icon-button archive-file-download" href={`/api/documents/entries/${row.id}/file`} download={row.fileName} aria-label={`Скачать ${row.title}`} title="Скачать"><Download size={18}/></a>
++          </div> : <fieldset className={`archive-file-editor${documentExpired(row.expiresOn || null) ? ' is-expired' : ''}`} key={row.key} disabled={busy}>
++            <legend>Документ {index + 1}</legend>
++            <div className="archive-file-title"><label>Название документа<input aria-label={`Название документа ${index + 1}`} required maxLength={200} value={row.title} placeholder="Например, паспорт" onChange={event => update(row.key, { title: event.target.value })}/></label><button className="icon-button archive-remove" type="button" aria-label={`Удалить документ ${index + 1}`} onClick={() => update(row.key, { removed: true })}><Trash2 size={18}/></button></div>
++            {row.id && <a className="archive-download" href={`/api/documents/entries/${row.id}/file`} download={row.fileName}><Download size={16}/>{row.fileName}</a>}
++            <label>{row.id ? 'Заменить файл' : 'Файл'}<input aria-label={`Файл ${index + 1}`} type="file" required={!row.id} onChange={event => update(row.key, { file: event.target.files?.[0] })}/><small>До 5 МБ{row.file ? ` · Выбран: ${row.file.name}` : ''}</small></label>
++            <label>Действует до<input aria-label={`Действует до ${index + 1}`} type="date" value={row.expiresOn} onChange={event => update(row.key, { expiresOn: event.target.value })}/><small>{documentExpired(row.expiresOn || null) ? 'Срок истёк' : 'Необязательно. Без даты — без срока.'}</small></label>
++            {row.id && <button className="button archive-file-done" type="button" onClick={() => { if (!row.title.trim()) { setError('Укажите название документа.'); return }; toggleFile(row.key) }}>Готово</button>}
++          </fieldset>)}</div>
++        </>}
++      </div>
++      <footer className="archive-drawer-footer">
++        {error && <p className="archive-error" role="alert">{error}</p>}
++        {discard ? <div className="archive-discard" role="alert"><p>Есть несохранённые изменения.</p><div className="archive-actions"><button className="button" type="button" onClick={() => setDiscard(false)}>Продолжить редактирование</button><button className="button" type="button" onClick={close}>Не сохранять</button></div></div> : <div className="archive-actions"><button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>}
++      </footer>
++    </form>
++  </dialog>
++}
+--- /dev/null
++++ b/web/src/DocumentsPage.tsx
+@@ -0,0 +1,31 @@
++import { useEffect, useState } from 'react'
++import { ChevronRight, Folder, Plus, RefreshCw } from 'lucide-react'
++import ScrollableSegments from './ScrollableSegments'
++import DocumentEditor from './DocumentEditor'
++import { documentsRequest } from './documents-api'
++import { documentExpired, moscowToday, type ArchiveItem, type DocumentArchiveView } from './documents-model'
++import './documents.css'
++export default function DocumentsPage() {
++  const [archive, setArchive] = useState<DocumentArchiveView>({ categories: [], items: [], documents: [] })
++  const [categoryId, setCategoryId] = useState(''), [query, setQuery] = useState('')
++  const [editor, setEditor] = useState<{ kind: 'category' | 'card'; item?: ArchiveItem } | null>(null)
++  const [loading, setLoading] = useState(true), [error, setError] = useState(''), [notice, setNotice] = useState(''), [today, setToday] = useState(moscowToday)
++  const category = archive.categories.find(c => c.id === categoryId) ?? archive.categories[0]
++  const reload = async () => { setLoading(true); try { setArchive(await documentsRequest<DocumentArchiveView>('')); setError('') } catch (e) { setError((e as Error).message) } finally { setLoading(false) } }
++  useEffect(() => { void reload(); const timer = setInterval(() => setToday(moscowToday()), 30000); return () => clearInterval(timer) }, [])
++  const open = (next: NonNullable<typeof editor>, button: HTMLButtonElement) => { button.focus({ preventScroll: true }); setEditor(next); setNotice('') }
++  const items = archive.items.filter(i => i.categoryId === category?.id && i.name.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')))
++  return <section className="document-archive" aria-label="Архив документов">
++    {!!archive.categories.length && <ScrollableSegments className="directory-tabs archive-category-tabs" label="Категории документов" value={category?.id ?? ''}>{archive.categories.map(c => <button className={`button ${c.id === category?.id ? 'primary' : ''}`} aria-pressed={c.id === category?.id} key={c.id} onClick={() => { setCategoryId(c.id); setQuery(''); setNotice(''); setError('') }}>{c.name}</button>)}</ScrollableSegments>}
++    <div className="archive-controls">
++      <label className="archive-search">Поиск<input type="search" placeholder="Наименование документа" value={query} disabled={!category} onChange={e => setQuery(e.target.value)}/></label>
++      <div className="archive-actions archive-main-actions"><button className="button" disabled={loading} onClick={() => void reload()} aria-label="Обновить документы" title="Обновить"><RefreshCw size={18}/></button><button className="button" disabled={loading} onClick={event => open({ kind: 'category' }, event.currentTarget)}><Plus size={18}/>Добавить категорию</button><button className="button primary" disabled={loading || !category} onClick={event => open({ kind: 'card' }, event.currentTarget)}><Plus size={18}/>Добавить документ</button></div>
++    </div>
++    {error && <p className="archive-error" role="alert">{error}</p>}{notice && <p className="archive-notice" role="status">{notice}</p>}
++    {loading ? <p role="status">Загружаем документы…</p> : !category ? <div className="archive-empty"><Folder size={32}/><h2>Создайте первую категорию</h2></div> : <div className="archive-list">{items.length ? items.map(i => {
++      const files = archive.documents.filter(d => d.itemId === i.id), expired = files.filter(d => documentExpired(d.expiresOn, today)).length
++      return <button className="archive-item" key={i.id} aria-haspopup="dialog" onClick={event => open({ kind: 'card', item: i }, event.currentTarget)}><Folder size={23} aria-hidden="true"/><span className="archive-item-info"><strong>{i.name}</strong><span>Файлов: {files.length}{expired > 0 && <span className="archive-item-expired"> · Просрочено: {expired}</span>}</span></span><ChevronRight size={20} aria-hidden="true"/></button>
++    }) : <div className="archive-empty"><Folder size={32}/><h2>{query ? 'Ничего не найдено' : 'Документов пока нет'}</h2><p>{query ? 'Измените поисковый запрос.' : 'Нажмите «Добавить документ», укажите наименование и прикрепите файлы.'}</p></div>}</div>}
++    {editor && <DocumentEditor kind={editor.kind} category={category} item={editor.item} files={archive.documents.filter(d => d.itemId === editor.item?.id)} onClose={() => setEditor(null)} onSaved={(next, id) => { setArchive(next); setCategoryId(id); setQuery(''); setEditor(null); setNotice('Сохранено') }}/ >}
++  </section>
++}
+--- /dev/null
++++ b/web/src/documents-api.ts
+@@ -0,0 +1,7 @@
++import { apiFetch } from './workspace-api'
++export async function documentsRequest<T>(path: string, body?: unknown, method = body ? 'POST' : 'GET'): Promise<T> {
++  const response = await apiFetch(`/api/documents${path}`, { cache: 'no-store', method, ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) })
++  const data = await response.json()
++  if (!response.ok) throw new Error(data.error || 'Не удалось сохранить. Введённые данные остались в форме.')
++  return data
++}
+--- /dev/null
++++ b/web/src/documents-model.ts
+@@ -0,0 +1,8 @@
++export interface DocumentCategory { id: string; name: string; createdAt: string; createdBy: string }
++export interface ArchiveItem { version?: number; updatedAt?: string; updatedBy?: string; id: string; categoryId: string; name: string; createdAt: string; createdBy: string }
++export interface ArchiveDocument { id: string; categoryId: string; itemId?: string; title: string; expiresOn: string | null; fileName: string; size: number; data: string; createdAt: string; createdBy: string }
++export interface DocumentArchive { categories: DocumentCategory[]; items?: ArchiveItem[]; documents: ArchiveDocument[] }
++export interface DocumentArchiveView { categories: DocumentCategory[]; items: ArchiveItem[]; documents: (Omit<ArchiveDocument, 'data' | 'itemId'> & { itemId: string })[] }
++export const documentMaxBytes = 5 * 1024 * 1024
++export const moscowToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
++export const documentExpired = (expiresOn: string | null, today = moscowToday()) => !!expiresOn && expiresOn < today
+--- /dev/null
++++ b/web/src/documents.css
+@@ -0,0 +1,29 @@
++.document-archive{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:16px}.archive-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.document-archive .button{min-height:44px;gap:7px}.document-archive label{display:grid;gap:8px;font-size:13px;font-weight:600;min-width:0}.document-archive input{width:100%;min-width:0;min-height:44px;border:1px solid var(--line,#d0d5dd);border-radius:10px;background:var(--surface,#fff);padding:10px 12px;font:inherit;color:var(--text,#182230);box-sizing:border-box}.document-archive small{color:var(--muted,#667085);font-weight:400;overflow-wrap:anywhere}.archive-search{max-width:560px}.archive-list{display:grid;gap:10px}.archive-empty{text-align:center;padding:44px 16px;border:1px dashed #cdd5df;border-radius:14px;color:var(--muted,#667085)}.archive-empty h2{color:var(--text,#344054)}.archive-error{color:#b42318;background:#fff0ee;padding:12px;border-radius:10px;margin:0}.archive-notice{color:#146c43;margin:0}.document-archive :focus-visible{outline:2px solid var(--accent,#216447);outline-offset:3px}div.archive-category-tabs[class]{margin-bottom:0}.archive-item{display:flex;align-items:center;gap:16px;padding:18px 20px;width:100%;min-width:0;text-align:left;background:var(--surface,#fff);border:1px solid var(--line,#e4e7ec);border-radius:14px;color:var(--text,#182230);font:inherit;cursor:pointer;transition:background 160ms ease,border-color 160ms ease}.archive-item:hover{background:var(--surface-hover,#f7f9f8);border-color:#c6d7cd}.archive-item>svg{flex-shrink:0;color:var(--accent,#176849)}.archive-item-info{display:grid;gap:7px;min-width:0;flex:1;overflow-wrap:anywhere}.archive-item-info>span{font-size:12px;color:var(--muted,#667085)}.archive-item-expired{color:#b42318}.document-archive button:disabled{cursor:default}
++/* Same right-edge geometry and motion as the operator details drawer. */
++dialog.archive-drawer{position:fixed;inset:0 0 0 auto;margin:0;width:min(520px,100%);height:100dvh;max-height:100dvh;max-width:100%;padding:0;border:0;border-radius:22px 0 0 22px;background:var(--surface,#fff);color:var(--text,#243c34);box-shadow:-16px 0 60px #142b2526;overflow:hidden;box-sizing:border-box}dialog.archive-drawer[open]{display:flex;flex-direction:column}dialog.archive-drawer[data-modal-motion]{--modal-x:100%;--modal-y:0px;--modal-scale:1}.archive-drawer::backdrop{background:#182e2459}.archive-drawer-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:24px;border-bottom:1px solid var(--line,#e4e7ec);flex-shrink:0}.archive-drawer-heading h2{font-size:20px;margin:0;overflow-wrap:anywhere;min-width:0}.archive-drawer-heading .icon-button{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:var(--surface-soft,#f5f7f6)}.archive-drawer-form{display:flex;flex-direction:column;min-height:0;flex:1}.archive-drawer-body{padding:24px;overflow:auto;min-height:0;flex:1;overscroll-behavior:contain;display:flex;flex-direction:column;gap:20px}.archive-category-name{font-size:13px;color:var(--muted,#667085);margin:0}.archive-files-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.archive-files-heading h3{font-size:17px;margin:0}.archive-hint{font-size:13px;line-height:1.6;color:var(--muted,#667085);margin:0}.archive-file-list{display:grid;gap:18px}.archive-file-editor{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;min-width:0;margin:0;padding:16px;border:1px solid var(--line,#e4e7ec);border-radius:14px;background:var(--surface-soft,#f8f9fa)}.archive-file-editor legend{padding:0 6px;font-size:12px;color:var(--muted,#667085)}.archive-file-editor.is-expired{border-color:#f4b4ae;background:#fff5f4}.archive-file-editor.is-expired>label:last-child small{color:#b42318}.archive-file-title{display:flex;align-items:flex-end;gap:8px}.archive-file-title label{flex:1;min-width:0}.archive-remove{min-width:44px;min-height:44px;color:#b42318}.archive-download{display:flex;align-items:center;gap:8px;overflow-wrap:anywhere;color:var(--accent,#176849);font-size:13px;min-height:32px}.archive-download svg{flex-shrink:0}.archive-file-removed{display:flex;gap:10px;align-items:center;justify-content:space-between;font-size:13px;overflow-wrap:anywhere;border:1px dashed var(--line,#d0d5dd);padding:12px;border-radius:12px}.archive-drawer-footer{display:grid;gap:12px;padding:18px 24px;border-top:1px solid var(--line,#e4e7ec);background:var(--surface,#fff);flex-shrink:0;max-height:45dvh;overflow:auto}.archive-drawer-footer>.archive-actions{justify-content:flex-end}.archive-discard p{margin:0 0 12px;font-size:14px}@media(max-width:600px){dialog.archive-drawer{width:100%;border-radius:0}.archive-drawer-heading,.archive-drawer-body{padding:18px}.archive-drawer-footer{padding:16px 18px}.archive-file-editor{padding:12px}.archive-main-actions{gap:8px}.archive-main-actions .button{font-size:12px;padding-inline:12px}}@media(prefers-reduced-motion:reduce){.archive-item{transition:none}}
++
++/* Search and actions share one baseline; compact layouts keep every action visible. */
++.document-archive{container:documents / inline-size}
++.archive-controls{display:flex;align-items:flex-end;gap:12px;min-width:0}
++.archive-controls .archive-search{flex:1;max-width:none;min-width:180px}
++.archive-controls .archive-main-actions{flex-shrink:0;flex-wrap:nowrap}
++.archive-main-actions .button svg{flex-shrink:0}
++.document-archive .archive-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px 16px;text-align:center}
++.document-archive .archive-empty h2{margin:0;font-size:16px;line-height:1.4}
++.document-archive .archive-empty p{margin:0 auto;max-width:480px;width:100%;font-size:13px;line-height:1.5;text-align:center}
++.document-archive .archive-empty>svg{width:26px;height:26px;flex-shrink:0}
++@container documents (max-width:800px){
++ .archive-controls{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
++ .archive-controls .archive-search{width:100%;min-width:0}
++ .archive-controls .archive-main-actions{display:grid;grid-template-columns:44px minmax(0,1fr) minmax(0,1fr);width:100%;gap:8px;align-items:stretch}
++ .document-archive .archive-controls .archive-main-actions>.button{width:100%;min-width:0;padding:8px;font-size:12px;white-space:normal;justify-content:center;line-height:1.3}
++ .document-archive .archive-empty{padding:18px 14px}
++}
++
++.archive-file-row{display:flex;align-items:center;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--line,#e4e7ec);border-radius:12px;background:var(--surface-soft,#f8f9fa)}
++.archive-file-summary{flex:1;min-width:0;display:grid;gap:5px;overflow-wrap:anywhere}.archive-file-summary strong{font-size:14px;line-height:1.45;font-weight:600}.archive-file-summary span{font-size:12px;line-height:1.4;color:#b42318}
++.archive-file-row.is-expired{background:#fff0ee;border-color:#f4b4ae}
++.archive-drawer .archive-file-edit,.archive-drawer .archive-file-download{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;min-width:44px;flex-shrink:0;border-radius:50%;text-decoration:none}
++.archive-drawer .archive-file-edit{background:#fff3cd;border:1px solid #e2c56f;color:#775516}.archive-drawer .archive-file-edit:hover{background:#ffe8a3}
++.archive-drawer .archive-file-download{background:#e3f2e9;border:1px solid #aacfb8;color:#176849}.archive-drawer .archive-file-download:hover{background:#cee8da}
++.archive-file-done{justify-self:end}
+--- a/web/src/page-catalog.ts
++++ b/web/src/page-catalog.ts
+@@ -14,6 +14,7 @@
+   {id:'payroll',title:'ЗП',icon:'Banknote',section:1,description:'',enabled:false},
+   {id:'accounts',title:'Сотрудники и доступ',icon:'UsersRound',section:1,description:'Учётные записи и права сотрудников.',enabled:true},
+   {id:'directories',title:'Справочники',icon:'BookOpen',section:1,description:'Клиенты, поставщики, нефтебазы, водители и автомобили.',enabled:true},
++  {id:'documents',title:'Документы',icon:'FileText',section:1,description:'Архив документов по категориям и срокам действия.',enabled:true},
+ ] as const;
+ export type PageId = typeof pageCatalog[number]['id'];
+ export const enabledPages = pageCatalog.filter(page => page.enabled);
