@@ -1,0 +1,313 @@
+{
+  "at": "2026-10-29T11:28:47.271191+00:00",
+  "releaseName": "20261029-documents-delete-f624b2f0",
+  "configSha256": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148",
+  "image": "artel-crm:20261029-documents-delete-f624b2f0",
+  "imageId": "sha256:bb8762ea2332770029787911552a7462a3864cf73461f8627912665e50d62105",
+  "containerId": "e922cfe8ee0d911ee26ec1e4fb3c63afcf84a2feab88fc23c54b6e31f4c262a9",
+  "healthy": true,
+  "restarts": 0,
+  "serverBundleSha256": "7898e77772b0318131256366fe2e68baa46f0ce27da0148850e5d046084916a7",
+  "rawBooleanFlags": {
+    "checksumVerified": true,
+    "strictDataEqual": false,
+    "protectedFilesUnchanged": true,
+    "workerFilesUnchanged": false,
+    "workerNonBridgeFilesUnchanged": true,
+    "otherServicesUnchanged": true
+  },
+  "rawChecks": {
+    "facts": {
+      "shipments": false,
+      "companies": true,
+      "directories": true,
+      "paymentAllocations": true,
+      "accounts": true,
+      "china": true,
+      "work": false,
+      "operator": true,
+      "tripNumbers": true,
+      "tripCreateRequests": true,
+      "tripRequests": true,
+      "tripRequestCreates": true,
+      "driverTripProgress": false,
+      "tripExecutions": true
+    },
+    "workflowDocumentsAndAuthorizationUnchanged": false,
+    "bankDataExceptPollingUnchanged": false,
+    "revisionNotRewound": true,
+    "trip27PresentInBaseline": true,
+    "trip27EtrnExact": false,
+    "trip27SabyExact": true
+  },
+  "classifiedAllReviewedInvariantsPassed": false,
+  "priorAuditResults": {
+    "after-preservation.json": {
+      "strictDataEqual": false,
+      "unexplainedChanges": 3,
+      "checks": {
+        "facts": {
+          "shipments": true,
+          "companies": true,
+          "directories": true,
+          "paymentAllocations": true,
+          "accounts": true,
+          "china": true,
+          "work": true,
+          "operator": true,
+          "tripNumbers": true,
+          "tripCreateRequests": true,
+          "tripRequests": true,
+          "tripRequestCreates": true,
+          "driverTripProgress": true,
+          "tripExecutions": true
+        },
+        "workflowDocumentsAndAuthorizationUnchanged": true,
+        "bankDataExceptPollingUnchanged": true,
+        "revisionNotRewound": true,
+        "trip27PresentInBaseline": true,
+        "trip27EtrnExact": false,
+        "trip27SabyExact": true
+      },
+      "protectedFilesUnchanged": true,
+      "workerFilesUnchanged": false,
+      "workerNonBridgeFilesUnchanged": true,
+      "otherServicesUnchanged": true
+    },
+    "after-independent-classification.json": {
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 3,
+      "protectedFilesUnchanged": true,
+      "workerFilesUnchanged": false,
+      "workerNonBridgeFilesUnchanged": true,
+      "otherServicesUnchanged": true,
+      "workflowDocumentsAndAuthorizationUnchanged": true,
+      "revisionNotRewound": true,
+      "classifiedCrmUnexplainedChanges": 0,
+      "crmBusinessFactsPreserved": true,
+      "allReviewedInvariantsPassed": true
+    },
+    "switch-service-result.json": {
+      "strictDataEqual": false,
+      "unexplainedChanges": 3,
+      "workerFilesUnchanged": false,
+      "reviewedBusinessInvariantsPreserved": true
+    }
+  },
+  "taskPassed": false,
+  "globalReviewed": false,
+  "preservationReviewRequired": true,
+  "targetInvariants": {
+    "documentArchiveExact": true,
+    "businessFactsExact": false,
+    "oldBankRecordsExact": false,
+    "protectedSabyExact": false,
+    "revisionNotRewound": true,
+    "protectedFilesUnchanged": true,
+    "otherServicesUnchanged": true,
+    "workerContainerUnchanged": true,
+    "workerPersistentFilesExact": true,
+    "workerBridgeReviewed": true,
+    "yandexTimerActive": true,
+    "yandexBrowserHealthy": true,
+    "yandexConnected": true,
+    "runtimeNoRestarts": true,
+    "deploymentChecksPassed": true,
+    "authenticatedProductionUiVerified": true
+  },
+  "failedTargetInvariants": [
+    "businessFactsExact",
+    "oldBankRecordsExact",
+    "protectedSabyExact"
+  ],
+  "factCollections": {
+    "shipments": false,
+    "companies": true,
+    "directories": true,
+    "paymentAllocations": true,
+    "accounts": true,
+    "china": true,
+    "work": false,
+    "operator": true,
+    "tripNumbers": true,
+    "tripCreateRequests": true,
+    "tripRequests": true,
+    "tripRequestCreates": true,
+    "driverTripProgress": false,
+    "tripExecutions": true
+  },
+  "businessFactDrift": [
+    "shipments",
+    "work",
+    "driverTripProgress"
+  ],
+  "accountsBusinessExact": true,
+  "oldBankRecordsExact": false,
+  "bankArrays": [
+    {
+      "pathHash": "3bcf67648422e244b18af9ac4975c5bb37dc20f043badaef266971a28ef01da8",
+      "stableKey": "date",
+      "beforeCount": 59,
+      "afterCount": 59,
+      "removed": 0,
+      "modified": 2,
+      "added": 0
+    },
+    {
+      "pathHash": "da3d8305f9db2f5e61c30e3a2db2f34fd31368e9a368004450f9c6b71aaaa63b",
+      "stableKey": "date",
+      "beforeCount": 59,
+      "afterCount": 59,
+      "removed": 0,
+      "modified": 2,
+      "added": 0
+    },
+    {
+      "pathHash": "20e819d5b238b379f896bdc55c253a239674330a7597ade3a575c8bbb71c3623",
+      "stableKey": "id",
+      "beforeCount": 558,
+      "afterCount": 558,
+      "removed": 0,
+      "modified": 0,
+      "added": 0
+    },
+    {
+      "pathHash": "63da97e001806ef02fc6bbab62fd4382ee1a5c4d8715329d0851a0e223382316",
+      "stableKey": "date",
+      "beforeCount": 54,
+      "afterCount": 54,
+      "removed": 0,
+      "modified": 0,
+      "added": 0
+    },
+    {
+      "pathHash": "a250da7fd803d2d28a9ff3f53259d42972d30f47ae108931415012e0098926df",
+      "stableKey": "id",
+      "beforeCount": 434,
+      "afterCount": 434,
+      "removed": 0,
+      "modified": 0,
+      "added": 0
+    },
+    {
+      "pathHash": "5d3934d629f5b63a78ab7dcced054d13640f83efbebfe168a45b107f7b2ea02a",
+      "stableKey": "date",
+      "beforeCount": 59,
+      "afterCount": 59,
+      "removed": 0,
+      "modified": 2,
+      "added": 0
+    },
+    {
+      "pathHash": "d0885b97a0de93e9e34ec58935dfa457a48de1fc78fb2db6ac489fdddf3d8a84",
+      "stableKey": "id",
+      "beforeCount": 543,
+      "afterCount": 543,
+      "removed": 0,
+      "modified": 0,
+      "added": 0
+    }
+  ],
+  "bankIssues": [],
+  "protectedSaby": {
+    "checkedProtectedRecords": 222,
+    "oldProtectedRecordsExact": true,
+    "changedCount": 0,
+    "addedCount": 4,
+    "allProtectedRecordsExact": false
+  },
+  "protectedFilesUnchanged": true,
+  "otherServicesUnchanged": true,
+  "workerContainerUnchanged": true,
+  "workerNonBridgeFilesUnchanged": true,
+  "workerFileReview": {
+    "workerFilesExact": false,
+    "workerNonBridgeFilesUnchanged": true,
+    "workerPersistentFilesExact": true,
+    "sqliteJournalChanged": false,
+    "sqliteDatabaseExact": true,
+    "journalExceptionApplied": false,
+    "changedFileCount": 1,
+    "note": "A changed transient SQLite journal is reported separately; this does not establish byte-for-byte preservation of all worker runtime files."
+  },
+  "workerBridge": {
+    "available": true,
+    "rawBytesUnchanged": false,
+    "beforeSha256": "4f1d7ee0a060984ff8ff56d72bf42fb6ea014d61fd90abd16e16ae0a65fd40e7",
+    "afterSha256": "6bb0539444ba71b322158c1f1fed6e2fd325d2313628da593593f01981273ef2",
+    "validatedSchema": true,
+    "unexplainedChanges": 0,
+    "fieldChanges": [
+      {
+        "field": "nonces",
+        "beforeHash": "558fb4499f83d69b86315fecfb8e59accc32334a9421b55337975f5aa2e3bc39",
+        "afterHash": "cc47bc46fa6c5d00faef8a4085213d8490eabca2e572cf63a7602aeecef1a7cd",
+        "classification": "request_nonce_journal",
+        "beforeCount": 7,
+        "afterCount": 6,
+        "added": 6,
+        "removed": 7,
+        "modified": 0,
+        "changedEntryHashes": [
+          "02d78e6205d3b353321ec14b3eb84518bd54d92fb1c39802c1cf74f757ff4b23",
+          "03a4570638b4024b332382da8398102742446c89248a862e2e465b378723d773",
+          "0a05e7c9a3c47525155510f497130d45a73fcee4f88589190d49446eec57a5c4",
+          "34cf93480678786a5e22adbb8a821aad2c8cde977ce8cd82af343bc3f99540c4",
+          "35ee7e163a894ff97982195d1b053c68d9b21f93649d05ada3c698063ac687e9",
+          "36ac4734b726f37a1ae5c006d75ecb9dd7a4e1070c8da3a6f7313f41e88e750a",
+          "6d03e74313a29c1a46a334d0a2c5491c60d0e9795caf1642f5f226f4bdcd6bc3",
+          "6ff3ee39ad07bcee1ed89a5b4f9ad2ad4f3078a134cd5bbf14aaf401f5fcec5c",
+          "780156f5327d48c04a3599502959a03dab1d3ec546dcff3a9e04c4f677ba548e",
+          "7bfeb5a5e990f059f4ada248dd29931d83c215f524ac9ceddc5372b4558c63b3",
+          "8de784ee06e109dffb0f0ca12f4a1ca2272882ee72839c802a601185be16e793",
+          "a9fd8e83e6a74a8191023073caa29e48c82094f89a7a6a29934157f476020cf7",
+          "d33fe0a2796ff421211923c66c85b33b2de8b664079429f62dd12442631a703d"
+        ],
+        "removedEntriesExpiredAtAfterCapture": true
+      }
+    ],
+    "identityAndRevocationsUnchanged": true,
+    "onlyRequestNonceJournalChanged": true
+  },
+  "yandex": {
+    "timerActive": true,
+    "browserHealthy": true,
+    "browserRestarts": 0,
+    "state": "connected",
+    "lastSuccessAt": "2026-10-29T11:25:33.327Z"
+  },
+  "authenticatedProductionUiVerified": true,
+  "deploymentChecksPassed": true,
+  "rawStrictDataEqual": false,
+  "rawUnexplainedChanges": 87,
+  "classifiedUnexplainedChanges": 50,
+  "businessChangeAttribution": "No business-fact changes are automatically attributed or excused.",
+  "inputSha256": {
+    "config.json": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148",
+    "before-state.json": "8f22c4d2e95cfac8d894c94d6c4b56ebc18e1892f2f19b9628a06fc55f8eb9f4",
+    "before-operations.private.json": "a1ff8ed274920839b8e414e0a85e884f8a6a2dafa4e216b7840a83b967ee3ce5",
+    "after-ui-state.json": "4903056f5f64e387269ad03cfb89a994ccb4b317109b017e8347c8f5276b47b9",
+    "after-ui-operations.private.json": "e11f1880029187b4e4532579aa4e6844d132da92da67282a3b2d87fc3360d6b0",
+    "after-ui-preservation.json": "c8d920dbe36545ec22cccd65a934c84b3117281245b083d1cd195d717480046c",
+    "after-ui-independent-classification.json": "529c70128efffe091b6334e91ad4c9ce168903305ac19ed7822c8b7b997d612e",
+    "performance-production-ui-proof.json": "e766b57c40eb05eeb034ba6a1eff7a127a88dea429a8e42ff2a3155fc721bf17",
+    "image-proof.json": "63f81f97293d061a3d56c19994536bbeaee30dd193517732023425b2ab06ee24",
+    "compatibility-proof.json": "2ec1f0288c85a4477b7eab03105e7e2397386a969b4b0dadfbb8c7c8f3fb7108",
+    "static-read-proof.json": "c811935828a5d6069d03a4b24019cd4e62fad49f8c1ccfd327963be13e059053",
+    "public-proof.json": "8365fe039c7f9911ce67dbdce09e5377baf39fac47909a36610be54d41f156c7",
+    "switch-started.json": "21170267a2b06b3b52f17c0d27c8b78e9e7eadd2306736b7b3c6a6634aaa8e4e",
+    "after-state.json": "7870ed8ded44c24c5a56760ea5cab65945efa026f141eb30b052f7913727b5ae",
+    "after-operations.private.json": "78a6b60333c77721f94b74d84c5d2145c2b3809ab55ed3f8f83e5ba99c036ba7",
+    "after-preservation.json": "81b0ffc27d06dfe80b1cf327eec62ca34dcf07f772f3bb31e9c8b3c91b9db1d1",
+    "after-independent-classification.json": "651ee5744794e3c5ea4fbcaf31897acf3c23f59dffec1d5a3b62b41f59216bb5",
+    "switch-service-result.json": "39d007556fccad0ebd69c60e8e7d3f5ee73ceea849ed5c1009b58010ba71c28f",
+    "before-worker-bridge-auth.private.json": "4f1d7ee0a060984ff8ff56d72bf42fb6ea014d61fd90abd16e16ae0a65fd40e7",
+    "after-worker-bridge-auth.private.json": "e1818b444c70f39ab9436c5a76de80726b90576c945b70b4f9cdcca0301a8c92",
+    "after-ui-worker-bridge-auth.private.json": "6bb0539444ba71b322158c1f1fed6e2fd325d2313628da593593f01981273ef2"
+  },
+  "rawEvidenceRetained": true,
+  "auditImplementationSha256": {
+    "final-audit.py": "5987439e19d655ad9f4840fc4a1be61220ecd09c443c4d14f43ca4c2a265b441",
+    "finalize.py": "ffed77b4e675489b2401f7e273f4bbdd987f69cfadf7ede320426f2686245245"
+  }
+}

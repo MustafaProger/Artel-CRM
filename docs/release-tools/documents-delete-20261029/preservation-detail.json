@@ -1,0 +1,153 @@
+{
+  "shipments": {
+    "removed": 0,
+    "added": 0,
+    "changed": [
+      {
+        "idHash": "ce496111ca0e",
+        "fields": [
+          "/version",
+          "/fields/trip_total_tonnes",
+          "/fields/loading_actual_at",
+          "/fields/quantity_gross_tonnes",
+          "/fields/quantity_tonnes",
+          "/updatedAt"
+        ]
+      },
+      {
+        "idHash": "da9328bcf682",
+        "fields": [
+          "/version",
+          "/fields/trip_total_tonnes",
+          "/fields/loading_actual_at",
+          "/fields/quantity_gross_tonnes",
+          "/fields/quantity_tonnes",
+          "/updatedAt"
+        ]
+      }
+    ]
+  },
+  "work": {
+    "tasks": {
+      "removed": 0,
+      "added": 0,
+      "changed": [
+        {
+          "idHash": "461ec3710951",
+          "fields": [
+            "/version",
+            "/updatedBy",
+            "/updatedAt"
+          ]
+        }
+      ]
+    },
+    "companyRecords": {
+      "removed": 0,
+      "added": 0,
+      "changed": []
+    },
+    "notes": {
+      "removed": 0,
+      "added": 0,
+      "changed": []
+    }
+  },
+  "driverTripProgress": {
+    "removed": 0,
+    "added": 0,
+    "changed": [
+      {
+        "idHash": "510f2157f54f",
+        "fields": [
+          "/departedBy",
+          "/masses",
+          "/continuationRequestedAt",
+          "/departureVersions",
+          "/departedAt"
+        ]
+      }
+    ]
+  },
+  "banks": [
+    {
+      "key": "date",
+      "before": 59,
+      "after": 59,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": [
+        [
+          "/syncedAt"
+        ],
+        [
+          "/syncedAt"
+        ]
+      ]
+    },
+    {
+      "key": "date",
+      "before": 59,
+      "after": 59,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": [
+        [
+          "/syncedAt"
+        ],
+        [
+          "/syncedAt"
+        ]
+      ]
+    },
+    {
+      "key": "id",
+      "before": 558,
+      "after": 558,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": []
+    },
+    {
+      "key": "date",
+      "before": 54,
+      "after": 54,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": []
+    },
+    {
+      "key": "id",
+      "before": 434,
+      "after": 434,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": []
+    },
+    {
+      "key": "date",
+      "before": 59,
+      "after": 59,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": [
+        [
+          "/syncedAt"
+        ],
+        [
+          "/syncedAt"
+        ]
+      ]
+    },
+    {
+      "key": "id",
+      "before": 543,
+      "after": 543,
+      "removed": 0,
+      "businessModified": 0,
+      "modifiedFields": []
+    }
+  ],
+  "documentArchiveExact": true,
+  "scope": "Read-only comparison of saved before and after-UI snapshots; no attribution of external actions"
+}

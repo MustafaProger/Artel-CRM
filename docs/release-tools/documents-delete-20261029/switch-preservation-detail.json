@@ -1,0 +1,118 @@
+{
+  "exactFacts": {
+    "shipments": true,
+    "companies": true,
+    "directories": true,
+    "paymentAllocations": true,
+    "accounts": true,
+    "china": true,
+    "work": true,
+    "operator": true,
+    "tripNumbers": true,
+    "tripCreateRequests": true,
+    "tripRequests": true,
+    "tripRequestCreates": true,
+    "driverTripProgress": true,
+    "tripExecutions": true
+  },
+  "allReviewedInvariantsPassed": true,
+  "classifiedCrmUnexplainedChanges": 0,
+  "banks": {
+    "exactEqual": false,
+    "equalByStableIdAndDateExceptPolling": true,
+    "storedRecordArrays": [
+      {
+        "path": "banks/banking/connections/#fd76030a8bfd/accounts",
+        "stableKey": null,
+        "beforeCount": 1,
+        "afterCount": 1,
+        "exactEqualExceptPolling": true
+      },
+      {
+        "path": "banks/banking/connections/#fd76030a8bfd/settlementVerifiedDays",
+        "stableKey": "date",
+        "beforeCount": 59,
+        "afterCount": 59,
+        "unchangedStoredRecords": 59,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      },
+      {
+        "path": "banks/banking/connections/#c87afc121c09/accounts",
+        "stableKey": null,
+        "beforeCount": 1,
+        "afterCount": 1,
+        "exactEqualExceptPolling": true
+      },
+      {
+        "path": "banks/banking/connections/#c87afc121c09/settlementVerifiedDays",
+        "stableKey": "date",
+        "beforeCount": 59,
+        "afterCount": 59,
+        "unchangedStoredRecords": 59,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      },
+      {
+        "path": "banks/banking/operations",
+        "stableKey": "id",
+        "beforeCount": 558,
+        "afterCount": 558,
+        "unchangedStoredRecords": 558,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      },
+      {
+        "path": "banks/sber/days",
+        "stableKey": "date",
+        "beforeCount": 54,
+        "afterCount": 54,
+        "unchangedStoredRecords": 54,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      },
+      {
+        "path": "banks/sber/operations",
+        "stableKey": "id",
+        "beforeCount": 434,
+        "afterCount": 434,
+        "unchangedStoredRecords": 434,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      },
+      {
+        "path": "banks/sberArtel/days",
+        "stableKey": "date",
+        "beforeCount": 59,
+        "afterCount": 59,
+        "unchangedStoredRecords": 59,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      },
+      {
+        "path": "banks/sberArtel/operations",
+        "stableKey": "id",
+        "beforeCount": 543,
+        "afterCount": 543,
+        "unchangedStoredRecords": 543,
+        "added": 0,
+        "removed": 0,
+        "modified": 0,
+        "changedEntryHashes": []
+      }
+    ],
+    "issues": []
+  }
+}

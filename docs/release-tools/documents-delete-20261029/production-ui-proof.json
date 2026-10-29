@@ -1,0 +1,23 @@
+{
+  "releaseName": "20261029-documents-delete-f624b2f0",
+  "configSha256": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148",
+  "image": "artel-crm:20261029-documents-delete-f624b2f0",
+  "verified": true,
+  "readOnly": true,
+  "reloadAuthenticated": true,
+  "businessActionsByAgent": 0,
+  "consoleErrors": [],
+  "at": "2026-10-29T11:28:40.026551+00:00",
+  "browser": "Chrome / Egor / CUA",
+  "pages": [
+    "documents"
+  ],
+  "checks": [
+    "category delete button replaces refresh",
+    "category confirmation names scope; cancelled",
+    "card delete button before save",
+    "card confirmation names scope; cancelled",
+    "card and categories remain",
+    "authenticated reload; console clean"
+  ]
+}

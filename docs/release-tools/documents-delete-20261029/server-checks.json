@@ -1,0 +1,70 @@
+{
+  "image-proof.json": {
+    "configSha256": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148",
+    "smokeScriptHashes": {
+      "build-crm.py": "ccef8dcbcf63f1f15fa685d82c888e5570324faf3b40fdaf0b95008fe7f4750e",
+      "image-smoke.mjs": "f09fcd78f57d18ea8b25fed6af57e56242c66ad35d7363f657babfba27d278dc",
+      "invoice-image-smoke.mjs": "7e799fd0d434a652d825b4c0cfac3af028914cd4eb28fb39db2a39826de698d3",
+      "nk-direct-autostart-image-smoke.mjs": "fd7c1cde8aeaa481844981e04b9cdc010de566d74b4c4c29a275e1231dc49e02",
+      "operator-cases-image-smoke.mjs": "7bb1aec56049617966ee564d2250111338636a65a91a9340a6373a7fa875897e",
+      "production-entrypoint.sh": "a8933c5c9992923c66375fda1f97705380c0dcfb72f337ff8b63bae238865fa5",
+      "saby-direct-protocol-image-smoke.mjs": "6dd4a6d7af2b23016b0112ef1cd8945b75f3620bba61d8e1d4953e29a0871018",
+      "static-image-smoke.mjs": "4d3d51f8480a3abf671669467497f6fe47488ea0d6c410f60cc973987591f9cc"
+    },
+    "evidenceManifestSha256": "8dd90d2cc328719abd2c053ba96c97959d0ceb471c23d011f9483532d68d7c64",
+    "productionMountsUsed": false,
+    "network": "none",
+    "images": {
+      "image": {
+        "tag": "artel-crm:20261029-documents-delete-f624b2f0",
+        "id": "sha256:bb8762ea2332770029787911552a7462a3864cf73461f8627912665e50d62105",
+        "checks": {
+          "image-smoke.mjs": true,
+          "invoice-image-smoke.mjs": true,
+          "nk-direct-autostart-image-smoke.mjs": true,
+          "saby-direct-protocol-image-smoke.mjs": true,
+          "operator-cases-image-smoke.mjs": true,
+          "production-entrypoint.sh": true,
+          "static-image-smoke.mjs": true
+        }
+      },
+      "recoveryImage": {
+        "tag": "artel-crm:20261029-documents-delete-f624b2f0-recovery",
+        "id": "sha256:bb8762ea2332770029787911552a7462a3864cf73461f8627912665e50d62105",
+        "checks": {
+          "image-smoke.mjs": true,
+          "invoice-image-smoke.mjs": true,
+          "nk-direct-autostart-image-smoke.mjs": true,
+          "saby-direct-protocol-image-smoke.mjs": true,
+          "operator-cases-image-smoke.mjs": true,
+          "production-entrypoint.sh": true,
+          "static-image-smoke.mjs": true
+        }
+      }
+    }
+  },
+  "compatibility-proof.json": {
+    "passed": true,
+    "currentStoreLoaded": true,
+    "fullDataExact": true,
+    "externalRequests": 0,
+    "sourceStoreSha256": "19e859a8e080d6c22415abd7019019abf8900d0e7bd9dc27780b490e5805ee79",
+    "operations": 17,
+    "cases": 11,
+    "configSha256": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148"
+  },
+  "static-read-proof.json": {
+    "passed": true,
+    "configSha256": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148",
+    "images": {
+      "image": {
+        "imageId": "sha256:bb8762ea2332770029787911552a7462a3864cf73461f8627912665e50d62105",
+        "tag": "artel-crm:20261029-documents-delete-f624b2f0"
+      },
+      "recoveryImage": {
+        "imageId": "sha256:bb8762ea2332770029787911552a7462a3864cf73461f8627912665e50d62105",
+        "tag": "artel-crm:20261029-documents-delete-f624b2f0-recovery"
+      }
+    }
+  }
+}

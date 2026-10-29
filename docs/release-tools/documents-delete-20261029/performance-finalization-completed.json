@@ -1,0 +1,18 @@
+{
+  "at": "2026-10-29T11:30:15.362757+00:00",
+  "image": "artel-crm:20261029-documents-delete-f624b2f0",
+  "imageId": "sha256:bb8762ea2332770029787911552a7462a3864cf73461f8627912665e50d62105",
+  "configSha256": "3a78cde40a6bc251dcda5fb449c3acee7dca16f3e9b969a140fb3ccdc4824148",
+  "finalResultSha256": "62a61a309a79425338111d037f1943a4eacf9b269905e1f655d0083efa964648",
+  "taskPassed": false,
+  "globalReviewed": false,
+  "preservationReviewRequired": true,
+  "authenticatedProductionUiVerified": true,
+  "metadataOnly": true,
+  "dataRestored": false,
+  "oldBackendRestored": false,
+  "switchRepeated": false,
+  "rawEvidenceRetained": true,
+  "writeIntent": false,
+  "metadataWritten": true
+}
