@@ -1,0 +1,374 @@
+{
+  "releaseName": "20261029-work-storage-56e53136",
+  "configSha256": "680b36889a3ad6c93677241a5ed1461d2ef037f300476c4da1828af3739fd7b6",
+  "imageId": "sha256:74319b0f1611ed3d884683d9236d62459ded57ee004e761e80df6e8b574fd0ca",
+  "backendSha256": "7df58e82c0f570970c08ebe244e871f850accbb8b52739156153362d9b457483",
+  "qa": {
+    "passed": true,
+    "sourceUnchanged": true,
+    "steps": [
+      {
+        "name": "lint",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "11d17526bfa6f0abd069b68b7fab770617559e748382a145eec8c512be717965"
+      },
+      {
+        "name": "build",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "d5dc09b2f72a6a93c8a3568df7de5aba830c070ad198ff7709e7e2a31bac81bd"
+      },
+      {
+        "name": "api",
+        "exitCode": 0,
+        "counts": {
+          "tests": 821,
+          "pass": 821,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "logSha256": "d280d2d57907ea7455247111b63e1ac4819880d6d33f8be2beabca624d2a36ee"
+      },
+      {
+        "name": "target",
+        "exitCode": 0,
+        "counts": {
+          "tests": 305,
+          "pass": 305,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "logSha256": "e006422464b613d012dd663dce14f6ed6ca045f5a66ed56ea91d3acb7ea64376"
+      },
+      {
+        "name": "bank-period",
+        "exitCode": 0,
+        "counts": {
+          "tests": 3,
+          "pass": 3,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "logSha256": "fc2d6e64ae1326958b1ec633c8bcd493989ea6dd1aef5a8bbac20d6240ff5ebf"
+      },
+      {
+        "name": "unit",
+        "exitCode": 0,
+        "counts": {
+          "tests": 564,
+          "pass": 564,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "logSha256": "5cbbb8fa9464e4bff33205e008ee7a4a2c009b6b693770fdfec6e80b8edb8eba"
+      },
+      {
+        "name": "work-source",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "2d0fbac795f3c6a138654b5a2c3dba1f7b41895187baa44b2ee13754d03ee4ef"
+      },
+      {
+        "name": "work-built",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "6cf6018c1ebd8859d17b2e80cd0cef4b5fd1d0b7c1e00cabcbaf4018970b8b0b"
+      },
+      {
+        "name": "security-source",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "98a273a597a1fc57ac5097f2f288b4926b82ab4f01beccfea4c196f71528348e"
+      },
+      {
+        "name": "security-built",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "88a3ae6b314e20b44f331b399ddc5d8d2ca99b70d94b6067e011075e2b3e1676"
+      },
+      {
+        "name": "navigation-chromium",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "b416826c8c1ec40f1a50654e8f14d5e96f3881b6ca16396bc3389dc1ceb89f87"
+      },
+      {
+        "name": "navigation-webkit",
+        "exitCode": 0,
+        "counts": {},
+        "logSha256": "b416826c8c1ec40f1a50654e8f14d5e96f3881b6ca16396bc3389dc1ceb89f87"
+      }
+    ]
+  },
+  "migration": {
+    "passed": true,
+    "allDataExact": true,
+    "beforeSha256": "0d4231b23b9778d81f3e5058ebea217a7fba0bffc896e99c48928febd3ec644d",
+    "afterSha256": "0d4231b23b9778d81f3e5058ebea217a7fba0bffc896e99c48928febd3ec644d",
+    "offline": true,
+    "oldDataRestored": false
+  },
+  "final": {
+    "at": "2026-10-29T11:24:08.502118+00:00",
+    "healthy": true,
+    "restarts": 0,
+    "taskPassed": false,
+    "globalReviewed": false,
+    "preservationReviewRequired": true,
+    "deploymentChecksPassed": true,
+    "authenticatedProductionUiVerified": true,
+    "targetInvariants": {
+      "migrationAllDataExact": true,
+      "existingBusinessWorkExact": false,
+      "documentArchiveExact": true,
+      "businessFactsExact": false,
+      "oldBankRecordsExact": false,
+      "protectedSabyExact": true,
+      "revisionNotRewound": true,
+      "protectedFilesUnchanged": true,
+      "otherServicesUnchanged": true,
+      "workerContainerUnchanged": true,
+      "workerPersistentFilesExact": false,
+      "workerBridgeReviewed": false,
+      "yandexTimerActive": true,
+      "yandexBrowserHealthy": true,
+      "yandexConnected": true,
+      "runtimeNoRestarts": true,
+      "deploymentChecksPassed": true,
+      "authenticatedProductionUiVerified": true
+    },
+    "factCollections": {
+      "shipments": true,
+      "companies": true,
+      "directories": true,
+      "paymentAllocations": true,
+      "accounts": false,
+      "china": true,
+      "work": false,
+      "operator": true,
+      "tripNumbers": true,
+      "tripCreateRequests": true,
+      "tripRequests": false,
+      "tripRequestCreates": false,
+      "driverTripProgress": false,
+      "tripExecutions": true
+    },
+    "rawUnexplainedChanges": 47,
+    "classifiedUnexplainedChanges": 47,
+    "protectedSaby": {
+      "checkedProtectedRecords": 222,
+      "oldProtectedRecordsExact": true,
+      "changedCount": 0,
+      "addedCount": 0,
+      "allProtectedRecordsExact": true
+    }
+  },
+  "uiMeasurements": {
+    "after": [
+      {
+        "action": "cold-reload-ready",
+        "ms": 2076
+      },
+      {
+        "action": "cold-done",
+        "ms": 12,
+        "enabled": true,
+        "valid": false,
+        "reason": "Already done before reload: no mutation; server version unchanged"
+      },
+      {
+        "action": "cold-reload-2-ready",
+        "ms": 2059
+      },
+      {
+        "action": "cold-todo-confirmed",
+        "ms": 1477,
+        "prior": {
+          "checked": true,
+          "status": "Готово"
+        },
+        "observed": {
+          "checked": false,
+          "disabled": false,
+          "status": "К выполнению"
+        }
+      },
+      {
+        "action": "cold-reload-3-ready",
+        "ms": 1817
+      },
+      {
+        "action": "cold-done-confirmed",
+        "ms": 1250,
+        "prior": {
+          "checked": false,
+          "status": "К выполнению"
+        },
+        "observed": {
+          "checked": true,
+          "disabled": false,
+          "status": "Готово"
+        }
+      },
+      {
+        "action": "create-confirmed",
+        "ms": 2074,
+        "dialogHidden": true
+      }
+    ],
+    "final": {
+      "finalCreateMs": 1093,
+      "warmedMs": 36080,
+      "warmDoneMs": 1332,
+      "warmedReturnMs": 63132,
+      "warmTodoMs": 360,
+      "editMs": 1164,
+      "warmedDoneFinalMs": 77300,
+      "warmDoneFinalMs": 1064,
+      "archiveMs": 1518
+    },
+    "consoleErrorCount": 0
+  },
+  "supplement": {
+    "at": "2026-10-29T11:25:15.692826+00:00",
+    "sourceHashes": {
+      "before-operations.private.json": "b6277b35d4f82a04883ca2d9c88a7cae587e405649eee6203440d09eae8a8888",
+      "after-ui-operations.private.json": "4c0aff7cc7f1e9060fba48129fc7f0b6bc9c8883a68dbbeb9b119fe26883b62c",
+      "final-result.json": "9957f26855a5b92952139dd284d495e9c1ad9dcfd86e83d3f1f001160efde471"
+    },
+    "rawFlagsUnchanged": true,
+    "globalReviewed": false,
+    "businessInitiatorEstablished": false,
+    "records": {
+      "tripRequests": {
+        "oldCount": 71,
+        "newCount": 74,
+        "removed": 0,
+        "modified": 0,
+        "added": 3,
+        "oldRecordsExact": true
+      },
+      "tripRequestCreates": {
+        "oldCount": 71,
+        "newCount": 74,
+        "removed": 0,
+        "modified": 0,
+        "added": 3,
+        "oldRecordsExact": true
+      },
+      "driverTripProgress": {
+        "oldCount": 23,
+        "newCount": 24,
+        "removed": 0,
+        "modified": 0,
+        "added": 1,
+        "oldRecordsExact": true
+      }
+    },
+    "banks": [
+      {
+        "path": "banking/connections/tbank-nk-artel/settlementVerifiedDays",
+        "oldCount": 59,
+        "newCount": 59,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {
+          "syncedAt": 7
+        },
+        "oldPayloadExactExcludingSyncTimes": true
+      },
+      {
+        "path": "banking/connections/sber-artel/settlementVerifiedDays",
+        "oldCount": 59,
+        "newCount": 59,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {
+          "syncedAt": 7
+        },
+        "oldPayloadExactExcludingSyncTimes": true
+      },
+      {
+        "path": "banking/operations",
+        "oldCount": 558,
+        "newCount": 558,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {
+          "updatedAt": 65
+        },
+        "oldPayloadExactExcludingSyncTimes": true
+      },
+      {
+        "path": "sber/days",
+        "oldCount": 54,
+        "newCount": 54,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {},
+        "oldPayloadExactExcludingSyncTimes": true
+      },
+      {
+        "path": "sber/operations",
+        "oldCount": 434,
+        "newCount": 434,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {},
+        "oldPayloadExactExcludingSyncTimes": true
+      },
+      {
+        "path": "sberArtel/days",
+        "oldCount": 59,
+        "newCount": 59,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {
+          "syncedAt": 7
+        },
+        "oldPayloadExactExcludingSyncTimes": true
+      },
+      {
+        "path": "sberArtel/operations",
+        "oldCount": 543,
+        "newCount": 543,
+        "removed": 0,
+        "added": 0,
+        "changedFieldCounts": {
+          "updatedAt": 63
+        },
+        "oldPayloadExactExcludingSyncTimes": true
+      }
+    ],
+    "allOldBankPayloadExactExcludingSyncTimes": true,
+    "documentArchiveExact": true,
+    "remainingReview": [
+      "Work: new note and existing task version/update time changed; do not infer physical actor from account identity.",
+      "Worker: jobs.json changed and one revoked session was added; old revocations retained, identity material unchanged per classifier. Full worker runtime preservation not established.",
+      "Other runtime/Saby observations remain in raw audit; protected Saby records are exact."
+    ]
+  },
+  "finalization": {
+    "at": "2026-10-29T11:24:49.793067+00:00",
+    "image": "artel-crm:20261029-work-storage-56e53136",
+    "imageId": "sha256:74319b0f1611ed3d884683d9236d62459ded57ee004e761e80df6e8b574fd0ca",
+    "configSha256": "680b36889a3ad6c93677241a5ed1461d2ef037f300476c4da1828af3739fd7b6",
+    "finalResultSha256": "9957f26855a5b92952139dd284d495e9c1ad9dcfd86e83d3f1f001160efde471",
+    "taskPassed": false,
+    "globalReviewed": false,
+    "preservationReviewRequired": true,
+    "authenticatedProductionUiVerified": true,
+    "metadataOnly": true,
+    "dataRestored": false,
+    "oldBackendRestored": false,
+    "switchRepeated": false,
+    "rawEvidenceRetained": true,
+    "writeIntent": false,
+    "metadataWritten": true
+  }
+}

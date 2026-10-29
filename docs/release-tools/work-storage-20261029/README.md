@@ -14,3 +14,5 @@ The migration proof must be exact before a partitioned runtime may start.
 
 Raw preservation results may remain false due to separately running jobs or user
 activity; final review must preserve those results and explain any scoped deltas.
+
+The release is deployed. `final-audit.py` and `finalize.py` capture immutable after-UI evidence and finalize only metadata. `review-supplement.py` compares frozen evidence without upgrading raw flags. They are archived for review, not replay. `evidence-summary.json` contains only sanitized results; full operational snapshots stay private on the server.
