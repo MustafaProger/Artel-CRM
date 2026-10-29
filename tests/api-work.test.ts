@@ -1,13 +1,14 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
-import { OperationsStore, StoreError, decodeOperations } from '../server/operations-store';
+import { OperationsStore, StoreError, decodeOperations, encodeOperations } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
 import { readWork, validateWorkData } from '../server/work-operations';
 import { emptyWork, type WorkCompanyRecord, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
@@ -44,6 +45,7 @@ async function setup() {
   }
   const snapshot = (await director('/api/snapshot')).body as Snapshot;
   assert.equal((await director('/api/directories', 'POST', { kind: 'customerManagers', companyId: snapshot.companies[0].id, managerId: users[1].managerId })).status, 201);
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(directory, base.provenance.sourceSha256);
   return { directory, store, director, alice, bob, anonymous, users, snapshot, close: async () => { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(directory, { recursive: true, force: true }); } };
 }
 
@@ -81,9 +83,9 @@ test('work versions, server validation and idempotency prevent lost edits, inval
     const created = await runtime.alice('/api/work/tasks', 'POST', payload); assert.equal(created.status, 201);
     const task = created.body.entry as WorkTask;
     assert.equal(task.assigneeId, runtime.users[1].id);
-    const original = await readFile(runtime.store.path, 'utf8');
+    const original = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
     const duplicate = await runtime.alice('/api/work/tasks', 'POST', payload); assert.equal(duplicate.status, 200); assert.equal(duplicate.body.entry.id, task.id);
-    assert.equal(await readFile(runtime.store.path, 'utf8'), original);
+    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), original);
     assert.equal((await runtime.alice('/api/work/tasks', 'POST', { ...payload, title: 'Другие данные' })).status, 409);
     for (const fields of [{ title: '' }, { title: 'x'.repeat(201) }, { status: 'imagined-stage' }, { dueDate: '2026-02-30' }, { reminderAt: '2026-09-10T25:00:00Z' }, { reminderAt: '2026-09-10T10:00' }, { companyId: 'missing-company' }, { assigneeId: 'missing-user' }, { createdBy: runtime.users[0].id }]) {
       const response = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, ...fields });
@@ -91,12 +93,12 @@ test('work versions, server validation and idempotency prevent lost edits, inval
     }
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { title: 'Без версии' })).status, 400);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', {})).status, 400);
-    assert.equal(await readFile(runtime.store.path, 'utf8'), original);
+    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), original);
     const result = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'done', dueDate: null, reminderAt: null }); assert.equal(result.status, 200);
-    const changed = await readFile(runtime.store.path, 'utf8');
+    const changed = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'doing' })).status, 409);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 1 })).status, 409);
-    assert.equal(await readFile(runtime.store.path, 'utf8'), changed);
+    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), changed);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 2, archived: true })).status, 200);
     const archived = (await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).work!.tasks[0];
     assert.ok(archived.archivedAt);
@@ -218,10 +220,10 @@ test('Work selects only active clients/suppliers, preserves old references and d
       const content = kind === 'tasks' ? { title: 'Scope check' } : { question: 'Scope check' };
       for (const [key] of cases) {
         const allowed = ['client', 'supplier', 'both'].includes(key);
-        const before = await readFile(f.store.path, 'utf8');
+        const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
         const result = await f.director(`/api/work/${kind}`, 'POST', { ...content, companyId: `scope-${key}` });
         assert.equal(result.status, allowed ? 201 : 400, `${kind}/${key}`);
-        if (!allowed) assert.equal(await readFile(f.store.path, 'utf8'), before);
+        if (!allowed) assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
       }
     }
     const legacy = (await f.director('/api/work/tasks', 'POST', { title: 'Legacy scope', companyId: 'scope-client', assigneeId: f.users[1].id })).body.entry as WorkTask;
@@ -276,4 +278,20 @@ test('lean Work projection exactly preserves visible company choices, scope and 
     const fast = measure(()=>scopeSnapshot(currentWorkSnapshot(base,data),f.users[0],'work'));
     console.log('WORK_PROJECTION_BENCH', JSON.stringify({ slow, fast, equal:true, sourceShipments:base.shipments.length, isolated:true }));
   } finally { await f.close(); }
+});
+
+test('partitioned Work retains shared company labels and does not change trips/directories business responses', async () => {
+  const f = await setup();
+  try {
+    const paths = ['/api/directories', '/api/shipment-trips'];
+    const before = await Promise.all(paths.map(path => f.director(path)));
+    const company = f.snapshot.companies.find(row => row.roles.includes('customer'))!;
+    const task = await f.director('/api/work/tasks', 'POST', {title:'Связь со справочником',companyId:company.id}); assert.equal(task.status,201);
+    assert.equal((await f.director(`/api/work/tasks/${task.body.entry.id}`,'PATCH',{version:1,status:'done'})).status,200);
+    const normalize = (value: unknown): unknown => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key])=>key!=='revision').map(([key,v])=>[key,normalize(v)])) : value;
+    for(let i=0;i<paths.length;i++) assert.deepEqual(normalize(await f.director(paths[i])), normalize(before[i]));
+    await f.store.mutate(base.provenance.sourceSha256, d=>{const updated={...company,name:'Общее новое название'};const index=d.companies.findIndex(row=>row.id===company.id);if(index<0)d.companies.push(updated);else d.companies[index]=updated;return{result:null,changed:true}});
+    const work=(await f.director('/api/work')).body as WorkResponse;
+    assert.equal(work.companies.find(row=>row.id===company.id)?.name,'Общее новое название');assert.equal(work.work.tasks.find(row=>row.id===task.body.entry.id)?.companyId,company.id);
+  } finally {await f.close();}
 });

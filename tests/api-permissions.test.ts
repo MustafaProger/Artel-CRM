@@ -1,3 +1,4 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import { enabledPages } from '../web/src/page-catalog';
 import { availablePagesFor, hasPageAccess } from '../web/src/page-access';
 import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
@@ -5,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -22,6 +23,7 @@ async function fixture() {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-permissions-'));
   const store = new OperationsStore(directory);
   await store.mutate(base.provenance.sourceSha256, data => { data.sourceOperationsCleared = true; return { changed: true, result: null }; });
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(directory,base.provenance.sourceSha256);
   const middleware = createSnapshotMiddleware(undefined, { operationsStore: store });
   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
@@ -114,13 +116,13 @@ test('two employees: IDs, spoofed owners, shared customers, search, facets, tota
     assert.equal(a.status, 201, JSON.stringify(a.body)); assert.equal(b.status, 201, JSON.stringify(b.body));
     const aid = a.body.shipment.id, bid = b.body.shipment.id;
     assert.equal(a.body.shipment.fields.manager_id, f.users[0].managerId);
-    const before = await readFile(f.store.path, 'utf8');
+    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
     assert.equal((await f.aidar('/api/shipments/' + bid)).status, 404);
     assert.equal((await f.aidar('/api/shipments/' + bid, 'PATCH', { version: 999, fields: { manager_id: f.users[0].managerId } })).status, 404);
     assert.equal((await f.aidar('/api/shipments/' + aid, 'PATCH', { version: 1, fields: { manager_id: f.users[1].managerId } })).status, 403);
     assert.equal((await f.aidar('/api/shipments', 'POST', { fields: f.azs(f.users[1].managerId!) })).status, 403);
     assert.equal((await f.aidar('/api/shipments/' + bid, 'DELETE', { version: 1 })).status, 403);
-    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
     for (const query of ['', '?manager=all&limit=1&offset=0&sort=customer_amount&direction=desc', '?companyId=' + f.snapshot.companies[0].id, '?managerId=' + f.users[1].managerId]) {
       const r = await f.aidar('/api/shipments' + query); assert.equal(r.status, 200);
       assert.deepEqual(r.body.items.map((row: Shipment) => row.id), [aid]); assert.equal(r.body.total, 1); assert.equal(r.body.summary.revenue.total, '100000');
@@ -146,14 +148,14 @@ test('a manager cannot claim an unassigned customer through a zero shipment or t
   const f = await fixture(); try {
     const created = await f.director('/api/directories', 'POST', { kind: 'companies', name: 'Unassigned protected customer', roles: ['customer'], addresses: [] });
     assert.equal(created.status, 201); const customerId = created.body.entry.id;
-    const before = await readFile(f.store.path, 'utf8');
+    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
     const fields = { ...f.azs(), customer_id: customerId, customer_amount: '0' };
     assert.equal((await f.aidar('/api/shipments', 'POST', { fields })).status, 403);
     const catalog = f.snapshot.directories!;
     const truck = { date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: catalog.products[0].id, purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: catalog.drivers[0].id, additional_costs: '0' };
     const customer = { customer_id: customerId, payment_form_id: catalog.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '0' };
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields: truck, customers: [{ fields: customer }] })).status, 403);
-    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
     const directoryCompany = (await f.aidar('/api/snapshot')).body.companies.find((company: { id: string }) => company.id === customerId);
     assert.equal(directoryCompany, undefined, 'Unassigned customer is not an own customer');
     assert.ok(!(await f.aidar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
@@ -177,11 +179,11 @@ test('mixed-owner trips hide shared totals and reject all partial truck changes 
     const own = (await f.aidar('/api/shipments')).body.items[0];
     assert.equal(own.tripReadOnly, true); assert.equal(own.fields.trip_total_tonnes, null); assert.equal(own.fields.trip_additional_costs, null);
     assert.equal((await f.aidar('/api/shipment-trips/' + trip.id)).status, 403);
-    const before = await readFile(f.store.path, 'utf8');
+    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
     assert.equal((await f.aidar('/api/shipment-trips/' + trip.id, 'PATCH', { fields, customers: [customer(0)], versions: { [own.id]: own.version } })).status, 403);
     assert.equal((await f.aidar('/api/shipments/' + trip.customers[1].id, 'PATCH', { version: 1, fields: {} })).status, 404);
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(1)] })).status, 403);
-    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
     const ownBody = { fields, customers: [customer(0), customer(0)] };
     await prepareTripRequestFixture(f.store, base, ownBody);
     const created = await f.aidar('/api/shipment-trips', 'POST', ownBody); assert.equal(created.status, 201, JSON.stringify(created.body));

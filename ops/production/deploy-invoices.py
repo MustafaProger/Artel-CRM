@@ -13,6 +13,8 @@ import time
 
 ROOT = Path('/opt/artel-crm')
 os.umask(0o077)
+if json.loads((ROOT / 'data/operations/operations.json').read_bytes()).get('format') == 'artel-work-partition-v1':
+    raise RuntimeError('This historical invoice deployer does not support partitioned storage; prepare a fresh compatible release')
 parser = argparse.ArgumentParser()
 parser.add_argument('release', type=Path)
 parser.add_argument('--config-sha256', required=True)

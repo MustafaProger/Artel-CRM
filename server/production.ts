@@ -149,7 +149,9 @@ export async function createProductionRuntime(env: Environment = process.env) {
     subject: env.VAPID_SUBJECT ?? '', schedule: env.PUSH_SCHEDULE_ENABLED === 'true',
   };
   const invoiceBridge = await configuredInvoiceBridge(env);
+  let wakeWorkNotifications = () => {};
   const middleware = createSnapshotMiddleware(snapshotDirectory, {
+    workNotificationWakeup: () => { setImmediate(() => wakeWorkNotifications()); },
     operationsStore: store, secureCookies: true, requireAuthentication: true,
     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
@@ -209,6 +211,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
     const timer = setInterval(tick, interval);
     timer.unref(); timers.push(timer);
     if (immediate) tick();
+    return tick;
   }
   let stopPromise: Promise<void> | undefined;
   return {
@@ -224,7 +227,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
         schedule(BANK_SYNC_TICK_MS, () => dispatchBanks(store, base.provenance.sourceSha256, bankEnvironment, transports.bankRequest, transports.sberRequest), true);
       }
       if (env.ARTEL_CABINET_ENCRYPTION_KEY && env.ARTEL_CABINET_SYNC_ENABLED !== 'false') schedule(60_000, () => refreshDueCabinets(store, base.provenance.sourceSha256, env));
-      if (pushReady(push)) schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
+      if (pushReady(push)) wakeWorkNotifications = schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
       if (invoiceBridge) schedule(5000, () => syncInvoiceEvents(invoiceBridge, store, base.provenance.sourceSha256), true);
       if (sabyEnabled) {
         schedule(SABY_WORKFLOW_TICK_MS, () => sabyScheduler.tick(), true);

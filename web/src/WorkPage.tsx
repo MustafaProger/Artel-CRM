@@ -27,10 +27,11 @@ export default function WorkPage() {
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const request = useRef<AbortController | null>(null), active = useRef(true);
   const completing = useRef(new Set<string>());
+  const editorSaving = useRef(false);
   const [pendingTasks, setPendingTasks] = useState<Record<string, WorkTask['status']>>({});
   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
   const refresh = useCallback(async (visible = false) => {
-    if (completing.current.size) return;
+    if (completing.current.size || editorSaving.current) return;
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -141,23 +142,22 @@ export default function WorkPage() {
           <section className="panel work-notes"><header className="work-section-heading"><h2>Заметки</h2><button className="icon-button" aria-label="Добавить заметку" onClick={() => setEditor({ kind: 'notes' })}><Plus size={18}/></button></header>{data.work.notes.length ? <div className="work-note-list">{data.work.notes.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(note => <button className="work-note" key={note.id} onClick={() => setEditor({ kind: 'notes', entry: note })} aria-label={`Заметка: ${note.title}`}><strong>{note.title}</strong><p>{note.content}</p><small>{userName(note.assigneeId)}</small></button>)}</div> : <p className="work-empty">Заметок пока нет.</p>}</section>
         </aside>
       </div>
-      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onClose={() => setEditor(null)} onSaved={(action, entry) => {
+      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }} onClose={() => setEditor(null)} onSaved={(action, entry) => {
         request.current?.abort();
         const key = editor.kind === 'companies' ? 'companyRecords' : editor.kind;
         setData(previous => {
           if (!previous) return previous;
           const remaining = previous.work[key].filter(row => row.id !== editor.entry?.id && row.id !== entry?.id);
-          return { ...previous, work: { ...previous.work, [key]: entry ? [...remaining, entry] : remaining } };
+          return { ...previous, work: { ...previous.work, [key]: entry && (!filter || entry.assigneeId === (filter === 'mine' ? previous.currentUser.id : filter)) ? [...remaining, entry] : remaining } };
         });
         setEditor(null);
         setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : 'Сохранено. Назначение доступно сотруднику в разделе «Работа».');
-        void refresh();
       }}/>}
     </>}
   </div>;
 }
 
-function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
+function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const [requestId] = useState(() => crypto.randomUUID());
@@ -173,7 +173,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose:
   const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
     if (inFlight.current) return;
     if (method !== 'DELETE' && !dialog.current?.querySelector('form')?.reportValidity()) return;
-    inFlight.current = true; setSaving(true); setError('');
+    inFlight.current = true; onSaving(true); setSaving(true); setError('');
     try {
       let body: Record<string, unknown> = { version: entry?.version };
       if (method !== 'DELETE') {
@@ -188,7 +188,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose:
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить запись.');
       await complete(() => onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry));
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
-    finally { inFlight.current = false; setSaving(false); }
+    finally { inFlight.current = false; onSaving(false); setSaving(false); }
   };
   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number } = {}) => <label className="work-field"><span>{label}{options.required ? ' *' : ''}</span>{options.multiline ? <textarea aria-label={label} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;
   const heading = editor.kind === 'tasks' ? entry ? 'Задача' : 'Новая задача' : editor.kind === 'companies' ? 'Работа с компанией' : entry ? 'Заметка' : 'Новая заметка';

@@ -1,5 +1,6 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
@@ -7,7 +8,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
-import { OperationsStore, type OperationsData } from '../server/operations-store';
+import { OperationsStore, type OperationsData, encodeOperations } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
 import { clearOperations } from '../server/reset-operations';
 import { deleteDirectoryEntry } from '../server/directory-deletion';
@@ -25,6 +26,7 @@ async function setup(clear = true) {
     return { result, changed: true };
   });
   if (clear) await mutate((_, data) => clearOperations(base, data));
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') { await store.mutate(base.provenance.sourceSha256, () => ({result:null,changed:true})); await migrateWorkStorage(directory,base.provenance.sourceSha256); }
   const snapshot = async () => currentSnapshot(base, await new OperationsStore(directory).read(base.provenance.sourceSha256));
   const remove = (kind: string, id: string, version = 0) => mutate((snapshot, data) => deleteDirectoryEntry(kind, id, { version }, snapshot, data));
   return { store, snapshot, mutate, remove, close: () => rm(directory, { recursive: true, force: true }) };
@@ -172,10 +174,10 @@ test('optimistic deletion rejects stale versions, duplicate requests and unknown
   try {
     const entry = (await runtime.snapshot()).directories!.products[0];
     await runtime.mutate((snapshot, data) => updateDirectoryEntry('products', entry.id, { version: 0, name: 'Версионный товар' }, snapshot, data));
-    const before = await readFile(runtime.store.path, 'utf8');
+    const before = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
     await assert.rejects(runtime.remove('products', entry.id, 0), /уже изменена/);
     await assert.rejects(runtime.mutate((snapshot, data) => deleteDirectoryEntry('products', entry.id, { version: 1, force: true }, snapshot, data)), /Неизвестное поле/);
-    assert.equal(await readFile(runtime.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), before);
     const results = await Promise.allSettled([runtime.remove('products', entry.id, 1), runtime.remove('products', entry.id, 1)]);
     assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
     assert.equal(results.filter(result => result.status === 'rejected').length, 1);

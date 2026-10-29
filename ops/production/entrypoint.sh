@@ -23,4 +23,9 @@ fi
 # same-container maintenance must use OperationsStore transaction locking, and
 # container teardown must kill those exec processes before the next startup.
 rm -f -- "$ARTEL_STORE_DIR/operations.json.lock"
+# The same lifetime lease fences all split-store writers. Preserve commit.json:
+# the first read replays a durable interrupted multi-file transaction.
+rm -f -- "$ARTEL_STORE_DIR/work-storage/transaction.lock" \
+  "$ARTEL_STORE_DIR/work-storage/core-queue.lock" \
+  "$ARTEL_STORE_DIR/work-storage/work-queue.lock"
 exec "$@"

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { OperationsStore, decodeOperations } from '../server/operations-store';
+import { OperationsStore, decodeOperations, encodeOperations } from '../server/operations-store';
 import { grantInvoiceAccess } from '../server/invoice-permission-grant';
 
 // Run only under the production entrypoint lifetime lock while CRM is stopped.
@@ -12,10 +12,11 @@ if (!args.includes('--execute') || !args.includes('--mapping') || !args.includes
 const expected = option('--expected-sha256');
 if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error('Invalid expected store checksum');
 const store = new OperationsStore(resolve(process.env.ARTEL_STORE_DIR));
-const raw = await readFile(store.path, 'utf8');
+const originalRaw = await readFile(store.path, 'utf8');
+const originalEnvelope = JSON.parse(originalRaw);
+const source = originalEnvelope.data?.sourceSha256 ?? originalEnvelope.sourceSha256;
+const raw = originalEnvelope.format === 'artel-work-partition-v1' ? encodeOperations(await store.read(source), source) : originalRaw;
 if (createHash('sha256').update(raw).digest('hex') !== expected) throw new Error('CRM store changed after review');
-const envelope = JSON.parse(raw);
-const source = envelope.data?.sourceSha256;
 const before = decodeOperations(raw, source);
 const mapping: unknown = JSON.parse(await readFile(option('--mapping'), 'utf8'));
 const preview = structuredClone(before);

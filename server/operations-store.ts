@@ -1,3 +1,4 @@
+import { WorkPartition, isWorkPartition } from './work-partition';
 import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
 import { validateDocumentArchive } from './document-archive';
 import { validateOperator } from './operator';
@@ -221,12 +222,18 @@ export function encodeOperations(data: OperationsData, sourceSha256 = data.sourc
   return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup'>>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork'>>;
 
-export class OperationsStore {
+export class LegacyOperationsStore {
   readonly path: string;
   #readCache?: { bytes: Buffer; raw: string; sourceSha256: string };
   constructor(directory: string) { this.path = resolve(directory, 'operations.json'); }
+
+  /** Internal write path only: raw must already have passed encode/decodeOperations
+   * and have been committed to this store. read() still compares actual bytes. */
+  rememberCommittedEncoding(raw: string, sourceSha256: string) {
+    this.#readCache = { bytes: Buffer.from(raw), raw, sourceSha256 };
+  }
 
   async backup(data: OperationsData): Promise<string> {
     const folder = resolve(dirname(this.path), 'backups');
@@ -302,7 +309,7 @@ export class OperationsStore {
             try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
             await rename(temporary, this.path);
             // encodeOperations already validated these exact bytes; keep callers isolated.
-            this.#readCache = { bytes: Buffer.from(encoded), raw: encoded, sourceSha256 };
+            this.rememberCommittedEncoding(encoded, sourceSha256);
           } finally { await unlink(temporary).catch(() => undefined); }
         }
         return result;
@@ -310,5 +317,20 @@ export class OperationsStore {
     });
     queues.set(this.path, pending);
     try { return await pending; } finally { if (queues.get(this.path) === pending) queues.delete(this.path); }
+  }
+}
+
+/** Transparent adapter keeps directories, employee checks and schedulers on the
+ * same logical snapshot. Physical partitioning is an explicit offline operation. */
+export class OperationsStore extends LegacyOperationsStore {
+  private partition = new WorkPartition(this.path);
+  override async read(source: string): Promise<OperationsData> {
+    return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
+  }
+  override async mutate<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update) : super.mutate(source, update);
+  }
+  async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
   }
 }

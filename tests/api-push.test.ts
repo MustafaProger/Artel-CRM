@@ -1,3 +1,4 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import assert from 'node:assert/strict';
 import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
@@ -21,11 +22,12 @@ function subscription(name = randomUUID()) {
   const key = createECDH('prime256v1'); key.generateKeys();
   return { endpoint: `https://fcm.googleapis.com/fcm/send/${name}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
 }
-async function fixture(sender: PushSender = async () => {}) {
+async function fixture(sender: PushSender = async () => {}, deferred = false) {
+  let wakeups = 0;
   const folder = await mkdtemp(resolve(tmpdir(), 'artel-push-'));
   const store = new OperationsStore(folder);
   const cronSecret = randomBytes(32).toString('hex');
-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store, pushConfig: config, pushSender: sender, cronSecret });
+  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store, pushConfig: config, pushSender: sender, ...(deferred ? {workNotificationWakeup: () => { wakeups++; }} : {}), cronSecret });
   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -45,7 +47,8 @@ async function fixture(sender: PushSender = async () => {}) {
   const second = await director('/api/auth/users', 'POST', { login: 'push-manager', name: 'Manager QA', role: 'manager', managerId: employee.body.entry.id, password });
   assert.equal(second.status, 201);
   assert.equal((await manager('/api/auth/login', 'POST', { login: 'push-manager', password })).status, 200);
-  return { store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(folder, base.provenance.sourceSha256);
+  return { wakeups: () => wakeups, store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,
     close: async () => { await new Promise<void>(done => server.close(() => done())); await rm(folder, { recursive: true, force: true }); } };
 }
 
@@ -399,4 +402,22 @@ test('async notification probe acknowledges before a slow provider and persists 
   for(let i=0;i<30;i++){status=(await f.manager(path)).body;if(status.status==='failed')break;await new Promise(resolve=>setTimeout(resolve,20))}
   assert.equal(status.status,'failed');assert.equal(status.failure,'provider_unavailable');
  }finally{release();await f.close()}
+});
+
+
+test('deferred Work response persists assignment before wakeup and dispatches durably after restart without duplicates', async () => {
+  let sent = 0;
+  const f = await fixture(async () => { sent++; }, true);
+  try {
+    assert.equal((await f.manager('/api/push/subscription', 'POST', {subscription: subscription(), explicit: true})).status, 200);
+    const created = await f.director('/api/work/tasks', 'POST', {title:'Задача без ожидания push', assigneeId:f.users[1].id, requestId:randomUUID()});
+    assert.equal(created.status, 201); assert.equal(sent, 0); assert.equal(f.wakeups(), 1);
+    const reloaded = new OperationsStore(resolve(f.store.path, '..'));
+    assert.equal((await reloaded.read(base.provenance.sourceSha256)).push?.taskAssignments?.[created.body.entry.id].assigneeId, f.users[1].id);
+    await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;});
+    assert.equal(sent, 1);
+    await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;}); assert.equal(sent, 1);
+    assert.equal((await f.manager(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', {version:1,status:'done'})).status, 200);
+    assert.equal(f.wakeups(), 1);
+  } finally {await f.close();}
 });

@@ -22,10 +22,21 @@ mkdir "$ARTEL_STORE_DIR"
 
 # A stale transaction marker from an already dead process must be recovered.
 printf '%s' 'stale' > "$ARTEL_STORE_DIR/operations.json.lock"
+mkdir "$ARTEL_STORE_DIR/work-storage"
+for name in transaction core-queue work-queue; do
+  printf '%s' 'stale' > "$ARTEL_STORE_DIR/work-storage/$name.lock"
+done
+printf '%s' 'durable-redo' > "$ARTEL_STORE_DIR/work-storage/commit.json"
 "$entrypoint" node -e '
   const fs = require("node:fs");
   const lock = process.env.ARTEL_STORE_DIR + "/operations.json.lock";
   if (fs.existsSync(lock)) throw new Error("stale lock was not recovered");
+  for (const name of ["transaction", "core-queue", "work-queue"]) {
+    const path = process.env.ARTEL_STORE_DIR + "/work-storage/" + name + ".lock";
+    if (fs.existsSync(path)) throw new Error("stale partition lock was not recovered");
+    fs.writeFileSync(path, "live-partition-transaction");
+  }
+  if (fs.readFileSync(process.env.ARTEL_STORE_DIR + "/work-storage/commit.json", "utf8") !== "durable-redo") throw new Error("redo journal was changed");
   fs.fstatSync(9);
   fs.writeFileSync(lock, "live-transaction");
   fs.writeFileSync(process.env.ARTEL_TEST_MARKER, "");
@@ -47,6 +58,9 @@ status=0
 test "$status" -eq 75
 test ! -e "$ARTEL_TEST_MARKER"
 test "$(cat "$ARTEL_STORE_DIR/operations.json.lock")" = 'live-transaction'
+for name in transaction core-queue work-queue; do
+  test "$(cat "$ARTEL_STORE_DIR/work-storage/$name.lock")" = 'live-partition-transaction'
+done
 
 # Kernel locks vanish even on SIGKILL; the stable lockfile inode remains.
 kill -KILL "$holder_pid"
@@ -56,6 +70,10 @@ test -e "$ARTEL_STORE_DIR/.runtime.lock"
 test -e "$ARTEL_STORE_DIR/operations.json.lock"
 "$entrypoint" sh -c '
   test ! -e "$ARTEL_STORE_DIR/operations.json.lock"
+  for name in transaction core-queue work-queue; do
+    test ! -e "$ARTEL_STORE_DIR/work-storage/$name.lock"
+  done
+  test "$(cat "$ARTEL_STORE_DIR/work-storage/commit.json")" = durable-redo
   : > "$ARTEL_TEST_MARKER"
 '
 test -e "$ARTEL_TEST_MARKER"

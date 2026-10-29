@@ -1,3 +1,5 @@
+import {OperationsStore} from '../server/operations-store.ts';
+import {migrateWorkStorage} from '../server/work-partition.ts';
 import {chromium,webkit,expect} from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import assert from 'node:assert/strict';
@@ -10,7 +12,8 @@ import {startOperatorQaServer} from './qa-operator-runtime.mjs';
 import {authenticateContext} from './qa-auth.mjs';
 const root=resolve(import.meta.dirname,'..'),out=resolve(root,'../ui',process.env.ARTEL_OPERATOR_QA_BUILT==='1'?'built':'source');
 const temporary=await mkdtemp(resolve(tmpdir(),'artel-work-response-')),snapshotDirectory=resolve(temporary,'snapshot'),operationsDirectory=resolve(temporary,'store');
-await mkdir(out,{recursive:true});await writeTripsQaSnapshot(snapshotDirectory);
+await mkdir(out,{recursive:true});const fixtureSource=await writeTripsQaSnapshot(snapshotDirectory);
+if(process.env.ARTEL_TEST_WORK_PARTITION==='1'){await new OperationsStore(operationsDirectory).mutate(fixtureSource,()=>({result:null,changed:true}));await migrateWorkStorage(operationsDirectory,fixtureSource);}
 const report={passed:false,synthetic:true,checks:[],axe:[],errors:[],externalRequests:[],timings:[]};
 const check=n=>{report.checks.push(n);console.log('PASS',n)};
 let runtime;
@@ -49,6 +52,19 @@ try{
  const a=await new AxeBuilder({page}).include('.work-page').analyze();report.axe.push({engine,width,violations:a.violations});assert.equal(a.violations.length,0);await page.screenshot({path:resolve(out,`${engine}-${width}.png`)});check(`${engine}: ${width} alignment/focus/layout/axe`);
  }
  await page.getByRole('button',{name:'Задача: Проверить документы',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByLabel('Срок задачи',{exact:true})).toHaveCount(0);await page.getByRole('button',{name:'Отмена',exact:true}).click();check(engine+': editor still works separately');
+
+ let editorGets=0;await page.route('**/api/work',async route=>{editorGets++;await route.continue()});
+ await page.getByRole('button',{name:'Новая задача',exact:true}).click();await page.getByLabel('Название',{exact:true}).fill('Проверка отдельного хранилища');
+ let releaseCreate,createStarted;const createGate=new Promise(r=>releaseCreate=r),createSeen=new Promise(r=>createStarted=r);
+ await page.route('**/api/work/tasks',async route=>{createStarted();await createGate;await route.continue()});
+ await page.getByRole('button',{name:'Сохранить',exact:true}).click();await createSeen;await expect(page.getByRole('button',{name:'Сохранение…',exact:true})).toBeDisabled();
+ releaseCreate();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'Задача: Проверка отдельного хранилища',exact:true})).toBeVisible();
+ assert.equal(editorGets,0,'Editor must apply POST response without another GET');await page.unroute('**/api/work/tasks');
+ await page.getByRole('button',{name:'Задача: Проверка отдельного хранилища',exact:true}).click();await page.getByLabel('Название',{exact:true}).fill('Исправленная задача');await page.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
+ await page.getByRole('button',{name:'Задача: Исправленная задача',exact:true}).click();await page.getByRole('button',{name:'В архив задач',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'Задача: Исправленная задача',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'Архив задач',exact:true}).click();await page.getByRole('button',{name:'Задача: Исправленная задача',exact:true}).click();await page.getByRole('button',{name:'Вернуть в работу',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
+ await page.getByRole('button',{name:'Задачи',exact:true}).click();await page.getByRole('button',{name:'Задача: Исправленная задача',exact:true}).click();await page.getByRole('button',{name:'Удалить',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('button',{name:'Задача: Исправленная задача',exact:true})).toHaveCount(0);
+ assert.equal(editorGets,0);await page.unroute('**/api/work');check(engine+': editor create/edit/archive/restore/delete from response without follow-up GET');
  await ctx.close();
  }finally{await browser.close()}}
  assert.deepEqual(report.errors,[]);assert.deepEqual(report.externalRequests,[]);report.passed=true;

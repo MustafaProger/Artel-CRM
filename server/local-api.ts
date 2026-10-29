@@ -319,6 +319,8 @@ export interface LocalApiOptions {
   invoiceBridge?: InvoiceBridge;
   pushConfig?: PushConfig;
   pushSender?: PushSender;
+  /** Persistent host wakeup; durable task outbox is committed before invocation. */
+  workNotificationWakeup?: () => void;
   cronSecret?: string;
   pushIntervalSeconds?: number;
   /** Only isolated domain tests may disable authentication. Runtime always requires it. */
@@ -931,7 +933,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
         const body=await jsonBody(request, false, 3 * 1024 * 1024);
-        const result=await operations.mutate(base.provenance.sourceSha256,data=>{
+        const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
+        const result=await transact(base.provenance.sourceSha256,data=>{
           const currentActor=authorized(data);
           const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
           return {result,changed:result.changed};
@@ -939,6 +942,11 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         // A status-only edit cannot create an assignment; do not wait for the push queue.
         const statusOnly = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status');
         if (workMatch[1] === 'tasks' && result.entry && !statusOnly && pushReady(config)) {
+          if (options.workNotificationWakeup) {
+            write(response,result.created?201:200,JSON.stringify(result));
+            try { options.workNotificationWakeup(); } catch { /* Durable outbox is retried by the scheduler. */ }
+            return;
+          }
           // Await the attempt within the request so serverless runtimes do not drop it.
           // The saved event remains available to the scheduler if delivery fails.
           try { await dispatchTaskAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.entry.id); }
@@ -1257,7 +1265,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
     })().catch((error: unknown) => {
       if (error instanceof ApiError) return write(response, error.status, JSON.stringify({ error: error.message }));
-      if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось проверить хранилище операций. Данные не изменены; проверьте data/local-operations/operations.json и файл блокировки."}');
+      if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось прочитать данные или подтвердить сохранение. Обновите раздел перед повтором. Если ошибка повторяется, обратитесь к администратору."}');
       cache = undefined;
       write(response, 500, '{"error":"Не удалось прочитать или проверить локальные данные. Исходный экспорт и сохранённые операции не изменены."}');
     });
