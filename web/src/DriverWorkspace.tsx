@@ -1,3 +1,5 @@
+import TripExecutionAction, { ExecutionEvent } from './TripExecutionAction'
+import { executionStageLabel } from './trip-execution-model'
 import { tripLabel } from './trip-identity'
 import { mapLink } from './map-link'
 import './trip-identity.css'
@@ -108,7 +110,7 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
         <a className="button driver-back" href="#driver-trips"><ArrowLeft size={16}/>Все мои рейсы</a>
         {detailLoading && !selected && <div className="driver-empty" role="status"><LoaderCircle size={24} className="spin"/><p>Открываем рейс…</p></div>}
         {detailError && <p className="driver-error" role="alert">{detailError}</p>}
-        {selected && <TripDetail key={selected.id} trip={selected} onUpdated={updateTrip}/>}
+        {selected && <TripDetail key={selected.id} trip={selected} onUpdated={updateTrip} onReload={refresh}/>}
       </> : <>
         <div className="driver-sections" role="group" aria-label="Разделы рейсов"><button type="button" aria-pressed={section === 'active'} className={section === 'active' ? 'is-active' : ''} onClick={() => setSection('active')}>Активные</button><button type="button" aria-pressed={section === 'archive'} className={section === 'archive' ? 'is-active' : ''} onClick={() => setSection('archive')}>Архивные</button></div>
         <label className="driver-search"><Search size={18}/><input type="search" aria-label="Поиск моих рейсов" placeholder="Номер рейса, дата, адрес или клиент" value={query} onChange={event => setQuery(event.target.value)}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск рейсов" onClick={() => setQuery('')}><X size={17}/></button>}</label>
@@ -120,9 +122,9 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
             {trip.vehiclePlate && <p className="driver-vehicle"><Truck size={17}/>{trip.vehiclePlate}</p>}
             <p className="driver-trip-route">{trip.loadingAddress || 'Место погрузки уточняется'}</p>
             <div className="driver-trip-destinations">{trip.deliveries.map((delivery, index) => <p key={delivery.id}><span>{index + 1}</span><span className="driver-destination-name">{[delivery.customer, delivery.address].filter(Boolean).join(' · ') || 'Место доставки уточняется'}{delivery.liters !== null && <small>{delivery.liters} л</small>}</span></p>)}</div>
-            <span className="driver-trip-deliveries">Доставок: {trip.deliveries.length}</span>
+            <span className="driver-trip-deliveries">{trip.execution ? executionStageLabel[trip.execution.stage] : 'Ожидает погрузки'} · Доставлено {trip.deliveries.filter(d => trip.execution?.deliveries[d.id]).length} из {trip.deliveries.length}</span>
           </a>)}</div>
-          {!visible.length && <div className="driver-empty"><Truck size={30}/><h2>{query ? 'Ничего не найдено' : section === 'archive' ? 'Архивных рейсов пока нет' : 'Активных рейсов пока нет'}</h2><p>{query ? 'Попробуйте другой адрес, дату или имя клиента.' : section === 'archive' ? 'Здесь появятся рейсы после подтверждённого завершения отправки документов по всем доставкам.' : 'Когда логист назначит вам рейс, он появится здесь.'}</p></div>}
+          {!visible.length && <div className="driver-empty"><Truck size={30}/><h2>{query ? 'Ничего не найдено' : section === 'archive' ? 'Архивных рейсов пока нет' : 'Активных рейсов пока нет'}</h2><p>{query ? 'Попробуйте другой адрес, дату или имя клиента.' : section === 'archive' ? 'Здесь появятся рейсы после всех доставок и подтверждения «Рейс выполнен».' : 'Когда логист назначит вам рейс, он появится здесь.'}</p></div>}
         </>}
       </>}
       </div>
@@ -130,13 +132,14 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
   </div>
 }
 
-function TripDetail({ trip, onUpdated }: { trip: DriverTrip; onUpdated: (trip: DriverTrip) => void }) {
+function TripDetail({ trip, onUpdated, onReload }: { trip: DriverTrip; onUpdated: (trip: DriverTrip) => void; onReload: () => void }) {
   return <article className="driver-trip-detail">
     <header className="driver-detail-heading"><h2>{tripLabel(trip)}</h2><p className="trip-identity-date">{dateLabel(trip.date)}</p>{trip.vehiclePlate && <p className="driver-vehicle"><Truck size={18}/>{trip.vehiclePlate}</p>}</header>
     <section className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker"><Truck size={18}/></span><h3>Место погрузки</h3></div>{trip.supplier && <p className="driver-stop-party">{trip.supplier}</p>}<Address address={trip.loadingAddress} mapUrl={trip.loadingMapUrl}/><Timing actual={trip.flowVersion === 'driver-v1' ? null : trip.loadingActualAt}/>{trip.notes && <p className="driver-note">{trip.notes}</p>}</section>
     {trip.flowVersion === 'driver-v1' && <DriverLoadingActions trip={trip} onUpdated={onUpdated}/>}
     <div className="driver-deliveries-heading"><h3>Доставки</h3><span>{trip.deliveries.length}</span></div>
-    {trip.deliveries.map((delivery, index) => <section key={delivery.id} className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker">{index + 1}</span><h3>{delivery.customer || `Доставка ${index + 1}`}</h3>{delivery.number && <small>№ {delivery.number}</small>}</div><Address address={delivery.address} mapUrl={delivery.mapUrl}/><dl className="driver-cargo">{delivery.product && <div><dt>Груз</dt><dd>{delivery.product}</dd></div>}{delivery.liters !== null && <div><dt>Объём</dt><dd>{delivery.liters} л</dd></div>}{delivery.netTonnes && <div><dt>Масса нетто</dt><dd>{delivery.netTonnes.replace('.', ',')} т</dd></div>}</dl><Timing actual={delivery.actualAt}/>{delivery.notes && <p className="driver-note">{delivery.notes}</p>}</section>)}
+    {trip.deliveries.map((delivery, index) => <section key={delivery.id} className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker">{index + 1}</span><h3>{delivery.customer || `Доставка ${index + 1}`}</h3>{delivery.number && <small>№ {delivery.number}</small>}</div><Address address={delivery.address} mapUrl={delivery.mapUrl}/><dl className="driver-cargo">{delivery.product && <div><dt>Груз</dt><dd>{delivery.product}</dd></div>}{delivery.liters !== null && <div><dt>Объём</dt><dd>{delivery.liters} л</dd></div>}{delivery.netTonnes && <div><dt>Масса нетто</dt><dd>{delivery.netTonnes.replace('.', ',')} т</dd></div>}</dl><Timing actual={delivery.actualAt}/>{delivery.notes && <p className="driver-note">{delivery.notes}</p>}{trip.execution && <TripExecutionAction key={`${delivery.id}-${trip.execution.version}`} tripId={trip.id} versions={trip.versions} execution={trip.execution} deliveryId={delivery.id} customer={delivery.customer || undefined} onSaved={r => { if (r.trip) onUpdated(r.trip) }} onReload={onReload}/>}</section>)}
+    {trip.execution && <div className="driver-execution-footer">{trip.execution.completed ? <div className="execution-record"><strong>Рейс завершён · все доставки выполнены</strong><ExecutionEvent event={trip.execution.completed}/></div> : <p className="execution-hint">Отмечайте прибытие на каждой точке доставки. После последней отметки рейс автоматически перейдёт в архив.</p>}</div>}
   </article>
 }
 

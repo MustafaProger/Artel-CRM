@@ -9,6 +9,8 @@ export interface TripRequest {
   quantityLitres: string;
   /** Optional client price; copied into a trip without updating the source request. */
   salePricePerLitre?: string | null;
+  /** Planned delivery day in Europe/Moscow; older requests can be undated. */
+  executionDate?: string | null;
   comment: string;
   ownerUserId: string | null;
   managerId: string | null;

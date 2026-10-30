@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -137,4 +137,24 @@ test('natcar scope update preserves the existing connection, credentials and old
     const same = await f.director(path, 'PATCH', { ...body, expectedOrganizationNames: body.organizationNames });
     assert.equal(same.status, 200); assert.equal((await f.store.read(f.source)).revision, after.revision);
   } finally { await f.close(); }
+});
+
+
+test('server browser Yandex is read-only, section protected, performs no business writes', async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), 'yandex-api-'));
+  const file = resolve(dir, 'snapshot.json');
+  const at = new Date().toISOString();
+  await writeFile(file, JSON.stringify({ version: 1, companyId: '7d90c6ecc6804d738c19d1c1c0ab0aaa', contractId: '49844602', contractNumber: '43207794/25', state: 'connected', createdAt: at, lastAttemptAt: at, lastSuccessAt: at, balance: { currency: 'RUB', amountMinor: 12345, availableMinor: 12345 }, cookie: 'synthetic-secret' }));
+  const f = await fixture({ ...env, ARTEL_YANDEX_BALANCE_FILE: file });
+  try {
+    const before = await readFile(f.store.path, 'utf8');
+    const answer = await f.director('/api/cabinets');
+    assert.equal(answer.status, 200); assert.equal(answer.body.connections.length, 1);
+    assert.equal(answer.body.connections[0].accounts[0].amountMinor, 12345);
+    assert.equal(answer.body.connections[0].refreshMode, 'server_browser');
+    assert.ok(!JSON.stringify(answer.body).includes('synthetic-secret'));
+    assert.equal((await f.client()('/api/cabinets')).status, 401);
+    assert.equal((await f.director('/api/cabinets/yandex-server-fuel/sync', 'POST', {})).status, 404);
+    assert.equal(await readFile(f.store.path, 'utf8'), before);
+  } finally { await f.close(); await rm(dir, { recursive: true, force: true }); }
 });

@@ -17,12 +17,27 @@ const temp = await mkdtemp(resolve(tmpdir(), 'artel-navigation-split-'));
 const snapshotDirectory = resolve(temp, 'snapshot'), operationsDirectory = resolve(temp, 'operations');
 await writeTripsQaSnapshot(snapshotDirectory);
 const denied = async () => { throw new Error('Provider call forbidden in navigation QA'); };
+// Exercise the real CRM invoice authorization/proxy route against an injected
+// worker response. No 1C provider, PDF creation or external request is involved.
+const invoiceWorkspace = {
+  integration: { status: 'read_only', message: 'Синтетические справочники QA', checkedAt: '2026-10-28T10:00:00Z' },
+  organizations: [{ id: 'qa-seller', name: 'Учебный продавец', connectionId: 'qa-connection' }],
+  buyers: [{ id: 'qa-buyer', name: 'Учебный покупатель', inn: '0000000000', connectionId: 'qa-connection' }],
+  defaultUnitPrice: '79', settings: { defaultUnitPrice: '79', revision: 1, updatedAt: null, updatedBy: null },
+  product: { name: 'Предоплата за дизельное топливо', unit: 'л', vatRate: '22', vatMode: 'included' },
+  canCreate: false, canPrepare: false, canEditDefaultPrice: false, history: { status: 'ready', items: [] },
+};
 const middleware = createSnapshotMiddleware(snapshotDirectory, {
   operationsDirectory, requireAuthentication: true, checkoApiKey: '', setupToken: '',
   tripRequestGeocoder: async () => ({ status: 'unavailable', message: 'Synthetic QA' }),
   bankEnvironment: { ARTEL_BANK_REQUESTS_ENABLED: 'false', ARTEL_BANK_SYNC_ENABLED: 'false' },
   bankRequest: denied, sberRequest: denied, fetcher: denied,
   cabinetEnvironment: {}, pushConfig: { publicKey: '', privateKey: '', subject: '', schedule: false }, pushSender: denied,
+  invoiceBridge: { request: async (path, method, body, identity) => {
+    assert.equal(path, '/api/invoices'); assert.equal(method, 'GET');
+    assert.equal(body.length, 0); assert.ok(identity?.crmUserId);
+    return { status: 200, contentType: 'application/json', body: Buffer.from(JSON.stringify(invoiceWorkspace)) };
+  } },
 });
 const publicRoot = resolve(root, 'app-dist');
 const types = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
@@ -39,14 +54,38 @@ const server = createServer((request, response) => middleware(request, response,
 }));
 await new Promise(done => server.listen(0, '127.0.0.1', done));
 const base = `http://127.0.0.1:${server.address().port}`;
-const report = { checks: [], initialScripts: [], initialScriptBytes: 0, errors: [], requestFailures: [], scriptResponses: [], screenshots: [] };
+const report = { checks: [], initialScripts: [], initialScriptBytes: 0, errors: [], apiErrors: [], apiResponses: [], requestFailures: [], scriptResponses: [], screenshots: [] };
 report.webPushExcluded = true;
+report.invoiceWorkerSynthetic = true;
 const check = name => { report.checks.push(name); console.log('PASS', name); };
 const pages = [
   ['overview', '.overview-page'], ['work', '.work-page'], ['shipments', '.shipments-workspace'],
   ['trips', '.trips-page'], ['payments', '.banking-page'], ['cabinet-balances', '.cabinet-page'],
   ['china', '.china-page'], ['accounts', '.account-management'], ['directories', '.directories-page'],
+  ['invoices', '.invoice-workspace'], ['operator', '.operator-workspace'],
 ];
+report.routes = pages.map(([id]) => id);
+const primaryApi = {
+  overview: '/api/settlements', work: '/api/work', shipments: '/api/shipments', trips: '/api/trip-requests',
+  payments: '/api/banking', 'cabinet-balances': '/api/cabinets', china: '/api/china', accounts: '/api/auth/users',
+  directories: '/api/snapshot', invoices: '/api/invoices', operator: '/api/operator',
+};
+const waitForData = (page, id) => page.waitForResponse(response => new URL(response.url()).pathname === primaryApi[id] && response.request().method() === 'GET' && response.status() === 200);
+async function loaded(page, id, selector) {
+  await expect(page.locator(selector)).toBeVisible();
+  if (id === 'invoices') {
+    await expect(page.getByRole('combobox', { name: 'Продавец', exact: true })).toBeEnabled();
+    await expect(page.getByRole('combobox', { name: 'Продавец', exact: true }).locator('option')).toContainText(['Выберите продавца', 'Учебный продавец']);
+    await expect(page.getByRole('heading', { name: 'История счетов', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Обновить счета', exact: true })).toBeEnabled();
+  }
+  if (id === 'operator') {
+    await expect(page.getByRole('heading', { name: /^Операции по водителям/ })).toBeVisible();
+    await expect(page.getByLabel('Поиск операций', { exact: true })).toBeEnabled();
+    await expect(page.locator('.operator-workspace').getByRole('button', { name: 'Обновить', exact: true })).toBeEnabled();
+    await expect(page.getByText('Операций пока нет', { exact: true })).toBeVisible();
+  }
+}
 let browser, initialized = false;
 try {
   for (const [engine, launch] of [['chromium', () => chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' })], ['webkit', () => webkit.launch({ headless: true })]].filter(([engine]) => !process.env.ARTEL_SPLIT_ONLY_WEBKIT || engine === 'webkit')) {
@@ -54,6 +93,13 @@ try {
     // Navigation QA has no push provider. Native WebKit getSubscription freezes
     // this headless runtime even with the unchanged baseline; exclude workers.
     const context = await browser.newContext({ ...(initialized ? { storageState: resolve(temp, 'session.json') } : {}), viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
+    context.on('response', response => {
+      const path = new URL(response.url()).pathname;
+      if (!path.startsWith('/api/')) return;
+      const row = { engine, path, status: response.status() };
+      report.apiResponses.push(row);
+      if (row.status >= 400) report.apiErrors.push(row);
+    });
     const page = await context.newPage();
     await page.bringToFront();
     page.on('response', response => { if (response.request().resourceType() === 'script' || response.request().resourceType() === 'stylesheet') report.scriptResponses.push({ engine, url: response.url(), status: response.status() }); });
@@ -84,8 +130,10 @@ try {
     for (const [id, selector] of pages) {
       const cold = await context.newPage();
       cold.on('pageerror', error => report.errors.push({ engine, route: id, message: error.message }));
+      const ready = waitForData(cold, id);
       await cold.goto(`${base}/#${id}`);
-      await expect(cold.locator(selector)).toBeVisible();
+      await ready;
+      await loaded(cold, id, selector);
       if (id === 'directories') {
         await cold.getByRole('button', { name: 'Добавить', exact: true }).click();
         const dialog = cold.locator('.directory-editor');
@@ -116,22 +164,24 @@ try {
       }
       await cold.close();
     }
-    check(`${engine}: all nine routes open directly; shared directory and China form styles survive cold load`);
+    check(`${engine}: all eleven routes open directly with successful data APIs; shared directory and China form styles survive cold load`);
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       for (const [id, selector] of pages) {
-        const titles = { overview: 'Обзор', work: 'Работа', shipments: 'Отгрузки', trips: 'Рейсы', payments: 'Платежи', 'cabinet-balances': 'Балансы кабинетов', china: 'Китай', accounts: 'Сотрудники и доступ', directories: 'Справочники' };
+        const titles = { overview: 'Обзор', work: 'Работа', shipments: 'Отгрузки', trips: 'Рейсы', payments: 'Платежи', 'cabinet-balances': 'Балансы кабинетов', china: 'Китай', accounts: 'Сотрудники и доступ', directories: 'Справочники', invoices: 'Счета', operator: 'Операторская' };
         const target = page.locator('.sidebar').getByRole('button', { name: titles[id], exact: true });
         if (!await target.isVisible() || await page.locator('.sidebar').evaluate(el => el.inert)) await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
         await page.bringToFront();
+        const ready = new URL(page.url()).hash === `#${id}` ? Promise.resolve() : waitForData(page, id);
         await target.click();
-        await expect(page.locator(selector)).toBeVisible();
+        await ready;
+        await loaded(page, id, selector);
         await expect(page.getByText('Не удалось открыть раздел', { exact: true })).toHaveCount(0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${engine}/${id}/${width} horizontal overflow`);
       }
       const screenshot = resolve(output, `${engine}-${width}.png`);
       await page.screenshot({ path: screenshot, fullPage: true }); report.screenshots.push(screenshot);
-      check(`${engine}: all nine pages load and fit at ${width}px`);
+      check(`${engine}: all eleven pages load and fit at ${width}px`);
     }
     if (engine === 'chromium') {
       const broken = await context.newPage();
@@ -147,7 +197,8 @@ try {
     await browser.close(); browser = null;
   }
   assert.deepEqual(report.errors, []);
-  check('Normal navigation has no browser JavaScript errors');
+  assert.deepEqual(report.apiErrors, []);
+  check('Normal navigation has no browser JavaScript or API errors across eleven routes');
   report.passed = true;
 } finally {
   await browser?.close();

@@ -32,6 +32,8 @@ export async function startTripsQaServer({ root, snapshotDirectory, operationsDi
   let api = middleware(sabyClient);
   const server = await createServer({
     configFile: false, envDir: false, root: resolve(root, 'web'),
+    // Independent local previews must not replace each other's optimized modules.
+    cacheDir: resolve(operationsDirectory, 'vite-cache'),
     plugins: [react(), { name: 'synthetic-trips-api', configureServer(vite) { vite.middlewares.use((request, response, next) => api(request, response, next)); } }],
     // Vite resolves port 0 to its default; allow a free port when none was requested.
     server: { host: '127.0.0.1', port, strictPort: port !== 0, cors: false, fs: { strict: true, allow: [resolve(root, 'web'), resolve(root, 'node_modules')], deny: ['**/data/**', '**/.env*'] } },

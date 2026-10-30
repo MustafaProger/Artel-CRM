@@ -4,15 +4,26 @@ import { validPhone } from './fleet-directory';
 import type { Company, ShipmentAddress } from '../web/src/model';
 
 export const loadingRoleKeys = ['loadingActorCompanyId', 'infrastructureOwnerCompanyId'] as const;
-export const locationDetailKeys = ['address', 'mapUrl', 'latitude', 'longitude', 'receiverName', 'receiverPhone', ...loadingRoleKeys] as const;
+const locationStringKeys = ['address', 'mapUrl', 'latitude', 'longitude', 'receiverName', 'receiverPhone', ...loadingRoleKeys] as const;
+export const locationDetailKeys = [...locationStringKeys, 'additionalReceivers'] as const;
 export function locationDetails(input: Record<string, unknown>, selection?: { companies: readonly Company[]; previous?: ShipmentAddress }) {
-  const result: Partial<Record<typeof locationDetailKeys[number], string>> = {};
-  for (const key of locationDetailKeys) {
+  const result: Partial<Pick<ShipmentAddress, typeof locationDetailKeys[number]>> = {};
+  for (const key of locationStringKeys) {
     const raw = input[key];
     if (raw === undefined || raw === '') continue;
     if (typeof raw !== 'string' || raw.length > 500) throw new ApiError(400, 'Проверьте адрес, ссылку на карту и координаты.');
     const value = raw.trim();
     if (value) result[key] = value;
+  }
+  if (input.additionalReceivers !== undefined) {
+    if (!Array.isArray(input.additionalReceivers) || input.additionalReceivers.length > 49) throw new ApiError(400, 'Можно указать до 50 приёмщиков адреса.');
+    result.additionalReceivers = input.additionalReceivers.map(raw => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['name', 'phone'].includes(key)) || typeof raw.name !== 'string' || typeof raw.phone !== 'string' || raw.name.length > 500 || raw.phone.length > 500) throw new ApiError(400, 'Проверьте имя и телефон приёмщика.');
+      const name = raw.name.trim(), phone = raw.phone.trim();
+      if (phone && !validPhone(phone)) throw new ApiError(400, 'Проверьте телефон приёмщика площадки.');
+      return { name, phone };
+    }).filter(row => row.name || row.phone);
+    if (!result.additionalReceivers.length) delete result.additionalReceivers;
   }
   if (result.mapUrl) {
     let url: URL;

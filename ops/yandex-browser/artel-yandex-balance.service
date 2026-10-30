@@ -1,0 +1,15 @@
+[Unit]
+Description=Read Yandex fuel balance from the server browser
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/artel-crm/private/yandex-browser-20261027/publish-snapshot.py
+TimeoutStartSec=115
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/artel-crm/data/operations

@@ -62,9 +62,9 @@ export class SberService {
     });
     return { pending: true };
   }
-  async dispatch(now = Date.now()) {
+  async dispatch(now = Date.now(), initial?: Promise<OperationsData>) {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false };
-    const state = (await this.store.read(this.source))[this.connection.slot] ?? emptySber(this.connection);
+    const state = (await (initial ?? this.store.read(this.source)))[this.connection.slot] ?? emptySber(this.connection);
     if (this.missing(state).length || !state.job && !syncDue(state.lastScheduledAt, state.lastSuccessAt, now)) return { enabled: true, pending: false };
     if (!state.job) await this.mutate(data => {
       const current = data[this.connection.slot]!;

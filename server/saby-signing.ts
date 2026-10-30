@@ -16,6 +16,10 @@ export interface SabySigningBinding {
   attachmentSubtype: '1110361' | '1110362' | '1110339' | '1110340'; attachmentId: string;
   /** Omitted only by legacy records; they retain owner confirmation. */
   keyType?: SabySigningKeyType;
+  /** Same-company direct route: freeze the actual provider envelope instead of assuming a second inbox. */
+  routePolicy?: 'nk-direct-v1';
+  documentDirection?: 'Исходящий' | 'Входящий';
+  actionStateCode?: string;
 }
 export interface SabySigningAttachment { id: string; name: string; subtype: string; sha256: string }
 export interface SabySigningManifest { binding: SabySigningBinding; attachments: SabySigningAttachment[]; preparedHash: string }
@@ -65,6 +69,17 @@ function currentAttachments(document: SabyObject, revision: string) {
 function organizationMatches(raw: unknown, inn: string, kpp: string): boolean {
   return sabyObject(raw) && sabyObject(raw.СвЮЛ) && raw.СвЮЛ.ИНН === inn && raw.СвЮЛ.КПП === kpp;
 }
+/** Current ConsignmentNote reads put roles in Стороны. Historical reads may
+ * expose top-level roles; any duplicate representation must agree exactly. */
+function consignmentPartyMatches(document: SabyObject, role: 'Отправитель' | 'Перевозчик', inn: string, kpp: string, optional = false): boolean {
+  if (Object.hasOwn(document, 'Стороны') && !sabyObject(document.Стороны)) return false;
+  const parties = sabyObject(document.Стороны) ? document.Стороны : {};
+  if (Object.hasOwn(document, 'Стороны') && !Object.hasOwn(parties, role)) return false;
+  const fields = role === 'Отправитель' ? ['Грузоотправитель'] : ['ТранспортнаяКомпания', 'Перевозчик'];
+  const historical = fields.filter(key => Object.hasOwn(document, key)).map(key => document[key]);
+  const values = Object.hasOwn(parties, role) ? [parties[role], ...historical] : historical;
+  return (!values.length ? optional : values.every(value => organizationMatches(value, inn, kpp)));
+}
 function availableStages(document: SabyObject): SabyObject[] {
   // Current-stage rows may be summaries without actions. Resolve their IDs against full Этап records.
   const stages = rows(document.Этап);
@@ -84,11 +99,17 @@ function availableStages(document: SabyObject): SabyObject[] {
   return selected.filter(stage => stage.Завершен !== 'Да' && stage.Актуален !== 'Нет');
 }
 export function assertSigningBinding(binding: SabySigningBinding): void {
+  const direct = binding?.routePolicy === 'nk-direct-v1';
   if (!binding || !['sender', 'carrier'].includes(binding.side) ||
+      (binding.routePolicy !== undefined && !direct) ||
+      (direct ? binding.documentType !== 'ConsignmentNote' || binding.organizationInn !== binding.counterpartyInn || binding.organizationKpp !== binding.counterpartyKpp ||
+        !['Исходящий', 'Входящий'].includes(binding.documentDirection ?? '') || !/^\d{1,3}$/.test(binding.actionStateCode ?? '') ||
+        ['6', '9', '22'].includes(binding.actionStateCode!) || binding.side === 'sender' && (binding.documentDirection !== 'Исходящий' || binding.actionStateCode !== '0')
+        : binding.documentDirection !== undefined || binding.actionStateCode !== undefined) ||
       (binding.keyType !== undefined && !['Отложенный', 'ОтложенныйСПодтверждением'].includes(binding.keyType)) ||
       ![binding.documentId, binding.revision, binding.stageId, binding.stageName, binding.actionName, binding.attachmentId].every(safeIdentifier) ||
       !thumbprint(binding.certificateThumbprint) || ![binding.organizationInn, binding.counterpartyInn].every(value => /^\d{10}$/.test(value)) ||
-      ![binding.organizationKpp, binding.counterpartyKpp].every(value => /^\d{9}$/.test(value)) || binding.organizationInn === binding.counterpartyInn ||
+      ![binding.organizationKpp, binding.counterpartyKpp].every(value => /^\d{9}$/.test(value)) || !direct && binding.organizationInn === binding.counterpartyInn ||
       (binding.documentType === 'ConsignmentNote'
         ? binding.side === 'sender' ? binding.attachmentSubtype !== '1110339' || binding.stageName !== 'Отправка' || binding.actionName !== 'Погружен' : binding.attachmentSubtype !== '1110340' || binding.stageName !== 'Получение груза' || binding.actionName !== 'Принят'
         : binding.documentType !== undefined || (binding.side === 'sender' ? binding.attachmentSubtype !== '1110361' || binding.stageName !== 'Отправка' || binding.actionName !== 'Отправить' :
@@ -99,8 +120,10 @@ export function assertSigningBinding(binding: SabySigningBinding): void {
 function assertDocumentIdentity(document: SabyObject, binding: SabySigningBinding) {
   assertSigningBinding(binding);
   if (document.Идентификатор !== binding.documentId || document.Тип !== (binding.documentType ?? 'TransportOrder') || document.Удален === 'Да' || document.ЧастичныеДанные === 'Да' ||
-      document.Направление !== (binding.side === 'sender' ? 'Исходящий' : 'Входящий') || currentRevision(document) !== binding.revision ||
-      !organizationMatches(document.НашаОрганизация, binding.organizationInn, binding.organizationKpp) || !organizationMatches(binding.documentType === 'ConsignmentNote' ? (binding.side === 'sender' ? document.ТранспортнаяКомпания : document.Грузоотправитель) : document.Контрагент, binding.counterpartyInn, binding.counterpartyKpp)) {
+      document.Направление !== (binding.routePolicy === 'nk-direct-v1' ? binding.documentDirection : binding.side === 'sender' ? 'Исходящий' : 'Входящий') || currentRevision(document) !== binding.revision ||
+      !organizationMatches(document.НашаОрганизация, binding.organizationInn, binding.organizationKpp) || (binding.documentType === 'ConsignmentNote'
+        ? !consignmentPartyMatches(document, binding.side === 'sender' ? 'Перевозчик' : 'Отправитель', binding.counterpartyInn, binding.counterpartyKpp) || !consignmentPartyMatches(document, binding.side === 'sender' ? 'Отправитель' : 'Перевозчик', binding.organizationInn, binding.organizationKpp, true)
+        : !organizationMatches(document.Контрагент, binding.counterpartyInn, binding.counterpartyKpp))) {
     throw new SabyError('validation', 'Заявка, её редакция или участники изменились. Подписание остановлено.');
   }
   if (hasErrors(document) || ['6', '9', '22'].includes(sabyOrderStateCode(document) ?? '')) throw new SabyError('validation', 'Saby сообщил ошибку, отклонение или отмену заявки. Подписание остановлено.');
@@ -109,9 +132,14 @@ function assertDocumentIdentity(document: SabyObject, binding: SabySigningBindin
   if (currentCode !== undefined && legacyCode !== undefined && String(currentCode) !== String(legacyCode)) throw new SabyError('validation', 'Saby вернул противоречащие состояния заявки. Подписание остановлено.');
 }
 function assertCurrentAction(document: SabyObject, binding: SabySigningBinding) {
-  if (sabyOrderStateCode(document) !== (binding.side === 'sender' ? '0' : '10')) throw new SabyError('validation', 'Заявка уже обрабатывается или вышла из этапа подписания. Новое действие остановлено.');
+  if (sabyOrderStateCode(document) !== (binding.routePolicy === 'nk-direct-v1' ? binding.actionStateCode : binding.side === 'sender' ? '0' : '10')) throw new SabyError('validation', 'Заявка уже обрабатывается или вышла из этапа подписания. Новое действие остановлено.');
+  if (binding.routePolicy === 'nk-direct-v1' && binding.side === 'carrier' &&
+    (!Array.isArray(document.ТекущиеЭтапы) || rows(document.ТекущиеЭтапы).filter(stage => stage.Идентификатор === binding.stageId).length !== 1)) {
+    throw new SabyError('validation', 'Saby не подтвердил текущий этап получения груза НК. Подготовка и подписание не запускаются.');
+  }
   const stages = availableStages(document).filter(stage => stage.Идентификатор === binding.stageId && stage.Название === binding.stageName);
   if (stages.length !== 1 || rows(stages[0].Действие).filter(action => action.Название === binding.actionName).length !== 1) throw new SabyError('validation', 'Этап или действие Saby изменились. Обновите состояние заявки.');
+  if (binding.routePolicy === 'nk-direct-v1' && stages[0].Служебный === 'Да') throw new SabyError('validation', 'Служебный этап не подтверждает получение груза НК.');
   const action = rows(stages[0].Действие).find(action => action.Название === binding.actionName)!;
   if (['ТребуетКомментария', 'ТребуетИсполнителя', 'ТребуетРасшифровки'].some(field => action[field] === 'Да')) throw new SabyError('validation', 'Saby требует дополнительные сведения для этого действия. Автоматическое подписание остановлено.');
   assertAdvertisedSigningMode(action, binding);
@@ -142,6 +170,7 @@ function assertDocument(document: SabyObject, binding: SabySigningBinding, requi
   return { attachments, title: title[0] };
 }
 export function createSigningBinding(remote: SabyObject, side: SabySigningSide, certificate: SabySigningCertificate, config: SabyConfig, keyType?: SabySigningKeyType, documentType?: 'ConsignmentNote'): SabySigningBinding {
+  if (config.documentMode === 'nk-direct-v1' && documentType !== 'ConsignmentNote') throw new SabyError('validation', 'Прямой кабинет НК используется только для ЭТрН без заказа-заявки.');
   const organization = side === 'sender' ? config.customer : config.carrier;
   const counterparty = side === 'sender' ? config.carrier : config.customer;
   if (certificate.organizationInn !== organization.inn || certificate.organizationKpp !== organization.kpp || !certificate.valid || !certificate.qualified ||
@@ -153,7 +182,8 @@ export function createSigningBinding(remote: SabyObject, side: SabySigningSide, 
   const { stage, action } = candidates[0];
   const binding: SabySigningBinding = { side, documentId: String(remote.Идентификатор ?? ''), revision, stageId: String(stage.Идентификатор ?? ''), stageName: String(stage.Название), actionName: String(action.Название),
     certificateThumbprint: certificate.thumbprint, organizationInn: organization.inn, organizationKpp: organization.kpp, counterpartyInn: counterparty.inn, counterpartyKpp: counterparty.kpp,
-    ...(documentType ? { documentType } : {}), attachmentSubtype: subtype, attachmentId: String(title[0].Идентификатор ?? ''), ...(keyType !== undefined ? { keyType } : {}) };
+    ...(documentType ? { documentType } : {}), attachmentSubtype: subtype, attachmentId: String(title[0].Идентификатор ?? ''), ...(keyType !== undefined ? { keyType } : {}),
+    ...(config.documentMode === 'nk-direct-v1' ? { routePolicy: 'nk-direct-v1' as const, documentDirection: remote.Направление as 'Исходящий' | 'Входящий', actionStateCode: sabyOrderStateCode(remote) ?? '' } : {}) };
   assertDocument(remote, binding, true); return binding;
 }
 /** Saby's documented preparation creates the missing reply; this is never a made-up title generator. */
@@ -169,8 +199,9 @@ export function createCarrierDraftBinding(remote: SabyObject, certificate: SabyS
 function assertCarrierDraftSource(remote: SabyObject, binding: SabySigningBinding) {
   assertDocumentIdentity(remote, binding); assertCurrentAction(remote, binding);
   const attachments = currentAttachments(remote, binding.revision);
-  const sender = attachments.filter(row => row.Подтип === (binding.documentType ? '1110339' : '1110361') && row.ВерсияФормата === '5.01' && row.Направление === 'Входящий');
-  if (binding.side !== 'carrier' || binding.attachmentId !== 'unprepared-carrier-title' || sabyOrderStateCode(remote) !== '10' ||
+  const sender = attachments.filter(row => row.Подтип === (binding.documentType ? '1110339' : '1110361') && row.ВерсияФормата === '5.01' &&
+    (binding.routePolicy === 'nk-direct-v1' ? ['Исходящий', 'Входящий'].includes(String(row.Направление)) : row.Направление === 'Входящий'));
+  if (binding.side !== 'carrier' || binding.attachmentId !== 'unprepared-carrier-title' || sabyOrderStateCode(remote) !== (binding.routePolicy === 'nk-direct-v1' ? binding.actionStateCode : '10') ||
       attachments.some(row => row.Подтип === (binding.documentType ? '1110340' : '1110362')) || sender.length !== 1 || !rows(sender[0].Подпись).some(signature => !hasErrors(signature) && sabyObject(signature.Сертификат) && signature.Сертификат.ИНН === binding.counterpartyInn && thumbprint(signature.Сертификат.Отпечаток))) {
     throw new SabyError('validation', 'Для подготовки ответа НК не подтверждён подписанный исходный титул и текущий этап.');
   }
@@ -181,6 +212,12 @@ export async function prepareCarrierDraft(client: SabyClient, binding: SabySigni
   await assertCurrentCertificate(client, binding);
   const prepared = await client.prepareSigningAction(binding);
   if (prepared.Идентификатор !== binding.documentId || currentRevision(prepared) !== binding.revision) throw new SabyError('unknown', 'Saby не подтвердил редакцию подготовленного ответа НК.', true);
+  return readPreparedCarrierDraft(client, binding);
+}
+/** Reconcile a durable draft intent by reads only; never repeat its Prepare. */
+export async function readPreparedCarrierDraft(client: SabyClient, binding: SabySigningBinding): Promise<SabyObject> {
+  assertSigningBinding(binding);
+  if (binding.side !== 'carrier' || binding.attachmentId !== 'unprepared-carrier-title') throw new SabyError('validation', 'Не подтверждено исходное намерение подготовки ответа перевозчика.');
   const fresh = await client.readSigningDocument('carrier', binding.documentId, binding.documentType);
   const titles = currentAttachments(fresh, binding.revision).filter(row => row.Подтип === (binding.documentType ? '1110340' : '1110362'));
   if (titles.length !== 1 || !sabyText(titles[0].Идентификатор)) throw new SabyError('unknown', 'Saby ещё не подтвердил созданный ответ НК. Повторная подготовка не выполняется.', true);
@@ -193,6 +230,7 @@ export function signingManifestHash(manifest: Pick<SabySigningManifest, 'binding
   // Legacy manifests must retain their original digest. Explicit modes are immutable signed intent.
   if (b.keyType !== undefined) identity.push(b.keyType);
   if (b.documentType !== undefined) identity.push(b.documentType);
+  if (b.routePolicy !== undefined) identity.push(b.routePolicy, b.documentDirection!, b.actionStateCode!);
   return hash(JSON.stringify([identity,
     manifest.attachments.map(file => [file.id, file.name, file.subtype, file.sha256]).sort((a, b) => a[0].localeCompare(b[0]))]));
 }
@@ -255,6 +293,33 @@ export async function prepareBoundSigning(client: SabyClient, binding: SabySigni
   const result = { binding: structuredClone(binding), attachments, preparedHash: signingManifestHash({ binding, attachments }) };
   assertSigningManifest(result); return result;
 }
+/** Read-only recovery of Saby replacing an unsigned native T2 during Prepare.
+ * The caller must verify the complete T2 business and signed T1 before persisting
+ * this manifest, retain the old binding, and have no prior Execute or manifest.
+ * A sole replacement T2 is required. Direct routes may retain unsigned GIS
+ * receipts, which are never included in the signing manifest or action. */
+export async function reconcileRegeneratedCarrierSigning(client: SabyClient, previous: SabySigningBinding, allowDirectElectronic = false): Promise<SabyPreparedSigning> {
+  assertSigningBinding(previous);
+  const direct = allowDirectElectronic && client.config.documentMode === 'nk-direct-v1' && previous.routePolicy === 'nk-direct-v1' && previous.organizationInn === previous.counterpartyInn && previous.organizationKpp === previous.counterpartyKpp;
+  if (previous.side !== 'carrier' || previous.documentType !== 'ConsignmentNote' || previous.attachmentSubtype !== '1110340' || previous.keyType !== 'Отложенный' || (previous.routePolicy && !direct) || previous.attachmentId === 'unprepared-carrier-title') throw new SabyError('validation', 'Не подтверждено намерение подписи титула НК.');
+  const remote = await client.readSigningDocument('carrier', previous.documentId, 'ConsignmentNote');
+  assertDocumentIdentity(remote, previous); assertCurrentAction(remote, previous);
+  const all = currentAttachments(remote, previous.revision);
+  const titles = all.filter(file => file.Подтип === '1110340');
+  const source = all.filter(file => file.Подтип === '1110339');
+  const extras = all.filter(file => !['1110339', '1110340'].includes(String(file.Подтип)));
+  const safeReceipts = direct && extras.every(file => file.Подтип === '' && file.Служебный === 'Да' && !hasErrors(file) && !rows(file.Подпись).length && !sabyText(file.ТребуемоеДействие) && sabyObject(file.Файл) && file.Файл.Имя === 'Ответ от ГИС ЭПД.xml');
+  if ((extras.length > 0 && !safeReceipts) || titles.length !== 1 || source.length !== 1 || !rows(source[0].Подпись).length ||
+      !safeIdentifier(titles[0].Идентификатор) || titles[0].Идентификатор === previous.attachmentId || all.some(file => file.Идентификатор === previous.attachmentId)) throw new SabyError('validation', 'Не подтверждён единственный заменённый титул НК; повторная подготовка запрещена.');
+  const binding = { ...previous, attachmentId: String(titles[0].Идентификатор) };
+  assertDocument(remote, binding, true); await assertCurrentCertificate(client, binding);
+  const file = await client.downloadSigningAttachment('carrier', binding.documentId, binding.attachmentId, binding.revision, 'ConsignmentNote');
+  if (!file.bytes.length || !file.name.toLowerCase().endsWith('.xml')) throw new SabyError('validation', 'Не подтверждён XML заменённого титула НК.');
+  const attachments = [{ id: binding.attachmentId, name: file.name, subtype: binding.attachmentSubtype, sha256: hash(file.bytes), bytes: file.bytes }];
+  const result = { binding, attachments, preparedHash: signingManifestHash({ binding, attachments }) };
+  await verifyPreparedSigning(client, result);
+  return result;
+}
 /** Read-only preflight; never regenerates files or resubmits a lost request. */
 export async function verifyPreparedSigning(client: SabyClient, prepared: SabyPreparedSigning): Promise<void> {
   assertSigningManifest(prepared);
@@ -284,22 +349,38 @@ export async function restorePreparedSigning(client: SabyClient, manifest: SabyS
   return prepared;
 }
 /** Capture a pre-existing signature by reading it. The sentinel binding can never be submitted as an action. */
-export async function captureSignedTitle(client: SabyClient, side: SabySigningSide, remote: SabyObject, certificate: SabySigningCertificate): Promise<SabySigningManifest> {
+export async function captureSignedTitle(client: SabyClient, side: SabySigningSide, remote: SabyObject, certificate: SabySigningCertificate, documentType?: 'ConsignmentNote'): Promise<SabySigningManifest> {
   const organization = side === 'sender' ? client.config.customer : client.config.carrier;
   const counterparty = side === 'sender' ? client.config.carrier : client.config.customer;
-  const revision = currentRevision(remote); const subtype = side === 'sender' ? '1110361' : '1110362';
+  if (documentType && (side !== 'carrier' || client.config.documentMode === 'nk-direct-v1')) throw new SabyError('validation', 'Наблюдаемая подпись разрешена только для входящего титула НК.');
+  const revision = currentRevision(remote); const subtype = documentType ? '1110340' : side === 'sender' ? '1110361' : '1110362';
   const titles = currentAttachments(remote, revision ?? '').filter(row => row.Подтип === subtype);
   if (!revision || titles.length !== 1 || certificate.organizationInn !== organization.inn || certificate.organizationKpp !== organization.kpp) throw new SabyError('validation', 'Не подтверждены ранее подписанный титул и его сторона.');
-  const binding: SabySigningBinding = { side, documentId: String(remote.Идентификатор ?? ''), revision, stageId: 'observed-signed', stageName: side === 'sender' ? 'Отправка' : 'Утверждение', actionName: side === 'sender' ? 'Отправить' : 'Утвердить',
-    certificateThumbprint: certificate.thumbprint, organizationInn: organization.inn, organizationKpp: organization.kpp, counterpartyInn: counterparty.inn, counterpartyKpp: counterparty.kpp, attachmentSubtype: subtype, attachmentId: String(titles[0].Идентификатор ?? '') };
+  const binding: SabySigningBinding = { side, documentId: String(remote.Идентификатор ?? ''), revision, stageId: 'observed-signed', stageName: documentType ? 'Получение груза' : side === 'sender' ? 'Отправка' : 'Утверждение', actionName: documentType ? 'Принят' : side === 'sender' ? 'Отправить' : 'Утвердить',
+    certificateThumbprint: certificate.thumbprint, organizationInn: organization.inn, organizationKpp: organization.kpp, counterpartyInn: counterparty.inn, counterpartyKpp: counterparty.kpp, attachmentSubtype: subtype, attachmentId: String(titles[0].Идентификатор ?? ''), ...(documentType ? { documentType, keyType: 'Отложенный' as const } : {}) };
   assertDocument(remote, binding, false);
-  const downloaded = await client.downloadSigningAttachment(side, binding.documentId, binding.attachmentId, revision);
+  const downloaded = await client.downloadSigningAttachment(side, binding.documentId, binding.attachmentId, revision, documentType);
   const attachments = [{ id: binding.attachmentId, name: downloaded.name, subtype, sha256: hash(downloaded.bytes) }];
   const manifest = { binding, attachments, preparedHash: signingManifestHash({ binding, attachments }) };
   const evidence = await readSigningEvidence(client, manifest);
   if (evidence.state !== 'confirmed') throw new SabyError('validation', evidence.reason);
   return manifest;
 }
+/** A direct NK document stays in state 10 while its next, carrier action is available.
+ * This is stage evidence only; callers must first verify every pinned T1 byte and signature. */
+function directSenderReachedCarrierStage(document: SabyObject, binding: SabySigningBinding): boolean {
+  if (binding.documentType !== 'ConsignmentNote' || binding.routePolicy !== 'nk-direct-v1' || binding.side !== 'sender' || sabyOrderStateCode(document) !== '10' ||
+      !Array.isArray(document.ТекущиеЭтапы) || document.ТекущиеЭтапы.length !== 1 || !sabyObject(document.ТекущиеЭтапы[0]) || !Array.isArray(document.Этап)) return false;
+  const summary = document.ТекущиеЭтапы[0];
+  if (!safeIdentifier(summary.Идентификатор) || summary.Идентификатор === binding.stageId || hasErrors(summary)) return false;
+  const matching = rows(document.Этап).filter(stage => stage.Идентификатор === summary.Идентификатор);
+  if (matching.length !== 1) return false;
+  const stage = matching[0];
+  if (stage.Название !== 'Получение груза' || stage.Служебный === 'Да' || stage.Завершен === 'Да' || stage.Актуален === 'Нет' || hasErrors(stage)) return false;
+  const acceptance = rows(stage.Действие).filter(action => action.Название === 'Принят');
+  return acceptance.length === 1 && acceptance[0].ТребуетПодписания === 'Да' && !hasErrors(acceptance[0]);
+}
+
 /** Read-back is evidence reported by Saby, not a claim of independent CMS cryptographic verification. */
 export async function readSigningEvidence(client: SabyClient, manifest: SabySigningManifest): Promise<SabySigningEvidence> {
   assertSigningManifest(manifest); const binding = manifest.binding;
@@ -334,6 +415,6 @@ export async function readSigningEvidence(client: SabyClient, manifest: SabySign
   if (unsigned && ['0', '10'].includes(code)) return { state: 'unconfirmed', reason: 'Saby не подтвердил постановку на подписание: заявка остаётся на исходном этапе без подписей всех подготовленных файлов.', signatureThumbprints: [...fingerprints] };
   if (unsigned) return { state: 'pending', reason: code === '23' ? 'Saby поставил заявку в ожидание подписания.' : 'Saby ещё не вернул подписи всех подготовленных файлов.', signatureThumbprints: [...fingerprints] };
   await assertCurrentCertificate(client, binding);
-  const complete = binding.documentType === 'ConsignmentNote' ? ['3', '4', '7'].includes(code) : binding.side === 'sender' ? ['3', '4', '7'].includes(code) : code === '7';
+  const complete = binding.documentType === 'ConsignmentNote' ? ['3', '4', '7'].includes(code) || directSenderReachedCarrierStage(document, binding) : binding.side === 'sender' ? ['3', '4', '7'].includes(code) : code === '7';
   return { state: complete ? 'confirmed' : 'pending', reason: complete ? 'Saby подтвердил выбранную подпись и завершение этапа.' : 'Подпись получена; ожидается завершение этапа Saby.', signatureThumbprints: [...fingerprints] };
 }

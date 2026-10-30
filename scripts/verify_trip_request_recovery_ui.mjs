@@ -91,9 +91,8 @@ try {
       await current.call('/api/shipment-trips', 'POST', current.tripBody([committed]));
       // A legitimate catalog change after consumption hides the company from active lookup.
       await current.store.mutate(current.source, data => { data.companies.find(row => row.id === 'qa-client').directoryArchived = true; return { result: null, changed: true }; });
-      const refreshed = page.waitForResponse(response => response.url() === current.base + '/api/trip-requests' && response.request().method() === 'GET');
-      await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await refreshed;
-      await expect(dialog.getByRole('combobox', { name: /^Место доставки/ })).toHaveValue('');
+      // Focus refresh was deliberately removed from TripsPage. Retry must still
+      // replay the stored body after authoritative server-side catalog archival.
       await dialog.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
       await expect(dialog).toHaveCount(0);
       assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1]);
@@ -102,11 +101,11 @@ try {
       assert.equal(Object.keys(stored.tripRequests).length, 1); assert.equal(stored.tripRequests[committed.id].status, 'consumed');
       assert.equal(stored.tripRequests[committed.id].latitude, '55.712345');
       assert.equal(stored.directories.addresses[0].latitude, undefined);
-      check(`${engine}: lost creation reply replays byte-identical selected point after catalog disappears; consumed request is not duplicated and directory is unchanged`);
+      check(`${engine}: lost creation reply replays byte-identical selected point after company archival; consumed request is not duplicated and directory is unchanged`);
       await context.close();
     }
     await current.close(); current = await fixture();
-    for (const mode of ['same-point', 'different-point', 'omitted-point']) {
+    for (const mode of ['same-point', 'different-point', 'omitted-point', 'different-date']) {
       const source = await current.newRequest(`PATCH recovery ${mode}`);
       const { page, context } = await openPage(browser, current);
       await page.goto(current.base + '/#trips');
@@ -119,7 +118,7 @@ try {
         if (route.request().method() !== 'PATCH') { await route.continue(); return; }
         bodies.push(route.request().postData());
         const submitted = route.request().postDataJSON();
-        const actual = bodies.length === 1 && mode !== 'same-point' ? { ...submitted, latitude: '55.8', longitude: '37.9' } : submitted;
+        const actual = bodies.length === 1 && mode === 'different-date' ? { ...submitted, executionDate: '2099-11-01' } : bodies.length === 1 && mode !== 'same-point' ? { ...submitted, latitude: '55.8', longitude: '37.9' } : submitted;
         const response = await route.fetch({ postData: JSON.stringify(actual) });
         if (bodies.length === 1) { assert.equal(response.status(), 200); await route.abort('failed'); }
         else await route.fulfill({ response });
@@ -132,15 +131,16 @@ try {
         await expect(dialog.getByRole('button', { name: 'Загрузить актуальную заявку', exact: true })).toBeVisible();
         await expect(dialog).toBeVisible();
         await dialog.getByRole('button', { name: 'Загрузить актуальную заявку', exact: true }).click();
-        await expect(dialog.getByText('Точка выбрана: 55.800000, 37.900000', { exact: true })).toBeVisible();
+        if (mode === 'different-date') await expect(dialog.getByLabel('Дата выполнения', { exact: true })).toHaveValue('2099-11-01');
+        else await expect(dialog.getByText('Точка выбрана: 55.800000, 37.900000', { exact: true })).toBeVisible();
         await expect(dialog.getByRole('button', { name: 'Сохранить заявку', exact: true })).toBeDisabled();
         await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
         await expect(dialog).toHaveCount(0);
       }
       assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1]);
       const stored = (await current.store.read(current.source)).tripRequests[source.id];
-      assert.equal(stored.latitude, mode === 'same-point' ? '55.712345' : '55.8');
-      assert.equal(new URL(stored.mapUrl).searchParams.get('pt'), mode === 'same-point' ? '37.623456,55.712345' : '37.9,55.8');
+      assert.equal(stored.latitude, ['same-point', 'different-date'].includes(mode) ? '55.712345' : '55.8');
+      assert.equal(new URL(stored.mapUrl).searchParams.get('pt'), ['same-point', 'different-date'].includes(mode) ? '37.623456,55.712345' : '37.9,55.8');
       check(`${engine}: lost PATCH ${mode} replays identical body; recovery validates point and navigation URL alongside litres/comment`);
       await context.close();
     }

@@ -10,6 +10,8 @@ import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 import { validPhone, validVehicleMetadata, withFleetDirectories } from './fleet-directory';
 import { TEMPLATE_PROFIT_RULE } from '../web/src/shipment-calculations';
+import { readOperatorCatalog } from '../web/src/operator-catalog';
+import { saveOperatorDirectory } from './operator-directories';
 
 export const normalizeName = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
 export const normalizePlate = (value: string) => value.normalize('NFKC').toUpperCase().replace(/[\s-]/g, '').replace(/[ABCEHKMOPTXY]/g, c => ({ A:'А',B:'В',C:'С',E:'Е',H:'Н',K:'К',M:'М',O:'О',P:'Р',T:'Т',X:'Х',Y:'У' }[c]!));
@@ -38,11 +40,15 @@ export function directoriesFor(base: Snapshot, store: OperationsData): Directori
   };
   const local = Object.values(store.shipments).filter(row => !row.deleted);
   const duplicates = base.quality.aliasCandidates.map(group => ({ kind: 'companies', ...group, reason: 'Сходные названия без подтверждённого общего ИНН. Связи сохранены; требуется проверка.' }));
-  const companies = [...base.companies.filter(c => !store.companies.some(s => s.id === c.id)), ...store.companies].filter(company => !saved.deletedEntries?.companies?.includes(company.id));
+  const savedCompanyIds = new Set(store.companies.map(company => company.id));
+  const deletedCompanyIds = new Set(saved.deletedEntries?.companies);
+  const companies = [...base.companies.filter(c => !savedCompanyIds.has(c.id)), ...store.companies].filter(company => !deletedCompanyIds.has(company.id));
   const names = new Map<string, typeof companies>();
   for (const company of companies) { const key = normalizeName(company.name); names.set(key, [...(names.get(key) ?? []),company]); }
   for (const group of names.values()) if (group.length > 1) duplicates.push({kind:'companies',ids:group.map(c=>c.id),names:group.map(c=>c.name),reason:'Одинаковое название; идентичность юридического лица требует подтверждения по ИНН.'});
   return { ...saved,
+    operatorGroups: readOperatorCatalog(saved).groups,
+    operatorServices: readOperatorCatalog(saved).services,
     oilDepots: (saved.oilDepots ?? []).filter(row => !saved.deletedEntries?.oilDepots?.includes(row.id)),
     defaults: { profit: TEMPLATE_PROFIT_RULE },
     customerManagers: saved.customerManagers ?? [],
@@ -54,6 +60,7 @@ export function directoriesFor(base: Snapshot, store: OperationsData): Directori
 }
 export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData, previousAddress?: ShipmentAddress) {
   const { kind } = input;
+  if (kind === 'operatorGroups' || kind === 'operatorServices') return saveOperatorDirectory(kind, input, snapshot, data);
   if (kind === 'oilDepots') return saveOilDepot(input, snapshot, data);
   if (kind === 'customerManagers') {
     if (Object.keys(input).some(key => !['kind','companyId','managerId'].includes(key))) throw new ApiError(400, 'Неизвестное поле связи клиента и менеджера.');

@@ -55,6 +55,25 @@ test('fills driver and vehicle in current unsigned title, validates XSD and repe
     await f.run(); assert.equal(f.client.writes, 1); assert.equal(f.record.carrierFill!.vehicleSaved, true);
   } finally { await f.close(); }
 });
+test('new carrier title rounds total capacity without inventing compartments and legacy record remains blocked', async () => {
+  const f = await fixture();
+  try {
+    const vehicle = f.snapshot.directories!.vehicles.find(row => row.id === 'vehicle')!;
+    vehicle.capacityLitres = '15048'; delete vehicle.compartmentsLitres;
+    const before = structuredClone(vehicle);
+    const input = carrierDetailsInput(f.snapshot, f.record);
+    assert.deepEqual(input.blockers, []);
+    const result = patchCarrierDetails(emptyDraft, senderXml, input);
+    validateXsd(result.xml);
+    assert.match(new TextDecoder('windows-1251').decode(result.xml), /Вместим="15.05"/);
+    assert.deepEqual(vehicle, before);
+    const legacy = structuredClone(f.record); delete legacy.snapshot.volumeRoundingVersion;
+    assert.ok(carrierDetailsInput(f.snapshot, legacy).blockers.some(message => /вместимость/.test(message)));
+    vehicle.capacityLitres = '4.999';
+    assert.ok(carrierDetailsInput(f.snapshot, f.record).blockers.some(message => /округления.*нулю/.test(message)));
+    assert.equal(f.client.writes, 0);
+  } finally { await f.close(); }
+});
 test('bad payload units do not prevent saving complete driver, and never become tonnes or fabricated vehicle', async () => {
   const f = await fixture();
   try {

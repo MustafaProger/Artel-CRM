@@ -27,3 +27,13 @@ dialog.archive-drawer{position:fixed;inset:0 0 0 auto;margin:0;width:min(520px,1
 .archive-drawer .archive-file-edit{background:#fff3cd;border:1px solid #e2c56f;color:#775516}.archive-drawer .archive-file-edit:hover{background:#ffe8a3}
 .archive-drawer .archive-file-download{background:#e3f2e9;border:1px solid #aacfb8;color:#176849}.archive-drawer .archive-file-download:hover{background:#cee8da}
 .archive-file-done{justify-self:end}
+
+.archive-drawer-footer .archive-delete-item{margin-right:auto}
+.archive-delete-dialog{width:min(440px,calc(100vw - 32px));max-height:calc(100dvh - 32px);box-sizing:border-box;border:1px solid var(--line,#e4e7ec);border-radius:20px;padding:24px;color:var(--text,#243c34);background:var(--surface,#fff);overflow:auto}
+.archive-delete-dialog::backdrop{background:#182e2459}
+.archive-delete-dialog h2{margin:0 0 16px;font-size:20px}
+.archive-delete-dialog p{font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+.archive-delete-dialog .archive-actions{justify-content:flex-end;margin-top:20px}
+.archive-delete-dialog .button{min-height:44px}
+.archive-delete-dialog .archive-danger{background:#b42318;color:white;border-color:#b42318}
+@media(max-width:380px){.archive-drawer-footer>.archive-actions{gap:8px}.archive-drawer-footer>.archive-actions>.button{padding-inline:10px;font-size:13px}.archive-drawer-footer .archive-delete-item{gap:5px}}

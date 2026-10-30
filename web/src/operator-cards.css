@@ -1,0 +1,55 @@
+/* Shared card rhythm for payment plans, returns and deferred refuellings. */
+.operator-workspace .operator-card-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,350px),1fr)); align-items:start; gap:16px; }
+.operator-workspace .operator-card { display:grid; min-width:0; gap:14px; padding:18px; border:1px solid var(--line,#dce4df); border-radius:18px; background:var(--surface,#fff); }
+.operator-workspace .operator-card > * { min-width:0; }
+.operator-workspace .operator-card > header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.operator-workspace .operator-card h3 { margin:0 0 6px; color:var(--text,#25362e); font-size:16px; line-height:1.4; font-weight:600; letter-spacing:-.015em; overflow-wrap:anywhere; }
+.operator-workspace .operator-card header > div > span { color:#5b6d62; font-size:12px; line-height:1.5; }
+.operator-workspace .operator-card :is(.operator-status,.operator-case-status) { display:inline-block; flex:none; padding:4px 8px; border-radius:7px; font-size:11px; line-height:1.5; white-space:nowrap; }
+.operator-workspace .operator-card :is(.operator-plan-totals,.operator-case-totals) { gap:12px; margin:0; }
+.operator-workspace .operator-card :is(.operator-plan-totals > span,.operator-case-totals dt) { font-size:11px; color:#5b6d62; line-height:1.5; }
+.operator-workspace .operator-card .operator-plan-totals > span { gap:5px; }
+.operator-workspace .operator-card :is(.operator-plan-totals strong,.operator-case-totals dd) { margin:5px 0 0; font-size:16px; font-weight:600; line-height:1.4; font-variant-numeric:tabular-nums; }
+.operator-workspace .operator-card .operator-plan-totals strong { margin:0; }
+.operator-workspace .operator-card :is(.operator-plan-details,.operator-case-history,.operator-case-origin) { padding-top:12px; }
+.operator-workspace .operator-card .operator-case-origin { gap:6px; }
+.operator-workspace .operator-card .operator-case-origin p { line-height:1.5; }
+.operator-workspace .operator-card :is(.operator-plan-details summary,.operator-case-history summary) { font-size:12px; min-height:30px; }
+.operator-workspace .operator-card .operator-case-task { gap:5px; padding:8px 10px; border-radius:8px; border-left:2px solid #bad5c6; background:#f6faf7; }
+.operator-workspace .operator-card .operator-case-task.is-overdue { border-left-color:#d8be82; background:#fcf9f0; }
+.operator-workspace .operator-card .operator-case-task > strong { display:flex; align-items:center; gap:6px; font-size:12px; line-height:1.5; }
+.operator-workspace .operator-card .operator-case-task > strong svg { flex:none; }
+.operator-workspace .operator-card .operator-case-task > p { font-size:12px; line-height:1.45; }
+.operator-workspace .operator-card .operator-case-task > small { font-size:11px; line-height:1.5; }
+.operator-workspace .operator-card .operator-case-kind { margin-bottom:5px; color:#176647; font-size:11px; }
+.operator-workspace .operator-card > .operator-card-actions { display:flex; flex-wrap:nowrap; justify-content:flex-start; align-items:center; gap:5px; }
+.app-shell .operator-card > .operator-card-actions .button { flex:1 1 0; width:auto; min-width:0; min-height:38px; padding:8px 6px; gap:5px; font-size:12px; line-height:18px; white-space:nowrap; justify-content:center; }
+.operator-card > .operator-card-actions svg { width:15px; height:15px; flex:none; }
+.operator-card :is(button,summary):focus-visible { outline:2px solid #216447; outline-offset:3px; }
+@media (max-width:600px) {
+  .operator-workspace .operator-card-grid { grid-template-columns:minmax(0,1fr); }
+  .operator-workspace .operator-card { padding:16px; gap:14px; }
+  .operator-workspace .operator-card > header { flex-wrap:wrap; }
+  .operator-workspace .operator-card :is(.operator-plan-totals strong,.operator-case-totals dd) { font-size:15px; }
+  .operator-workspace .operator-card :is(.operator-plan-details summary,.operator-case-history summary,.operator-case-source) { min-height:44px; }
+}
+
+/* Payment and settlement actions share the same compact, equal-width controls. */
+.app-shell .operator-card > .operator-card-actions :is(.operator-return-action,.operator-edit-action) { color:#7b4b13; background:#fff3df; border-color:#e4c490; }
+.app-shell .operator-card > .operator-card-actions .operator-operations-action { color:#17623f; background:#e4f3e9; border-color:#a8cfb6; }
+.app-shell .operator-card > .operator-card-actions .operator-fuel-action { color:#245b89; background:#e8f1fb; border-color:#b9d2eb; }
+@media(hover:hover) {
+  .app-shell .operator-card > .operator-card-actions :is(.operator-return-action,.operator-edit-action):hover { background:#fbe7c5; border-color:#cda464; }
+  .app-shell .operator-card > .operator-card-actions .operator-operations-action:hover { background:#cfe9d8; border-color:#86b89a; }
+  .app-shell .operator-card > .operator-card-actions .operator-fuel-action:hover { background:#d9e9f9; border-color:#8fb6dd; }
+}
+/* Size monetary columns to their card, without breaking the currency onto its own line. */
+.operator-workspace .operator-plan-card { container-type:inline-size; }
+.operator-workspace .operator-plan-card .operator-plan-totals { gap:8px; }
+.operator-workspace .operator-plan-card .operator-plan-totals > span { min-width:0; font-size:clamp(9px,3.1cqi,11px); }
+.operator-workspace .operator-plan-card .operator-plan-totals strong { font-size:clamp(10px,4.2cqi,16px); white-space:nowrap; overflow-wrap:normal; }
+@container (max-width:280px) {
+  .operator-plan-card .operator-plan-totals { grid-template-columns:minmax(0,1fr); gap:7px; }
+  .operator-workspace .operator-plan-card .operator-plan-totals > span { grid-template-columns:minmax(0,1fr) auto; align-items:baseline; gap:8px; font-size:11px; }
+  .operator-workspace .operator-plan-card .operator-plan-totals strong { font-size:14px; }
+}

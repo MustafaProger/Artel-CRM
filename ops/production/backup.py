@@ -21,6 +21,19 @@ with (destination / '.backup.lock').open('w') as lock:
     # OperationsStore replaces whole files atomically, so this read is a single revision.
     raw = (ROOT / 'data/operations/operations.json').read_bytes()
     envelope = json.loads(raw)
+    storage_layout = 'legacy'
+    if envelope.get('format') == 'artel-work-partition-v1':
+        # Do not archive independently copied files: they could straddle a commit.
+        # Exporter uses the runtime's consistency latch and replays any journal.
+        exported = subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
+                                   'exec', '-T', 'crm', 'node', '/app/server-render/export-operations.mjs'],
+                                  capture_output=True, timeout=120)
+        if exported.returncode:
+            raise RuntimeError('Consistent partition export failed; no backup published')
+        raw = exported.stdout
+        envelope = json.loads(raw)
+        storage_layout = 'partitioned-flattened'
+
     if not isinstance(envelope.get('data'), dict) or not isinstance(envelope.get('sha256'), str):
         raise RuntimeError('Invalid operations envelope; no backup published')
     # Use JavaScript serialization, exactly as OperationsStore does; never put data in argv/logs.
@@ -36,7 +49,7 @@ with (destination / '.backup.lock').open('w') as lock:
     with tempfile.TemporaryDirectory(prefix='.backup-', dir=destination) as temporary:
         folder = Path(temporary)
         (folder / 'operations.json').write_bytes(raw)
-        manifest = {'createdAt': stamp, 'revision': envelope['data']['revision'],
+        manifest = {'createdAt': stamp, 'storageLayout': storage_layout, 'revision': envelope['data']['revision'],
                     'operationsSha256': hashlib.sha256(raw).hexdigest()}
         (folder / 'manifest.json').write_text(json.dumps(manifest))
         archive = folder / 'backup.tar.gz'

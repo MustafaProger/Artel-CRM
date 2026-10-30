@@ -1,3 +1,4 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import assert from 'node:assert/strict';
 import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
@@ -21,11 +22,12 @@ function subscription(name = randomUUID()) {
   const key = createECDH('prime256v1'); key.generateKeys();
   return { endpoint: `https://fcm.googleapis.com/fcm/send/${name}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
 }
-async function fixture(sender: PushSender = async () => {}) {
+async function fixture(sender: PushSender = async () => {}, deferred = false) {
+  let wakeups = 0;
   const folder = await mkdtemp(resolve(tmpdir(), 'artel-push-'));
   const store = new OperationsStore(folder);
   const cronSecret = randomBytes(32).toString('hex');
-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store, pushConfig: config, pushSender: sender, cronSecret });
+  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store, pushConfig: config, pushSender: sender, ...(deferred ? {workNotificationWakeup: () => { wakeups++; }} : {}), cronSecret });
   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -45,7 +47,8 @@ async function fixture(sender: PushSender = async () => {}) {
   const second = await director('/api/auth/users', 'POST', { login: 'push-manager', name: 'Manager QA', role: 'manager', managerId: employee.body.entry.id, password });
   assert.equal(second.status, 201);
   assert.equal((await manager('/api/auth/login', 'POST', { login: 'push-manager', password })).status, 200);
-  return { store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(folder, base.provenance.sourceSha256);
+  return { wakeups: () => wakeups, store, director, manager, anon, cronSecret, users: [first.body.user, second.body.user], client,
     close: async () => { await new Promise<void>(done => server.close(() => done())); await rm(folder, { recursive: true, force: true }); } };
 }
 
@@ -57,7 +60,7 @@ test('push endpoints enforce ownership, subscription validation, logout, rate li
     assert.equal((await f.anon('/api/push/config')).status, 401);
     assert.equal((await f.director('/api/push/dispatch')).status, 403);
     assert.equal((await f.director('/api/push/config')).body.enabled, true);
-    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: sub, userId: f.users[0].id })).status, 200);
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub, userId: f.users[0].id })).status, 200);
     assert.equal((await f.store.read(base.provenance.sourceSha256)).push!.devices[0].userId, f.users[1].id);
     assert.equal((await f.director('/api/push/test', 'POST', { endpoint: sub.endpoint })).status, 404);
     assert.equal((await f.director('/api/push/subscription', 'DELETE', { endpoint: sub.endpoint })).status, 200);
@@ -68,7 +71,7 @@ test('push endpoints enforce ownership, subscription validation, logout, rate li
     const cron = await f.anon('/api/push/dispatch', 'GET', undefined, { Authorization: `Bearer ${f.cronSecret}` });
     assert.equal(cron.status, 200);
     assert.equal(cron.body.sent, 0);
-    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: { ...sub, endpoint: 'https://127.0.0.1/private' } })).status, 400);
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: { ...sub, endpoint: 'https://127.0.0.1/private' } })).status, 400);
     assert.equal((await f.manager('/api/auth/logout', 'POST', {})).status, 200);
     assert.equal((await f.store.read(base.provenance.sourceSha256)).push!.devices.length, 0);
   } finally { await f.close(); }
@@ -78,8 +81,8 @@ test('deleting an employee revokes push subscriptions and test probes while pres
   const f = await fixture();
   try {
     const managerSub = subscription(), directorSub = subscription();
-    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: managerSub })).status, 200);
-    assert.equal((await f.director('/api/push/subscription', 'POST', { subscription: directorSub })).status, 200);
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: managerSub })).status, 200);
+    assert.equal((await f.director('/api/push/subscription', 'POST', { explicit: true, subscription: directorSub })).status, 200);
     const probe = await f.manager('/api/push/test', 'POST', { endpoint: managerSub.endpoint });
     assert.equal(probe.status, 200);
     const user = f.users[1];
@@ -87,7 +90,7 @@ test('deleting an employee revokes push subscriptions and test probes while pres
     const stored = await f.store.read(base.provenance.sourceSha256);
     assert.deepEqual(stored.push!.devices.map(device => device.userId), [f.users[0].id]);
     assert.equal(Object.values(stored.push!.probes ?? {}).some(row => row.userId === user.id), false);
-    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: managerSub })).status, 401);
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: managerSub })).status, 401);
   } finally { await f.close(); }
 });
 
@@ -96,7 +99,7 @@ test('push tests distinguish provider acceptance from notification creation and 
   const f = await fixture(async (_device, payload) => { probe = JSON.parse(payload).probe; });
   try {
     const sub = subscription();
-    assert.equal((await f.manager('/api/push/subscription', 'POST', { subscription: sub })).status, 200);
+    assert.equal((await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub })).status, 200);
     const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
     assert.equal(result.status, 200);
     assert.ok(probe);
@@ -147,7 +150,7 @@ test('a notification receipt may arrive before provider completion; concurrent r
   });
   try {
     const sub = subscription();
-    await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub });
     const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
     assert.equal(result.status, 200);
     assert.equal(confirmedBeforeProvider?.status, 'confirmed');
@@ -167,7 +170,7 @@ test('a confirmed browser receipt remains successful when the sender times out w
   });
   try {
     const sub = subscription();
-    await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub });
     const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
     assert.equal(result.status, 200);
     assert.equal(result.body.ok, true);
@@ -194,7 +197,7 @@ test('acceptance storage failures after sending preserve the probe id and any al
     const mutate = f.store.mutate.bind(f.store);
     try {
       const sub = subscription();
-      await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+      await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub });
       const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
       f.store.mutate = mutate;
       assert.equal(result.status, 200);
@@ -217,7 +220,7 @@ test('provider failures never claim acceptance; expired receipt tokens are refus
   const f = await fixture(async (_device, payload) => { probe = JSON.parse(payload).probe; throw Object.assign(new Error('Provider unavailable'), { statusCode: 503 }); });
   try {
     const sub = subscription();
-    await f.manager('/api/push/subscription', 'POST', { subscription: sub });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub });
     assert.equal((await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint })).status, 502);
     assert.ok(probe);
     const path = `/api/push/test-status?probeId=${probe.id}`;
@@ -266,8 +269,8 @@ test('push dispatch persists deliveries, routes to the current assignee, skips d
   const f = await fixture();
   try {
     const a = subscription(), b = subscription();
-    await f.director('/api/push/subscription', 'POST', { subscription: a });
-    await f.manager('/api/push/subscription', 'POST', { subscription: b });
+    await f.director('/api/push/subscription', 'POST', { explicit: true, subscription: a });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: b });
     const tasks = [];
     for (const [name, fields] of [
       ['due', { assigneeId: f.users[1].id }], ['done', { status: 'done' }], ['archive', { archived: true }], ['future', { reminderAt: new Date(now + 3600000).toISOString() }],
@@ -301,8 +304,8 @@ test('temporary failures retry, expired endpoints are removed, and company remin
   const f = await fixture();
   try {
     const a = subscription(), b = subscription();
-    await f.manager('/api/push/subscription', 'POST', { subscription: a });
-    await f.manager('/api/push/subscription', 'POST', { subscription: b });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: a });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: b });
     const companyId = (await f.director('/api/snapshot')).body.companies[0].id;
     const record = await f.director('/api/work/companies', 'POST', { companyId, question: 'Company QA', assigneeId: f.users[1].id, reminderAt: new Date(now - 1000).toISOString() });
     assert.equal(record.status, 201);
@@ -358,7 +361,7 @@ test('scheduler verifies signed GitHub identity, audience, repository, branch an
 test('delivery result retries storage conflicts without resending, and an interrupted lease expires safely', async () => {
   const f = await fixture();
   try {
-    await f.manager('/api/push/subscription', 'POST', { subscription: subscription() });
+    await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: subscription() });
     await f.manager('/api/work/tasks', 'POST', { title: 'Lease QA', reminderAt: new Date(now - 1000).toISOString() });
     let writes = 0, sends = 0;
     const conflicting = {
@@ -382,4 +385,39 @@ test('delivery result retries storage conflicts without resending, and an interr
     await dispatchReminders(f.store, base.provenance.sourceSha256, config, async () => { sends++; }, now + 120001);
     assert.equal(sends, 2);
   } finally { await f.close(); }
+});
+
+test('async notification probe acknowledges before a slow provider and persists its failure',async()=>{
+ let release!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve});
+ const f=await fixture(async()=>{await gate;throw new Error('synthetic provider offline')});
+ try {
+  const sub=subscription();
+  assert.equal((await f.manager('/api/push/subscription','POST',{explicit:true,subscription:sub})).status,200);
+  const result=await Promise.race([f.manager('/api/push/test','POST',{endpoint:sub.endpoint,async:true}),new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('HTTP acknowledgement waited for provider')),2000))]);
+  assert.equal(result.status,202);assert.equal(result.body.queued,true);
+  const path=`/api/push/test-status?probeId=${result.body.probeId}`;
+  assert.equal((await f.manager(path)).body.status,'pending');release();
+  let status;
+  for(let i=0;i<30;i++){status=(await f.manager(path)).body;if(status.status==='failed')break;await new Promise(resolve=>setTimeout(resolve,20))}
+  assert.equal(status.status,'failed');assert.equal(status.failure,'provider_unavailable');
+ }finally{release();await f.close()}
+});
+
+
+test('deferred Work response persists assignment before wakeup and dispatches durably after restart without duplicates', async () => {
+  let sent = 0;
+  const f = await fixture(async () => { sent++; }, true);
+  try {
+    assert.equal((await f.manager('/api/push/subscription', 'POST', {subscription: subscription(), explicit: true})).status, 200);
+    const created = await f.director('/api/work/tasks', 'POST', {title:'Задача без ожидания push', assigneeId:f.users[1].id, requestId:randomUUID()});
+    assert.equal(created.status, 201); assert.equal(sent, 0); assert.equal(f.wakeups(), 1);
+    const reloaded = new OperationsStore(resolve(f.store.path, '..'));
+    assert.equal((await reloaded.read(base.provenance.sourceSha256)).push?.taskAssignments?.[created.body.entry.id].assigneeId, f.users[1].id);
+    await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;});
+    assert.equal(sent, 1);
+    await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;}); assert.equal(sent, 1);
+    assert.equal((await f.manager(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', {version:1,status:'done'})).status, 200);
+    assert.equal(f.wakeups(), 1);
+  } finally {await f.close();}
 });

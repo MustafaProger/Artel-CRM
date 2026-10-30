@@ -1,3 +1,4 @@
+import { NATIVE_APPROVED_REDIRECTION_METHOD } from './saby-consignment-evidence';
 import { ApiError } from './api-error';
 import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import { isUnpackagedDiesel } from '../web/src/trip-input-rules';
@@ -8,9 +9,10 @@ import { allocateTrip } from '../web/src/trip-calculations';
 import { readIntermediateStops } from '../web/src/trip-route';
 import type { OperationsData } from './operations-store';
 import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, sabyConsignmentBlockers } from './saby-consignment-note';
-import { sabyConfigurationBlockers, sabyObject, type SabyConfig } from './saby-client';
+import { SabyClient, sabyConfigurationBlockers, sabyObject, type SabyConfig } from './saby-client';
 import { sabyAllowedPickupAt, sabyTransportBlockers, sabyTransportDraftBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
 import type { TripSabyPreparation } from './trip-saby-workflow';
+import { SABY_VOLUME_ROUNDING_VERSION } from './saby-volume';
 
 /** Server-only confirmed recurring facts. No credentials or historical document payloads. */
 export interface TripSabyAutofillSettings {
@@ -38,8 +40,11 @@ const loadingRole = (source: Snapshot, companyId?: string): EtrnLoadingParty => 
 const profileConfigCargo = (config: SabyConfig, productId: string | null) => config.transportProfile?.cargoByProductId[productId || ''];
 const exact = (value: string | undefined, divisor: number) => value && /^\d+(?:\.\d+)?$/.test(value) ? new Decimal(value).div(divisor).toFixed() : '';
 
-/** Pure preflight: never reserves numbers or creates external counterparty cards. */
-export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): TripSabyPreparation {
+export interface NkDirectEtrnPreparation { deliveries: TripSabyPreparation['deliveries']; blockers: string[] }
+function prepare(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings: TripSabyAutofillSettings, direct: false): TripSabyPreparation;
+function prepare(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings: TripSabyAutofillSettings, direct: true): NkDirectEtrnPreparation;
+/** Pure common delivery preflight. The direct branch never constructs or validates a TransportOrder. */
+function prepare(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings: TripSabyAutofillSettings, direct: boolean): TripSabyPreparation | NkDirectEtrnPreparation {
   const originalCount = trip.customers.length;
   trip = etrnTrip(source, trip);
   if (!trip.customers.length) throw new ApiError(409, ETRN_NOT_REQUIRED);
@@ -58,8 +63,7 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   if (!product?.documentName) blockers.push('В справочнике товара заполните полное наименование для документов.');
   if (!product?.dangerousGoodsSource) blockers.push('В справочнике товара укажите источник подтверждения характеристик опасного груза.');
   if (product?.cargoPackaging === 'packaged') blockers.push('Автоматическая подготовка Saby поддерживает дизельное топливо наливом; для груза в упаковке требуется отдельный профиль перевозки.');
-  // Both confirmed scenarios ship third-party fuel from Artel with NK as carrier;
-  // the CRM accounting organization does not change the document's consignor.
+  // Direct callers explicitly scope the sender to NK; historical order callers retain Artel.
   const sender = config.customer;
   const selectedCarrier = source.companies.find(company => company.id === trip.fields.carrier_id);
   // The ordinary trip selects a driver and vehicle. Its legal Saby carrier comes
@@ -92,7 +96,9 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   };
   const profileConfig = config.transportProfile;
   const contract = profileConfig?.contract ? { ...profileConfig.contract, ...(settings.contractDateFromTrip ? { date: trip.fields.date || '' } : {}) } : undefined;
-  const regulatory = settings.instructions?.regulatory || (contract?.name && contract.number && contract.date ? `Согласно ${contract.name} № ${contract.number} от ${contract.date.split('-').reverse().join('.')}` : '');
+  const regulatory = direct ? config.nkRegulatoryInstructions || '' : settings.instructions?.regulatory || (contract?.name && contract.number && contract.date ? `Согласно ${contract.name} № ${contract.number} от ${contract.date.split('-').reverse().join('.')}` : '');
+  if (direct && !config.consignmentSigner) blockers.push('Подтвердите ФИО и должность подписанта НК для прямой ЭТрН в серверных настройках.');
+  if (direct && !regulatory) blockers.push('Подтвердите обязательные указания НК по выполнению норм перевозки для прямой ЭТрН; договор АРТЭЛЬ с перевозчиком не используется.');
   const depot = directories?.oilDepots?.find(row => row.id === trip.fields.oil_depot_id);
   const owner = source.companies.find(row => row.id === depot?.ownerCompanyId);
   if (!depot) blockers.push('В рейсе выберите нефтебазу из отдельного справочника.');
@@ -106,10 +112,24 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
       loading_map_url: trip.fields.loading_map_url || depot.mapUrl || null, loading_latitude: trip.fields.loading_latitude || depot.latitude || null, loading_longitude: trip.fields.loading_longitude || depot.longitude || null } : {}) } };
   const deliveries = trip.customers.map((delivery, index) => {
     const snapshot = buildSabyConsignmentSnapshot(source, normalizedTrip, delivery.id, sender, transportCarrier, null);
+    const frozen = direct ? data.etrn?.trips[trip.id]?.direct?.deliveries.find(row => row.shipmentId === delivery.id)?.snapshot : undefined;
+    if (direct) {
+      snapshot.documentMode = 'nk-direct-v1';
+      // Rechecking an existing grant must reproduce its format version, including
+      // the absent version in pre-rounding records. All source facts stay fresh.
+      if (frozen) {
+        if (frozen.volumeRoundingVersion === undefined) delete snapshot.volumeRoundingVersion;
+        else snapshot.volumeRoundingVersion = frozen.volumeRoundingVersion;
+      }
+      if (!frozen || frozen.loadingDetailsVersion === 1) snapshot.loadingDetailsVersion = 1;
+      if (!frozen || frozen.carrierResponsibleVersion === 1) snapshot.carrierResponsibleVersion = 1;
+      if ((frozen ? frozen.loadingActorMode : data.etrn?.trips[trip.id]?.loadingActorMode) === 'sender') snapshot.loadingActorMode = 'sender';
+    }
     const p = snapshot.profile;
     const address = directories?.addresses.find(row => row.id === delivery.fields.unloading_address_id);
     p.confirmed = true;
-    p.order = { number: '', date: trip.fields.date || '' };
+    // FNS 5.01 requires both attributes even without a separate order. No IdZak/link is generated.
+    p.order = { number: direct ? 'Без номера' : '', date: trip.fields.date || '' };
     p.consignorIsForwarder = '0';
     // The recipient is the customer company. A site receiver is a different contact.
     if (!driverFlow) {
@@ -117,6 +137,11 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
       if (!address?.receiverName || !address.receiverPhone) blockers.push(`Доставка ${index + 1}: у выбранного адреса заполните имя и телефон приёмщика.`);
     }
     p.carrierPhone = driver?.phone || '';
+    if (snapshot.carrierResponsibleVersion === 1) {
+      const responsible = frozen ? frozen.profile.carrierResponsible : config.carrierResponsible;
+      if (responsible) p.carrierResponsible = structuredClone(responsible);
+      if (!frozen && responsible === null) blockers.push('Проверьте серверную настройку ФИО и телефона ответственного НК.');
+    }
     p.cargo = { name: cargo.name, condition: cargo.condition, packagingCode: cargo.packagingCode, packingMethod: 'Налив в цистерну', packageCount: '1', marking: 'Без маркировки', massMethod: driverFlow ? '03' : '', dangerousGoods: cargo.dangerousGoods!, dimensions: { heightMetres: '1', lengthMetres: '1', widthMetres: '1' } };
     p.deliveryMassTonnes = allocation.tonnes[index];
     p.massSource = driverFlow ? 'driver' : 'calculated';
@@ -131,11 +156,26 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     p.signer.status = settings.signerStatus || '';
     p.loadingActor = loadingRole(source, depot?.loadingActorCompanyId);
     p.infrastructureOwner = loadingRole(source, depot?.infrastructureOwnerCompanyId);
-    // New order-based trips leave Saby's separate "Отгружает" party empty
-    // (the sender loads). Existing authorized delivery roles remain unchanged.
-    const saved = _data.tripSaby?.trips[trip.id]?.deliveries.find(row => row.shipmentId === delivery.id)?.snapshot;
-    p.loadingActor = saved ? structuredClone(saved.profile.loadingActor)
-      : { sameAsConsignor: true, party: { ...sender, phone: sender.phone || '', edoId: '' } };
+    if (!direct) {
+      // New order-based trips leave Saby's separate "Отгружает" party empty
+      // (the sender loads). Reconciliation retains the exact authorized role
+      // of an existing trip; changing this default must not amend old documents.
+      const saved = data.tripSaby?.trips[trip.id]?.deliveries.find(row => row.shipmentId === delivery.id)?.snapshot;
+      p.loadingActor = saved ? structuredClone(saved.profile.loadingActor)
+        : { sameAsConsignor: true, party: { ...sender, phone: sender.phone || '', edoId: '' } };
+    }
+    if (snapshot.loadingDetailsVersion === 1) {
+      if (snapshot.loadingActorMode === 'sender') {
+        // This explicit trip choice changes only the loader; the depot's owner stays independent.
+        p.loadingActor = frozen ? structuredClone(frozen.profile.loadingActor) : { sameAsConsignor: true, party: { ...sender, phone: sender.phone || '', edoId: '' } };
+      } else {
+        const details = frozen ? frozen.profile.loadingActor : data.etrn?.trips[trip.id]?.loadingDetails;
+        p.loadingActor.sameAsConsignor = frozen ? frozen.profile.loadingActor.sameAsConsignor
+          : depot?.loadingActorCompanyId ? p.loadingActor.party.inn === sender.inn && p.loadingActor.party.kpp === sender.kpp : null;
+        if (details?.basis !== undefined) p.loadingActor.basis = structuredClone(details.basis);
+        if (details?.worker !== undefined) p.loadingActor.worker = structuredClone(details.worker);
+      }
+    }
     p.instructions = { regulatory, redirectionParty: 'Грузополучатель', redirectionMethod: 'По телефону', redirectionPhone: address?.receiverPhone || '', transshipmentForbidden: '', ...Object.fromEntries(Object.entries(settings.instructions || {}).filter(([, value]) => value)) };
     p.instructions.regulatory = regulatory;
     if (driverFlow) {
@@ -146,10 +186,19 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
       snapshot.fields.quantity_tonnes = p.deliveryMassTonnes || null;
       snapshot.fields.quantity_gross_tonnes = p.plannedGrossMassTonnes || null;
     }
+    // User-approved default for new trips; persisted exchanges retain their original terms.
+    if (direct && snapshot.loadingActorMode === 'sender') {
+      p.instructions.redirectionMethod = frozen?.profile.instructions.redirectionMethod ?? NATIVE_APPROVED_REDIRECTION_METHOD;
+    }
+    if (!direct) {
+      const savedInstructions = data.tripSaby?.trips[trip.id]?.deliveries.find(row => row.shipmentId === delivery.id)?.snapshot.profile.instructions;
+      p.instructions.redirectionMethod = savedInstructions?.redirectionMethod ?? NATIVE_APPROVED_REDIRECTION_METHOD;
+    }
     // Nothing here copies loading_actual_at or a planning time into an event.
     blockers.push(...sabyConsignmentBlockers(snapshot, { stage: driverFlow ? 'driver_draft' : 'preparation' }).map(message => `Доставка ${index + 1}: ${message}`));
     return { shipmentId: delivery.id, snapshot };
   });
+  if (direct) return { deliveries, blockers: [...new Set(blockers)] };
   const first = deliveries[0].snapshot;
   const productId = trip.fields.product_id || '', vehicleId = trip.fields.vehicle_id || '';
   const profile: SabyTransportProfile = { function: 'Заявка', ...(contract ? { contract } : {}), regulatoryInstructions: regulatory, foodInstructions: 'Отсутствуют', signatory: profileConfig?.signatory || { surname: '', name: '', position: '', authorityMethod: '1' }, cargoByProductId: { [productId]: cargo }, vehicleById: { [vehicleId]: { type: first.profile.vehicle.type, payloadTonnes: first.profile.vehicle.payloadTonnes, capacityCubicMetres: first.profile.vehicle.capacityCubicMetres } } };
@@ -157,6 +206,7 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   if (stops.length && !['true', 'false'].includes(trip.fields.intermediate_stops_in_order || '')) blockers.push('Укажите в рейсе, включать ли промежуточные остановки в заявку Saby.');
   const infrastructureOwner = first.profile.infrastructureOwner.party;
   const order: SabyTransportSnapshot = {
+    volumeRoundingVersion: SABY_VOLUME_ROUNDING_VERSION,
     tripId: trip.id, shipmentId: trip.id, version: Math.max(...trip.customers.map(row => row.version)),
     fields: { ...first.fields, quantity_litres: allocation.totalLitres, quantity_tonnes: trip.fields.quantity_tonnes, quantity_gross_tonnes: plannedGross ?? null, loading_site_owner_name: owner?.fullName || owner?.name || null, loading_site_owner_address: owner?.address || null, loading_site_owner_inn: owner?.inn || null },
     customer: first.customer, supplier: party(source.companies.find(row => row.id === trip.fields.supplier_id)),
@@ -168,4 +218,15 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   };
   blockers.push(...(driverFlow ? sabyTransportDraftBlockers(order) : sabyTransportBlockers(order)));
   return { scenario, order, deliveries, blockers: [...new Set(blockers)] };
+}
+
+/** Ordinary order-based flow keeps the original account and preparation rules. */
+export function prepareTripSaby(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): TripSabyPreparation {
+  return prepare(source, data, trip, config, settings, false);
+}
+
+/** NK's direct consignment. A per-trip sender choice never changes the depot's infrastructure owner. */
+export function prepareNkDirectEtrn(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): NkDirectEtrnPreparation {
+  const scoped = new SabyClient(config).forNkDirectEtrn().config;
+  return prepare(source, data, trip, scoped, settings, true);
 }

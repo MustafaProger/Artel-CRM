@@ -123,3 +123,7 @@
 .account-saved-password-value { display: grid; gap: 6px; max-width: 240px; min-width: 0; }
 .account-saved-password-value code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; font-size: 14px; }
 .account-password-unavailable { max-width: 240px; color: var(--muted, #64748b); }
+
+.account-directory-access{margin-top:20px}
+.account-directory-access h4{margin:0 0 10px}
+.account-directory-access p{font-size:13px;line-height:1.5;color:var(--muted);margin:8px 0 14px}

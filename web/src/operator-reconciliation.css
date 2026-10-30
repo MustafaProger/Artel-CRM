@@ -1,0 +1,120 @@
+.operator-reconciliation {display:grid;gap:16px;min-width:0}
+.operator-reconciliation-heading {display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:nowrap}
+.operator-reconciliation-heading input {flex:1;max-width:260px!important;width:0!important;min-height:44px}
+.operator-reconciliation-heading .reconciliation-refresh {display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;gap:8px;height:44px;padding:0 16px}
+.operator-reconciliation-summary:empty {display:none}
+.reconciliation-mobile-columns {display:none}
+.reconciliation-history {display:inline-flex;vertical-align:middle;align-items:center;justify-content:center;width:28px;min-height:28px;margin-right:6px;border:0;background:none;color:#58645d;cursor:pointer;border-radius:6px}
+.operator-reconciliation-heading h2 {margin:0 0 6px}
+.operator-reconciliation-heading p,.operator-reconciliation-note {color:var(--muted,#66716c);margin:0;line-height:1.6}
+.operator-reconciliation-heading label {display:grid;gap:8px}
+.operator-reconciliation-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,390px),1fr));gap:20px}
+.operator-reconciliation-card {border:1px solid var(--border,#dce3df);border-radius:22px;background:var(--surface,#fff);padding:22px;display:grid;align-content:start;gap:20px;min-width:0}
+.operator-reconciliation-card header {display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.operator-reconciliation-card header>span:last-child {font-size:13px;color:#58645d}
+.operator-reconciliation-card.is-different header>span:last-child {color:#9b3e28}
+.operator-reconciliation-card.is-matched header>span:last-child {color:#17694c}
+.operator-reconciliation-card table {border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+.operator-reconciliation-card th,.operator-reconciliation-card td {padding:12px 4px;border-bottom:1px solid #e4e9e6;text-align:right;overflow-wrap:anywhere}
+.operator-reconciliation-card th:first-child {text-align:left;font-weight:500}
+.operator-reconciliation-card thead {color:#68736e;font-size:12px}
+.operator-reconciliation-delta {font-weight:650;background:#f4f7f5}
+.is-different .operator-reconciliation-delta {background:#fff2eb;color:#963d25}
+.operator-reconciliation-card fieldset {border:0;padding:0;margin:0;display:grid;grid-template-columns:1fr 1fr;gap:12px;min-width:0}
+.operator-reconciliation-card label {display:grid;gap:8px;font-size:13px;min-width:0}
+.operator-reconciliation-card input {width:100%;min-width:0}
+.operator-reconciliation-card form {display:grid;gap:14px}
+.operator-reconciliation-card summary {cursor:pointer;font-size:14px;padding:4px 0}
+.operator-reconciliation-operation {background:none;border:0;border-bottom:1px solid #e4e9e6;width:100%;text-align:left;display:flex;justify-content:space-between;gap:12px;padding:14px 0;color:inherit;cursor:pointer}
+.operator-reconciliation-card small {display:block;color:#68736e;font-size:12px;margin-top:6px;overflow-wrap:anywhere}
+.operator-source-details {display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:0}
+.operator-source-details dt {font-size:13px;color:#68736e;margin-bottom:6px}
+.operator-source-details dd {margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.operator-source-wide {grid-column:1/-1}
+.operator-case-price {font-size:14px;color:#58645d;margin:0}
+.operator-discard-dialog {max-width:480px!important}
+.operator-discard {padding:8px 0 20px;line-height:1.5}
+.operator-discard .operator-actions {margin-top:24px}
+.operator-form-grid label>.operator-service-badges {margin-top:7px;align-self:start}
+@media(max-width:480px) {.operator-reconciliation-card {padding:16px;gap:16px}.operator-reconciliation-card table {font-size:12px}.operator-reconciliation-card fieldset {grid-template-columns:1fr}.operator-reconciliation-heading label {width:100%}.operator-reconciliation-card .operator-actions {flex-wrap:wrap}.operator-reconciliation-card .button {white-space:normal}}
+
+.operator-reconciliation-card tbody td {color:#35433b}
+.operator-reconciliation-card .operator-reconciliation-delta td {color:#35433b}
+.operator-reconciliation-card.is-different .operator-reconciliation-delta td {color:#963d25}
+.operator-reconciliation-method {font-size:14px;color:#526159}
+.operator-reconciliation-method p {line-height:1.6;margin-bottom:0}
+
+/* The service color belongs to the button; the strip itself stays transparent. */
+.operator-reconciliation {grid-template-columns:minmax(0,1fr);container-type:inline-size;container-name:reconciliation}
+.operator-reconciliation-heading>*,.operator-reconciliation-scroll {min-width:0}
+.operator-reconciliation-heading input {box-sizing:border-box;min-width:0;max-width:100%;width:100%}
+div.scrollable-segments.operator-reconciliation-services[class] {justify-self:end;gap:6px;padding:3px;background:transparent;box-shadow:none;border:0;max-width:100%;min-width:0}
+div.scrollable-segments.operator-reconciliation-services[class]>button {border:1px solid transparent;padding:9px 18px;min-height:40px}
+div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true],div.scrollable-segments.operator-reconciliation-services[class]>button[aria-pressed=true]:hover {border-color:#81998a;box-shadow:inset 0 0 0 1px #81998a}
+.operator-reconciliation-services>button:focus-visible {outline:3px solid #226b52;outline-offset:-3px}
+.operator-reconciliation-services .scrollable-segments-selection {display:none}
+.operator-reconciliation-summary {margin:0;color:var(--muted,#58645d);font-size:14px}
+.operator-reconciliation-scroll {max-width:100%;border:1px solid var(--border,#dce3df);border-radius:16px;background:var(--surface,#fff);overflow:hidden}
+.operator-reconciliation-table {width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums}
+.operator-reconciliation-table th,.operator-reconciliation-table td {padding:5px 10px;height:38px;box-sizing:border-box;text-align:right;border-bottom:1px solid var(--border,#e4e9e6);overflow-wrap:anywhere}
+.operator-reconciliation-table thead th {height:32px;background:#f3f5f4;color:#43524a;font-weight:600;text-align:center}
+.operator-reconciliation-table thead tr:first-child>th:not(:last-child),.operator-reconciliation-table thead tr:nth-child(2)>th:nth-child(even) {border-right:1px solid #cdd9d1}
+.operator-reconciliation-table thead tr:first-child>th:first-child {width:116px}
+.operator-reconciliation-table thead tr:first-child>th:last-child {width:140px}
+.operator-reconciliation-table tbody th {background:var(--surface,#fff);text-align:left;border-right:1px solid var(--border,#e4e9e6)}
+.operator-reconciliation-table tbody tr:last-child>* {border-bottom:0}
+.operator-reconciliation-table tbody td {color:#35433b}
+.operator-reconciliation-table .reconciliation-difference.is-matched {background:#e3f3e9;color:#185b36;font-weight:600}
+.operator-reconciliation-table .reconciliation-difference.is-different {background:#fde8e8;color:#9a2424;font-weight:600}
+.operator-reconciliation-date,.operator-reconciliation-edit,.reconciliation-cell-edit {border:0;background:none;color:#17694c;cursor:pointer;font:inherit;padding:4px 0;min-height:28px;text-align:left;text-decoration:underline;text-underline-offset:3px}
+.operator-reconciliation-date {white-space:nowrap}
+.operator-reconciliation-table .reconciliation-cell-edit {width:100%;text-align:right;color:inherit;text-decoration-style:dotted}
+.operator-reconciliation :is(button,input):focus-visible {outline:2px solid #226b52;outline-offset:2px}
+.operator-reconciliation-table button:disabled {cursor:default;opacity:.55}
+.operator-reconciliation-table .is-editing {background:#f7faf8}
+.operator-reconciliation-table .reconciliation-report-cell input {box-sizing:border-box;width:100%;min-width:0;min-height:32px;height:32px;padding:4px 6px;font-size:13px;text-align:right;border:1px solid #81998a;border-radius:7px;background:white;color:#263d30}
+.reconciliation-inline-actions {display:flex;justify-content:flex-end;gap:4px}
+.reconciliation-inline-actions button {display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:32px;padding:5px;border:1px solid #cdd9d1;border-radius:7px;cursor:pointer;font:inherit;font-size:11px;line-height:1.2}
+.reconciliation-inline-actions svg {flex-shrink:0}
+.reconciliation-save {color:#185b36;background:#e3f3e9}
+.reconciliation-cancel {color:#43524a;background:white;min-width:30px}
+.reconciliation-row-actions form {margin:0}
+.reconciliation-row-actions p {white-space:normal;font-size:12px;line-height:1.4;color:#9a2424;margin:8px 0 0}
+.operator-reconciliation-dialog {width:min(680px,calc(100vw - 24px));max-width:680px}
+.operator-reconciliation-dialog .operator-reconciliation-card {padding:0;border:0;border-radius:0}
+.operator-reconciliation-card.is-matched .operator-reconciliation-delta {background:#e3f3e9;color:#185b36}
+.operator-reconciliation-card.is-different .operator-reconciliation-delta {background:#fde8e8;color:#9a2424}
+.operator-reconciliation-card:not(.is-matched):not(.is-different) .operator-reconciliation-delta {background:transparent}
+/* One editor and one set of values, reflowed as a small table per day. */
+@container reconciliation (max-width:760px) {
+  .operator-reconciliation-heading {justify-content:flex-start}
+  .operator-reconciliation-heading .reconciliation-refresh {flex:0 0 44px;width:44px;padding:0}
+  .reconciliation-refresh-label {display:none}
+  .operator-reconciliation-scroll {border:0;background:transparent;border-radius:0;overflow:visible}
+  .operator-reconciliation-table {display:block;width:100%;min-width:0}
+  .operator-reconciliation-table thead {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .operator-reconciliation-table tbody {display:grid;gap:12px}
+  .operator-reconciliation-table tbody tr {--row-label-width:64px;display:grid;grid-template-columns:var(--row-label-width) minmax(0,1fr) minmax(0,1.3fr);padding:10px 12px;border:1px solid var(--border,#dce3df);border-radius:16px;background:var(--surface,#fff);min-width:0}
+  .operator-reconciliation-table tbody th {grid-column:1/-1;border:0;padding:0;height:auto;background:none}
+  .reconciliation-mobile-columns {display:grid;grid-template-columns:var(--row-label-width) minmax(0,1fr) minmax(0,1.3fr);font-size:11px;font-weight:400;color:#58645d;border-bottom:1px solid #e4e9e6;padding:6px 0}
+  .reconciliation-mobile-columns span {text-align:right;padding-right:6px}
+  .operator-reconciliation-table tbody td {display:flex;align-items:center;justify-content:flex-end;min-width:0;height:auto;min-height:38px;padding:6px;border:0;text-align:right}
+  .operator-reconciliation-table tbody td[data-label] {grid-column:3;border-bottom:1px solid #e4e9e6}
+  .operator-reconciliation-table tbody td[data-source] {position:relative;grid-column:2}
+  .operator-reconciliation-table tbody td[data-source]::before {content:attr(data-source);position:absolute;right:100%;top:0;bottom:-1px;box-sizing:border-box;width:var(--row-label-width);display:flex;align-items:center;text-align:left;font-size:12px;font-weight:400;color:#58645d;border-bottom:1px solid #e4e9e6}
+  .operator-reconciliation-table .reconciliation-cell-edit {min-height:28px;padding:0}
+  .operator-reconciliation-table tbody .reconciliation-difference {border:0}
+  .operator-reconciliation-table .reconciliation-difference[data-source]::before {background:inherit;color:inherit;border:0;border-radius:7px 0 0 7px;padding-left:5px}
+  .operator-reconciliation-table .reconciliation-difference:not([data-source]) {border-radius:0 7px 7px 0}
+  .operator-reconciliation-table .reconciliation-row-actions {grid-column:1/-1;padding:5px 0 0;gap:4px}
+  .operator-reconciliation-date {font-weight:600;font-size:15px;min-height:36px}
+  .operator-reconciliation-edit {min-height:36px;padding:4px 8px}
+  .reconciliation-history {width:36px;min-height:36px;margin:0}
+  .operator-reconciliation-table .reconciliation-report-cell input {height:40px;font-size:16px}
+  .reconciliation-inline-actions button {min-height:40px;font-size:12px;padding:8px 12px}
+  .reconciliation-cancel {min-width:40px}
+  .operator-reconciliation-table .is-empty-day {grid-template-columns:minmax(0,1fr) auto;align-items:center;padding-block:6px}
+  .operator-reconciliation-table .is-empty-day th {grid-column:1}
+  .operator-reconciliation-table .is-empty-day td[data-label],.is-empty-day .reconciliation-mobile-columns {display:none}
+  .operator-reconciliation-table .is-empty-day .reconciliation-row-actions {grid-column:2;padding:0}
+}

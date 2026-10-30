@@ -1,3 +1,4 @@
+import { watchVisibleRefresh } from './visible-refresh'
 import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, ChevronRight, FileText, LoaderCircle, RefreshCw, Search, Unplug, X } from 'lucide-react'
@@ -86,8 +87,7 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
   // Refresh saved state while the server performs the scheduled bank requests.
   useEffect(() => {
     if (!data?.scheduleEnabled) return
-    const timer = setInterval(() => { if (!working.current) void load().catch(() => {}) }, 30000)
-    return () => clearInterval(timer)
+    return watchVisibleRefresh(() => { if (!working.current) void load().catch(() => {}) }, 30000)
   }, [load, data?.scheduleEnabled])
 
   const synchronize = async () => {

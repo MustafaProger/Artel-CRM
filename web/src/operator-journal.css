@@ -1,0 +1,73 @@
+.operator-desktop-journal { position:relative; }
+.operator-grouped-table { min-width:1060px; }
+.operator-grouped-table .operator-operation-group:not(:last-child) { border-bottom:2px solid var(--line,#e2e7e4); }
+.operator-grouped-table .operator-operation-group > tr:last-child > td { border-bottom:0; }
+.operator-grouped-table .operator-operation-group:nth-of-type(even) { background:#fafcfb; }
+.operator-grouped-table .operator-group-driver { min-width:150px; white-space:normal; background:transparent; vertical-align:middle; }
+.operator-group-driver > small, .operator-group-driver > button { display:block; }
+.operator-group-driver > small { font-size:11px; color:var(--muted,#66736e); margin-bottom:8px; }
+.operator-group-driver > button { font-weight:600; overflow-wrap:anywhere; }
+.operator-grouped-table .operator-recipient-column, .operator-grouped-table .operator-recipient-row { border-left:1px solid #cdd9d1; }
+.operator-recipient-row { min-width:220px; max-width:340px; }
+.operator-recipient-line { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:6px 14px; min-width:0; }
+.operator-recipient-line > strong { min-width:0; font-weight:500; overflow-wrap:anywhere; }
+.operator-recipient-details { display:block; font-size:12px; color:var(--muted,#66736e); line-height:1.5; margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.operator-recipient-amount, .operator-operation-total { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.operator-recipient-amount { font-weight:600; }
+.operator-operation-total { font-weight:600; }
+.operator-journal-quantity > * { display:block; white-space:nowrap; }
+.operator-journal-quantity small { color:var(--muted,#66736e); font-size:11px; margin-top:4px; }
+.app-shell .operator-action-trigger { font-size:12px; min-height:40px; padding:8px 14px; white-space:nowrap; }
+.operator-mobile-journal { display:none; }
+@media (max-width:700px) {
+  .operator-desktop-journal { display:none; }
+  .operator-mobile-journal { display:grid; gap:14px; }
+  .operator-operation-card { display:grid; gap:16px; padding:17px; background:var(--surface,#fff); border:1px solid var(--line,#e2e7e4); border-radius:18px; min-width:0; }
+  .operator-operation-card > header { display:flex; justify-content:space-between; align-items:start; gap:12px; }
+  .operator-operation-card > header > div { display:grid; gap:6px; min-width:0; overflow-wrap:anywhere; }
+  .operator-operation-card > header small { font-size:11px; color:var(--muted,#66736e); }
+  .operator-operation-card > header .operator-link { font-size:17px; font-weight:600; }
+  .operator-operation-card > header span { font-size:12px; color:var(--muted,#66736e); }
+  .operator-card-service { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .operator-card-totals { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .operator-card-totals > span { display:grid; gap:5px; min-width:0; overflow-wrap:anywhere; }
+  .operator-card-totals > span:last-child { text-align:right; }
+  .operator-card-totals strong { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .operator-card-totals small { font-size:11px; color:var(--muted,#66736e); }
+  .operator-operation-card > .operator-status { justify-self:start; }
+  .operator-operation-card > .operator-journal-cases { margin-top:0; }
+  .operator-card-recipients { display:grid; gap:12px; margin:0; padding:0 0 0 12px; list-style:none; border-left:2px solid #cdd9d1; min-width:0; }
+  .operator-card-recipients > li { min-width:0; padding:0; font-size:12px; }
+  .operator-card-recipients > li + li { padding-top:12px; border-top:1px solid var(--line,#e2e7e4); }
+  .operator-card-recipients .operator-recipient-details { font-size:11px; }
+}
+
+.operator-grouped-table { min-width:0; width:max-content; }
+.operator-grouped-table .operator-group-driver { min-width:120px; }
+.operator-grouped-table .operator-recipient-row, .operator-grouped-table .operator-recipient-column { box-sizing:border-box; width:500px; min-width:500px; max-width:500px; border-right:1px solid #cdd9d1; }
+.operator-recipient-scroll { width:475px; max-width:475px; overflow-x:auto; }
+.operator-recipient-scroll:focus-visible { outline:2px solid #2465b2; outline-offset:2px; }
+.operator-recipient-scroll .operator-recipient-inline { width:max-content; }
+.operator-recipient-scroll .operator-recipient-inline > * { flex:none; white-space:nowrap; max-width:none; }
+.operator-recipient-inline { display:flex; align-items:center; gap:12px; white-space:nowrap; }
+.operator-recipient-inline > strong { font-weight:500; }
+.operator-recipient-inline .operator-recipient-details { margin:0; white-space:nowrap; }
+.operator-recipient-client { font-weight:500; }
+.operator-date-column { white-space:nowrap; }
+.operator-table .operator-price, .operator-card-totals .operator-price { color:#2465b2; font-weight:600; }
+.operator-litres { color:#111; font-weight:700; }
+.app-shell.app-shell.app-shell .operator-workspace select.operator-payment-select { min-width:145px; min-height:38px; padding:7px 24px 7px 10px; font-size:12px; appearance:none; border:0; border-radius:999px; box-shadow:none; background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%); background-position:calc(100% - 15px) 50%,calc(100% - 11px) 50%; background-size:4px 4px; background-repeat:no-repeat; }
+@media(max-width:700px) {
+  .operator-recipient-inline { flex-wrap:wrap; gap:6px 12px; white-space:normal; overflow-wrap:anywhere; }
+  .operator-recipient-inline .operator-recipient-details { width:100%; white-space:normal; }
+  .operator-recipient-client { width:100%; }
+  .operator-payment-select { justify-self:start; max-width:100%; }
+}
+
+.app-shell.app-shell.app-shell.app-shell.app-shell .operator-workspace select.operator-payment-select:focus-visible { outline:3px solid #2465b2; outline-offset:3px; }
+.app-shell.app-shell.app-shell .operator-workspace select.operator-payment-select:disabled { cursor:wait; opacity:.65; }
+.operator-recipient-inline > strong, .operator-recipient-client, .operator-recipient-inline .operator-recipient-details { white-space:normal; overflow-wrap:anywhere; min-width:0; max-width:260px; }
+.operator-card-totals .operator-litres { font-weight:700; }
+
+/* One recipient per compact row; spanning operation controls retain their hit area. */
+.operator-grouped-table tbody td, .operator-grouped-table tbody th { padding-block:8px; height:auto; }

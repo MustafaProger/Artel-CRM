@@ -42,3 +42,22 @@ docker run --rm --entrypoint sh IMAGE -s < tests/production-entrypoint.sh
 The test uses a temporary synthetic store, checks that a concurrent process
 cannot remove a live transaction marker, kills the holder with SIGKILL, then
 confirms the next runtime recovers the stale marker and obtains the lease.
+
+## Work partition, 2026-10-29
+
+After an explicit offline split, operations.json is a format pointer. Never copy
+that pointer as a business-data backup. Export a consistent complete envelope
+with server-render/export-operations.mjs (store/snapshot env required). It uses
+the transaction latch and replays a committed redo journal. Offline export,
+split and merge run in the new image through its lifetime-lock entrypoint with
+all CRM writers stopped. Merge composes current data; never restore an old
+premigration snapshot over newer writes.
+
+The same lifetime lease fences work-storage/{transaction,core-queue,work-queue,trip-requests-queue}.lock.
+The entrypoint removes only stale lock files after acquiring the lease and keeps
+commit.json for redo recovery. Core and Work share one consistency latch; Work
+has a separate admission queue. A mixed transaction may increment the composed
+revision by two. Total partition size is conservatively bounded for a <=64MiB
+flat export. Backup, audit and deployment tools must be layout-aware.
+
+Trip requests have their own FIFO admission lock, but still commit the core file under the shared transaction latch. There is no third data partition, pointer change, or alternate backup format. Trip consumption uses the ordinary core transaction and races cancellation under the same latch.

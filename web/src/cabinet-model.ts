@@ -1,5 +1,3 @@
-import { ourOrganizationDisplayName } from './our-organizations';
-
 export const cabinetProviders = [
   { id: 'glopro', name: 'GloPro', url: 'https://lk.glopro.ru/', confirmation: false },
   { id: 'yandex', name: 'Яндекс Go', url: 'https://business.taxi.yandex.ru/', confirmation: true },
@@ -20,6 +18,7 @@ export interface CabinetConnection {
   error?: string;
   accounts?: CabinetAccount[];
   organizationNames?: string[];
+  refreshMode?: 'server_browser';
 }
 export interface CabinetResponse { connections: CabinetConnection[]; credentialStorageReady: boolean }
 
@@ -33,11 +32,6 @@ export interface CabinetAccount {
   amountMinor: number;
   currency: 'RUB';
   sourceUpdatedAt?: string;
-}
-
-/** Cabinet owner label only; provider account and contract data remain unchanged. */
-export function cabinetConnectionDisplayName(connection: Pick<CabinetConnection, 'provider' | 'label'>): string {
-  return connection.provider === 'glopro' ? 'НК АРТЭЛЬ' : ourOrganizationDisplayName(connection.label);
 }
 
 /** A successful fetch does not make an old provider snapshot current. */

@@ -1,14 +1,16 @@
+import TripProcessPanel from './TripProcessPanel'
+import { Activity } from 'lucide-react'
 import { tripLabel } from './trip-identity'
 import './trip-identity.css'
 import { useDialogMotion } from './useDialogMotion'
 import { apiFetch as fetch } from './workspace-api'
-import { useEffect, useRef, useState } from 'react'
-import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map as MapIcon, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
 import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
 import type { TripRequest } from './trip-request-model'
 import ScrollableSegments from './ScrollableSegments'
 import TripRequestsPanel from './TripRequestsPanel'
-import TripRequestsMap from './TripRequestsMap'
+const TripRequestsMap = lazy(() => import('./TripRequestsMap'))
 import TripRequestEditor from './TripRequestEditor'
 import './trip-requests.css'
 import ShipmentTripEditor from './ShipmentTripEditor'
@@ -25,49 +27,68 @@ import './trips.css'
 
 export default function TripsPage({ data, canManagePlaces, onChanged, allowDelete = false }: { data: DirectoryData; canManagePlaces: boolean; onChanged: () => void; allowDelete?: boolean }) {
   const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
-  const [view, setView] = useState<'requests' | 'map' | 'trips'>('requests')
+  const [view, setView] = useState<'requests' | 'map' | 'trips' | 'process'>('requests')
   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
-  const [refresh, setRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
+  const [refresh, setRefresh] = useState(0), [requestRefresh, setRequestRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
   const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyId, setSabyId] = useState<string | null>(null), [notice, setNotice] = useState('')
   const [automation, setAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
   useEffect(() => {
-    const refreshOnFocus = () => setRefresh(value => value + 1)
-    window.addEventListener('focus', refreshOnFocus)
-    return () => window.removeEventListener('focus', refreshOnFocus)
-  }, [])
-  useEffect(() => {
+    if (view !== 'trips' && view !== 'process') return
     const controller = new AbortController()
     setLoading(true); setError('')
     fetch('/api/shipment-trips', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы'); return result })
-      .then(result => { setTrips(result.trips); setAutomation(result.automation ?? { enabled: false }) })
+      .then(result => { setTrips(previous => { const executions = new Map(previous.map(trip => [trip.id, trip.execution])); return (result.trips as ShipmentTrip[]).map(trip => { const saved = executions.get(trip.id); return saved && saved.version > (trip.execution?.version ?? 0) ? { ...trip, execution: saved } : trip }) }); setAutomation(result.automation ?? { enabled: false }) })
       .catch(reason => { if (!controller.signal.aborted) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [refresh])
+  }, [refresh, view])
+  const requestGeneration = useRef(0)
   useEffect(() => {
+    const generation = ++requestGeneration.current
     const controller = new AbortController()
     setRequestsLoading(true); setRequestsError('')
     void fetch('/api/trip-requests', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить заявки.'); return result })
-      .then(result => { if (!controller.signal.aborted) { setRequests(result.requests); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
-      .catch(reason => { if (!controller.signal.aborted) { setRequestsError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
-      .finally(() => { if (!controller.signal.aborted) setRequestsLoading(false) })
+      .then(result => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequests(result.requests); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
+      .catch(reason => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequestsError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
+      .finally(() => { if (!controller.signal.aborted && generation === requestGeneration.current) setRequestsLoading(false) })
     return () => controller.abort()
-  }, [refresh])
+  }, [requestRefresh])
+  useEffect(() => {
+    if (view !== 'process') return
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') setRefresh(value => value + 1) }, 30000)
+    return () => window.clearInterval(timer)
+  }, [view])
+  // Apply only acknowledged server results. In-flight older lists cannot undo a save.
+  const requestSaved = (saved: TripRequest) => {
+    requestGeneration.current++
+    setRequests(previous => saved.status === 'active' ? [...previous.filter(row => row.id !== saved.id), saved] : previous.filter(row => row.id !== saved.id))
+    setRequestsLoading(false); setRequestsError('')
+  }
+  const requestDeleted = (id: string) => {
+    requestGeneration.current++
+    setRequests(previous => previous.filter(row => row.id !== id))
+    setRequestsLoading(false); setRequestsError('')
+  }
+  const reloadRequests = () => setRequestRefresh(value => value + 1)
+  const reloadAll = () => { setRefresh(value => value + 1); reloadRequests() }
   const [deleting, setDeleting] = useState<string | null>(null)
   const directories = data.directories
+  const companyNames = useMemo(() => new Map([...requestCompanies, ...data.companies].map(company => [company.id, company.name])), [data.companies, requestCompanies])
+  const driverNames = useMemo(() => new Map(directories?.drivers.map(driver => [driver.id, driver.name])), [directories?.drivers])
   if (!directories) return <p className="soft-notice">Не удалось загрузить справочники рейсов.</p>
-  const companyName = (id: string | null) => data.companies.find(company => company.id === id)?.name ?? requestCompanies.find(company => company.id === id)?.name ?? 'Не указано'
-  const driverName = (id: string | null) => directories.drivers.find(driver => driver.id === id)?.name ?? 'Не указан'
-  const filtered = trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
+  const companyName = (id: string | null) => (id ? companyNames.get(id) : undefined) ?? 'Не указано'
+  const driverName = (id: string | null) => (id ? driverNames.get(id) : undefined) ?? 'Не указан'
+  const filtered = view !== 'trips' ? [] : trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
   return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
-    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: Map }, { id: 'trips', name: 'Рейсы', icon: Truck }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { setView(item.id); setNotice(''); setRefresh(value => value + 1) }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
-    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={() => setRefresh(value => value + 1)} onChanged={() => { setRefresh(value => value + 1); onChanged() }}/>}
-    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}{requestsLoading && !requests.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/>}</section>}
+    <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { if (item.id === view) return; setView(item.id); setNotice(''); reloadRequests() }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
+    {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} error={error} onReload={() => setRefresh(value => value + 1)}/>}
+    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={reloadRequests} onSaved={requestSaved} onDeleted={requestDeleted}/>}
+    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={reloadRequests}>Повторить загрузку</button></div>}{requestsLoading && !requestCompanies.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <Suspense fallback={<p role="status">Загружаем карту…</p>}><TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/></Suspense>}</section>}
     {view === 'trips' && <><div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Номер рейса, клиент, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
-    {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку заявок</button></div>}
+    {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={reloadRequests}>Повторить загрузку заявок</button></div>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}
     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем рейсы…</div> : <>
@@ -86,9 +107,9 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       {!!filtered.length && <div className="pagination"><span>Рейсов: {filtered.length}</span><div><button className="icon-button" aria-label="Предыдущая страница рейсов" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={18}/></button><span>{currentPage + 1} / {lastPage + 1}</span><button className="icon-button" aria-label="Следующая страница рейсов" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}><ChevronRight size={18}/></button></div></div>}
     </>}
     </>}
-    {mapRequest && <TripRequestEditor request={mapRequest} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => { setMapRequest(null); setRefresh(value => value + 1) }} onSaved={() => { setMapRequest(null); setRefresh(value => value + 1); onChanged() }}/>}
-    {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); setRefresh(value => value + 1); onChanged() }}/> }
-    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={() => setRefresh(value => value + 1)} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); setRefresh(value => value + 1); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
+    {mapRequest && <TripRequestEditor request={mapRequest} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => { setMapRequest(null); reloadRequests() }} onSaved={saved => { setMapRequest(null); requestSaved(saved) }}/>}
+    {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); reloadAll(); onChanged() }}/> }
+    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={reloadRequests} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); reloadAll(); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
   </div>
 }
 

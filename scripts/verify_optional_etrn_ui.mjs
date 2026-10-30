@@ -1,7 +1,7 @@
 // Synthetic snapshots, real local UI/API and loopback only. Provider requests are rejected.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium, webkit, expect } from '@playwright/test';
 import { SabyClient } from '../server/saby-client.ts';
@@ -11,7 +11,8 @@ import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
 import { startTripsQaServer } from './qa-trips-runtime.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const output = resolve(root, 'qa/optional-etrn-ui-2026-10-15');
+const built = process.argv.includes('--built');
+const output = resolve(root, '.local/optional-etrn-ui', built ? 'built' : 'source');
 await mkdir(output, { recursive: true });
 const rt = await integrationRuntime();
 const report = { syntheticOnly: true, workingStoreAccessed: false, providerCalls: 0, checks: [], screenshots: [], browserErrors: [], externalRequests: [], fetchFailures: [], expectedAborts: [], apiHttpErrors: [], drains: [] };
@@ -52,6 +53,11 @@ async function trackApi(context, label) {
 try {
   const client = new SabyClient(integrationConfig(), async () => { report.providerCalls++; throw new Error('External provider forbidden in optional ETRN UI QA'); });
   runtime = await startTripsQaServer({ root, snapshotDirectory: rt.snapshotDirectory, operationsDirectory: resolve(rt.directory, 'store'), sabyClient: client });
+  if (built) runtime.server.middlewares.stack.unshift({ route: '', handle(req, res, next) {
+    const path = new URL(req.url, runtime.base).pathname; if (path.startsWith('/api/')) return next();
+    const relative = path === '/' ? 'index.html' : path.slice(1); if (relative.includes('..')) return next();
+    readFile(resolve(root, 'app-dist', relative)).then(body => { res.setHeader('Content-Type', relative.endsWith('.js') ? 'text/javascript' : relative.endsWith('.css') ? 'text/css' : 'text/html'); res.end(body); }).catch(() => next());
+  } });
   const { cookie } = await bootstrapQaAuth(runtime.base);
   const call = async (path, method = 'GET', body) => {
     const response = await fetch(runtime.base + path, { method, headers: { Cookie: cookie, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -140,7 +146,7 @@ try {
     await expect(actions).not.toContainText('CRM продолжает обработку документов');
     await expect(actions.getByRole('button', { name: 'Убыл', exact: true })).toHaveCount(0);
     const driverState = (await (await driver.request.get(runtime.base + `/api/driver/trips/${tripId}`)).json()).trip;
-    assert.equal(driverState.etrnRequired, false); assert.equal(driverState.archived, true);
+    assert.equal(driverState.etrnRequired, false); assert.equal(driverState.archived, false);
     assert.deepEqual(driverState.deliveries.map(item => item.netTonnes), ['2.5', '3.25']);
     for (const width of widths) {
       await driverPage.setViewportSize({ width, height: 1050 }); await actions.scrollIntoViewIfNeeded();

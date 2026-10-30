@@ -688,3 +688,109 @@ test('trip inherits request price and permits independent litre/price overrides 
     assert.equal((await f.request('/api/shipment-trips', 'POST', body, f.one.cookie)).status, 201);
   } finally { await f.close(); }
 });
+
+test('execution dates persist, sort earliest first, validate and protect retries and versions', async () => {
+  const f = await fixture();
+  try {
+    const legacy = await f.create();
+    const body = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', executionDate: '2026-10-29', idempotencyKey: randomUUID() };
+    const created = await f.request('/api/trip-requests', 'POST', body, f.one.cookie);
+    assert.equal(created.status, 201); const dated = created.body.request;
+    assert.equal(dated.executionDate, body.executionDate);
+    const repeated = await f.request('/api/trip-requests', 'POST', body, f.one.cookie);
+    assert.equal(repeated.body.request.id, dated.id);
+    assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: '2026-10-30' }, f.one.cookie)).status, 409);
+    for (const date of ['2026-02-30', '2026-13-01', '2026-1-01', '0000-01-01', 1, {}, '2026-10-29T12:00:00Z']) {
+      assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: date, idempotencyKey: randomUUID() }, f.one.cookie)).status, 400);
+    }
+    const updated = await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-28' }, f.two.cookie);
+    assert.equal(updated.status, 200); assert.equal(updated.body.request.executionDate, '2026-10-28');
+    assert.equal((await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-27' }, f.one.cookie)).status, 409);
+    const undated = await f.create(2);
+    assert.deepEqual((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.map((r: TripRequest) => r.id), [legacy.id, dated.id, undated.id]);
+    const preserved = await f.request(`/api/trip-requests/${dated.id}`, 'PATCH', { version: dated.version, quantityLitres: '2000' }, f.one.cookie);
+    assert.equal(preserved.body.request.executionDate, body.executionDate);
+    const cleared = await f.request(`/api/trip-requests/${dated.id}`, 'PATCH', { version: preserved.body.request.version, quantityLitres: '2000', executionDate: null }, f.one.cookie);
+    assert.equal(cleared.body.request.executionDate, null);
+    const disk = await f.store.read(f.source);
+    assert.equal(disk.tripRequests?.[legacy.id].executionDate, '2026-10-28');
+    assert.equal(disk.tripRequests?.[dated.id].executionDate, null);
+  } finally { await f.close(); }
+});
+
+test('request projection and trips context preserve the existing catalog and permission scopes', async () => {
+  const { currentSnapshot, currentTripRequestSnapshot } = await import('../server/shipment-operations');
+  const { tripRequestCatalog } = await import('../server/trip-requests');
+  const { scopeSnapshot } = await import('../server/auth-scope');
+  const f = await fixture(); try {
+    // Historical shipment roles must still make a company available in the shared queue.
+    await f.store.mutate(f.source, data => { data.companies.find(row => row.id === 'customer')!.roles = []; return { changed: true, result: null }; });
+    const data = await f.store.read(f.source), full = currentSnapshot(f.base, data, false), lean = currentTripRequestSnapshot(f.base, data);
+    assert.deepEqual(tripRequestCatalog(lean), tripRequestCatalog(full));
+    for (const credential of [f.admin, f.one.cookie, f.two.cookie]) {
+      const session = await f.request('/api/auth/session', 'GET', undefined, credential);
+      const actor = data.accounts!.users.find(user => user.id === session.body.user.id)!;
+      const expected = scopeSnapshot(full, actor);
+      const context = await f.request('/api/trip-requests/context', 'GET', undefined, credential);
+      assert.equal(context.status, 200); assert.deepEqual(context.body, JSON.parse(JSON.stringify({ companies: expected.companies, directories: expected.directories })));
+      assert.equal(Object.hasOwn(context.body, 'payments'), false);
+    }
+    const denied = await f.employee('context-denied', 'no-trips-manager', []);
+    assert.equal((await f.request('/api/trip-requests/context', 'GET', undefined, denied.cookie)).status, 403);
+    assert.equal((await f.request('/api/trip-requests/context')).status, 401);
+    assert.equal((await f.request('/api/trip-requests/context', 'POST', {}, f.admin)).status, 405);
+  } finally { await f.close(); }
+});
+
+test('partitioned requests preserve Work, history, idempotency, trip consumption and restart/export', async () => {
+  const { migrateWorkStorage, mergeWorkStorage, WorkPartition } = await import('../server/work-partition');
+  const f = await fixture(); try {
+    await migrateWorkStorage(dirname(f.store.path), f.source);
+    const part = new WorkPartition(f.store.path), before = await f.store.read(f.source), work = await readFile(part.workPath, 'utf8');
+    const input = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', salePricePerLitre: '61.25', executionDate: '2026-10-30', idempotencyKey: randomUUID() };
+    const created = await f.request('/api/trip-requests', 'POST', input, f.one.cookie);
+    assert.equal(created.status, 201); const request = created.body.request;
+    assert.equal((await f.request('/api/trip-requests', 'POST', input, f.one.cookie)).body.request.id, request.id);
+    assert.equal((await f.request('/api/trip-requests/' + request.id, 'DELETE', { version: 99 }, f.one.cookie)).status, 409);
+    const consumed = await f.request('/api/shipment-trips', 'POST', f.tripBody([request]), f.one.cookie);
+    assert.equal(consumed.status, 201, JSON.stringify(consumed.body));
+    assert.equal((await f.request('/api/trip-requests/' + request.id, 'DELETE', { version: request.version }, f.one.cookie)).status, 409);
+    const cancelled = await f.create(2); assert.equal((await f.request('/api/trip-requests/' + cancelled.id, 'DELETE', { version: cancelled.version }, f.two.cookie)).status, 200);
+    const after = await new OperationsStore(dirname(f.store.path)).read(f.source);
+    assert.equal(after.tripRequests![request.id].status, 'consumed'); assert.equal(after.tripRequests![cancelled.id].status, 'cancelled');
+    assert.equal(after.tripRequests![request.id].executionDate, input.executionDate);
+    assert.deepEqual(after.directories, before.directories); assert.deepEqual(after.accounts, before.accounts);
+    for (const [id, row] of Object.entries(before.shipments)) assert.deepEqual(after.shipments[id], row);
+    assert.equal(await readFile(part.workPath, 'utf8'), work);
+    await mergeWorkStorage(dirname(f.store.path), f.source); assert.deepEqual(await f.store.read(f.source), after);
+  } finally { await f.close(); }
+});
+
+test('separate request admission reauthorizes revoked accounts inside the transaction', async () => {
+  const { migrateWorkStorage } = await import('../server/work-partition');
+  const f = await fixture(); try {
+    await migrateWorkStorage(dirname(f.store.path), f.source);
+    const original = f.store.mutateTripRequests.bind(f.store);
+    f.store.mutateTripRequests = async (source, update) => {
+      await f.store.mutate(source, data => { const user = data.accounts!.users.find(row => row.id === f.one.user.id)!; user.active = false; user.version++; return { changed: true, result: null }; });
+      return original(source, update);
+    };
+    const before = (await f.store.read(f.source)).tripRequests;
+    const response = await f.request('/api/trip-requests', 'POST', { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', idempotencyKey: randomUUID() }, f.one.cookie);
+    assert.equal(response.status, 401); assert.deepEqual((await f.store.read(f.source)).tripRequests, before);
+  } finally { await f.close(); }
+});
+
+test('request cancellation racing trip consumption has a single atomic winner on the split store', async () => {
+  const { migrateWorkStorage } = await import('../server/work-partition');
+  const f = await fixture(); try {
+    await migrateWorkStorage(dirname(f.store.path), f.source); const row = await f.create();
+    const [trip, cancelled] = await Promise.all([f.request('/api/shipment-trips', 'POST', f.tripBody([row]), f.one.cookie), f.request('/api/trip-requests/' + row.id, 'DELETE', { version: row.version }, f.two.cookie)]);
+    assert.ok(trip.status === 201 && cancelled.status === 409 || trip.status === 409 && cancelled.status === 200, JSON.stringify([trip, cancelled]));
+    const stored = await f.store.read(f.source), saved = stored.tripRequests![row.id];
+    assert.equal(saved.version, row.version + 1);
+    assert.equal(saved.status, trip.status === 201 ? 'consumed' : 'cancelled');
+    if (saved.status === 'consumed') assert.equal(stored.shipments[saved.shipmentId!].fields.source_request_id, row.id);
+    else assert.equal(Object.values(stored.shipments).filter(shipment => shipment.fields.source_request_id === row.id).length, 0);
+  } finally { await f.close(); }
+});

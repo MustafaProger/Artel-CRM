@@ -6,8 +6,9 @@ import type { ShipmentTrip, DirectoryData } from './model'
 import type { EtrnTripResponse } from './etrn-api-model'
 import type { TripSabyResponse } from './trip-saby-model'
 import type { SabyTripResponse } from './saby-model'
-import { driverConfirmedAt, exchangeStageLabels, workflowSteps, workflowTime, workflowView } from './trip-workflow-view'
+import { directWorkflowSteps, driverConfirmedAt, exchangeStageLabels, workflowSteps, workflowTime, workflowView } from './trip-workflow-view'
 import TripSabySigningPanel from './TripSabySigningPanel'
+import TripLoadingDetails from './TripLoadingDetails'
 import './trip-workflow.css'
 
 interface LoadingFacts { arrivedAt: string; departedAt: string; deliveries: Record<string, { grossMassTonnes: string; massMethod: string }> }
@@ -28,7 +29,7 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
   const [startUncertain, setStartUncertain] = useState(false)
   const lock = useRef(false), mounted = useRef(true), requestGeneration = useRef(0)
   const loadDocuments = useCallback(async (generation: number) => {
-    const response = await fetch(etrnEndpoint)
+    const response = await fetch(etrnEndpoint, { signal: AbortSignal.timeout(20_000) })
     const body = await response.json()
     if (!mounted.current || generation !== requestGeneration.current) return
     if (!response.ok) throw new Error(body.error || 'Не удалось обновить ЭТрН')
@@ -37,21 +38,26 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
   const read = useCallback(async () => {
     const generation = ++requestGeneration.current
     try {
-      const response = await fetch(endpoint)
+      const response = await fetch(endpoint, { signal: AbortSignal.timeout(20_000) })
       const body = await response.json()
       if (!mounted.current || generation !== requestGeneration.current) return
       if (!response.ok) throw new Error(body.error || 'Не удалось загрузить состояние Saby')
-      setResult(body); setRefreshError(''); setStartUncertain(false)
-      await loadDocuments(generation)
+      setResult(body); setError(''); setRefreshError(''); setStartUncertain(false)
+      if (body.documentMode === 'nk_direct_etrn') { setLegacy(null); await loadDocuments(generation); return }
+      await Promise.all([loadDocuments(generation), fetch(`/api/shipment-trips/${encodeURIComponent(trip.id)}/saby`, { signal: AbortSignal.timeout(20_000) }).then(async legacyResponse => {
+        if (!legacyResponse.ok) return
+        const legacyBody = await legacyResponse.json()
+        if (mounted.current && generation === requestGeneration.current) setLegacy(legacyBody)
+      }).catch(() => {})])
     } catch (reason) {
       if (!mounted.current || generation !== requestGeneration.current) return
+      if (reason instanceof DOMException && ['TimeoutError', 'AbortError'].includes(reason.name)) throw new Error('Сервер не ответил за 20 секунд. Повторите загрузку состояния.', { cause: reason })
       throw reason
     }
-  }, [endpoint, loadDocuments])
+  }, [endpoint, loadDocuments, trip.id])
   useEffect(() => {
-    mounted.current = true; setBusy(true)
+    mounted.current = true; setResult(null); setEtrn(null); setLegacy(null); setError(''); setRefreshError(''); setBusy(true)
     void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) })
-    void fetch(`/api/shipment-trips/${encodeURIComponent(trip.id)}/saby`).then(async response => { if (response.ok && mounted.current) setLegacy(await response.json()) }).catch(() => {})
     return () => { mounted.current = false; requestGeneration.current++ }
   }, [read, trip.id])
   const perform = useCallback(async (loadingFacts?: LoadingFacts, carrierDetails = false, start?: TripSabyResponse['start']) => {
@@ -136,12 +142,65 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     } catch { setRefreshError('Не удалось скопировать. Можно выделить данные ниже и скопировать вручную.') }
   }
   const haveLegacy = !result?.locked && (!!legacy?.saby.documents.length || etrn?.deliveries.some(delivery => delivery.document))
+  const directAutostart = result?.automation?.mode === 'after_driver_departure'
+  const steps = result?.documentMode === 'nk_direct_etrn' ? directWorkflowSteps(result, trip.customers.filter(requiresEtrn).map(row => row.id)) : []
+  const directTitle = !result ? '' : result.notRequired ? 'ЭТрН не нужна'
+    : steps[6]?.state === 'done' ? 'Приёмка всех доставок подтверждена'
+    : result.stage6CompletedAt ? 'ЭТрН переданы клиентам'
+    : !result.locked && result.blockers.length ? 'Черновик ЭТрН: нужны сведения'
+    : result.phase === 'unknown' || result.deliveries.some(delivery => delivery.status === 'unknown' || delivery.dispatch?.sender.state === 'unknown' || delivery.dispatch?.carrier.state === 'unknown') ? 'Сверяем результат обмена с Saby'
+    : result.phase === 'error' || result.lastError || confirmedByDriverAt && result.blockers.length || result.deliveries.some(delivery => delivery.dispatch?.sender.state === 'blocked' || delivery.dispatch?.carrier.state === 'blocked') ? 'Отправка ЭТрН требует проверки'
+    : !result.locked ? confirmedByDriverAt ? directAutostart ? 'Ожидаем постановку ЭТрН в очередь' : 'Массы сохранены. Требуется запуск отправки' : 'Ожидаем убытие водителя'
+    : !result.deliveries.some(delivery => delivery.id || delivery.status !== 'not_sent') ? 'ЭТрН в очереди отправки'
+    : result.phase === 'creating_etrn' ? 'Создание ЭТрН в Saby'
+    : result.deliveries.some(delivery => delivery.dispatch?.sender.state !== 'confirmed') ? 'Подписание ЭТрН от имени НК'
+    : result.deliveries.some(delivery => delivery.dispatch?.carrier.state !== 'confirmed') ? 'Подписание титула перевозчика'
+    : 'Передача ЭТрН клиентам'
+  if (!result) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+    <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>Документы Saby</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Загрузка документов"/>}</div>
+    {error ? <p className="shipment-error" role="alert">{error}</p> : <p role="status">Загружаем маршрут и этапы обмена…</p>}
+    {!busy && <button type="button" className="button" onClick={() => { setBusy(true); setError(''); void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) }) }}><RefreshCw size={15}/>Повторить загрузку</button>}
+  </section>
+  if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+    <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление состояния"/>}</div>
+    {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>}
+    <p>НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик, без заказа-заявки. Состав документов определяется флажком «ЭТрН не нужна» у каждой доставки.</p>
+    <div className="workflow-current" role="status"><strong>{directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
+    {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
+    {error && <p className="shipment-error" role="alert">{error}</p>}
+    {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
+    {result.lastError && <p className="shipment-error" role="alert">{result.lastError}</p>}
+    {!!result.blockers.length && <div className="trip-saby-blockers"><p>Что требуется для прямой ЭТрН:</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
+    {!result.notRequired && <TripLoadingDetails key={trip.id} tripId={trip.id} disabled={busy} locked={result.locked} onSaved={read}/>}
+    {!!result.previousExchanges?.length && <details className="workflow-history"><summary>Предыдущие накладные</summary><ol>{result.previousExchanges.flatMap((exchange, exchangeIndex) => exchange.documents.map((document, documentIndex) => {
+      const url = safeSabyUrl(document.url)
+      return <li key={`${exchangeIndex}-${documentIndex}`}><span>{url ? <a href={url} target="_blank" rel="noreferrer">{document.number ? `Накладная № ${document.number}` : 'Открыть накладную в Saby'} <ArrowUpRight size={13}/></a> : document.number ? `Накладная № ${document.number}` : 'Накладная без подтверждённого номера'}{document.status && <> · {document.status}</>}</span><time dateTime={exchange.at}>{workflowTime(exchange.at)}</time></li>
+    }))}</ol></details>}
+    {result.start && !directAutostart && !result.locked && !result.notRequired && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || startUncertain || !result.ready} onClick={() => void perform(undefined, false, result.start!)}><FilePlus2 size={16}/>Запустить подписание и отправку</button></div>}
+    {startUncertain && <p className="workflow-sync-warning" role="status">Результат запуска пока не подтверждён. Обновите сохранённое состояние перед повтором.</p>}
+    {result.locked && <p className="etrn-note">{result.monitoring.enabled ? 'CRM продолжает проверку документов в фоне.' : result.monitoring.reason || 'Фоновая проверка приостановлена.'} Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}.</p>}
+    {trip.customers.map((row, index) => {
+      const required = requiresEtrn(row), delivery = result.deliveries.find(item => item.shipmentId === row.id), doc = etrn?.deliveries.find(item => item.shipmentId === row.id)?.document
+      const dispatch = delivery?.dispatch, url = safeSabyUrl(doc?.url)
+      const status = !required ? 'ЭТрН не нужна для этой доставки' : dispatch?.recipientAcceptedAt ? 'Приёмка клиентом подтверждена' : dispatch?.completedAt ? 'Передано клиенту. Приёмка клиентом пока не подтверждена.' : doc ? doc.remoteStatus || (doc.status === 'draft' ? 'ЭТрН создана в НК АРТЭЛЬ' : doc.status === 'pending' ? 'Создание ЭТрН выполняется' : 'Результат требует сверки') : delivery?.status === 'unknown' ? 'Результат создания требует сверки' : delivery?.id ? 'ЭТрН создана. Сведения о документе обновляются.' : 'ЭТрН ещё не создана'
+      return <section className="etrn-delivery" key={row.id}><h3>{title(row.id, index)}</h3><p className="etrn-note">{row.fields.unloading_address || 'Адрес доставки не указан'}</p><p>{status}</p>{(delivery?.lastError || doc?.lastError) && <p className="shipment-error" role="alert">{delivery?.lastError || doc?.lastError}</p>}
+        {required && <p className="etrn-note">Подпись НК как отправителя: {dispatch?.sender.state === 'confirmed' ? 'подтверждена Saby' : dispatch?.sender.message || 'пока не подтверждена'}. Подпись НК как перевозчика: {dispatch?.carrier.state === 'confirmed' ? 'подтверждена Saby' : dispatch?.carrier.message || 'пока не подтверждена'}.</p>}
+        {doc && <p className="etrn-note">ГИС ЭПД: {doc.gisStatus || 'подтверждение не получено'}. Последнее обновление: {workflowTime(doc.updatedAt)} · Москва.</p>}
+        {url && <a className="button" href={url} target="_blank" rel="noreferrer">Открыть ЭТрН в Saby <ArrowUpRight size={14}/></a>}
+        {!!doc?.files.length && <ul>{doc.files.map(file => <li key={file.id}>{file.url.startsWith(`${etrnEndpoint}/files/${encodeURIComponent(row.id)}/`) && <a href={apiUrl(file.url)} download><Download size={14}/>{file.name}</a>}</li>)}</ul>}
+      </section>
+    })}
+    <div className="etrn-actions"><button type="button" className="button" disabled={busy} onClick={() => {
+      setBusy(true); setError('')
+      void read().catch(reason => setError(reason instanceof Error ? reason.message : 'Нет связи с сервером')).finally(() => { if (mounted.current) setBusy(false) })
+    }}><RefreshCw size={15}/>Обновить состояние</button></div>
+  </section>
   if (result?.notRequired) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby"><h3>ЭТрН не нужна</h3><p>Для всех клиентов рейса передача в Saby отключена. Задание водителя и факты погрузки сохраняются в CRM.</p></section>
   return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>АРТЭЛЬ → НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление документов"/>}</div>
     {error && <p className="shipment-error" role="alert">{error}</p>}
     {result && <>
-      <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>
+      <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>
       <div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
       {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
       {(!savedFactsNeedReconciliation || !automatic) && result.automation?.message && result.automation.message !== view!.text && <p className="etrn-note">{result.automation.message}</p>}

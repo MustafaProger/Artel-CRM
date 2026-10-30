@@ -94,9 +94,15 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
       });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error || 'Не удалось войти.');
+      if (!value.user?.id) throw new Error('Не удалось подтвердить вход. Повторите попытку.');
+      // Login/setup commits the session and returns the same public user as
+      // /auth/session. Do not put a second store read on the login critical path.
+      // Ignore a focus/timer session response started before this login finished.
+      sessionRequest.current++;
+      setSession(previous => ({ user: value.user as AccountUser, needsSetup: false, setupTokenRequired: previous?.setupTokenRequired ?? false }));
+      setChecking(false);
       setForm(emptyForm);
       setShowPassword(false);
-      await refresh();
     } catch (e) {
       setError((e as Error).message);
     } finally {

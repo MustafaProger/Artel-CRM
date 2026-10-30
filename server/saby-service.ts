@@ -1,3 +1,4 @@
+import type { ShipmentAccessContext } from './shipment-operations';
 import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import Decimal from 'decimal.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -5,11 +6,12 @@ import type { ShipmentTrip, Snapshot } from '../web/src/model';
 import type { SabyDocumentSummary, SabyTripResponse } from '../web/src/saby-model';
 import { ApiError } from './api-error';
 import type { OperationsData, OperationsStorage } from './operations-store';
-import { currentSnapshot } from './shipment-operations';
+import { currentSnapshot, currentShipmentAccess } from './shipment-operations';
 import { getShipmentTrip } from './shipment-trips';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
 import { buildSabyTransportDocument, sabyTransportBlockers, type SabyTransportSnapshot } from './saby-transport-order';
 import { hasEtrnDocuments } from './etrn-service';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
 
 export interface SabyDocumentRecord extends SabyDocumentSummary {
   marker: string;
@@ -81,6 +83,7 @@ function summary(record: SabyTripRecord | undefined, ready: boolean): SabyTripRe
 export function getSabyTrip(base: Snapshot, data: OperationsData, tripId: string, config = sabyConfigFromEnv()): SabyTripResponse {
   const snapshot = currentSnapshot(base, data);
   const trip = getShipmentTrip(snapshot, tripId);
+  assertTripTransportDocumentsAllowed(trip, data);
   const record = data.saby?.trips[tripId];
   const errors = record?.documents.some(doc => doc.status !== 'error' || doc.id) ? sabyCredentialBlockers(config) : blockers(snapshot, trip, config);
   return { saby: summary(data.saby?.trips[tripId], errors.length === 0), readiness: { ready: errors.length === 0, blockers: errors } };
@@ -104,7 +107,7 @@ function confirmed(doc: SabyObject, record: SabyDocumentRecord): Partial<SabyDoc
 }
 export interface SubmitSabyTripOptions {
   base: Snapshot; store: OperationsStorage; tripId: string;
-  authorize: (snapshot: Snapshot, data: OperationsData) => void;
+  authorize: (snapshot: ShipmentAccessContext, data: OperationsData) => void;
   client?: SabyClient;
 }
 /** Claims persist before network; the store lock is never held across an external call. */
@@ -114,6 +117,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
   const claimed = await store.mutate(source, data => {
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId);
+    assertTripTransportDocumentsAllowed(trip, data);
     if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Для рейса уже запущена общая заявка Saby. Используйте обновление общего обмена.');
     const existing = data.saby?.trips[tripId];
     if (existing?.documents.every(doc => doc.status === 'draft')) return { result: null, changed: false };
@@ -134,7 +138,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
   });
   if (claimed) {
     client = client.withRequestGuard(async () => {
-      const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+      const data = await store.read(source); authorize(currentShipmentAccess(base, data), data);
       const record = data.saby?.trips[tripId];
       if (!record || record.leaseId !== leaseId || !record.leaseUntil || Date.parse(record.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс передачи Saby истёк или изменён. Выполните сверку состояния.');
     });
@@ -159,7 +163,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
         let id = record.id;
         try {
           // Recheck access between customer documents; a revoked employee cannot initiate another one.
-          const latest = await store.read(source); authorize(currentSnapshot(base, latest), latest);
+          const latest = await store.read(source); authorize(currentShipmentAccess(base, latest), latest);
           if (record.status === 'unknown' && !id) {
             const rows = await client.findDocuments(record.marker, record.snapshot.fields.date!.split('-').reverse().join('.'), record.snapshot.customerOrganization, `CRM-${record.attemptId}`);
             if (rows.length !== 1) throw new SabyError('unknown', rows.length ? 'В Saby найдено несколько совпадений. Нужна ручная сверка; повторное создание запрещено.' : 'Документ пока не найден в Saby. Результат прежней записи неизвестен; новое создание запрещено. Повторите сверку позже.', true);
@@ -196,6 +200,6 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
       });
     }
   }
-  const latest = await store.read(source); authorize(currentSnapshot(base, latest), latest);
+  const latest = await store.read(source); authorize(currentShipmentAccess(base, latest), latest);
   return getSabyTrip(base, latest, tripId, client.config);
 }

@@ -12,3 +12,22 @@ await build({
   banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
   logLevel: 'info',
 });
+
+await build({
+  entryPoints: ['scripts/grant-invoice-access.ts'],
+  outfile: 'server-render/grant-invoice-access.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  sourcemap: false,
+  banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
+  logLevel: 'info',
+});
+
+for (const name of ['export-operations', 'work-storage']) await build({
+  entryPoints: [`scripts/${name}.ts`], outfile: `server-render/${name}.mjs`,
+  bundle: true, platform: 'node', format: 'esm', target: 'node22', sourcemap: false,
+  banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
+  logLevel: 'info',
+});

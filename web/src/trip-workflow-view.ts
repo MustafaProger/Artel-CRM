@@ -55,6 +55,28 @@ export function driverConfirmedAt(result: TripSabyResponse) {
   return value && Number.isFinite(Date.parse(value)) ? value : null
 }
 
+/** Each direct delivery needs its own evidence; a later phase is not a receipt. */
+export function directWorkflowSteps(result: TripSabyResponse, requiredShipmentIds: string[]) {
+  if (result.notRequired || !requiredShipmentIds.length) return []
+  const deliveries = requiredShipmentIds.map(id => result.deliveries.find(row => row.shipmentId === id))
+  const dated = (value: string | null | undefined) => !!value && Number.isFinite(Date.parse(value))
+  const counts = [
+    deliveries.filter(row => !!row?.id).length,
+    deliveries.filter(row => row?.dispatch?.sender.state === 'confirmed').length,
+    deliveries.filter(row => row?.dispatch?.carrier.state === 'confirmed').length,
+    deliveries.filter(row => dated(row?.dispatch?.completedAt)).length,
+    deliveries.filter(row => dated(row?.dispatch?.recipientAcceptedAt)).length,
+  ]
+  const labels = ['Подготовка', 'Подтверждение водителя', 'Создание ЭТрН', 'Подпись отправителя НК', 'Подпись перевозчика НК', 'Передача клиентам', 'Приёмка клиентами']
+  const done = [result.ready || result.locked, !!driverConfirmedAt(result), ...counts.map(count => count === deliveries.length)]
+  const hasExchange = deliveries.some(row => !!row?.id)
+  const current = done.findIndex((complete, index) => !complete && !(hasExchange && index < 2))
+  return labels.map((label, index) => {
+    const state = done[index] ? 'done' : index === current ? 'current' : hasExchange && index < 2 ? 'unconfirmed' : 'pending'
+    return { label, state, note: state === 'unconfirmed' ? 'Не зафиксировано' : index >= 2 ? `${counts[index - 2]} из ${deliveries.length}` : undefined }
+  })
+}
+
 export function workflowSteps(result: TripSabyResponse, currentStep: number) {
   const labels = ['Подготовка', 'Подтверждение водителя', 'Отправка АРТЭЛЬ', 'Водитель и машина', 'Подтверждение НК', 'Создание ЭТрН', 'Отправка клиентам']
   return labels.map((label, index) => {
@@ -104,6 +126,7 @@ export function workflowView(result: TripSabyResponse, hasLoadingFacts = false):
   }
   if (result.phase === 'sending_etrn' || result.phase === 'completed' && result.driverFlow) return { title: 'ЭТрН созданы · отправка клиентам', text: 'CRM проверяет подписи и отправку каждой ЭТрН клиенту. Рейс остаётся активным до подтверждения всех доставок.', step: 6 }
   if (result.phase === 'completed') return { title: 'ЭТрН созданы · ожидают обработки', text: 'В АРТЭЛЬ откройте каждую ЭТрН, проверьте заполнение и подпишите отправку клиенту. Состояния документов и подписей обновляются ниже.', step: 6 }
+  if (result.phase === 'creating_etrn' && result.deliveries.some(delivery => delivery.waitingForNativeDraft)) return { title: 'Ожидаем ЭТрН от Saby', text: 'Заявка подтверждена. CRM автоматически проверяет появление связанной ЭТрН и продолжит обработку, когда Saby её вернёт.', step: 5 }
   if (result.phase === 'creating_etrn') return { title: 'АРТЭЛЬ · создание ЭТрН', text: 'По подтверждённой заявке создаётся отдельная ЭТрН для каждой доставки.', step: 5 }
   if (result.phase === 'awaiting_loading') return result.driverFlow
     ? { title: 'Заявка подтверждена · проверяем погрузку', text: 'CRM проверяет ранее сохранённые водителем массы и события перед созданием ЭТрН для клиентов.', step: 5 }

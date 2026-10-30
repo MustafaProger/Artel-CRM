@@ -5,7 +5,20 @@ export interface EtrnParty {
   person?: EtrnName;
 }
 export interface EtrnDocumentBasis { name: string; number: string; date: string; issuerInns: string[] }
+/** A loading document is identified either by its electronic ID or all three paper requisites. */
+export interface EtrnLoadingDocumentBasis extends EtrnDocumentBasis { documentId?: string; additionalInfo?: string }
+export interface EtrnLoadingWorker extends EtrnName {
+  position: string;
+  /** A choice confirmed by the user; neither a driver's identity nor a signer implies loading authority. */
+  authority: '' | 'job_duties' | 'document';
+  authorityDocument?: EtrnLoadingDocumentBasis;
+  additionalInfo?: string;
+}
+/** Confirmed for one trip; no automatic reuse for another loading operation. */
+export interface EtrnLoadingDetails { basis: EtrnLoadingDocumentBasis; worker: EtrnLoadingWorker }
 export interface EtrnName { surname: string; name: string; patronymic: string }
+/** Transportation contact; this role grants no signing or loading authority. */
+export interface EtrnCarrierResponsible extends EtrnName { phone: string }
 export interface EtrnDangerousGoods {
   unNumber: string; shippingName: string; class: string; classificationCode: string;
   packingGroup: string; hazardSign: string; tunnelCode: string;
@@ -13,11 +26,14 @@ export interface EtrnDangerousGoods {
 export interface EtrnLoadingParty {
   /** null means unconfirmed. False requires an explicit party, never supplier inference. */
   sameAsConsignor: boolean | null; party: EtrnParty;
+  basis?: EtrnLoadingDocumentBasis;
+  worker?: EtrnLoadingWorker;
 }
 export interface SabyConsignmentProfile {
   confirmed: boolean;
   consignorPhone: string;
   carrierPhone: string;
+  carrierResponsible?: EtrnCarrierResponsible;
   /** 0 = consignor, 1 = forwarder; forwarder additionally requires transportCustomer. */
   consignorIsForwarder: string;
   transportCustomer?: EtrnParty;

@@ -97,7 +97,7 @@ const optionalDate = (value: unknown, label: string, timestamp = false) => {
 };
 export function publicWorkEntry<T extends AnyWorkEntry>(entry: T): T {
   if (!('attachments' in entry)) return entry;
-  return { ...entry, attachments: entry.attachments?.map(({ data: _data, ...file }) => { return file; }) };
+  return { ...entry, attachments: entry.attachments?.map(({ data: _data, ...file }) => { void _data; return file; }) };
 }
 export function workFile(data: OperationsData, kind: string, id: string, fileId: string, actor: AccountUser) {
   const entry = (kind === 'tasks' ? data.work?.tasks : data.work?.companyRecords)?.find(row => row.id === id);

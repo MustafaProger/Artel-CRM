@@ -1,12 +1,11 @@
 import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bell, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { Bell, Check, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { isScopedEmployee, type AccountUser } from './auth-model';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
 import { isWorkDirectoryCompany, workStatuses, workFileLimit, workFilesTotalLimit, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from './work-model';
 import './work.css';
-import { NotificationMenu } from './DriverNotifications';
 import ScrollableSegments from './ScrollableSegments';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry };
@@ -27,7 +26,12 @@ export default function WorkPage() {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const request = useRef<AbortController | null>(null), active = useRef(true);
+  const completing = useRef(new Set<string>());
+  const editorSaving = useRef(false);
+  const [pendingTasks, setPendingTasks] = useState<Record<string, WorkTask['status']>>({});
+  const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
   const refresh = useCallback(async (visible = false) => {
+    if (completing.current.size || editorSaving.current) return;
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -36,7 +40,7 @@ export default function WorkPage() {
       const response = await fetch(`/api/work${filter ? `?assigneeId=${encodeURIComponent(filter)}` : ''}`, { signal: controller.signal, cache: 'no-store' });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рабочее пространство.');
-      if (!controller.signal.aborted && active.current) { setData(result); setError(''); }
+      if (!controller.signal.aborted && active.current) { setData(result); setError(''); setTaskErrors({}); }
     } catch (reason) {
       if (!controller.signal.aborted && active.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.');
     } finally { if (!controller.signal.aborted && active.current) setLoading(false); }
@@ -45,10 +49,9 @@ export default function WorkPage() {
     active.current = true;
     void refresh(true);
     const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
-    const timer = window.setInterval(onVisible, 15000);
-    window.addEventListener('focus', onVisible);
+    const timer = window.setInterval(onVisible, 30000);
     document.addEventListener('visibilitychange', onVisible);
-    return () => { active.current = false; request.current?.abort(); window.clearInterval(timer); window.removeEventListener('focus', onVisible); document.removeEventListener('visibilitychange', onVisible); };
+    return () => { active.current = false; request.current?.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [refresh]);
   useEffect(() => {
     if (!data) return;
@@ -61,6 +64,25 @@ export default function WorkPage() {
     params.delete('workId'); params.delete('workKind');
     history.replaceState(null, '', `${location.pathname}${params.size ? `?${params}` : ''}#work`);
   }, [data]);
+  const toggleTask = async (task: WorkTask) => {
+    if (completing.current.has(task.id)) return;
+    const status = task.status === 'done' ? 'todo' : 'done';
+    completing.current.add(task.id);
+    request.current?.abort(); setLoading(false);
+    setPendingTasks(previous => ({ ...previous, [task.id]: status }));
+    setTaskErrors(previous => { const next = { ...previous }; delete next[task.id]; return next; });
+    try {
+      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status }), signal: AbortSignal.timeout(20000) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
+      if (active.current) setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
+    } catch (reason) {
+      if (active.current) setTaskErrors(previous => ({ ...previous, [task.id]: reason instanceof Error && reason.name !== 'TimeoutError' && reason.name !== 'TypeError' ? reason.message : 'Не удалось подтвердить сохранение. Обновите список перед повтором.' }));
+    } finally {
+      completing.current.delete(task.id);
+      if (active.current) setPendingTasks(previous => { const next = { ...previous }; delete next[task.id]; return next; });
+    }
+  };
   const userName = (id: string) => [...(data?.users ?? []), ...(data?.historicalUsers ?? [])].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
   const isManager = !!data && isScopedEmployee(data.currentUser);
@@ -68,28 +90,21 @@ export default function WorkPage() {
   const today = localDay(new Date());
   const events: CalendarEvent[] = [];
   for (const task of (work?.tasks ?? []).filter(task => !task.archivedAt)) {
-    if (task.dueDate) events.push({ id: `${task.id}-due`, day: task.dueDate, title: task.title, reminder: false, editor: { kind: 'tasks', entry: task } });
     if (task.reminderAt) events.push({ id: `${task.id}-reminder`, day: localDay(new Date(task.reminderAt)), title: task.title, reminder: true, editor: { kind: 'tasks', entry: task } });
   }
   for (const row of work?.companyRecords ?? []) if (row.reminderAt && !row.archivedAt) events.push({ id: row.id, day: localDay(new Date(row.reminderAt)), title: companyName(row.companyId), reminder: true, editor: { kind: 'companies', entry: row } });
-  const reminders = [
-    ...(work?.tasks ?? []).filter(task => task.reminderAt && task.status !== 'done' && !task.archivedAt).map(task => ({ at: task.reminderAt!, title: task.title, editor: { kind: 'tasks', entry: task } as Editor })),
-    ...(work?.companyRecords ?? []).filter(row => row.reminderAt && !row.archivedAt).map(row => ({ at: row.reminderAt!, title: `${companyName(row.companyId)}: ${row.question}`, editor: { kind: 'companies', entry: row } as Editor })),
-  ].sort((a, b) => a.at.localeCompare(b.at));
   const records: Editor[] = [
     ...(work?.tasks ?? []).map(entry => ({ kind: 'tasks' as const, entry })),
     ...(work?.companyRecords ?? []).map(entry => ({ kind: 'companies' as const, entry })),
-  ].filter(item => !!(item.entry as WorkTask).archivedAt === (view === 'archive')).sort((a, b) => b.entry!.updatedAt.localeCompare(a.entry!.updatedAt));
+  ].filter(item => !!(item.entry as WorkTask).archivedAt === (view === 'archive')).sort((a, b) => b.entry!.createdAt.localeCompare(a.entry!.createdAt) || a.entry!.id.localeCompare(b.entry!.id));
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const start = new Date(first); start.setDate(1 - (first.getDay() + 6) % 7);
   const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
   return <div className="work-page">
     <div className="work-view-toolbar">
       <ScrollableSegments className="work-views" label="Представление работы" value={view}><button className={`button ${view === 'board' ? 'primary' : ''}`} aria-pressed={view === 'board'} onClick={() => setView('board')}><LayoutGrid size={17}/>Задачи</button><button className={`button ${view === 'calendar' ? 'primary' : ''}`} aria-pressed={view === 'calendar'} onClick={() => setView('calendar')}><CalendarDays size={17}/>Календарь</button><button className={`button ${view === 'archive' ? 'primary' : ''}`} aria-pressed={view === 'archive'} onClick={() => setView('archive')}>Архив задач</button></ScrollableSegments>
-    </div>
-    <div className="work-toolbar work-action-toolbar">
-      <div className="work-assignee">{isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
-      <div className="work-toolbar-actions">{data && <NotificationMenu key={data.currentUser.id} userId={data.currentUser.id} kind="work" count={reminders.length}>{closeWith => reminders.length ? <div className="work-reminder-list">{reminders.map(reminder => <button key={reminder.editor.entry!.id} className="work-reminder" onClick={() => closeWith(() => setEditor(reminder.editor))}><strong>{reminder.title}</strong><small className={reminder.at <= new Date().toISOString() ? 'work-overdue' : ''}>{dateLabel(reminder.at)}{reminder.at <= new Date().toISOString() ? ' · наступило' : ''}</small></button>)}</div> : <p className="work-empty">Напоминаний пока нет.</p>}</NotificationMenu>}<button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
+      <div className="work-assignee">{isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" disabled={Object.keys(pendingTasks).length > 0} value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
+      <div className="work-toolbar-actions"><button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
       </div>
     </div>
     {notice && <p className="work-notice" role="status">{notice}</p>}
@@ -98,31 +113,51 @@ export default function WorkPage() {
     {data && <>
       <div className="work-layout">
         <section className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
-          {view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header><div className="work-company-list">{records.map(item => { const row = item.entry as WorkTask | WorkCompanyRecord; const task = 'title' in row ? row : null; return <button key={row.id} className={task ? 'work-card' : 'work-company-row'} onClick={() => setEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}><span><strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong><p>{companyName(row.companyId) || 'Без компании'}</p>{task?.description && <p>{task.description}</p>}<small>{userName(row.assigneeId)} · Комментариев: {row.comments?.length ?? 0} · Файлов: {row.attachments?.length ?? 0}</small></span><span className="work-card-footer">{task && <small>{workStatuses.find(status => status.id === task.status)?.name}</small>}{task?.dueDate && <small className={task.dueDate < today && task.status !== 'done' ? 'work-overdue' : ''}><CalendarDays size={13}/>{dateLabel(task.dueDate)}</small>}{row.reminderAt && <small><Bell size={13}/>{dateLabel(row.reminderAt)}</small>}</span></button>; })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><CalendarDays size={14}/>Срок задачи <Bell size={14}/>Напоминание · время вашего устройства</p></section>}
+          {view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => setEditor({ kind: 'tasks' })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header><div className="work-company-list">{records.map(item => {
+            const row = item.entry as WorkTask | WorkCompanyRecord;
+            const task = 'title' in row ? row : null;
+            const pending = Object.hasOwn(pendingTasks, row.id);
+            const status = task ? pendingTasks[row.id] ?? task.status : null;
+            return <div key={row.id} className={task ? `work-task-row${status === 'done' ? ' is-done' : ''}${pending ? ' is-saving' : ''}` : 'work-record-row'}>
+              {task && <label className="work-task-check" title={status === 'done' ? 'Вернуть в работу' : 'Выполнить задачу'}>
+                <input type="checkbox" aria-label={`Выполнена: ${task.title}`} checked={status === 'done'} disabled={pending || !!task.archivedAt} onChange={() => void toggleTask(task)}/>
+                <span className="work-task-check-box" aria-hidden="true"><Check size={16} strokeWidth={3}/></span>
+              </label>}
+              <div className="work-task-content">
+                <button className={task ? 'work-task-open' : 'work-company-row'} disabled={pending} onClick={() => setEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}>
+                  <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
+                  {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
+                  {task?.description && <span className="work-task-description">{task.description}</span>}
+                  <span className="work-task-meta"><span>{userName(row.assigneeId)}</span>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
+                </button>
+                {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
+              </div>
+              {task && <span className={`work-task-status status-${status}`} role="status">{pending ? <><LoaderCircle size={13} className="spin"/>Сохраняем…</> : status === 'done' ? 'Готово' : status === 'doing' ? 'В работе' : 'К выполнению'}</span>}
+            </div>;
+          })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><Bell size={14}/>Напоминание · время вашего устройства</p></section>}
 
         </section>
-        <aside className="work-side">
+        <aside className="work-side" aria-label="Заметки">
 
           <section className="panel work-notes"><header className="work-section-heading"><h2>Заметки</h2><button className="icon-button" aria-label="Добавить заметку" onClick={() => setEditor({ kind: 'notes' })}><Plus size={18}/></button></header>{data.work.notes.length ? <div className="work-note-list">{data.work.notes.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(note => <button className="work-note" key={note.id} onClick={() => setEditor({ kind: 'notes', entry: note })} aria-label={`Заметка: ${note.title}`}><strong>{note.title}</strong><p>{note.content}</p><small>{userName(note.assigneeId)}</small></button>)}</div> : <p className="work-empty">Заметок пока нет.</p>}</section>
         </aside>
       </div>
-      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onClose={() => setEditor(null)} onSaved={(action, entry) => {
+      {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }} onClose={() => setEditor(null)} onSaved={(action, entry) => {
         request.current?.abort();
         const key = editor.kind === 'companies' ? 'companyRecords' : editor.kind;
         setData(previous => {
           if (!previous) return previous;
           const remaining = previous.work[key].filter(row => row.id !== editor.entry?.id && row.id !== entry?.id);
-          return { ...previous, work: { ...previous.work, [key]: entry ? [...remaining, entry] : remaining } };
+          return { ...previous, work: { ...previous.work, [key]: entry && (!filter || entry.assigneeId === (filter === 'mine' ? previous.currentUser.id : filter)) ? [...remaining, entry] : remaining } };
         });
         setEditor(null);
         setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : 'Сохранено. Назначение доступно сотруднику в разделе «Работа».');
-        void refresh();
       }}/>}
     </>}
   </div>;
 }
 
-function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
+function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const [requestId] = useState(() => crypto.randomUUID());
@@ -138,7 +173,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose:
   const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
     if (inFlight.current) return;
     if (method !== 'DELETE' && !dialog.current?.querySelector('form')?.reportValidity()) return;
-    inFlight.current = true; setSaving(true); setError('');
+    inFlight.current = true; onSaving(true); setSaving(true); setError('');
     try {
       let body: Record<string, unknown> = { version: entry?.version };
       if (method !== 'DELETE') {
@@ -146,14 +181,14 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose:
           ? task?.reminderAt ?? null
           : fields.reminderAt ? new Date(fields.reminderAt).toISOString() : null;
         const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
-        body = { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived: nextArchived ?? archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, dueDate: fields.dueDate || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
+        body = { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived: nextArchived ?? archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
       }
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить запись.');
       await complete(() => onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry));
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
-    finally { inFlight.current = false; setSaving(false); }
+    finally { inFlight.current = false; onSaving(false); setSaving(false); }
   };
   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number } = {}) => <label className="work-field"><span>{label}{options.required ? ' *' : ''}</span>{options.multiline ? <textarea aria-label={label} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;
   const heading = editor.kind === 'tasks' ? entry ? 'Задача' : 'Новая задача' : editor.kind === 'companies' ? 'Работа с компанией' : entry ? 'Заметка' : 'Новая заметка';
@@ -167,7 +202,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onClose:
 
       {editor.kind === 'companies' && input('Текущий вопрос', 'question', { required: true, multiline: true })}
       <div className="work-field-grid"><label className="work-field"><span>Исполнитель *</span><select aria-label="Исполнитель" value={fields.assigneeId} required disabled={saving || !entry && isScopedEmployee(actor)} onChange={event => update('assigneeId', event.target.value)}>{!users.some(user => user.id === fields.assigneeId) && <option value={fields.assigneeId} disabled>{userName(fields.assigneeId)} · доступ отключён</option>}{users.map(user => <option value={user.id} key={user.id}>{user.name}{user.id === actor.id ? ' (я)' : ''}</option>)}</select></label>{editor.kind === 'tasks' && <label className="work-field"><span>Состояние</span><select aria-label="Состояние задачи" value={fields.status} disabled={saving} onChange={event => update('status', event.target.value)}>{workStatuses.map(status => <option key={status.id} value={status.id}>{status.name}</option>)}</select></label>}
-        {editor.kind === 'tasks' && input('Срок задачи', 'dueDate', { type: 'date' })}{editor.kind !== 'notes' && input('Напоминание', 'reminderAt', { type: 'datetime-local' })}
+        {editor.kind !== 'notes' && input('Напоминание', 'reminderAt', { type: 'datetime-local' })}
       </div>
       {isScopedEmployee(actor) && <p className="work-hint">{entry ? 'После передачи запись появится у выбранного сотрудника и исчезнет из ваших назначений.' : 'Новая запись назначается вам. После сохранения её можно передать сотруднику.'}</p>}
       {editor.kind !== 'notes' && <p className="work-hint">При включённых уведомлениях напоминание придёт исполнителю на устройство. Укажите время в часовом поясе вашего устройства.</p>}

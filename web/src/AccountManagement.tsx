@@ -1,17 +1,18 @@
+import AccountDirectoryAccess from './AccountDirectoryAccess';
 import { enabledPages } from './page-catalog';
 import { availablePagesFor } from './page-access';
 import { useDialogMotion } from './useDialogMotion'
 import { useEffect, useRef, useState } from 'react';
 import { Plus, Search, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 import './accounts.css';
-import { effectiveSections, isAdministrator, isScopedEmployee, legacyManagerSections, roleNames, type AccountRole, type AccountUser, type SectionId } from './auth-model';
+import { effectiveSections, isAdministrator, isScopedEmployee, defaultEmployeeSections, roleNames, type AccountRole, type AccountUser, type SectionId, type SharedDirectory } from './auth-model';
 import type { Directories } from './model';
 import DriverAccess from './DriverAccess';
 import AccountPasswordField from './AccountPasswordField';
 import AccountSavedPassword from './AccountSavedPassword';
 type AccountListUser = AccountUser & { passwordAvailable?: boolean };
 import RoleFilter, { type RoleFilterValue } from './RoleFilter';
-const empty = () => ({ name: '', login: '', password: '', role: 'manager' as AccountRole, managerId: '', active: true, sections: legacyManagerSections.filter(id => enabledPages.some(page => page.id === id)) });
+const empty = () => ({ name: '', login: '', password: '', role: 'manager' as AccountRole, managerId: '', active: true, directoryGrants: [] as SharedDirectory[], sections: defaultEmployeeSections.filter(id => enabledPages.some(page => page.id === id)) });
 
 async function request(url: string, method = 'GET', body?: unknown) {
   const response = await fetch(url, { method, ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
@@ -44,7 +45,7 @@ export default function AccountManagement({ directories, onChanged }: { director
   const edit = (user: AccountUser | null) => {
     setEditorRequest(previous => previous + 1);
     setEditing(user); setDriverId(user?.driverId ?? ''); setError(''); setNotice(''); setEmployeeName('');
-    setForm(user ? { name: user.name, login: user.login, password: '', role: user.role, managerId: user.managerId ?? '', active: user.active, sections: effectiveSections(user) } : empty());
+    setForm(user ? { name: user.name, login: user.login, password: '', role: user.role, managerId: user.managerId ?? '', active: user.active, directoryGrants: [...(user.directoryGrants ?? [])], sections: effectiveSections(user) } : empty());
   };
   const toggle = (id: SectionId, enabled: boolean) => setForm(previous => ({ ...previous, sections: enabled ? [...previous.sections, id] : previous.sections.filter(value => value !== id) }));
   const privileged = isAdministrator(form);
@@ -52,7 +53,7 @@ export default function AccountManagement({ directories, onChanged }: { director
   const linkedName = (user: AccountUser) => (user.role === 'driver' ? drivers.find(driver => driver.id === user.driverId) : employees.find(employee => employee.id === user.managerId))?.name;
   const filteredUsers = users.filter(user => (roleFilter === 'all' || user.role === roleFilter) && [user.name, user.login, linkedName(user) ?? ''].some(value => value.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'))));
   const roleOptions = Object.entries(roleNames).filter(([role]) => !editing || (editing.role === 'driver') === (role === 'driver'));
-  const changeRole = (role: AccountRole) => setForm(previous => ({ ...previous, role, password: role === 'driver' ? '' : previous.password, sections: isScopedEmployee(previous) && isScopedEmployee({ role }) ? previous.sections : [] }));
+  const changeRole = (role: AccountRole) => setForm(previous => ({ ...previous, role, password: role === 'driver' ? '' : previous.password, directoryGrants: isScopedEmployee(previous) && isScopedEmployee({ role }) ? previous.directoryGrants : [], sections: isScopedEmployee(previous) && isScopedEmployee({ role }) ? previous.sections : [] }));
   const closeEditor = () => { setEditing(undefined); setForm(empty()); };
   const refreshAccess = () => { void refresh().catch(reason => setError(reason.message)); };
   const deletionBlock = (user: AccountUser) => user.id === currentUserId ? 'Нельзя удалить свою учётную запись' : user.active && user.role === 'director' && users.filter(row => row.active && row.role === 'director').length === 1 ? 'Нельзя удалить последнего активного директора' : '';
@@ -94,7 +95,8 @@ export default function AccountManagement({ directories, onChanged }: { director
       <AccountPasswordField key={editorRequest} value={form.password} editing={!!editing} onChange={password => setForm(previous => ({ ...previous, password }))}/>
       </div></div><div className="account-access-card"><div className="account-group-heading"><span className="account-group-icon"><ShieldCheck size={19} aria-hidden="true" /></span><div><h3>Права доступа</h3></div></div>
       <label>Полномочия<select aria-label="Полномочия" value={form.role} onChange={event => changeRole(event.target.value as AccountRole)}>{roleOptions.map(([id, title]) => <option value={id} key={id}>{title}</option>)}</select></label>
-      <div className="account-permissions"><div className="account-permissions-heading"><strong>Доступные разделы</strong><span>{privileged ? enabledPages.length : enabledPages.filter(page => form.sections.includes(page.id)).length} из {enabledPages.length}</span></div><div className="account-section-grid">{enabledPages.map(section => <label key={section.id}><input className="account-toggle" type="checkbox" checked={privileged || form.sections.includes(section.id)} disabled={privileged} onChange={event => toggle(section.id, event.target.checked)} /><span>{section.title}</span></label>)}</div></div>
+      <div className="account-permissions"><div className="account-permissions-heading"><strong>Доступные разделы</strong><span>{enabledPages.filter(page => privileged || form.sections.includes(page.id)).length} из {enabledPages.length}</span></div><div className="account-section-grid">{enabledPages.map(section => <label key={section.id}><input className="account-toggle" type="checkbox" checked={privileged || form.sections.includes(section.id)} disabled={privileged} onChange={event => toggle(section.id, event.target.checked)} /><span>{section.title}</span></label>)}</div></div>
+      <AccountDirectoryAccess grants={form.directoryGrants} privileged={privileged} enabled={privileged || form.sections.includes('directories')} onChange={directoryGrants => setForm(previous => ({ ...previous, directoryGrants }))}/>
       </div></div>
       <div className="account-form-footer"><label className="active-field"><input className="account-toggle" type="checkbox" checked={form.active} onChange={event => setForm({ ...form, active: event.target.checked })} /><span>Активен</span></label>
       <div className="account-actions"><button className="button primary" type="submit">{busy ? 'Сохраняем…' : 'Сохранить пользователя'}</button><button className="button" type="button" onClick={closeEditor}>Отмена</button></div></div>

@@ -5,6 +5,7 @@ import type { Snapshot } from '../web/src/model';
 import type { TripRequest } from '../web/src/trip-request-model';
 import type { OperationsData } from './operations-store';
 import { tripRequestExplicitCoordinates, type TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
+import { compareRequestDates, validRequestDate } from '../web/src/trip-request-schedule';
 import { ApiError } from './api-error';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -17,6 +18,7 @@ export function validateTripRequests(value: unknown, creates: unknown) {
       if (!object(row) || row.id !== id || !id.startsWith('trip-request-') || !Number.isSafeInteger(row.version) || Number(row.version) < 1) throw new Error('Invalid trip request');
       for (const key of ['companyId', 'addressId', 'companyName', 'addressName', 'address', 'createdAt', 'updatedAt']) if (typeof row[key] !== 'string' || !row[key]) throw new Error('Invalid trip request field');
       if (typeof row.comment !== 'string' || row.comment.length > 4000 || typeof row.quantityLitres !== 'string' || !/^\d+(?:\.\d{1,6})?$/.test(row.quantityLitres) || !new Decimal(row.quantityLitres).gt(0)) throw new Error('Invalid trip request quantity');
+      if (row.executionDate !== undefined && row.executionDate !== null && !validRequestDate(row.executionDate)) throw new Error('Invalid trip request execution date');
       if (row.salePricePerLitre !== undefined && row.salePricePerLitre !== null && (typeof row.salePricePerLitre !== 'string' || row.salePricePerLitre.length > 40 || !/^\d+(?:\.\d{1,6})?$/.test(row.salePricePerLitre) || !new Decimal(row.salePricePerLitre).gt(0))) throw new Error('Invalid trip request price');
       for (const key of ['ownerUserId', 'managerId', 'mapUrl', 'latitude', 'longitude', 'tripId', 'shipmentId']) if (row[key] !== null && typeof row[key] !== 'string') throw new Error('Invalid trip request reference');
       if (row.locationSnapshot !== undefined) {
@@ -53,7 +55,7 @@ export function requireTripRequest(data: OperationsData, snapshot: Snapshot, act
 }
 
 export function listTripRequests(data: OperationsData, snapshot: Snapshot, actor: AccountUser | null) {
-  return Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && canAccessTripRequest(actor, snapshot, row)).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+  return Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && canAccessTripRequest(actor, snapshot, row)).sort(compareRequestDates);
 }
 
 function quantity(value: unknown) {
@@ -93,8 +95,10 @@ function deliveryPoint(body: Record<string, unknown>) {
 
 /** Run inside the same operations mutation as authorization. */
 export function saveTripRequest(data: OperationsData, snapshot: Snapshot, actor: AccountUser | null, body: Record<string, unknown>, id?: string, knownLocation?: TripRequestLocationResult) {
-  const allowed = id ? ['version', 'quantityLitres', 'salePricePerLitre', 'comment', 'address', 'latitude', 'longitude'] : ['companyId', 'addressId', 'address', 'quantityLitres', 'salePricePerLitre', 'comment', 'idempotencyKey', 'latitude', 'longitude'];
+  const allowed = id ? ['version', 'quantityLitres', 'salePricePerLitre', 'executionDate', 'comment', 'address', 'latitude', 'longitude'] : ['companyId', 'addressId', 'address', 'quantityLitres', 'salePricePerLitre', 'executionDate', 'comment', 'idempotencyKey', 'latitude', 'longitude'];
   if (Object.keys(body).some(key => !allowed.includes(key))) throw new ApiError(400, 'В заявке есть неизвестные параметры.');
+  if (body.executionDate !== undefined && body.executionDate !== null && !validRequestDate(body.executionDate)) throw new ApiError(400, 'Укажите корректную дату выполнения заявки.');
+  const executionDate = body.executionDate as string | null | undefined;
   const litres = quantity(body.quantityLitres);
   const price = pricePerLitre(body.salePricePerLitre);
   const previous = id ? requireTripRequest(data, snapshot, actor, id) : undefined;
@@ -105,7 +109,7 @@ export function saveTripRequest(data: OperationsData, snapshot: Snapshot, actor:
   const address = typeof body.address === 'string' ? body.address.trim().replace(/\s+/g, ' ') : previous?.address;
   const changedAddress = previous && address !== previous.address;
   if (previous) {
-    const request = { ...previous, ...(Object.hasOwn(body, 'salePricePerLitre') ? { salePricePerLitre: price } : {}), ...(changedAddress ? { address: address!, latitude: null, longitude: null, mapUrl: null, locationSnapshot: undefined } : {}), ...(point ? { ...point, locationSnapshot: undefined } : {}), quantityLitres: litres, comment: note, version: previous.version + 1, updatedAt: new Date().toISOString() };
+    const request = { ...previous, ...(executionDate !== undefined ? { executionDate } : {}), ...(Object.hasOwn(body, 'salePricePerLitre') ? { salePricePerLitre: price } : {}), ...(changedAddress ? { address: address!, latitude: null, longitude: null, mapUrl: null, locationSnapshot: undefined } : {}), ...(point ? { ...point, locationSnapshot: undefined } : {}), quantityLitres: litres, comment: note, version: previous.version + 1, updatedAt: new Date().toISOString() };
     data.tripRequests![request.id] = request;
     return { request, created: false, changed: true };
   }
@@ -113,7 +117,7 @@ export function saveTripRequest(data: OperationsData, snapshot: Snapshot, actor:
   const key = body.idempotencyKey;
   if (key !== undefined && (typeof key !== 'string' || !uuid.test(key))) throw new ApiError(400, 'Некорректный ключ сохранения заявки.');
   // Preserve legacy replay keys when optional price/address/point are absent.
-  const fingerprint = createHash('sha256').update(JSON.stringify([body.companyId, body.addressId, litres, note, ...(point ? [point.latitude, point.longitude] : []), ...(address === undefined ? [] : ['address', address]), ...(price === null ? [] : ['salePricePerLitre', price])])).digest('hex');
+  const fingerprint = createHash('sha256').update(JSON.stringify([body.companyId, body.addressId, litres, note, ...(point ? [point.latitude, point.longitude] : []), ...(address === undefined ? [] : ['address', address]), ...(price === null ? [] : ['salePricePerLitre', price]), ...(executionDate == null ? [] : ['executionDate', executionDate])])).digest('hex');
   const replay = typeof key === 'string' ? data.tripRequestCreates?.[key] : undefined;
   if (replay) {
     if (replay.actorId !== (actor?.id ?? null) || replay.fingerprint !== fingerprint) throw new ApiError(409, 'Этот ключ уже использован для другой заявки.');
@@ -127,7 +131,7 @@ export function saveTripRequest(data: OperationsData, snapshot: Snapshot, actor:
   const directoryPoint = samePlaceAddress ? { mapUrl: place.mapUrl || null, latitude: place.latitude || null, longitude: place.longitude || null } : { mapUrl: null, latitude: null, longitude: null };
   const automaticPoint = !point && !tripRequestExplicitCoordinates(directoryPoint) && !directoryPoint.latitude && !directoryPoint.longitude && knownLocation?.status === 'found' ? { latitude: String(knownLocation.latitude), longitude: String(knownLocation.longitude), locationSnapshot: structuredClone(knownLocation) } : {};
   const now = new Date().toISOString();
-  const request: TripRequest = { id: `trip-request-${randomUUID()}`, version: 1, companyId: company.id, addressId: place.id, quantityLitres: litres, ...(price === null ? {} : { salePricePerLitre: price }), comment: note, ownerUserId: actor?.id ?? null, managerId: actor?.managerId ?? snapshot.directories?.customerManagers?.find(row => row.companyId === company.id)?.managerId ?? null, companyName: company.name, addressName: place.name, address: address ?? (place.address || place.name), ...directoryPoint, ...automaticPoint, ...point, status: 'active', createdAt: now, updatedAt: now, tripId: null, shipmentId: null };
+  const request: TripRequest = { id: `trip-request-${randomUUID()}`, version: 1, companyId: company.id, addressId: place.id, quantityLitres: litres, ...(executionDate == null ? {} : { executionDate }), ...(price === null ? {} : { salePricePerLitre: price }), comment: note, ownerUserId: actor?.id ?? null, managerId: actor?.managerId ?? snapshot.directories?.customerManagers?.find(row => row.companyId === company.id)?.managerId ?? null, companyName: company.name, addressName: place.name, address: address ?? (place.address || place.name), ...directoryPoint, ...automaticPoint, ...point, status: 'active', createdAt: now, updatedAt: now, tripId: null, shipmentId: null };
   (data.tripRequests ??= {})[request.id] = request;
   if (typeof key === 'string') (data.tripRequestCreates ??= {})[key] = { requestId: request.id, actorId: actor?.id ?? null, fingerprint };
   return { request, created: true, changed: true };

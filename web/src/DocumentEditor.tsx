@@ -1,16 +1,19 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Download, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react'
 import { useDialogMotion } from './useDialogMotion'
+import DocumentDeleteDialog from './DocumentDeleteDialog'
 import { documentsRequest } from './documents-api'
 import { documentExpired, documentMaxBytes, type ArchiveItem, type DocumentArchiveView, type DocumentCategory } from './documents-model'
 
 type DraftFile = { key: string; id?: string; title: string; expiresOn: string; fileName: string; file?: File; removed?: boolean }
-export default function DocumentEditor({ kind, category, item, files, onClose, onSaved }: {
+export default function DocumentEditor({ kind, category, item, files, onClose, onSaved, onDeleted }: {
   kind: 'category' | 'card'; category?: DocumentCategory; item?: ArchiveItem; files: DocumentArchiveView['documents']; onClose: () => void;
+  onDeleted: (archive: DocumentArchiveView) => void;
   onSaved: (archive: DocumentArchiveView, categoryId: string) => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null), titleId = useId(), lock = useRef(false), backdropDown = useRef(false)
   const { close, complete } = useDialogMotion(dialog, onClose)
+  const [deleting, setDeleting] = useState(false)
   const [name, setName] = useState(item?.name ?? '')
   const [rows, setRows] = useState<DraftFile[]>(() => files.map(f => ({ key: f.id, id: f.id, title: f.title, expiresOn: f.expiresOn ?? '', fileName: f.fileName })))
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
@@ -67,8 +70,9 @@ export default function DocumentEditor({ kind, category, item, files, onClose, o
       </div>
       <footer className="archive-drawer-footer">
         {error && <p className="archive-error" role="alert">{error}</p>}
-        {discard ? <div className="archive-discard" role="alert"><p>Есть несохранённые изменения.</p><div className="archive-actions"><button className="button" type="button" onClick={() => setDiscard(false)}>Продолжить редактирование</button><button className="button" type="button" onClick={close}>Не сохранять</button></div></div> : <div className="archive-actions"><button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>}
+        {discard ? <div className="archive-discard" role="alert"><p>Есть несохранённые изменения.</p><div className="archive-actions"><button className="button" type="button" onClick={() => setDiscard(false)}>Продолжить редактирование</button><button className="button" type="button" onClick={close}>Не сохранять</button></div></div> : <div className="archive-actions">{item && <button className="button archive-remove archive-delete-item" type="button" disabled={busy} onClick={() => setDeleting(true)}><Trash2 size={18}/>Удалить</button>}<button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>}
       </footer>
     </form>
+    {deleting && item && <DocumentDeleteDialog kind="cards" id={item.id} name={item.name} version={item.version} onClose={() => setDeleting(false)} onDeleted={next => { setDeleting(false); void complete(() => onDeleted(next)) }}/ >}
   </dialog>
 }

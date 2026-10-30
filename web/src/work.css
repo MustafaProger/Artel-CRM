@@ -6,3 +6,35 @@
 
 .work-editor-footer .button.work-delete { color: #fff; background: #b42318; border-color: #b42318; }
 .work-editor-footer .button.work-delete:hover { background: #912018; border-color: #912018; }
+
+/* One aligned row owns its checkbox, content and status; no nested card borders. */
+.work-page .work-task-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:start;min-width:0;padding:10px 16px;border-bottom:1px solid var(--border,#e4e7eb)}
+.work-page .work-task-row:last-child{border-bottom:0}
+.work-task-content{min-width:0}
+.work-page .work-task-open{display:flex;flex-direction:column;gap:5px;width:100%;min-width:0;padding:10px 0;border:0;border-radius:6px;box-shadow:none;background:none;text-align:left;color:var(--text,#1d1d1f);font:inherit;cursor:pointer}
+.work-page .work-task-open:disabled{opacity:1;color:var(--text,#1d1d1f);cursor:wait}
+.work-page .work-task-open strong{font-size:14px;line-height:24px;font-weight:600;overflow-wrap:anywhere}
+.work-task-company,.work-task-description{font-size:13px;line-height:1.5;color:var(--muted,#626269);overflow-wrap:anywhere}
+.work-task-description{white-space:pre-line;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.work-task-meta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;line-height:1.6;color:var(--muted,#626269)}
+.work-task-meta>span{display:inline-flex;gap:4px;align-items:center}
+.work-task-check{position:relative;display:flex;align-items:center;justify-content:center;width:44px;height:44px;cursor:pointer;border-radius:9px}
+.work-page .work-task-check input{position:absolute;inset:0;width:44px;height:44px;margin:0;opacity:0;cursor:inherit}
+.work-task-check-box{display:flex;align-items:center;justify-content:center;width:23px;height:23px;border:1.5px solid #87958e;border-radius:7px;background:white;color:white;pointer-events:none;transition:background .12s,border-color .12s,transform .12s}
+.work-task-check-box svg{opacity:0}
+.work-task-check input:checked+.work-task-check-box{background:var(--accent,#19694d);border-color:var(--accent,#19694d)}
+.work-task-check input:checked+.work-task-check-box svg{opacity:1}
+.work-task-check input:focus-visible+.work-task-check-box{outline:3px solid #a3c8b9;outline-offset:3px}
+.work-task-check:has(input:not(:disabled)):hover .work-task-check-box{border-color:#19694d}
+.work-task-check:has(input:not(:disabled)):active .work-task-check-box{transform:scale(.92)}
+.work-task-check:has(input:disabled){cursor:wait}
+.work-task-status{display:inline-flex;align-items:center;gap:5px;justify-self:end;margin-top:12px;padding:4px 8px;border-radius:6px;background:#f1f3f2;color:#59635f;font-size:11px;line-height:16px;white-space:nowrap}
+.work-task-status.status-done{color:#176447;background:#eaf5ee}
+.work-task-row.is-done .work-task-open strong{color:#64716a;text-decoration:line-through;text-decoration-color:#a2afa7}
+.work-task-row.is-saving .work-task-status{color:#526159;background:#f1f3f2}
+.work-task-error{margin:0 0 8px;font-size:12px;line-height:1.5;color:#a12f25;overflow-wrap:anywhere}
+.work-task-error button{border:0;background:none;color:inherit;font:inherit;text-decoration:underline;min-height:32px;cursor:pointer}
+.work-page .work-task-open:focus-visible{outline:2px solid #19694d;outline-offset:3px}
+@media(max-width:650px){.work-page .work-task-row{grid-template-columns:44px minmax(0,1fr);gap:0 6px;padding:8px}.work-task-status{grid-column:2;justify-self:start;margin:0 0 10px}.work-task-meta{gap:3px 10px}}
+@media(prefers-reduced-motion:reduce){.work-task-check-box{transition:none}.work-task-check:active .work-task-check-box{transform:none}}
+@media(forced-colors:active){.work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight;border-color:Highlight;color:HighlightText;forced-color-adjust:none}}

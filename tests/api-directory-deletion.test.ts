@@ -1,5 +1,6 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
@@ -7,7 +8,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
-import { OperationsStore, type OperationsData } from '../server/operations-store';
+import { OperationsStore, type OperationsData, encodeOperations } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
 import { clearOperations } from '../server/reset-operations';
 import { deleteDirectoryEntry } from '../server/directory-deletion';
@@ -25,6 +26,7 @@ async function setup(clear = true) {
     return { result, changed: true };
   });
   if (clear) await mutate((_, data) => clearOperations(base, data));
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') { await store.mutate(base.provenance.sourceSha256, () => ({result:null,changed:true})); await migrateWorkStorage(directory,base.provenance.sourceSha256); }
   const snapshot = async () => currentSnapshot(base, await new OperationsStore(directory).read(base.provenance.sourceSha256));
   const remove = (kind: string, id: string, version = 0) => mutate((snapshot, data) => deleteDirectoryEntry(kind, id, { version }, snapshot, data));
   return { store, snapshot, mutate, remove, close: () => rm(directory, { recursive: true, force: true }) };
@@ -92,7 +94,7 @@ test('a fleet seed matched to an older custom vehicle ID is not recreated after 
   } finally { await runtime.close(); }
 });
 
-test('unused local and imported companies are deleted permanently; owned addresses and manager links block company removal', async () => {
+test('unused local and imported companies are deleted permanently; owned addresses block removal and ownership metadata is removed with the client', async () => {
   const runtime = await setup();
   try {
     const initial = await runtime.snapshot(), manager = initial.directories!.managers[0];
@@ -101,11 +103,10 @@ test('unused local and imported companies are deleted permanently; owned address
     await assert.rejects(runtime.remove('customers', company.id, company.version), /справочнике адресов/);
     const address = (await runtime.snapshot()).directories!.addresses.find(row => row.companyId === company.id)!;
     await runtime.remove('addresses', address.id);
-    await assert.rejects(runtime.remove('customers', company.id, company.version), /назначении менеджера/);
     await assert.rejects(runtime.remove('managers', manager.id), /назначении менеджера/);
-    await runtime.mutate((snapshot, data) => deleteDirectoryEntry('customerManagers', company.id, { managerId: manager.id }, snapshot, data));
     await runtime.remove('customers', company.id, company.version);
     assert.ok(!(await runtime.snapshot()).companies.some(row => row.id === company.id));
+    assert.ok(!(await runtime.snapshot()).directories!.customerManagers!.some(row => row.companyId === company.id));
     const imported = initial.companies.find(row => !initial.directories!.addresses.some(address => address.companyId === row.id))!;
     await runtime.remove('companies', imported.id, imported.version);
     assert.ok(!(await runtime.snapshot()).companies.some(row => row.id === imported.id));
@@ -129,7 +130,7 @@ test('source operation dependencies block deletion including source records rena
   } finally { await runtime.close(); }
 });
 
-test('HTTP deletion requires a real session and director/admin role; dependencies and versions are checked on the server', async () => {
+test('HTTP deletion requires a real session and directory access; dependencies and versions are checked on the server', async () => {
   const runtime = await setup();
   const middleware = createSnapshotMiddleware(resolve('data/local-xlsx-final'), { operationsStore: runtime.store });
   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
@@ -144,7 +145,7 @@ test('HTTP deletion requires a real session and director/admin role; dependencie
     const director = await request('/api/auth/setup', 'POST', { name: 'Тестовый директор удаления', login: 'delete-director', password });
     assert.equal(director.status, 200); assert.ok(director.cookie);
     const managerId = (await runtime.snapshot()).directories!.managers[0].id;
-    assert.equal((await request('/api/auth/users', 'POST', { name: 'Тестовый менеджер удаления', login: 'delete-manager', password, role: 'manager', managerId }, director.cookie)).status, 201);
+    assert.equal((await request('/api/auth/users', 'POST', { name: 'Тестовый менеджер удаления', login: 'delete-manager', password, role: 'manager', managerId, sections: ['shipments'] }, director.cookie)).status, 201);
     const manager = await request('/api/auth/login', 'POST', { login: 'delete-manager', password });
     assert.equal(manager.status, 200);
     const created = await request('/api/directories', 'POST', { kind: 'products', name: 'HTTP удаляемый товар' }, director.cookie);
@@ -173,10 +174,10 @@ test('optimistic deletion rejects stale versions, duplicate requests and unknown
   try {
     const entry = (await runtime.snapshot()).directories!.products[0];
     await runtime.mutate((snapshot, data) => updateDirectoryEntry('products', entry.id, { version: 0, name: 'Версионный товар' }, snapshot, data));
-    const before = await readFile(runtime.store.path, 'utf8');
+    const before = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
     await assert.rejects(runtime.remove('products', entry.id, 0), /уже изменена/);
     await assert.rejects(runtime.mutate((snapshot, data) => deleteDirectoryEntry('products', entry.id, { version: 1, force: true }, snapshot, data)), /Неизвестное поле/);
-    assert.equal(await readFile(runtime.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), before);
     const results = await Promise.allSettled([runtime.remove('products', entry.id, 1), runtime.remove('products', entry.id, 1)]);
     assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
     assert.equal(results.filter(result => result.status === 'rejected').length, 1);

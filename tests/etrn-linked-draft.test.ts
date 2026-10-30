@@ -38,10 +38,16 @@ function fixture() {
   let beforeCall = () => {};
   let afterCall = () => {};
   let responseId = 'synthetic-note';
+  let signatureRefreshField: string | null = null, readSequence = 0;
   class Client extends SabyClient {
     constructor() { super({ sessionId: 'synthetic-session', customer: snapshot.customerOrganization, carrier: snapshot.carrierOrganization }, async () => { throw new Error('Network forbidden'); }); }
     override async readTransportOrder(id: string) { assert.equal(id, order.Идентификатор); return structuredClone(order); }
-    override async readConsignmentNote(id: string) { assert.equal(id, remote.Идентификатор); return structuredClone(remote); }
+    override async readConsignmentNote(id: string) {
+      assert.equal(id, remote.Идентификатор);
+      const result = structuredClone(remote);
+      if (signatureRefreshField) ((result.Вложение as SabyObject[])[0]).Подпись = [{ Сертификат: { Отпечаток: 'synthetic' }, Файл: { Имя: 'sender.sgn', [signatureRefreshField]: `synthetic-${++readSequence}` } }];
+      return result;
+    }
     override async downloadAttachment(id: string, attachmentId: string, expectedRevision?: string | null) {
       assert.equal(id, remote.Идентификатор); assert.equal(attachmentId, 'synthetic-title');
       assert.equal(expectedRevision, (remote.Редакция as SabyObject[])[0].Идентификатор);
@@ -71,6 +77,7 @@ function fixture() {
     current: () => document, update: async patch => { updates.push(structuredClone(patch)); document = { ...document, ...structuredClone(patch) }; }, checkAccess: async () => check(),
   };
   return { snapshot, serialized, remote, order, context, writes, updates, run: () => reconcileLinkedConsignmentDraft(context), doc: () => document, xml: () => xml,
+    refreshSignatureField: (field: string) => { signatureRefreshField = field; },
     replaceXml: (value: Uint8Array) => { xml = Buffer.from(value); }, restart: () => { document = JSON.parse(JSON.stringify(document)) as LinkedDraftDocument; },
     setCheck: (value: () => void) => { check = value; }, beforeCall: (value: () => void) => { beforeCall = value; }, afterCall: (value: () => void) => { afterCall = value; }, responseId: (value: string) => { responseId = value; },
   };
@@ -376,7 +383,7 @@ async function storeFixture() {
       }
     }
     const client = new StoreClient();
-    return { ...rt, client, shipmentId, input, snapshot, note, writes, readDocument, serialized,
+    return { ...rt, client, shipmentId, input, snapshot, order, note, writes, readDocument, serialized,
       run: () => exchangePreparedEtrn({ ...rt, store, client }, input),
       refresh: () => exchangeEtrn({ ...rt, store, client }, shipmentId, true),
       restart: () => { store = new OperationsStore(resolve(rt.directory, 'store')); },
@@ -395,7 +402,45 @@ async function storeFixture() {
   } catch (error) { await rt.close(); throw error; }
 }
 
-test('OperationsStore wrapper adopts native driver draft once and refreshes after restart without reserving or regenerating XML', async () => {
+
+test('a delayed native link stays pending across restart and adopts the later exact note without creating another', async () => {
+  const f = await storeFixture();
+  try {
+    const links = structuredClone(f.order.ДокументСледствие);
+    f.order.ДокументСледствие = [];
+    const waiting = { status: 'pending', id: null, lastError: null, waitingForNativeDraft: true };
+    assert.deepEqual(await f.run(), waiting);
+    const first = (await f.readDocument())!;
+    assert.equal(first.reservationAttempted, false); assert.equal(first.uploadAttempted, false);
+    assert.equal(first.leaseId, null); assert.equal(first.linkedDraft, undefined);
+    assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 }); assert.equal(f.writes.length, 0);
+    f.restart(); assert.deepEqual(await f.run(), waiting);
+    const second = (await f.readDocument())!;
+    for (const key of ['attemptId', 'marker', 'payloadHash', 'snapshot'] as const) assert.deepEqual(second[key], first[key]);
+    assert.equal(f.writes.length, 0);
+    f.order.ДокументСледствие = links;
+    const ready = await f.run(); assert.equal(ready.status, 'draft', ready.lastError ?? '');
+    assert.equal(ready.id, 'native-store-note'); assert.equal(f.writes.length, 1);
+    f.restart(); assert.equal((await f.run()).status, 'draft'); assert.equal(f.writes.length, 1);
+    assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 });
+  } finally { await f.close(); }
+});
+
+test('ambiguous native links after a safe wait remain an error and never create or update documents', async () => {
+  const f = await storeFixture();
+  try {
+    const links = structuredClone(f.order.ДокументСледствие) as SabyObject[];
+    f.order.ДокументСледствие = [];
+    assert.equal((await f.run()).waitingForNativeDraft, true);
+    f.order.ДокументСледствие = [...links, ...links];
+    const result = await f.run();
+    assert.equal(result.status, 'error'); assert.equal(result.waitingForNativeDraft, undefined);
+    assert.match(result.lastError!, /одна ЭТрН/); assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 });
+  } finally { await f.close(); }
+});
+
+test('OperationsStore wrapper adopts native driver draft once and refreshes after restart using frozen order data without reserving another document', async () => {
   const f = await storeFixture();
   try {
     const result = await f.run(); assert.equal(result.status, 'draft', result.lastError ?? ''); assert.equal(result.id, 'native-store-note');
@@ -403,7 +448,9 @@ test('OperationsStore wrapper adopts native driver draft once and refreshes afte
     assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 }); assert.equal(f.writes.length, 1);
     const data = await f.store.read(f.source), preview = preparedEtrnXml(f.base, data, f.tripId, f.shipmentId, f.client.config);
     assert.deepEqual(preview.xml, Buffer.from(doc.linkedDraft!.filledBase64, 'base64')); assert.equal(preview.name, f.serialized.name);
-    assert.match(new TextDecoder('windows-1251').decode(preview.xml), /<Подписант СтатПодп="1"(?:\/>|><\/Подписант>)/);
+    assert.equal(doc.orderDraftVersion, 1); assert.equal(doc.senderTitleVersion, 2);
+    assert.ok(doc.linkedDraft?.allocation);
+    assert.match(new TextDecoder('windows-1251').decode(preview.xml), /<Подписант[^>]*СтатПодп="1"[^>]*><ФИО/);
     assert.notDeepEqual(preview.xml, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number).xml);
     f.restart(); await f.refresh(); await f.run();
     const refreshed = (await f.readDocument())!; assert.equal(refreshed.status, 'draft'); assert.deepEqual(refreshed.linkedDraft, doc.linkedDraft); assert.equal(refreshed.leaseId, null);
@@ -432,4 +479,28 @@ test('OperationsStore wrapper blocks a lease expiring between persisted binding 
     const doc = (await f.readDocument())!; assert.equal(doc.id, 'native-store-note'); assert.equal(doc.linkedDraft?.writeAttempted, false); assert.equal(doc.leaseId, null);
     assert.equal(f.writes.length, 0); assert.equal(f.counts().reserves, 0);
   } finally { await f.close(); }
+});
+
+
+test('read-only refresh uses a verified prepared title only after the original fill was confirmed', async () => {
+  const f = fixture(); await f.run();
+  const old = f.xml();
+  const changed = encodeWindows1251(new TextDecoder('windows-1251').decode(old).replace('ВерсПрог="', 'ВерсПрог="Prepared '));
+  f.replaceXml(changed);
+  let verified = 0;
+  f.context.readOnly = true;
+  f.context.verifyPreparedTitle = (remote, bytes) => { assert.equal(remote.Идентификатор, f.doc().id); assert.deepEqual(Buffer.from(bytes), Buffer.from(changed)); verified++; };
+  await f.run(); assert.equal(verified, 1); assert.equal(f.writes.length, 1);
+  f.context.verifyPreparedTitle = () => { throw new Error('changed signed title'); };
+  await assert.rejects(f.run(), /changed signed title/); assert.equal(f.writes.length, 1);
+  f.context.verifyPreparedTitle = () => { throw new Error('must not run before confirmed fill'); };
+  f.doc().linkedDraft!.writeConfirmed = false; f.doc().linkedDraft!.confirmedAt = null;
+  f.replaceXml(old); await f.run(); assert.equal(f.writes.length, 1);
+});
+
+
+test('signed refresh ignores rotating signature download URLs but rejects changed signature content metadata', async () => {
+  const f = fixture(); await f.run(); f.context.readOnly = true;
+  f.refreshSignatureField('Ссылка'); await f.run(); assert.equal(f.writes.length, 1);
+  f.refreshSignatureField('Хеш'); await assert.rejects(f.run(), /изменились во время сверки/); assert.equal(f.writes.length, 1);
 });

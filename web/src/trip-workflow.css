@@ -70,6 +70,29 @@
 .workflow-signing .etrn-actions { flex-wrap: wrap; }
 .workflow-signing .button { max-width: 100%; white-space: normal; text-align: center; }
 .workflow-signing .button svg { flex: 0 0 auto; }
+.etrn-panel .trip-loading-details { min-width: 0; margin: 18px 0; padding: 20px; border: 1px solid var(--line, #dce5de); border-radius: 16px; background: var(--surface, #fff); }
+.trip-loading-details header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.trip-loading-details h4 { margin: 0; font-size: 16px; line-height: 1.4; }
+.trip-loading-actor { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 12px 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.trip-loading-actor span { color: var(--text-secondary, #63776b); }
+.trip-loading-fields { min-width: 0; padding: 0; margin: 0; border: 0; }
+.trip-loading-document { min-width: 0; padding: 16px 0 0; margin: 18px 0 0; border: 0; border-top: 1px solid var(--line, #dce5de); }
+.trip-loading-document legend { padding: 0 12px 0 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.trip-loading-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.trip-loading-grid .shipment-field { min-width: 0; }
+.trip-loading-grid :is(input, select) { min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; }
+.trip-loading-details .shipment-field small { color: #586f64; font-size: 12px; line-height: 1.5; }
+.trip-loading-wide { grid-column: 1 / -1; }
+.trip-loading-details .etrn-actions { flex-wrap: wrap; margin-top: 18px; }
+.trip-loading-details .button { max-width: 100%; white-space: normal; }
+.trip-loading-summary { display: grid; gap: 14px; margin: 16px 0 0; }
+.trip-loading-summary dt { color: var(--text-secondary, #63776b); font-size: 12px; }
+.trip-loading-summary dd { margin: 4px 0 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 540px) {
+  .etrn-panel .trip-loading-details { padding: 16px; }
+  .trip-loading-grid { grid-template-columns: minmax(0, 1fr); }
+  .trip-loading-details .etrn-actions > .button { width: 100%; justify-content: center; }
+}
 @media (max-width: 760px) { .workflow-signing .workflow-signing-sides { grid-template-columns: 1fr; } }
 @media (max-width: 900px) {
   .etrn-panel .workflow-steps { gap: .65rem; grid-template-columns: 1fr; }

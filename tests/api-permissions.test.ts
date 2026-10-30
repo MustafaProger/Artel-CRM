@@ -1,3 +1,4 @@
+import { migrateWorkStorage } from '../server/work-partition';
 import { enabledPages } from '../web/src/page-catalog';
 import { availablePagesFor, hasPageAccess } from '../web/src/page-access';
 import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
@@ -5,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,7 +15,7 @@ import { OperationsStore, encodeOperations, decodeOperations } from '../server/o
 import { currentSnapshot } from '../server/shipment-operations';
 import { scopeSnapshot } from '../server/auth-scope';
 import { shipmentOwnership } from '../server/shipment-ownership';
-import { sections, effectiveSections, legacyManagerSections, type AccountUser } from '../web/src/auth-model';
+import { sections, effectiveSections, legacyManagerSections, defaultEmployeeSections, type AccountUser } from '../web/src/auth-model';
 import type { Shipment, ShipmentTrip, Snapshot } from '../web/src/model';
 const base = await loadSnapshot();
 
@@ -22,6 +23,7 @@ async function fixture() {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-permissions-'));
   const store = new OperationsStore(directory);
   await store.mutate(base.provenance.sourceSha256, data => { data.sourceOperationsCleared = true; return { changed: true, result: null }; });
+  if (process.env.ARTEL_TEST_WORK_PARTITION === '1') await migrateWorkStorage(directory,base.provenance.sourceSha256);
   const middleware = createSnapshotMiddleware(undefined, { operationsStore: store });
   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
@@ -76,7 +78,7 @@ for (const role of ['employee', 'logistician'] as const) test(`${role} persists 
     for (const path of ['/api/work', '/api/shipments', '/api/shipment-trips']) assert.equal((await f.aidar(path)).status, 403, path);
     const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'New role QA' });
     const created = await f.director('/api/auth/users', 'POST', { name: 'New role QA', login: 'new-role-qa', password: f.password, managerId: employee.body.entry.id, role });
-    assert.equal(created.status, 201); assert.deepEqual(created.body.user.sections, []);
+    assert.equal(created.status, 201); assert.deepEqual(created.body.user.sections, defaultEmployeeSections);
     const duplicate = await f.director('/api/auth/users', 'POST', { name: 'Duplicate QA', login: 'duplicate-role-qa', password: f.password, managerId: employee.body.entry.id, role });
     assert.equal(duplicate.status, 409);
   } finally { await f.close(); }
@@ -114,13 +116,13 @@ test('two employees: IDs, spoofed owners, shared customers, search, facets, tota
     assert.equal(a.status, 201, JSON.stringify(a.body)); assert.equal(b.status, 201, JSON.stringify(b.body));
     const aid = a.body.shipment.id, bid = b.body.shipment.id;
     assert.equal(a.body.shipment.fields.manager_id, f.users[0].managerId);
-    const before = await readFile(f.store.path, 'utf8');
+    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
     assert.equal((await f.aidar('/api/shipments/' + bid)).status, 404);
     assert.equal((await f.aidar('/api/shipments/' + bid, 'PATCH', { version: 999, fields: { manager_id: f.users[0].managerId } })).status, 404);
     assert.equal((await f.aidar('/api/shipments/' + aid, 'PATCH', { version: 1, fields: { manager_id: f.users[1].managerId } })).status, 403);
     assert.equal((await f.aidar('/api/shipments', 'POST', { fields: f.azs(f.users[1].managerId!) })).status, 403);
     assert.equal((await f.aidar('/api/shipments/' + bid, 'DELETE', { version: 1 })).status, 403);
-    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
     for (const query of ['', '?manager=all&limit=1&offset=0&sort=customer_amount&direction=desc', '?companyId=' + f.snapshot.companies[0].id, '?managerId=' + f.users[1].managerId]) {
       const r = await f.aidar('/api/shipments' + query); assert.equal(r.status, 200);
       assert.deepEqual(r.body.items.map((row: Shipment) => row.id), [aid]); assert.equal(r.body.total, 1); assert.equal(r.body.summary.revenue.total, '100000');
@@ -146,15 +148,16 @@ test('a manager cannot claim an unassigned customer through a zero shipment or t
   const f = await fixture(); try {
     const created = await f.director('/api/directories', 'POST', { kind: 'companies', name: 'Unassigned protected customer', roles: ['customer'], addresses: [] });
     assert.equal(created.status, 201); const customerId = created.body.entry.id;
-    const before = await readFile(f.store.path, 'utf8');
+    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
     const fields = { ...f.azs(), customer_id: customerId, customer_amount: '0' };
     assert.equal((await f.aidar('/api/shipments', 'POST', { fields })).status, 403);
     const catalog = f.snapshot.directories!;
     const truck = { date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: catalog.products[0].id, purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: catalog.drivers[0].id, additional_costs: '0' };
     const customer = { customer_id: customerId, payment_form_id: catalog.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '0' };
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields: truck, customers: [{ fields: customer }] })).status, 403);
-    assert.equal(await readFile(f.store.path, 'utf8'), before);
-    assert.ok(!(await f.aidar('/api/snapshot')).body.companies.some((company: { id: string }) => company.id === customerId));
+    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
+    const directoryCompany = (await f.aidar('/api/snapshot')).body.companies.find((company: { id: string }) => company.id === customerId);
+    assert.equal(directoryCompany, undefined, 'Unassigned customer is not an own customer');
     assert.ok(!(await f.aidar('/api/settlements')).body.companies.some((company: { companyIds: string[] }) => company.companyIds.includes(customerId)));
     const seeded = await f.director('/api/shipments', 'POST', { fields: { ...fields, manager_id: f.users[0].managerId } });
     assert.equal(seeded.status, 201);
@@ -176,11 +179,11 @@ test('mixed-owner trips hide shared totals and reject all partial truck changes 
     const own = (await f.aidar('/api/shipments')).body.items[0];
     assert.equal(own.tripReadOnly, true); assert.equal(own.fields.trip_total_tonnes, null); assert.equal(own.fields.trip_additional_costs, null);
     assert.equal((await f.aidar('/api/shipment-trips/' + trip.id)).status, 403);
-    const before = await readFile(f.store.path, 'utf8');
+    const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
     assert.equal((await f.aidar('/api/shipment-trips/' + trip.id, 'PATCH', { fields, customers: [customer(0)], versions: { [own.id]: own.version } })).status, 403);
     assert.equal((await f.aidar('/api/shipments/' + trip.customers[1].id, 'PATCH', { version: 1, fields: {} })).status, 404);
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(1)] })).status, 403);
-    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
     const ownBody = { fields, customers: [customer(0), customer(0)] };
     await prepareTripRequestFixture(f.store, base, ownBody);
     const created = await f.aidar('/api/shipment-trips', 'POST', ownBody); assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -269,7 +272,7 @@ test('stored legacy settlement access survives reload as overview; explicit empt
   } finally { await f.close(); }
 });
 
-test('manager directory projection never exposes unrelated payment/summary customer aliases, addresses or deleted IDs', async () => {
+test('without directory access the projection hides unrelated customer details; directory grants expose enabled catalogs but no foreign operations', async () => {
   const f = await fixture(); try {
     const template = f.snapshot.companies[0];
     const hidden = { ...template, id: 'hidden-customer', name: 'Hidden customer name', roles: ['customer', 'payment_counterparty'] };
@@ -279,19 +282,29 @@ test('manager directory projection never exposes unrelated payment/summary custo
       addresses: [{ id: 'hidden-address', name: 'Hidden delivery address', companyId: hidden.id, kind: 'delivery' as const }],
       customerManagers: [{ companyId: hidden.id, managerId: f.users[1].managerId! }], deletedEntries: { companies: ['deleted-private-company'] },
     } };
-    const scoped = scopeSnapshot(snapshot, f.users[0]);
+    const scoped = scopeSnapshot(snapshot, { ...f.users[0], sections: ['shipments'] });
     assert.deepEqual(scoped.companies.map(company => company.id), [supplier.id]);
     assert.deepEqual(scoped.companies[0].roles, ['supplier']); assert.equal(scoped.companies[0].inn, undefined);
     assert.deepEqual(scoped.directories!.addresses, []); assert.equal(scoped.directories!.deletedEntries, undefined);
     assert.equal(scoped.overview.companyCount, 0);
     for (const text of [hidden.name, payment.name, 'hidden-address', 'deleted-private-company', 'hidden-shipment']) assert.ok(!JSON.stringify(scoped).includes(text), text);
+    const closed = scopeSnapshot(snapshot, { ...f.users[0], sections: ['directories'] }, 'directories');
+    assert.deepEqual(closed.companies, []);
+    const catalog = scopeSnapshot(snapshot, { ...f.users[0], sections: ['directories'], directoryGrants: ['suppliers'] }, 'directories');
+    assert.deepEqual(catalog.companies.map(company => company.id), [supplier.id]);
+    assert.equal(catalog.companies[0].inn, supplier.inn);
+    assert.deepEqual(catalog.directories!.managers.map(row => row.id), [f.users[0].managerId]);
+    assert.deepEqual(catalog.directories!.customerManagers, []);
+    assert.deepEqual(catalog.directories!.addresses, []);
+    assert.deepEqual(catalog.shipments, []); assert.deepEqual(catalog.payments, []); assert.deepEqual(catalog.stocks, []);
+    assert.ok(catalog.companies.every(company => !company.shipmentIds.length && !company.paymentIds.length));
   } finally { await f.close(); }
 });
 
 
 test('enabled pages respect explicit grants without adding new rights to old managers', () => {
   const user: AccountUser = { id: 'qa', name: 'QA', login: 'qa', role: 'manager', managerId: 'qa', active: true, version: 1, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) };
-  assert.equal(enabledPages.length, 11);
+  assert.equal(enabledPages.length, 12);
   for (const id of ['stock', 'payroll'] as const) {
     assert.ok(effectiveSections(user).includes(id));
     assert.equal(hasPageAccess(user, id), false);
@@ -305,7 +318,7 @@ test('enabled pages respect explicit grants without adding new rights to old man
   }
   assert.equal(hasPageAccess(user, 'operator'), true);
   assert.equal(hasPageAccess({ ...user, sections: [] }, 'operator'), false);
-  assert.equal(availablePagesFor(user).length, 9);
+  assert.equal(availablePagesFor(user).length, 10);
   assert.equal(availablePagesFor({ ...user, role: 'director' }).length, enabledPages.length);
 });
 
@@ -324,6 +337,7 @@ test('editing visible permissions preserves hidden grants and cabinet access sta
     assert.deepEqual((await f.director('/api/auth/users')).body.users.find((user: AccountUser) => user.id === before.id).sections, permissions);
   } finally { await f.close(); }
 });
+
 
 test('cabinet balances can be granted and revoked independently of role and account management', async () => {
   const f = await fixture(); try {

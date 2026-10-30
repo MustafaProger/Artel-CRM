@@ -14,6 +14,7 @@ import { StoreError, type OperationsData } from './operations-store';
 import { shipmentSettlementAllocations } from './organization-settlements';
 import { isOurOrganizationId, organizationName, shipmentOrganizationId } from '../web/src/our-organizations';
 import { readIntermediateStops } from '../web/src/trip-route';
+import { validTripDocumentPolicy } from './trip-document-mode';
 
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 export const SHIPMENT_FIELDS = [
@@ -28,7 +29,7 @@ export const SHIPMENT_FIELDS = [
   'trip_notes', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'intermediate_stops_after', 'intermediate_stops_in_order', 'trip_delivery_order', 'quantity_gross_tonnes',
   'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude',
   'loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at',
-  'trip_flow_version', 'trip_id', 'source_request_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
+  'trip_flow_version', 'trip_document_policy', 'trip_id', 'source_request_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
   'opening_payment_date', 'opening_paid_amount', 'loading_address_id', 'unloading_address_id', 'purchase_unit', 'payment_due_date', 'overdue_days', 'calculation_mode', 'profit_rule',
 ] as const;
 const allowedFields = new Set<string>(SHIPMENT_FIELDS);
@@ -45,6 +46,11 @@ const metric = (values: (string | null)[]): Metric => {
   const numbers = values.map(numeric).filter((value): value is string => value !== null);
   return { total: numbers.length ? numbers.reduce((sum, value) => sum.plus(value), new Exact(0)).toFixed() : null, numericCount: numbers.length, missingCount: values.length - numbers.length };
 };
+function firstBy<T>(rows: readonly T[], key: (row: T) => string) {
+  const result = new Map<string, T>();
+  for (const row of rows) if (!result.has(key(row))) result.set(key(row), row);
+  return result;
+}
 const totals = (rows: Shipment[]) => ({ liters: metric(rows.map(row => row.liters)), revenue: metric(rows.map(row => row.revenue)), cost: metric(rows.map(row => row.cost)) });
 
 function findCompany(value: string | null, companies: Company[], inn?: string | null, id?: string | null): Company | null {
@@ -73,7 +79,7 @@ function findCompany(value: string | null, companies: Company[], inn?: string | 
 
 export function validateShipmentFields(input: unknown, previous: Shipment | undefined, companies: Company[]): Record<string, string | null> {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400, 'Укажите поля операции.');
-  const fields: Record<string, string | null> = previous ? { ...previous.fields } : Object.fromEntries(SHIPMENT_FIELDS.map(key => [key, null]));
+  const fields: Record<string, string | null> = previous ? { ...previous.fields } : Object.fromEntries(SHIPMENT_FIELDS.filter(key => key !== 'trip_document_policy').map(key => [key, null]));
   for (const [key, raw] of Object.entries(input)) {
     if (!allowedFields.has(key)) throw new ApiError(400, `Неизвестное поле: ${key}.`);
     if (raw !== null && typeof raw !== 'string') throw new ApiError(400, `Поле ${key} должно быть строкой или null.`);
@@ -137,7 +143,7 @@ function validateStoredTrips(shipments: Shipment[]) {
   const groups = new Map<string, Shipment[]>();
   for (const row of shipments) {
     if (!row.fields.trip_id) {
-      if (row.fields.trip_total_tonnes || row.fields.trip_additional_costs) throw new StoreError('Orphan trip metadata');
+      if (row.fields.trip_total_tonnes || row.fields.trip_additional_costs || row.fields.trip_document_policy != null) throw new StoreError('Orphan trip metadata');
       continue;
     }
     if (!/^shipment-trip-[a-f0-9-]+$/.test(row.fields.trip_id)) throw new StoreError('Invalid trip identity');
@@ -145,11 +151,12 @@ function validateStoredTrips(shipments: Shipment[]) {
     const members = groups.get(row.fields.trip_id) ?? [];
     members.push(row); groups.set(row.fields.trip_id, members);
   }
-  const shared = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order'];
+  const shared = ['trip_flow_version', 'trip_document_policy', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order'];
   for (const rows of groups.values()) {
     const first = rows[0].fields;
     const driverFlow = first.trip_flow_version === 'driver-v1';
     if (first.trip_flow_version != null && !driverFlow) throw new StoreError('Invalid trip flow version');
+    if (first.trip_document_policy != null && (!driverFlow || !validTripDocumentPolicy(first.trip_document_policy))) throw new StoreError('Invalid trip document policy');
     const awaitingMass = driverFlow && rows.every(row => row.fields.quantity_tonnes == null && row.fields.quantity_gross_tonnes == null && row.fields.trip_total_tonnes == null);
     if (!driverFlow && rows.some(row => (row.fields.quantity_gross_tonnes ?? null) !== (first.quantity_gross_tonnes ?? null))) throw new StoreError('Inconsistent gross mass');
     if (driverFlow && rows.some(row => row.fields.quantity_gross_tonnes !== row.fields.quantity_tonnes)) throw new StoreError('Invalid driver gross mass');
@@ -166,7 +173,10 @@ function validateStoredTrips(shipments: Shipment[]) {
   }
 }
 
-export function currentSnapshot(base: Snapshot, store: OperationsData, includeBankSettlements = true): Snapshot {
+/** Operational authorization data deliberately excludes monetary aggregates and summaries. */
+export type ShipmentAccessContext = Pick<Snapshot, 'shipments' | 'directories'>;
+
+function currentShipmentData(base: Snapshot, store: OperationsData, calculate: boolean) {
   const directories = directoriesFor(base, store);
   if (store.sourceOperationsCleared) base = {
     ...base, shipments: [], payments: [], stocks: [],
@@ -176,11 +186,13 @@ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBa
   };
   const deletedCompanies = new Set(directories.deletedEntries?.companies ?? []);
   const companies = base.companies.filter(company => !deletedCompanies.has(company.id)).map(company => ({ ...company }));
+  const companyPositions = new Map<string, number>();
+  companies.forEach((company, index) => { if (!companyPositions.has(company.id)) companyPositions.set(company.id, index); });
   for (const metadata of store.companies) {
     if (deletedCompanies.has(metadata.id)) continue;
-    const index = companies.findIndex(company => company.id === metadata.id);
-    if (index >= 0) companies[index] = { ...companies[index], ...metadata };
-    else companies.push({ ...metadata });
+    const index = companyPositions.get(metadata.id);
+    if (index !== undefined) companies[index] = { ...companies[index], ...metadata };
+    else { companyPositions.set(metadata.id, companies.length); companies.push({ ...metadata }); }
   }
   const originals = new Map(base.shipments.map(row => [row.id, row]));
   const shipments: Shipment[] = base.shipments.filter(row => !store.shipments[row.id]).map(row => ({ ...row, fields: { ...row.fields }, version: 0 }));
@@ -194,46 +206,111 @@ export function currentSnapshot(base: Snapshot, store: OperationsData, includeBa
       shipments.push({ ...row, version: override.version, createdAt: override.createdAt, updatedAt: override.updatedAt });
     } catch { throw new StoreError('Invalid stored company reference'); }
   }
-  for (const address of directories.addresses) if (!companies.some(c => c.id === address.companyId)) throw new StoreError('Invalid address company');
+  const companyIds = new Set(companies.map(row => row.id));
+  const managerIds = new Set(directories.managers.map(row => row.id));
+  const shipmentIds = new Set(shipments.map(row => row.id));
+  const paymentIds = new Set(base.payments.map(row => row.id));
+  for (const address of directories.addresses) if (!companyIds.has(address.companyId)) throw new StoreError('Invalid address company');
   for (const assignment of directories.customerManagers ?? []) {
-    if (!companies.some(c => c.id === assignment.companyId) || !directories.managers.some(m => m.id === assignment.managerId)) throw new StoreError('Invalid customer manager reference');
+    if (!companyIds.has(assignment.companyId) || !managerIds.has(assignment.managerId)) throw new StoreError('Invalid customer manager reference');
   }
   for (const allocation of store.paymentAllocations ?? []) {
-    if (!shipments.some(s => s.id === allocation.shipmentId) || !base.payments.some(p => p.id === allocation.paymentId)) throw new StoreError('Invalid payment allocation reference');
+    if (!shipmentIds.has(allocation.shipmentId) || !paymentIds.has(allocation.paymentId)) throw new StoreError('Invalid payment allocation reference');
+  }
+  const companyById = firstBy(companies, row => row.id);
+  const driversById = firstBy(directories.drivers, row => row.id);
+  const vehiclesById = firstBy(directories.vehicles, row => row.id);
+  const productByName = firstBy(directories.products, row => normalizeName(row.name));
+  const directoryIds = new Map([
+    ['product_id', new Set(directories.products.map(row => row.id))],
+    ['payment_form_id', new Set(directories.paymentForms.map(row => row.id))],
+    ['driver_id', new Set(driversById.keys())], ['vehicle_id', new Set(vehiclesById.keys())],
+  ]);
+  const addressKeys = new Set(directories.addresses.map(row => JSON.stringify([row.id, row.companyId, row.kind])));
+  const depotIds = new Set(directories.oilDepots?.map(row => row.id));
+  const allocationsByShipment = new Map<string, NonNullable<OperationsData['paymentAllocations']>>();
+  if (calculate) for (const allocation of store.paymentAllocations ?? []) {
+    const entries = allocationsByShipment.get(allocation.shipmentId) ?? [];
+    entries.push(allocation); allocationsByShipment.set(allocation.shipmentId, entries);
   }
   for (const row of shipments) {
     const fields = { ...row.fields };
     if (fields.etrn_not_required != null && !['true', 'false'].includes(fields.etrn_not_required)) throw new StoreError('Invalid ETRN requirement');
-    for (const [key,entries] of [['manager_id',directories.managers],['product_id',directories.products],['payment_form_id',directories.paymentForms],['driver_id',directories.drivers],['vehicle_id',directories.vehicles]] as const) {
-      // Unresolved historical ownership stays inaccessible to employees, not guessed.
-      if (key !== 'manager_id' && fields[key] && !entries.some(entry => entry.id === fields[key])) throw new StoreError('Invalid shipment directory reference');
-    }
+    // Unresolved historical manager ownership remains inaccessible, never guessed.
+    for (const [key, ids] of directoryIds) if (fields[key] && !ids.has(fields[key])) throw new StoreError('Invalid shipment directory reference');
     for (const [key,role,kind] of [['loading_address_id','supplier','loading'],['unloading_address_id','customer','delivery']] as const) {
-      if (fields[key] && !directories.addresses.some(a => a.id === fields[key] && a.companyId === row[`${role}Id`] && a.kind === kind)) throw new StoreError('Invalid shipment address');
+      if (fields[key] && !addressKeys.has(JSON.stringify([fields[key], row[`${role}Id`], kind]))) throw new StoreError('Invalid shipment address');
     }
-    if (fields.oil_depot_id && !directories.oilDepots?.some(depot => depot.id === fields.oil_depot_id)) throw new StoreError('Invalid shipment oil depot');
+    if (fields.oil_depot_id && !depotIds.has(fields.oil_depot_id)) throw new StoreError('Invalid shipment oil depot');
     if (fields.shipment_type && !['tanker','azs'].includes(fields.shipment_type)) throw new StoreError('Invalid shipment type');
     const azs = fields.shipment_type === 'azs';
     if (azs && fields.trip_id) throw new StoreError('AZS cannot belong to a tanker trip');
     const historical = fields.calculation_mode !== 'automatic';
     if (!historical) fields.profit_rule = azs ? AZS_PROFIT_RULE : TEMPLATE_PROFIT_RULE;
     const rules: CalculationRules = azs ? {sale:null,purchase:null,profit:AZS_PROFIT_RULE,debtSign:'paid-minus-sale'} : { sale: historical ? row.calculationRules?.sale ?? null : 'litres', purchase: ['litres','tonnes'].includes(fields.purchase_unit ?? '') ? fields.purchase_unit as 'litres'|'tonnes' : row.calculationRules?.purchase ?? null, profit: (fields.profit_rule as CalculationRules['profit']) ?? row.calculationRules?.profit ?? directories.defaults.profit, debtSign: 'paid-minus-sale' };
-    const calculated = calculateShipment(fields, rules, { historical, allocations: (store.paymentAllocations ?? []).filter(a => a.shipmentId === row.id) });
-    row.fields = calculated.fields; row.fields.purchase_unit ??= rules.purchase;
-    const canonicalProduct = directories.products.find(p => normalizeName(p.name) === normalizeName(row.product ?? ''));
+    const calculated = calculate ? calculateShipment(fields, rules, { historical, allocations: allocationsByShipment.get(row.id) ?? [] }) : null;
+    row.fields = calculated?.fields ?? fields; row.fields.purchase_unit ??= rules.purchase;
+    const canonicalProduct = productByName.get(normalizeName(row.product ?? ''));
     if (canonicalProduct) row.product = canonicalProduct.name;
-    row.calculationRules = rules; row.calculationWarnings = calculated.warnings;
+    row.calculationRules = rules; if (calculated) row.calculationWarnings = calculated.warnings;
     for (const role of ['customer','supplier'] as const) {
-      const company = companies.find(c => c.id === row[`${role}Id`]);
+      const company = companyById.get(row[`${role}Id`] ?? '');
       if (!row.fields[`${role}_inn`] && company?.inn) row.fields[`${role}_inn`] = company.inn;
     }
-    const driver = directories.drivers.find(d => d.id === fields.driver_id);
-    const vehicle = directories.vehicles.find(v => v.id === (fields.vehicle_id || driver?.vehicleId));
+    const driver = driversById.get(fields.driver_id ?? '');
+    const vehicle = vehiclesById.get(fields.vehicle_id || driver?.vehicleId || '');
     if (driver) row.fields.driver_name = driver.name;
     if (vehicle) { row.fields.vehicle_id = vehicle.id; row.fields.vehicle_plate = vehicle.plate; }
     row.liters = numeric(row.fields.quantity_litres); row.revenue = numeric(row.fields.customer_amount); row.cost = numeric(row.fields.purchase_amount);
   }
   validateStoredTrips(shipments);
+  return { base, companies, shipments, directories };
+}
+
+/** Fresh structural validation uses the same assembly as financial views, including
+ * unrelated stored rows. Nothing is cached and no authority is retained between reads. */
+export function currentShipmentAccess(base: Snapshot, store: OperationsData): ShipmentAccessContext {
+  const { shipments, directories } = currentShipmentData(base, store, false);
+  return { shipments, directories };
+}
+
+/** Work only needs current company identity and shipment ownership. Reuse structural
+ * validation without calculating shipment totals, bank allocations or dashboards. */
+export function currentWorkSnapshot(base: Snapshot, store: OperationsData): Snapshot {
+  const assembled = currentShipmentData(base, store, false);
+  return { ...assembled.base, companies: assembled.companies, shipments: assembled.shipments, directories: assembled.directories };
+}
+
+/** Requests need the shared directory and historical role inference, not financial
+ * recalculation. Keep the same structural/reference validation as other views. */
+export function currentTripRequestSnapshot(base: Snapshot, store: OperationsData): Snapshot {
+  const snapshot = currentWorkSnapshot(base, store);
+  const canonicalManagers = new Map(snapshot.managers.map(manager => [normalizeName(manager.label), manager.label]));
+  for (const row of snapshot.shipments) if (row.manager) {
+    const key = normalizeName(row.manager);
+    if (!canonicalManagers.has(key)) canonicalManagers.set(key, row.manager.trim());
+    row.manager = canonicalManagers.get(key)!;
+  }
+  const companies = snapshot.companies.map(company => ({ ...company, roles: [...company.roles], shipmentIds: [] as string[], paymentIds: [] as string[], managerLabels: [] as string[] }));
+  const byId = new Map(companies.map(company => [company.id, company]));
+  for (const row of snapshot.shipments) for (const role of ['customer', 'supplier', 'carrier'] as const) {
+    const company = byId.get(row[`${role}Id`] ?? '');
+    if (!company) continue;
+    if (!company.roles.includes(role)) company.roles.push(role);
+    if (!company.shipmentIds.includes(row.id)) company.shipmentIds.push(row.id);
+    if (role === 'customer' && row.manager && !company.managerLabels.includes(row.manager)) company.managerLabels.push(row.manager);
+  }
+  for (const payment of snapshot.payments) {
+    const company = byId.get(payment.counterpartyId ?? '');
+    if (company) { company.paymentIds.push(payment.id); if (!company.roles.includes('payment_counterparty')) company.roles.push('payment_counterparty'); }
+  }
+  return { ...snapshot, companies };
+}
+
+export function currentSnapshot(base: Snapshot, store: OperationsData, includeBankSettlements = true): Snapshot {
+  const assembled = currentShipmentData(base, store, true);
+  base = assembled.base;
+  const { companies, shipments, directories } = assembled;
   // Derive from complete, unfiltered records before applying employee scopes or pagination.
   // Bank allocations never enter stored shipment fields or the legacy XLSX allocation list.
   if (includeBankSettlements) {
@@ -390,7 +467,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   }
   data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
-  automatic.push('trip_flow_version', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
+  automatic.push('trip_flow_version', 'trip_document_policy', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);

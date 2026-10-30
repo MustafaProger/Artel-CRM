@@ -9,9 +9,11 @@ import { validInn } from './checko';
 import { companyRoleUsed } from './directory-deletion';
 import { saveOilDepot } from './oil-depots';
 import { deliveryDistances, sameDeliveryDistances } from './delivery-distances';
+import { saveOperatorDirectory } from './operator-directories';
 
 export type EditableDirectory = 'managers' | 'products' | 'paymentForms' | 'vehicles' | 'drivers' | 'addresses';
 export function updateDirectoryEntry(kind: string, id: string, input: Record<string, unknown>, snapshot: Snapshot, data: OperationsData) {
+  if (kind === 'operatorGroups' || kind === 'operatorServices') return saveOperatorDirectory(kind, input, snapshot, data, id);
   if (kind === 'oilDepots') return saveOilDepot(input, snapshot, data, id);
   if (!['managers', 'products', 'paymentForms', 'vehicles', 'drivers', 'addresses'].includes(kind)) throw new ApiError(400, 'Неизвестный справочник.');
   const key = kind as EditableDirectory;
@@ -65,7 +67,7 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
         const address = existingAddresses.find(address => address.kind === raw.kind && normalizeName(address.name) === normalizeName(raw.name));
         if (address) {
           const fields = { ...raw };
-          for (const key of locationDetailKeys) if (fields[key] === undefined || typeof fields[key] === 'string' && !fields[key].trim()) delete fields[key];
+          for (const key of locationDetailKeys) if (fields[key] === undefined || typeof fields[key] === 'string' && !fields[key].trim() || key === 'additionalReceivers' && Array.isArray(fields[key]) && !fields[key].length) delete fields[key];
           return { ...fields, id: address.id };
         }
       }
@@ -108,7 +110,7 @@ export function saveCompany(input: Record<string, unknown>, snapshot: Snapshot, 
     if (Object.hasOwn(raw, 'version') && (raw.version !== (previousAddress?.version ?? 0))) throw new ApiError(409, 'Адрес компании уже изменён. Закройте карточку и откройте её снова.');
     const details = locationDetails({ ...previousAddress, ...raw }, { companies: snapshot.companies, previous: previousAddress });
     const oilDepotDistancesKm = deliveryDistances(raw, snapshot, previousAddress);
-    return { ...details, ...(oilDepotDistancesKm ? { oilDepotDistancesKm } : {}), id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => previousAddress[key] === details[key]) && sameDeliveryDistances(previousAddress.oilDepotDistancesKm, oilDepotDistancesKm) ? 0 : 1) } : {}) };
+    return { ...details, ...(oilDepotDistancesKm ? { oilDepotDistancesKm } : {}), id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => JSON.stringify(previousAddress[key]) === JSON.stringify(details[key])) && sameDeliveryDistances(previousAddress.oilDepotDistancesKm, oilDepotDistancesKm) ? 0 : 1) } : {}) };
   });
   const removed = oldAddresses.filter(address => !addresses.some(row => row.id === address.id));
   if (activeRequests.some(request => removed.some(address => address.id === request.addressId))) throw new ApiError(409, 'Адрес используется в активной заявке на рейс. Его можно изменить, но нельзя удалить.');

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
+import { formatSabyVolume } from './saby-volume';
 import { SabyError, sabyObject, type SabyObject } from './saby-client';
 import { serializeXml } from './saby-carrier-details';
 import { serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
@@ -15,16 +16,21 @@ export interface ConsignmentDraftFill {
   fields: ConsignmentDraftRequestedFields;
 }
 
-const fail = (): never => { throw new SabyError('validation', 'Связанный черновик ЭТрН не подтверждает сохранённые сведения доставки. Дозаполнение остановлено; требуется сверка.'); };
+const fail = (detail?: string): never => { throw new SabyError('validation', 'Связанный черновик ЭТрН не подтверждает сохранённые сведения доставки.' + (detail ? ` ${detail}.` : '') + ' Дозаполнение остановлено; требуется сверка.'); };
 const elements = (node: XmlNode) => node.children.filter((child): child is XmlNode => typeof child !== 'string');
 const named = (node: XmlNode, name: string) => elements(node).filter(child => child.name === name);
-const only = (node: XmlNode, name: string): XmlNode => { const found = named(node, name); if (found.length !== 1) fail(); return found[0]; };
+const only = (node: XmlNode, name: string): XmlNode => { const found = named(node, name); if (found.length !== 1) fail(`XML ${node.name}/${name}: ожидался один элемент, получено ${found.length}`); return found[0]; };
 const normalized = (value: string | undefined) => (value ?? '').replace(/\s+/g, ' ').trim();
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const decimal = (value: string | undefined) => /^-?\d{1,18}(?:\.\d{1,9})?$/.test(normalized(value));
 const equivalentNumber = (left: string | undefined, right: string | undefined) => decimal(left) && decimal(right) && new Decimal(normalized(left)).eq(normalized(right));
 const equal = (left: string | undefined, right: string | undefined) => { if (!normalized(right) || normalized(left) !== normalized(right)) fail(); };
 const equalNumber = (left: string | undefined, right: string | undefined) => { if (!equivalentNumber(left, right)) fail(); };
+// The native draft inherits the order's two-decimal volume. Reconstruct that
+// value from the versioned frozen litres; the note itself always needs its three-decimal value.
+// Unversioned historical snapshots retain their original exact-only conversion.
+const nativeRoundedVolume = (actual: string | undefined, expected: string | undefined, orderVolume?: string | null) =>
+  !!orderVolume && equivalentNumber(actual, orderVolume) && !equivalentNumber(expected, orderVolume);
 const compact = (value: string | undefined) => normalized(value).replace(/\s/g, '').toUpperCase();
 
 function title(bytes: Uint8Array) {
@@ -55,7 +61,7 @@ function sameParty(actual: XmlNode, expected: XmlNode) {
   const left = identity(actual), right = identity(expected);
   if (left.inn !== right.inn || left.kpp !== right.kpp) fail();
 }
-function address(actual: XmlNode, expected: XmlNode) {
+function address(actual: XmlNode, expected: XmlNode, allowMissingCoordinates = false) {
   // The supported native draft has the same literal physical address as the frozen delivery.
   // Structured legal addresses in participant requisites are deliberately left untouched.
   const left = only(actual, 'АдресИнф'), right = only(expected, 'АдресИнф');
@@ -63,7 +69,7 @@ function address(actual: XmlNode, expected: XmlNode) {
   equal(left.attributes.АдрТекст, right.attributes.АдрТекст);
   if (named(actual, 'Коорд').length > 1 || named(expected, 'Коорд').length > 1) fail();
   const knownCoordinates = named(expected, 'Коорд')[0];
-  if (knownCoordinates) {
+  if (knownCoordinates && (!allowMissingCoordinates || named(actual, 'Коорд').length)) {
     const actualCoordinates = only(actual, 'Коорд');
     equalNumber(actualCoordinates.attributes.Широта, knownCoordinates.attributes.Широта);
     equalNumber(actualCoordinates.attributes.Долгота, knownCoordinates.attributes.Долгота);
@@ -86,12 +92,13 @@ function emptyNativeRecipient(value: XmlNode): boolean {
   };
   return JSON.stringify(shape(value)) === JSON.stringify(['СвГП', [['РекИдентГП', [['ИдСв', []], ['Контакт', []]]], ['АдресДостГр', []]]]);
 }
-function anchors(actual: ReturnType<typeof title>, expected: ReturnType<typeof title>) {
+function anchors(actual: ReturnType<typeof title>, expected: ReturnType<typeof title>, allowMissingLoadingCoordinates = false, nativeOrderVolume?: string | null) {
   for (const key of ['НомерТрН', 'ДатаТрН', 'НомЗак', 'ДатаЗак']) equal(actual.content.attributes[key], expected.content.attributes[key]);
   sameParty(only(only(actual.content, 'СвГО'), 'РекИдентГО'), only(only(expected.content, 'СвГО'), 'РекИдентГО'));
   sameParty(only(actual.content, 'СвПер'), only(expected.content, 'СвПер'));
   equal(actual.cargo.attributes.НаимГруз, expected.cargo.attributes.НаимГруз);
-  for (const key of ['КолМестГр', 'Объем']) equalNumber(actual.cargo.attributes[key], expected.cargo.attributes[key]);
+  equalNumber(actual.cargo.attributes.КолМестГр, expected.cargo.attributes.КолМестГр);
+  if (!allowMissingLoadingCoordinates || !nativeRoundedVolume(actual.cargo.attributes.Объем, expected.cargo.attributes.Объем, nativeOrderVolume)) equalNumber(actual.cargo.attributes.Объем, expected.cargo.attributes.Объем);
   const actualMass = only(actual.cargo, 'ПлМасГруз'), expectedMass = only(expected.cargo, 'ПлМасГруз');
   equalNumber(actualMass.attributes.МасБрутЗнач, expectedMass.attributes.МасБрутЗнач);
   if (actualMass.attributes.МасНетЗнач || expectedMass.attributes.МасНетЗнач) equalNumber(actualMass.attributes.МасНетЗнач, expectedMass.attributes.МасНетЗнач);
@@ -101,7 +108,7 @@ function anchors(actual: ReturnType<typeof title>, expected: ReturnType<typeof t
   }
   const actualVehicle = only(only(actual.content, 'СвТС'), 'ТС'), expectedVehicle = only(only(expected.content, 'СвТС'), 'ТС');
   for (const key of ['РегНомер', 'НомерВИН']) if (expectedVehicle.attributes[key] && compact(actualVehicle.attributes[key]) !== compact(expectedVehicle.attributes[key])) fail();
-  address(only(actual.loading, 'ФАдресПогр'), only(expected.loading, 'ФАдресПогр'));
+  address(only(actual.loading, 'ФАдресПогр'), only(expected.loading, 'ФАдресПогр'), allowMissingLoadingCoordinates);
   if (actual.recipient && !emptyNativeRecipient(actual.recipient)) recipient(actual.recipient, expected.recipient);
 }
 
@@ -129,12 +136,18 @@ export function verifyDraftRequestedFields(bytes: Uint8Array, snapshot: SabyCons
 }
 
 /** Fill a separately proven unsigned native draft. The caller must freeze identity/revision/signatures first.
- * Only the missing recipient and driver loading events/count/gross mass may change; native business stays native.
+ * Only the missing recipient, driver loading events/count/gross mass and proven rounded volume may change; native business stays native.
  */
 export function fillConsignmentDraft(bytes: Uint8Array, snapshot: SabyConsignmentSnapshot, number: string): ConsignmentDraftFill {
   const actual = title(bytes), expected = expectedTitle(snapshot, number);
-  anchors(actual, expected);
+  anchors(actual, expected, true, formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion));
   const before = JSON.stringify(canonical(actual.root));
+  if (!equivalentNumber(actual.cargo.attributes.Объем, expected.cargo.attributes.Объем)) actual.cargo.attributes.Объем = expected.cargo.attributes.Объем;
+  // Saby's unsigned native draft can omit coordinates while keeping the exact address.
+  // Only fill absence from frozen CRM facts; conflicting coordinates still fail above.
+  const location = only(actual.loading, 'ФАдресПогр');
+  const coordinates = named(only(expected.loading, 'ФАдресПогр'), 'Коорд')[0];
+  if (coordinates && !named(location, 'Коорд').length) location.children.unshift(structuredClone(coordinates));
   if (!actual.recipient) {
     const cargoIndex = actual.content.children.indexOf(only(actual.content, 'СвГруз'));
     actual.content.children.splice(cargoIndex, 0, structuredClone(expected.recipient));
@@ -198,4 +211,34 @@ export function hasExactConsignmentOrderLink(note: SabyObject, order: SabyObject
   const sourceOrders = bases.filter(doc => doc.Тип === 'TransportOrder');
   const targetNotes = consequences.filter(doc => doc.Идентификатор === note.Идентификатор);
   return sourceOrders.length === 1 && exactReference(sourceOrders[0], order) && targetNotes.length === 1 && exactReference(targetNotes[0], note);
+}
+
+/** Prove the whole operator-created order draft before allocating its first delivery.
+ * Positional matching is against the immutable order delivery list, never a search by mass alone.
+ * The original bytes remain in LinkedDraftState; the replacement uses frozen CRM business data.
+ */
+export function allocateNativeConsignmentDraft(bytes: Uint8Array, snapshots: SabyConsignmentSnapshot[], number: string): ConsignmentDraftFill {
+  if (!snapshots.length || new Set(snapshots.map(x => x.shipmentId)).size !== snapshots.length) fail('Состав доставок заявки неоднозначен');
+  const root = parseXml(bytes), document = only(root, 'Документ'), content = only(document, 'СодИнфГО');
+  const cargo = only(content, 'СвГруз'), items = named(cargo, 'ОпГруз');
+  if (elements(cargo).length !== snapshots.length || items.length !== snapshots.length) fail('Число грузов нативной ЭТрН не совпадает с заявкой');
+  const recipients = named(content, 'СвГП');
+  if (recipients.length > 1 || recipients.length === 1 && !emptyNativeRecipient(recipients[0])) fail('Получатель общего черновика уже заполнен');
+  for (let index = 0; index < snapshots.length; index++) {
+    const snapshot = snapshots[index];
+    if (snapshot.tripId !== snapshots[0].tripId || snapshot.profile.order.number !== snapshots[0].profile.order.number || snapshot.profile.order.date !== snapshots[0].profile.order.date) fail('Доставки относятся к разным заявкам');
+    const copy = structuredClone(root), info = only(only(copy, 'Документ'), 'СодИнфГО');
+    only(info, 'СвГруз').children = [structuredClone(items[index])];
+    const actual = title(encodeWindows1251(serializeXml(copy)));
+    anchors(actual, expectedTitle(snapshot, number), true, formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion));
+  }
+  const snapshot = snapshots[0];
+  const generated = serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000001', '2025-01-01T00:00:00.000Z', number, { senderTitleVersion: 2 });
+  const filled = parseXml(generated.xml);
+  filled.attributes.ИдФайл = root.attributes.ИдФайл;
+  const resultDocument = only(filled, 'Документ');
+  for (const key of ['ДатИнфГО', 'ВрИнфГО']) resultDocument.attributes[key] = document.attributes[key];
+  const result = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(filled));
+  verifyDraftRequestedFields(result, snapshot, number);
+  return { bytes: result, changed: true, beforeHash: digest(bytes), afterHash: digest(result), fields: requestedFields(expectedTitle(snapshot, number)) };
 }

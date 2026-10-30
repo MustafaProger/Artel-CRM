@@ -373,3 +373,13 @@ test('driver confirmation survives failure and missing Saby linkage without clai
   assert.equal(workflowSteps(state, 0)[0].state, 'current');
   assert.equal(workflowSteps(state, 0)[1].state, 'done');
 });
+
+test('a confirmed order waiting for its native note displays automatic waiting at stage six without an error', () => {
+  const state = failedWorkflow('carrier_confirmed', true);
+  state.phase = 'creating_etrn'; state.status = 'not_sent'; state.lastError = null;
+  state.monitoring = { enabled: true, intervalSeconds: 60 };
+  state.deliveries = [{ shipmentId: 'delivery-id', id: null, status: 'pending', lastError: null, waitingForNativeDraft: true }];
+  const view = workflowView(state);
+  assert.equal(view.title, 'Ожидаем ЭТрН от Saby'); assert.equal(view.step, 5);
+  assert.match(view.text, /автоматически проверяет/); assert.doesNotMatch(view.title, /ошибк|приостановлено|завершены/);
+});

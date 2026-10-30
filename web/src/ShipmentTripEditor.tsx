@@ -100,6 +100,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const dirty = serialize(draft) !== initial
   const fields = draft.fields
   const driverFlow = fields.trip_flow_version === 'driver-v1'
+  const nkDirectEtrn = driverFlow && fields.organization_id === 'nk-artel' && (!tripId || ['supply-delivery-v1', 'nk-direct-etrn-v1', 'nk-direct-autostart-v1'].includes(fields.trip_document_policy || ''))
   const disabled = saving || loading || uncertain
 
   useEffect(() => {
@@ -367,8 +368,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       <div className="shipment-editor-body" aria-busy={loading || saving}>
         {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={24}/><span>Загружаем отгрузку и всех её клиентов…</span></div> : loadError ? <div className="shipment-trip-loading"><p className="shipment-error" role="alert">{loadError}</p><button type="button" className="button" onClick={() => setReload(value => value + 1)}>Повторить загрузку</button></div> : <>
           <p className="shipment-editor-note shipment-trip-intro">{driverFlow ? 'Сохранение создаёт рейс, строки доставок в «Отгрузках» и задание водителю. Массы водитель внесёт по бумажной ТТН после погрузки.' : 'Исторический рейс. Сохранённые массы и фактические даты не меняются автоматически.'}</p>
-          {automation?.enabled && <p className="shipment-editor-note" role="note">{driverFlow ? 'До убытия водителя заявка остаётся неподписанной. После получения всех масс CRM продолжит обмен автоматически; состояние видно в блоке Saby.' : 'Изменения учёта сохраняются в CRM. Исправления документов выполняются вручную в Saby.'}</p>}
-          {!automation?.enabled && automation?.message && <p className="shipment-editor-note" role="note">{automation.message}</p>}
+          {nkDirectEtrn ? <p className="shipment-editor-note" role="note">{tripId ? 'НК АРТЭЛЬ выбрана организацией рейса. Сохранённая схема документов и состояние обмена показаны в блоке Saby.' : 'НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик, без заказа-заявки. После сохранения водителем масс и убытия CRM автоматически запускает подписание и отправку. Состояние видно в блоке Saby.'} ЭТрН можно отключить отдельно у каждой доставки флажком «ЭТрН не нужна». Счета оформляются независимо.</p> : automation?.enabled && <p className="shipment-editor-note" role="note">{driverFlow ? 'До убытия водителя заявка остаётся неподписанной. После получения всех масс CRM продолжит обмен автоматически; состояние видно в блоке Saby.' : 'Изменения учёта сохраняются в CRM. Исправления документов выполняются вручную в Saby.'}</p>}
+          {!nkDirectEtrn && !automation?.enabled && automation?.message && <p className="shipment-editor-note" role="note">{automation.message}</p>}
           {uncertain && <p className="shipment-calculation-warning" role="status">Ответ сервера не подтверждён. Повторите сохранение: будет проверен тот же запрос без создания второго рейса.</p>}
           {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
           {conflict && <button type="button" className="button" disabled={saving} onClick={() => setReload(value => value + 1)}>Загрузить актуальный рейс</button>}
@@ -376,6 +377,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
             {select('Наша организация', 'organization_id', ourOrganizations.map(organization => ({ ...organization })), { required: !tripId })}
             {dateTimeInput(driverFlow ? 'Плановая дата рейса · Москва' : 'Дата отгрузки / погрузки', loadingValue, value => update('loading_at', value), true)}
             {tripMode && <label className="trip-invoice-option form-field-wide"><input type="checkbox" checked={fields.organization_id === 'nk-artel'} disabled={disabled} onChange={event => update('organization_id', event.target.checked ? 'nk-artel' : 'artel')}/>Собственный клиент НК Артэль — НК отправитель и перевозчик</label>}
+            {tripMode && !!tripId && fields.organization_id === 'nk-artel' && !nkDirectEtrn && <p className="shipment-editor-note form-field-wide">Для этого ранее созданного рейса сохранена прежняя схема документов. Состояние обмена показано в блоке Saby.</p>}
             {select('Поставщик', 'supplier_id', companyEntries('supplier', draft.fields.supplier_id), { required: true })}
             {select('Нефтебаза', 'oil_depot_id', (directories.oilDepots ?? []).map(entry => ({ id: entry.id, name: entry.name, detail: entry.address })))}
             {select('Товар', 'product_id', directories.products, { required: true })}

@@ -2,16 +2,23 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireManage, requireUser } from '../auth';
 import { requireSection } from '../permissions';
 import { ApiError } from '../api-error';
+import type { OperationsData } from '../operations-store';
 import { csv } from './domain';
 import { BankingService } from './service';
 
-export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>) {
-  const authorize = async () => requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
-  await authorize();
+export async function bankingRoutes(service: BankingService, request: IncomingMessage, response: ServerResponse, url: URL, readBody: () => Promise<Record<string, unknown>>, requestData?: OperationsData) {
   const method = request.method, path = url.pathname;
-  // Body reads and provider calls may outlive logout or an administrator's revocation.
-  const send = async (value: unknown) => { await authorize(); response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
-  if (path === '/api/banking' && method === 'GET') return send(await service.list(url.searchParams));
+  const listRequest = path === '/api/banking' && method === 'GET';
+  // Only the list GET has no body/provider await between authorization and output.
+  // Other routes must not inherit the earlier middleware view.
+  const data = listRequest && requestData ? requestData : await service.store.read(service.source);
+  requireManage(requireSection(requireUser(data, request), 'payments'));
+  const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
+  if (listRequest) return send(service.listFromData(data, url.searchParams));
+  // Every remaining route can yield while reading a body or awaiting a provider.
+  // Recheck the current session before protected work and before releasing data.
+  const authorize = async () => requireManage(requireSection(requireUser(await service.store.read(service.source), request), 'payments'));
+  const sendAuthorized = async (value: unknown) => { await authorize(); send(value); };
   if (path === '/api/banking/export' && method === 'GET') {
     const output = csv(await service.rows(url.searchParams));
     await authorize();
@@ -22,12 +29,12 @@ export async function bankingRoutes(service: BankingService, request: IncomingMe
     const body = await readBody();
     await authorize();
     if (sync[2] === 'sync') { await service.start(sync[1], body.from, body.to); await authorize(); }
-    return send(await service.tick(sync[1]) ?? { pending: true });
+    return sendAuthorized(await service.tick(sync[1]) ?? { pending: true });
   }
   const operation = path.match(/^\/api\/banking\/operations\/([a-f0-9]{64})(?:\/(refresh|print))?$/);
   if (operation) {
-    if (!operation[2] && method === 'GET') return send({ operation: await service.operation(operation[1]) });
-    if (operation[2] === 'refresh' && method === 'POST') { await readBody(); await authorize(); return send({ operation: await service.enrich(operation[1]) }); }
+    if (!operation[2] && method === 'GET') return sendAuthorized({ operation: await service.operation(operation[1]) });
+    if (operation[2] === 'refresh' && method === 'POST') { await readBody(); await authorize(); return sendAuthorized({ operation: await service.enrich(operation[1]) }); }
     if (operation[2] === 'print' && method === 'GET') {
       const buffer = await service.print(operation[1]);
       await authorize();

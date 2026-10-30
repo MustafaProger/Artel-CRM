@@ -1,5 +1,9 @@
+import { WorkPartition, isWorkPartition } from './work-partition';
+import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
 import { validateDocumentArchive } from './document-archive';
 import { validateOperator } from './operator';
+import { validTripDocumentPolicy } from './trip-document-mode';
+import { operatorDiscount } from './operator-directories';
 import type { OperatorData } from '../web/src/operator-model';
 import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
 import { validateCabinets } from './cabinet-connections';
@@ -47,6 +51,7 @@ export interface OperationsData {
   companies: Company[];
   directories?: Directories;
   paymentAllocations?: PaymentAllocation[];
+  tripExecutions?: Record<string, StoredTripExecution>;
   driverTripProgress?: Record<string, DriverTripProgress>;
   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
   tripRequests?: Record<string, TripRequest>;
@@ -71,6 +76,7 @@ export interface OperationsData {
 
 export class StoreError extends Error {}
 const queues = new Map<string, Promise<unknown>>();
+const tripRequestQueues = new Map<string, Promise<unknown>>();
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -86,6 +92,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
     if (!object(data.tripCreateRequests)) throw new StoreError('Invalid trip requests');
     for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
   }
+  try { validateTripExecutions(data.tripExecutions); } catch { throw new StoreError('Invalid trip executions'); }
   try { validateDriverTripProgress(data.driverTripProgress); } catch { throw new StoreError('Invalid driver trip progress'); }
   try { validateTripRequests(data.tripRequests, data.tripRequestCreates); } catch { throw new StoreError('Invalid trip requests'); }
   try { validateSabyData(data.saby); } catch { throw new StoreError('Invalid Saby storage'); }
@@ -114,6 +121,31 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
       for (const row of directories.customerManagers) {
         if (!object(row) || typeof row.companyId !== 'string' || !row.companyId || typeof row.managerId !== 'string' || !row.managerId || customers.has(row.companyId)) throw new StoreError('Invalid customer manager');
         customers.add(row.companyId);
+      }
+    }
+    for (const key of ['operatorGroups', 'operatorServices']) {
+      const rows = directories[key];
+      if (rows === undefined) continue;
+      if (!Array.isArray(rows)) throw new StoreError('Invalid operator directory');
+      const seen = new Set<string>();
+      for (const row of rows) {
+        if (!object(row) || typeof row.id !== 'string' || !row.id || seen.has(row.id) || typeof row.name !== 'string' || !row.name.trim() || row.name.length > 500 || row.version !== undefined && (!Number.isSafeInteger(row.version) || Number(row.version) < 0)) throw new StoreError('Invalid operator directory entry');
+        if (key === 'operatorServices') {
+          if (typeof row.discountPercent !== 'string' || !/^\d+(?:\.\d+)?$/.test(row.discountPercent)) throw new StoreError('Invalid operator discount');
+          if (row.backgroundColor !== undefined && (typeof row.backgroundColor !== 'string' || !/^#[0-9a-f]{6}$/i.test(row.backgroundColor))) throw new StoreError('Invalid operator background');
+          if (row.discountHistory !== undefined) {
+            if (!Array.isArray(row.discountHistory) || !row.discountHistory.length) throw new StoreError('Invalid operator discount history');
+            let last = '';
+            for (const rate of row.discountHistory) {
+              if (!object(rate) || typeof rate.effectiveFrom !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rate.effectiveFrom) || !Number.isFinite(Date.parse(rate.effectiveFrom)) || new Date(rate.effectiveFrom).toISOString().slice(0,10) !== rate.effectiveFrom || rate.effectiveFrom <= last) throw new StoreError('Invalid operator discount date');
+              try { operatorDiscount(rate.discountPercent); } catch { throw new StoreError('Invalid operator discount history'); }
+              last = rate.effectiveFrom;
+            }
+            if (row.discountHistory.at(-1)?.discountPercent !== row.discountPercent) throw new StoreError('Invalid current operator discount');
+          }
+          try { operatorDiscount(row.discountPercent); } catch { throw new StoreError('Invalid operator discount'); }
+        }
+        seen.add(row.id);
       }
     }
     if (directories.oilDepots !== undefined) {
@@ -151,6 +183,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   for (const [id, row] of Object.entries(data.shipments)) {
     if (!id || !object(row) || !object(row.fields) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.createdAt !== 'string' || typeof row.updatedAt !== 'string' || (row.deleted !== undefined && typeof row.deleted !== 'boolean')) throw new StoreError('Invalid shipment override');
     if (Object.values(row.fields).some(value => value !== null && typeof value !== 'string')) throw new StoreError('Invalid shipment fields');
+    if (row.fields.trip_document_policy != null && (!validTripDocumentPolicy(row.fields.trip_document_policy) || row.fields.trip_flow_version !== 'driver-v1' || !row.fields.trip_id)) throw new StoreError('Invalid trip document policy');
     if (row.fields.source_request_id) {
       const request = (data.tripRequests as Record<string, TripRequest> | undefined)?.[String(row.fields.source_request_id)];
       if (!request || request.status !== 'consumed' || request.shipmentId !== id || request.tripId !== row.fields.trip_id || request.companyId !== row.fields.customer_id || request.addressId !== row.fields.unloading_address_id) throw new StoreError('Invalid shipment request source');
@@ -180,19 +213,28 @@ export function decodeOperations(raw: string, sourceSha256: string): OperationsD
   } catch { throw new StoreError('Operations store is damaged or belongs to another source'); }
 }
 
-export function encodeOperations(data: OperationsData): string {
-  validate(data, data.sourceSha256);
-  const encoded = JSON.stringify({ sha256: hash(JSON.stringify(data)), data });
+export function encodeOperations(data: OperationsData, sourceSha256 = data.sourceSha256): string {
+  validate(data, sourceSha256);
+  // The checksum covers these exact JSON bytes. Reuse them for the envelope
+  // instead of serializing the complete store a second time on every write.
+  const payload = JSON.stringify(data);
+  const encoded = `{"sha256":"${hash(payload)}","data":${payload}}`;
   if (Buffer.byteLength(encoded) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
   return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup'>>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests'>>;
 
-export class OperationsStore {
+export class LegacyOperationsStore {
   readonly path: string;
   #readCache?: { bytes: Buffer; raw: string; sourceSha256: string };
   constructor(directory: string) { this.path = resolve(directory, 'operations.json'); }
+
+  /** Internal write path only: raw must already have passed encode/decodeOperations
+   * and have been committed to this store. read() still compares actual bytes. */
+  rememberCommittedEncoding(raw: string, sourceSha256: string) {
+    this.#readCache = { bytes: Buffer.from(raw), raw, sourceSha256 };
+  }
 
   async backup(data: OperationsData): Promise<string> {
     const folder = resolve(dirname(this.path), 'backups');
@@ -259,15 +301,16 @@ export class OperationsStore {
         const { result, changed } = await update(data);
         if (changed) {
           data.revision++;
-          validate(data, sourceSha256);
-          const encoded = encodeOperations(data);
+          // Validate once against the caller's source, including after callbacks
+          // that accidentally changed sourceSha256, before any file is written.
+          const encoded = encodeOperations(data, sourceSha256);
           const temporary = `${this.path}.${randomUUID()}.tmp`;
           try {
             const file = await open(temporary, 'wx', 0o600);
             try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
             await rename(temporary, this.path);
             // encodeOperations already validated these exact bytes; keep callers isolated.
-            this.#readCache = { bytes: Buffer.from(encoded), raw: encoded, sourceSha256 };
+            this.rememberCommittedEncoding(encoded, sourceSha256);
           } finally { await unlink(temporary).catch(() => undefined); }
         }
         return result;
@@ -275,5 +318,32 @@ export class OperationsStore {
     });
     queues.set(this.path, pending);
     try { return await pending; } finally { if (queues.get(this.path) === pending) queues.delete(this.path); }
+  }
+}
+
+/** Transparent adapter keeps directories, employee checks and schedulers on the
+ * same logical snapshot. Physical partitioning is an explicit offline operation. */
+export class OperationsStore extends LegacyOperationsStore {
+  private partition = new WorkPartition(this.path);
+  override async read(source: string): Promise<OperationsData> {
+    return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
+  }
+  override async mutate<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update) : super.mutate(source, update);
+  }
+  /** Separate FIFO admission only; the same core file, latch, validation and WAL
+   * still commit requests and trip consumption atomically with the rest of CRM. */
+  async mutateTripRequests<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    // Register before any asynchronous pointer I/O, whose completion order can
+    // differ from invocation order. Share this queue across facade instances,
+    // while keeping the existing file admission and transaction locks intact.
+    const previous = tripRequestQueues.get(this.path) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(async () =>
+      await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, false, true) : super.mutate(source, update));
+    tripRequestQueues.set(this.path, pending);
+    try { return await pending; } finally { if (tripRequestQueues.get(this.path) === pending) tripRequestQueues.delete(this.path); }
+  }
+  async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
   }
 }

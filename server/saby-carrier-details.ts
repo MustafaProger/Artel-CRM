@@ -6,6 +6,7 @@ import { parseXml, type XmlNode } from './saby-order-evidence';
 import { encodeWindows1251 } from './saby-transport-order';
 import { SabyError, type SabyCarrierResponsible } from './saby-client';
 import type { TripSabyRecord } from './trip-saby-workflow';
+import { formatSabyVolume, sabyVolumeRoundedToZero } from './saby-volume';
 
 const node = (name: string, attributes: Record<string, string> = {}, children: Array<XmlNode | string> = []): XmlNode => ({ name, attributes, children });
 export const xmlChildren = (parent: XmlNode, name: string) => parent.children.filter((value): value is XmlNode => typeof value !== 'string' && value.name === name);
@@ -34,12 +35,17 @@ export function carrierDetailsInput(snapshot: Snapshot, record: TripSabyRecord, 
   if (!driver?.inn || !/^\d{12}$/.test(driver.inn) || !validInn(driver.inn)) driverErrors.push('Для ответа НК нужен подтверждённый ИНН водителя.');
   if (!/^\d{4}$/.test(driver?.licenseSeries ?? '') || !/^\d{6}$/.test(driver?.licenseNumber ?? '') || !date(driver?.licenseIssuedAt)) driverErrors.push('Заполните серию, номер и дату выдачи действующих водительских прав.');
   if (!vehicle || vehicle.plate !== record.snapshot.vehicle.plate || !text(vehicle.plate, 20)) vehicleErrors.push('Сверьте машину рейса с сохранённой заявкой.');
+  const frozenVehicle = record.deliveries[0]?.snapshot.vehicle;
+  const frozenIdentity = frozenVehicle && frozenVehicle.id === record.snapshot.fields.vehicle_id && frozenVehicle.plate === record.snapshot.vehicle.plate && record.deliveries.every(row => row.snapshot.vehicle.id === frozenVehicle.id && row.snapshot.vehicle.plate === frozenVehicle.plate && row.snapshot.vehicle.vin === frozenVehicle.vin && row.snapshot.vehicle.stsNumber === frozenVehicle.stsNumber) ? frozenVehicle : undefined;
+  if (!frozenIdentity || frozenIdentity.vin && !/^[A-Z0-9]{17}$/.test(frozenIdentity.vin) || frozenIdentity.stsNumber && !/^\d{10}$/.test(frozenIdentity.stsNumber)) vehicleErrors.push('Сверьте VIN и СТС машины в сохранённых доставках рейса.');
   const type = vehicle?.transportVehicleType || vehicle?.vehicleType;
   if (!text(type, 1000) || !text(vehicle?.brand, 1000)) vehicleErrors.push('Заполните марку и тип автомобиля.');
   if (!positive(vehicle?.payloadTonnes) || vehicle?.maxWeight && /^\d+(?:\.\d+)?$/.test(vehicle.maxWeight) && positive(vehicle.payloadTonnes) && new Decimal(vehicle.payloadTonnes!).mul(1000).gt(vehicle.maxWeight)) vehicleErrors.push('Укажите согласованное максимальное значение для Saby в тоннах. Проверьте единицы: килограммы нужно разделить на 1000.');
   const litres = vehicle?.capacityLitres;
-  const capacity = litres && /^\d+(?:\.\d+)?$/.test(litres) ? new Decimal(litres).div(1000).toFixed() : '';
-  if (!positive(capacity)) vehicleErrors.push('Вместимость цистерны должна точно выражаться в м³ с двумя знаками, без округления.');
+  const capacity = formatSabyVolume(litres, 'litres', 2, record.snapshot.volumeRoundingVersion) ?? '';
+  if (!positive(capacity)) vehicleErrors.push(sabyVolumeRoundedToZero(litres, 'litres', 2, record.snapshot.volumeRoundingVersion)
+    ? 'Вместимость цистерны после округления до 2 знаков м³ равна нулю. Проверьте общую вместимость в литрах.'
+    : 'Проверьте общую вместимость цистерны в литрах; формат ответа НК — м³ до 2 знаков, не более 5 цифр. Секции необязательны.');
   if (!['1', '2', '3', '4', '5'].includes(vehicle?.ownershipType ?? '')) vehicleErrors.push('Укажите тип владения автомобилем.');
   const issuerInns = (vehicle?.leaseDocumentIssuerInn || '').split(',').map(value => value.trim()).filter(Boolean);
   const needsLease = ['3', '4', '5'].includes(vehicle?.ownershipType ?? '');
@@ -47,7 +53,7 @@ export function carrierDetailsInput(snapshot: Snapshot, record: TripSabyRecord, 
   // A trailer needs a structured, verified mapping; a free-text plate is insufficient.
   if (vehicle?.trailer?.trim()) vehicleErrors.push('Сверьте прицеп в Saby: его реквизиты пока не подготовлены для автоматического заполнения.');
   const driverNode = driverErrors.length ? null : node('СвВодит', { НомВУ: driver!.licenseNumber!, СерВУ: driver!.licenseSeries!, ДатаВыдВУ: driver!.licenseIssuedAt!.split('-').reverse().join('.'), ИННФЛ: driver!.inn! }, [node('Тлф', {}, [driver!.phone!]), node('ФИО', { Фамилия: names[0], Имя: names[1], ...(names[2] ? { Отчество: names[2] } : {}) })]);
-  const vehicleNode = vehicleErrors.length ? null : node('ТС', { РегНомер: vehicle!.plate, ТипВлад: vehicle!.ownershipType! }, [
+  const vehicleNode = vehicleErrors.length ? null : node('ТС', { РегНомер: vehicle!.plate, ТипВлад: vehicle!.ownershipType!, ...(frozenIdentity?.vin ? { НомерВИН: frozenIdentity.vin } : {}), ...(frozenIdentity?.stsNumber ? { НомСТС: frozenIdentity.stsNumber } : {}) }, [
     node('ПарТС', { Тип: type!, Марка: vehicle!.brand!, Грузопод: vehicle!.payloadTonnes!, Вместим: capacity }),
     ...(needsLease ? [node('ОснАрЛиз', { НаимДок: vehicle!.leaseDocumentName!, НомерДок: vehicle!.leaseDocumentNumber!, ДатаДок: vehicle!.leaseDocumentDate!.split('-').reverse().join('.') }, issuerInns.map(inn => node('ИдРекСост', {}, [node(inn.length === 10 ? 'ИННЮЛ' : 'ИННФЛ', {}, [inn])])))] : []),
   ]);

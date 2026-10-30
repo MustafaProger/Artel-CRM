@@ -13,6 +13,7 @@ import { projectMapPoint } from './yandex-map-coordinates'
 import { mapCardPosition, requestFitView, requestOverviewBounds, type MapPoint } from './trip-map-view'
 import { locationStatusText, oilDepotLocationTarget, requestLocationTarget, useTripRequestLocations, type LocationState } from './useTripRequestLocations'
 import { groupRequestsByLocation, requestVolumeBand, requestVolumeBands } from './trip-map-points'
+import { requestIsOnMap, requestDateLabel, requestToday } from './trip-request-schedule'
 import './trip-requests-map.css'
 
 type LocatedRequest = { request: TripRequest; coordinates: MapPoint | null; automatic?: LocationState }
@@ -27,8 +28,15 @@ const noDepots: readonly OilDepot[] = []
 export default function TripRequestsMap({ requests, addresses = noAddresses, oilDepots = noDepots, onEditRequest }: {
   requests: readonly TripRequest[]; addresses?: readonly ShipmentAddress[]; oilDepots?: readonly OilDepot[]; onEditRequest?: (request: TripRequest) => void
 }) {
-  const active = useMemo(() => requests.filter(request => request.status === 'active'), [requests])
-  return active.length || oilDepots.length ? <ActiveRequestsMap requests={active} addresses={addresses} oilDepots={oilDepots} onEditRequest={onEditRequest} /> : <div className="trip-map-empty"><MapPin size={28} aria-hidden="true" /><strong>На карте пока нет заявок и нефтебаз</strong><p>Создайте заявку или добавьте нефтебазу в справочник.</p></div>
+  const [today, setToday] = useState(requestToday)
+  useEffect(() => {
+    const update = () => setToday(requestToday())
+    const timer = window.setInterval(update, 30000)
+    document.addEventListener('visibilitychange', update)
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', update) }
+  }, [])
+  const active = useMemo(() => requests.filter(request => requestIsOnMap(request, new Date(`${today}T12:00:00+03:00`))), [requests, today])
+  return active.length || oilDepots.length ? <ActiveRequestsMap requests={active} addresses={addresses} oilDepots={oilDepots} onEditRequest={onEditRequest} /> : <div className="trip-map-empty"><MapPin size={28} aria-hidden="true" /><strong>Нет заявок до завтра включительно</strong><p>Укажите дату выполнения заявки. На карте показаны активные заявки за прошлые даты, сегодня и завтра по московскому времени.</p></div>
 }
 
 function ActiveRequestsMap({ requests, addresses, oilDepots, onEditRequest }: {
@@ -185,7 +193,7 @@ function ActiveRequestsMap({ requests, addresses, oilDepots, onEditRequest }: {
     }
   }
   return <section className="trip-requests-map" aria-label="Карта заявок">
-    <div className="trip-map-toolbar"><div className="trip-map-summary" aria-live="polite"><strong>{requests.length ? `На карте ${located} из ${requests.length} заявок` : 'Активных заявок нет'}</strong>{searching > 0 ? <span>Ищем адреса: {searching}</span> : located < requests.length ? <span>Адресов без точки: {requests.length - located}</span> : requests.length > 0 && <span>Все активные заявки</span>}{oilDepots.length > 0 && <span>Нефтебаз на карте: {locatedDepots} из {oilDepots.length}{searchingDepots > 0 ? ` · ищем адреса: ${searchingDepots}` : ''}</span>}</div><button type="button" className="button trip-map-show-all" disabled={!map || allPoints.length === 0} onClick={showAll}><Maximize size={17} aria-hidden="true" />Показать все</button></div>
+    <div className="trip-map-toolbar"><div className="trip-map-summary" aria-live="polite"><strong>{requests.length ? `На карте ${located} из ${requests.length} заявок` : 'Нет заявок до завтра включительно'}</strong>{searching > 0 ? <span>Ищем адреса: {searching}</span> : located < requests.length ? <span>Адресов без точки: {requests.length - located}</span> : requests.length > 0 && <span>Прошлые даты, сегодня и завтра · МСК</span>}{oilDepots.length > 0 && <span>Нефтебаз на карте: {locatedDepots} из {oilDepots.length}{searchingDepots > 0 ? ` · ищем адреса: ${searchingDepots}` : ''}</span>}</div><button type="button" className="button trip-map-show-all" disabled={!map || allPoints.length === 0} onClick={showAll}><Maximize size={17} aria-hidden="true" />Показать все</button></div>
     <ul className="trip-map-legend" aria-label="Цвет точки по сумме литров в заявках">{requestVolumeBands.map(band => <li key={band.id}><span className="trip-map-swatch" data-volume-band={band.id} aria-hidden="true"/>{band.label}</li>)}<li><span className="trip-map-swatch is-depot" aria-hidden="true"/>Нефтебаза</li></ul>
     {(tileError || mapError) && <div className="trip-map-load-error" role="status"><span>{mapError ? 'Не удалось открыть карту.' : 'Не удалось загрузить изображение карты. Точки заявок и список доступны.'}</span><button type="button" className="button" onClick={() => setRetry(value => value + 1)}><RotateCcw size={16} />Повторить</button></div>}
     <div ref={surface} className={`trip-map-surface${mapError ? ' trip-map-unavailable' : ''}`}>
@@ -193,15 +201,26 @@ function ActiveRequestsMap({ requests, addresses, oilDepots, onEditRequest }: {
       {mapError && <div className="trip-map-overlay"><MapPin size={32} aria-hidden="true" /><strong>Карта временно недоступна</strong><p>Площадки и ссылки на карту доступны в списке ниже.</p></div>}
       {loadingTiles && !mapError && <span className="trip-map-loading" role="status">Загружаем карту…</span>}
       {outside && <button type="button" className="trip-map-outside" onClick={showAll}>Есть точки вне обзора · Показать все</button>}
-      {openGroup && map && <MapDetails coordinates={openGroup.coordinates} heading={openGroup.requests.length > 1 ? `Заявок: ${openGroup.requests.length} · Всего ${volume(openGroup.totalLitres)}` : 'Точка доставки'} label="Информация о точке доставки" map={map} revision={viewRevision} pinned={!!card?.pinned} onClose={closeCard} onEnter={cancelHide} onLeave={hideCard}>{openGroup.requests.map(request => <article className="trip-map-balloon" key={request.id}><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span><b>{volume(request.quantityLitres)}</b>{request.comment.trim() && <div className="trip-map-card-comment"><small>Комментарий</small><p>{request.comment}</p></div>}</article>)}</MapDetails>}
+      <div id="trip-map-details">
+      {openGroup && map && <MapDetails coordinates={openGroup.coordinates} heading={openGroup.requests.length > 1 ? `Заявок: ${openGroup.requests.length} · Всего ${volume(openGroup.totalLitres)}` : 'Точка доставки'} label="Информация о точке доставки" map={map} revision={viewRevision} pinned={!!card?.pinned} onClose={closeCard} onEnter={cancelHide} onLeave={hideCard}>{openGroup.requests.map(request => <article className="trip-map-balloon" key={request.id}><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span><b>{volume(request.quantityLitres)}</b><span>Дата выполнения: {requestDateLabel(request.executionDate)}</span>{request.comment.trim() && <div className="trip-map-card-comment"><small>Комментарий</small><p>{request.comment}</p></div>}</article>)}</MapDetails>}
       {openDepot?.coordinates && map && <MapDetails coordinates={openDepot.coordinates} heading="Нефтебаза" label="Информация о нефтебазе" map={map} revision={viewRevision} pinned={!!card?.pinned} onClose={closeCard} onEnter={cancelHide} onLeave={hideCard}><article className="trip-map-balloon"><strong>{openDepot.depot.name}</strong><span>{openDepot.depot.address || 'Адрес не указан'}</span>{openDepot.automatic?.status === 'found' && <span>{openDepot.automatic.accuracy === 'street' ? 'По адресу найдена улица — точку можно уточнить в справочнике' : 'Найдено по адресу'}</span>}</article></MapDetails>}
+      </div>
     </div>
     <ul className="trip-map-list" aria-label="Площадки заявок">
       {locations.map(item => {
         const { request, coordinates, automatic } = item
         const link = mapLink({ mapUrl: automatic?.status === 'found' ? null : request.mapUrl, address: request.address, ...(coordinates ? { latitude: coordinates[0], longitude: coordinates[1] } : {}) })
         const action = coordinates ? automatic?.status === 'found' ? 'Уточнить точку' : 'Изменить точку' : 'Уточнить адрес'
-        const content = <><span className="trip-map-list-icon"><MapPin size={18} aria-hidden="true" /></span><span className="trip-map-list-info"><strong>{request.companyName}</strong><span>{request.address || request.addressName}</span>{automatic && <small className={`trip-map-geocode-status ${automatic.status}`} role="status">{locationStatusText(automatic)}</small>}</span><b>{volume(request.quantityLitres)}</b></>
+        const content = <>
+          <span className="trip-map-list-icon"><MapPin size={18} aria-hidden="true" /></span>
+          <span className="trip-map-list-info">
+            <strong>{request.companyName}</strong>
+            <span>{request.address || request.addressName}</span>
+            <span className="trip-map-list-date">Дата выполнения: <time dateTime={request.executionDate || undefined}>{requestDateLabel(request.executionDate)}</time></span>
+            {automatic && <small className={`trip-map-geocode-status ${automatic.status}`} role="status">{locationStatusText(automatic)}</small>}
+          </span>
+          <b className="trip-map-list-volume">{volume(request.quantityLitres)}</b>
+        </>
         return <li key={request.id}>{coordinates && map ? <button type="button" className="trip-map-list-location" onClick={() => focusRequest(item)} aria-label={`${request.companyName}, ${request.address || request.addressName}, ${volume(request.quantityLitres)}. Показать на карте`}>{content}</button> : <div className="trip-map-list-static">{content}</div>}<div className="trip-map-list-actions">{automatic?.status === 'unavailable' && <button type="button" className="trip-map-edit-point" onClick={() => retryLocation(requestLocationTarget(request))}>Повторить поиск адреса</button>}{onEditRequest && <button type="button" className="trip-map-edit-point" onClick={() => onEditRequest(request)} aria-label={`${action}: ${request.companyName}`}>{action}</button>}{link && <a className="trip-map-external-link" href={link.href} target="_blank" rel="noreferrer" aria-label={`${link.label}: ${request.companyName}, ${request.address || request.addressName}`}>{link.label}<ArrowUpRight size={15} aria-hidden="true" /></a>}</div></li>
       })}
     </ul>
@@ -231,7 +250,7 @@ function MapDetails({ coordinates, heading, label, children, map, revision, pinn
     const resize = new ResizeObserver(update); resize.observe(card)
     return () => resize.disconnect()
   }, [map, coordinates, revision])
-  return <div ref={element} id="trip-map-details" className={`trip-map-details${pinned ? ' is-pinned' : ''}`} style={position} role="region" aria-label={label} onMouseOver={onEnter} onMouseLeave={onLeave} onFocus={onEnter} onBlur={onLeave} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+  return <div ref={element} className={`trip-map-details${pinned ? ' is-pinned' : ''}`} style={position} role="region" aria-label={label} onMouseOver={onEnter} onMouseLeave={onLeave} onFocus={onEnter} onBlur={onLeave} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
     <header><span>{heading}</span><button type="button" className="trip-map-card-close" onClick={onClose} aria-label="Закрыть карточку точки"><X size={18} aria-hidden="true" /></button></header>
     <div className="trip-map-card-scroll">{children}</div>
   </div>

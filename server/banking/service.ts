@@ -27,7 +27,12 @@ export class BankingService {
     }
   }
   async list(query: URLSearchParams): Promise<BankListResult> {
-    const data = (await this.store.read(this.source)).banking ?? emptyBanking();
+    return this.listFromData(await this.store.read(this.source), query);
+  }
+  // Synchronous projection for a caller that has just authorized this same view.
+  // Call list() instead when a request body/provider await may have intervened.
+  listFromData(operations: OperationsData, query: URLSearchParams): BankListResult {
+    const data = operations.banking ?? emptyBanking();
     const activeRows = data.operations.filter(row => row.provider === 'tbank');
     const rows = filterOperations(activeRows, query);
     const allCardsRows = filterOperations(activeRows, query, true);
@@ -150,9 +155,9 @@ export class BankingService {
     if (!result) throw new ApiError(423, 'Банк занят синхронизацией. Повторите получение формы позже.');
     return result;
   }
-  async dispatch(now = Date.now()) {
+  async dispatch(now = Date.now(), initial?: Promise<OperationsData>) {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
-    const data = (await this.store.read(this.source)).banking ?? emptyBanking();
+    const data = (await (initial ?? this.store.read(this.source))).banking ?? emptyBanking();
     const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? bankJobDue(state.job, now) : state?.lastSuccessAt && (state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
     if (!due) return { enabled: true, pending: false };
     if (!due.state?.job) await this.mutate(data => {
