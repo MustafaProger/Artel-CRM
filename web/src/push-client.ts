@@ -99,9 +99,12 @@ export async function disconnectPushDevice() {
     await (await worker?.pushManager.getSubscription())?.unsubscribe();
   }
 }
-export async function currentPushEndpoint() {
+export async function currentPushEndpoint(updateWorker = false) {
   if (!('serviceWorker' in navigator)) return null;
   const worker = await navigator.serviceWorker.getRegistration('/');
+  // Updating an existing worker needs no notification permission or subscription.
+  // It runs while the workspace is open and never delays auth or endpoint lookup.
+  if (updateWorker && worker) void worker.update().catch(() => undefined);
   return (await worker?.pushManager.getSubscription())?.endpoint ?? null;
 }
 export function applicationKey(value: string) {

@@ -3,13 +3,29 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('push', event => {
   let payload = {};
-  try { payload = event.data?.json() ?? {}; } catch { /* Still show a visible notification. */ }
+  try { const value = event.data?.json(); if (value && typeof value === 'object') payload = value; } catch { /* Still show a generic visible notification. */ }
   event.waitUntil((async () => {
-    await self.registration.showNotification(payload.title || 'Артэль CRM', {
-      body: payload.body || 'У вас новое напоминание. Откройте CRM.',
+    // A queued push may arrive after logout or a different account's login.
+    // Native transport can be reused; only the currently authorized session may
+    // reveal this payload's event/link or acknowledge its delivery probe.
+    let authorized = false;
+    if (typeof payload.displayBinding === 'string' && /^[a-f0-9]{64}$/.test(payload.displayBinding)) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(new URL('/api/push/config', self.location.origin).href, {
+          credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
+        });
+        if (response.ok) authorized = (await response.json()).displayBinding === payload.displayBinding;
+      } catch { /* Offline, revoked and unconfirmed sessions receive generic text. */ }
+      finally { clearTimeout(timeout); }
+    }
+    await self.registration.showNotification(authorized ? payload.title || 'Артэль CRM' : 'Артэль CRM', {
+      body: authorized ? payload.body || 'У вас новое напоминание. Откройте CRM.' : 'Новое уведомление. Войдите в CRM, чтобы проверить актуальные данные.',
       icon: '/icons/icon-192.png?v=20260911', badge: '/icons/icon-192.png?v=20260911',
-      tag: payload.tag || 'artel-reminder', data: { url: payload.url || '/#work' },
+      tag: authorized ? payload.tag || 'artel-reminder' : 'artel-reminder', data: { url: authorized ? payload.url || '/#work' : '/#work' },
     });
+    if (!authorized) return;
     if (typeof payload.url === 'string' && payload.url.startsWith('/#driver-trip/')) {
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of windows) client.postMessage({ type: 'artel-driver-trip-assigned' });

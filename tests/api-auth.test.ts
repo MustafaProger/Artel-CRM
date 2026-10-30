@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore } from '../server/operations-store';
 import { BlobOperationsStore } from '../server/blob-operations-store';
@@ -14,10 +14,49 @@ import { sameOrigin } from '../server/cloud-auth';
 import { scopeSnapshot } from '../server/auth-scope';
 import { encodeOperations } from '../server/operations-store';
 import type { AccountUser } from '../web/src/auth-model';
+import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
+
+/** Both visible and hidden records are synthetic, so scope checks cannot pass
+ * merely because the fixture contains no financial or shipment data. */
+async function authSnapshot(directory: string) {
+  await writeTripsQaSnapshot(directory);
+  const manifestPath = resolve(directory, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const labels = ['Z Synthetic Manager', 'A Synthetic Manager'];
+  const datasets = {
+    companies: ['other', 'own', 'supplier'].map((id, index) => ({
+      id: `synthetic-${id}`, display_name: `Synthetic ${id}`, source_roles: [id === 'supplier' ? 'supplier' : 'customer'],
+      manager_labels: index < 2 ? [labels[index]] : [], shipment_ids: [], payment_ids: [], quality_flags: [],
+    })),
+    shipments: labels.map((manager, index) => ({
+      id: `synthetic-shipment-${index}`, source: { sheet: 'Synthetic shipments', row: index + 3 }, cells: {},
+      customer_id: `synthetic-${index ? 'own' : 'other'}`, supplier_id: 'synthetic-supplier', quality_flags: [],
+      fields: { date: '2026-10-01', customer_name: index ? 'Synthetic own' : 'Synthetic other', supplier_name: 'Synthetic supplier',
+        manager_label: manager, quantity_litres: '1000', customer_amount: index ? '65000' : '99000', purchase_amount: '50000', product: 'Synthetic fuel', payment_form: 'б/нал' },
+    })),
+    manager_labels: labels.map((label, index) => ({ id: `synthetic-manager-${index}`, source_label: label, shipment_ids: [`synthetic-shipment-${index}`] })),
+    payments: [{ id: 'synthetic-payment', source: { sheet: 'Synthetic payments', row: 3 }, cells: {}, counterparty_id: 'synthetic-other',
+      fields: { date: '2026-10-01', counterparty_name: 'Synthetic other', purpose: 'Synthetic payment' }, normalized_amounts: { incoming_amount: '99000', outgoing_amount: null }, quality_flags: [] }],
+    stock_summaries: [{ id: 'synthetic-stock', source: { sheet: 'Synthetic stock', row: 3 }, cells: {}, counterparty_id: 'synthetic-supplier',
+      label: 'Synthetic stock', month: '2026-10', value_basis: 'synthetic', fields: { incoming_litres: '2000', outgoing_litres: '1000', balance_litres: '1000' } }],
+  };
+  for (const [name, data] of Object.entries(datasets)) {
+    const raw = JSON.stringify({ meta: manifest.meta, data });
+    await writeFile(resolve(directory, `${name}.json`), raw);
+    manifest.files[`${name}.json`] = { sha256: createHash('sha256').update(raw).digest('hex'), bytes: Buffer.byteLength(raw) };
+  }
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  return loadSnapshot(directory);
+}
 
 async function runtime(cloud=false){
   const directory=await mkdtemp(resolve(tmpdir(),'artel-auth-'));
-  const middleware=createSnapshotMiddleware(resolve('data/local-xlsx-final'),{operationsDirectory:directory,...(cloud?{authorizeRequest:request=>sameOrigin({method:request.method,headers:{...request.headers,host:'crm.example'}}),secureCookies:true,setupToken:'test-only-cloud-setup'}:{})});
+  const snapshotDirectory=resolve(directory,'snapshot'),base=await authSnapshot(snapshotDirectory);
+  const denied=async()=>{throw new Error('External providers are forbidden in synthetic auth tests');};
+  const middleware=createSnapshotMiddleware(snapshotDirectory,{operationsDirectory:directory,
+    bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},cabinetEnvironment:{},geocoderEnvironment:{},
+    bankRequest:denied,sberRequest:denied,fetcher:denied,pushSender:denied,pushConfig:{publicKey:'',privateKey:'',subject:'',schedule:false},
+    ...(cloud?{authorizeRequest:request=>sameOrigin({method:request.method,headers:{...request.headers,host:'crm.example'}}),secureCookies:true,setupToken:'test-only-cloud-setup'}:{})});
   const server=createServer((req,res)=>middleware(req,res,()=>{res.writeHead(404);res.end();}));
   await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));
   const url=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -25,7 +64,7 @@ async function runtime(cloud=false){
     const r=await fetch(url+path,{method,headers:{...(body?{'Content-Type':'application/json'}:{}),...(cloud?{host:'crm.example',origin:'https://crm.example'}:{}),...(cookie?{cookie}:{})},...(body?{body:JSON.stringify(body)}:{})});
     return {status:r.status,body:await r.json(),cookie:r.headers.get('set-cookie')};
   };
-  return {directory,request,store:new OperationsStore(directory),close:async()=>{await new Promise<void>(done=>server.close(()=>done()));await rm(directory,{recursive:true,force:true});}};
+  return {directory,base,request,store:new OperationsStore(directory),close:async()=>{await new Promise<void>(done=>server.close(()=>done()));await rm(directory,{recursive:true,force:true});}};
 }
 
 test('login uses server sessions; credentials never returned; logout, password changes, last director and brute-force limits enforced',async()=>{
@@ -61,7 +100,7 @@ test('cloud bootstrap requires an explicit server token and produces secure cook
 
 test('manager financial scope does not leak global aggregates or other shipment IDs and cannot alter assignments',async()=>{
   const r=await runtime();try{
-    const base=await loadSnapshot();
+    const base=r.base;
     const password=randomBytes(20).toString('hex');
     const setup=await r.request('/api/auth/setup','POST',{name:'Director',login:'director',password});const cookie=setup.cookie!.split(';')[0];
     const snap=(await r.request('/api/snapshot','GET',undefined,cookie)).body;
@@ -69,6 +108,8 @@ test('manager financial scope does not leak global aggregates or other shipment 
     const account=await r.request('/api/auth/users','POST',{name:'Manager',login:'manager',password,role:'manager',managerId},cookie);assert.equal(account.status,201);
     const signed=await r.request('/api/auth/login','POST',{login:'manager',password});const managerCookie=signed.cookie!.split(';')[0];
     const scoped=(await r.request('/api/snapshot','GET',undefined,managerCookie)).body;
+    assert.equal(snap.shipments.length,2);assert.equal(snap.payments.length,1);assert.equal(snap.stocks.length,1);
+    assert.equal(scoped.shipments.length,1);assert.equal(scoped.shipments[0].id,'synthetic-shipment-1');
     assert.equal(scoped.payments.length,0);assert.equal(scoped.stocks.length,0);assert.equal(scoped.overview.incoming.total,null);
     assert.equal((await r.request('/api/auth/users','POST',{name:'Intruder',login:'intruder',password,role:'director'},managerCookie)).status,403);
     assert.equal((await r.request('/api/directories','POST',{kind:'products',name:'A closed catalog denies editing'},managerCookie)).status,403);
@@ -88,7 +129,7 @@ test('manager financial scope does not leak global aggregates or other shipment 
 });
 
 test('a fresh cloud store instance retains users and sessions in the same protected envelope',async()=>{
-  const base=await loadSnapshot();const local=await runtime();try{
+  const local=await runtime(),base=local.base;try{
     await local.request('/api/auth/setup','POST',{name:'Cloud user',login:'clouduser',password:randomBytes(20).toString('hex')});
     const data=await local.store.read(base.provenance.sourceSha256);let raw=encodeOperations(data);
     const client={get:async()=>({statusCode:200,stream:new Response(raw).body,blob:{etag:'1'}}),put:async(_p:string,body:unknown)=>{raw=String(body);return{etag:'2'};}};
@@ -115,7 +156,7 @@ test('account deletion enforces permissions, exact confirmation, versions and di
     assert.equal((await r.request(path, 'DELETE', { ...body, confirmationName: 'wrong' }, cookie)).status, 400);
     assert.equal((await r.request(path, 'DELETE', { ...body, active: false }, cookie)).status, 400);
     assert.equal((await r.request(path, 'DELETE', { ...body, version: user.version + 1 }, cookie)).status, 409);
-    const base = await loadSnapshot();
+    const base = r.base;
     const before = await r.store.read(base.provenance.sourceSha256);
     assert.equal((await r.request(path, 'DELETE', body, cookie)).status, 200);
     const persisted = await new OperationsStore(r.directory).read(base.provenance.sourceSha256);

@@ -28,6 +28,9 @@ export const pushConfig = (): PushConfig => ({ publicKey: process.env.VAPID_PUBL
 export const pushReady = (config: PushConfig) => !!(config.publicKey && config.privateKey && config.subject && config.schedule);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 export const pushSessionHash = (request: IncomingMessage) => hash(sessionToken(request) ?? '');
+/** Display identity only: this domain-separated digest cannot authorize a
+ * request and never exposes the session cookie or its stored hash. */
+export const pushDisplayBinding = (sessionHash: string) => hash(`artel:push-display:v1:${sessionHash}`);
 export function validCron(request: IncomingMessage, secret = process.env.CRON_SECRET) {
   const actual = request.headers.authorization ?? '';
   const expected = `Bearer ${secret}`;
@@ -256,7 +259,7 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
         const trip = item.event === 'trip-assignment';
         const invoice = item.event === 'invoice-ready';
         const body = operator ? (completed ? 'Ваше задание выполнено оператором. Откройте операторскую, чтобы посмотреть результат.' : 'Добавлено новое задание. Откройте операторскую, чтобы посмотреть подробности.') : invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».' : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.' : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
-        await sender(device, JSON.stringify({ title: operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль') : trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator` : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices` : trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
+        await sender(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль') : trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator` : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices` : trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });
       } catch (error) {
         const status = (error as { statusCode?: number }).statusCode;

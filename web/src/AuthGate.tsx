@@ -1,8 +1,9 @@
-import { apiFetch as fetch, logisticsSessionExpiredEvent, sessionExpiredEvent } from './workspace-api';
+import { advanceAuthEpoch, apiFetch as fetch, logisticsSessionExpiredEvent, sessionExpiredEvent } from './workspace-api';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight, Eye, EyeOff, KeyRound, LoaderCircle, LockKeyhole, ShieldCheck, Truck, UserRound } from 'lucide-react';
 import type { AccountUser, SessionState } from './auth-model';
-import { currentPushEndpoint, disconnectPushDevice } from './push-client';
+import { currentPushEndpoint } from './push-client';
+import { watchVisibleRefresh } from './visible-refresh';
 import './auth.css';
 
 const emptyForm = { name: '', login: '', password: '', setupToken: '' };
@@ -20,97 +21,198 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
   const logistics = workspace === 'logistics';
   const [session, setSession] = useState<SessionState | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
+  const [operation, setOperation] = useState<'login' | 'logout' | null>(null);
+  const busy = operation !== null;
   const [checking, setChecking] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const sessionRequest = useRef(0);
+  const sessionController = useRef<AbortController | null>(null);
+  const operationRef = useRef<'login' | 'logout' | null>(null);
+  const refreshAfterAction = useRef(false);
+  const currentSession = useRef<SessionState | null>(null);
+  const pushEndpoint = useRef<{ userId: string; endpoint: string } | null>(null);
+  const channel = useRef<BroadcastChannel | null>(null);
+  const lastChange = useRef('');
+  const audience = logistics ? 'logistics' : 'crm';
+  const changeKey = `artel:auth-change:${audience}`;
 
+  const invalidateReads = useCallback(() => {
+    sessionRequest.current++;
+    sessionController.current?.abort();
+    sessionController.current = null;
+  }, []);
+  const applySession = useCallback((value: SessionState | null) => {
+    const old = currentSession.current?.user, next = value?.user;
+    if (old?.id !== next?.id || old?.version !== next?.version) advanceAuthEpoch(audience);
+    currentSession.current = value;
+    setSession(value);
+  }, [audience]);
+  const clearSession = useCallback(() => {
+    advanceAuthEpoch(audience);
+    applySession(currentSession.current ? { ...currentSession.current, user: null } : null);
+    setShowPassword(false);
+    setForm(emptyForm);
+    setLogoutError('');
+  }, [applySession, audience]);
   const refresh = useCallback(async () => {
+    // A focus/visibility burst shares one read. Auth mutations apply their own
+    // confirmed response; a cross-tab change schedules a fresh check afterwards.
+    if (operationRef.current || sessionController.current) return;
     const generation = ++sessionRequest.current;
+    const controller = new AbortController();
+    sessionController.current = controller;
+    const timer = window.setTimeout(() => controller.abort(), 15000);
     setChecking(true);
     try {
-      const response = await fetch('/api/auth/session');
+      const response = await fetch('/api/auth/session', { cache: 'no-store', signal: controller.signal });
       if (generation !== sessionRequest.current) return;
       if (!response.ok) {
-        if (response.status === 401) setSession(value => value ? { ...value, user: null } : value);
+        if (response.status === 401) clearSession();
         throw new Error('Не удалось проверить доступ.');
       }
       const current = await response.json() as SessionState;
       if (generation !== sessionRequest.current) return;
-      setSession(current);
+      applySession(current);
       setError('');
     } catch (e) {
-      if (generation === sessionRequest.current) setError((e as Error).message);
+      if (generation === sessionRequest.current) setError(controller.signal.aborted ? 'Не удалось проверить доступ. Повторите загрузку.' : (e as Error).message);
     } finally {
+      window.clearTimeout(timer);
+      if (sessionController.current === controller) sessionController.current = null;
       if (generation === sessionRequest.current) setChecking(false);
     }
-  }, [logistics]);
+  }, [applySession, clearSession]);
 
   useEffect(() => {
     void refresh();
-    const focus = () => { void refresh(); };
-    window.addEventListener('focus', focus);
-    const timer = setInterval(focus, 60000);
-    return () => { window.removeEventListener('focus', focus); clearInterval(timer); };
-  }, [refresh]);
+    const stop = watchVisibleRefresh(() => { void refresh(); }, 60000);
+    return () => { stop(); invalidateReads(); };
+  }, [refresh, invalidateReads]);
 
   useEffect(() => {
-    const expired = () => { sessionRequest.current++; setChecking(false); setSession(value => value ? { ...value, user: null } : value); };
+    const expired = () => { invalidateReads(); setChecking(false); clearSession(); };
     const event = logistics ? logisticsSessionExpiredEvent : sessionExpiredEvent;
     window.addEventListener(event, expired);
     return () => window.removeEventListener(event, expired);
-  }, [logistics]);
+  }, [logistics, invalidateReads, clearSession]);
 
+  useEffect(() => {
+    const changed = (value: unknown) => {
+      if (typeof value !== 'string' || !value || value === lastChange.current) return;
+      lastChange.current = value;
+      invalidateReads();
+      clearSession();
+      setChecking(true);
+      if (operationRef.current) refreshAfterAction.current = true;
+      else void refresh();
+    };
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel.current = new BroadcastChannel(changeKey);
+      channel.current.onmessage = event => changed(event.data);
+    }
+    const storage = (event: StorageEvent) => { if (event.key === changeKey) changed(event.newValue); };
+    window.addEventListener('storage', storage);
+    return () => { channel.current?.close(); channel.current = null; window.removeEventListener('storage', storage); };
+  }, [changeKey, clearSession, invalidateReads, refresh]);
+
+  // Resolve the optional endpoint while the workspace is open, never while the
+  // user waits to log out. Session-bound server revocation is authoritative.
+  useEffect(() => {
+    pushEndpoint.current = null;
+    const userId = session?.user?.id;
+    if (logistics || !userId || session.user?.role === 'driver') return;
+    let active = true;
+    void currentPushEndpoint(true).then(endpoint => { if (active && endpoint) pushEndpoint.current = { userId, endpoint }; }).catch(() => undefined);
+    return () => { active = false; };
+  }, [logistics, session?.user?.id, session?.user?.role]);
+
+  const notifyTabs = () => {
+    const nonce = `${Date.now()}:${Math.random()}`;
+    lastChange.current = nonce;
+    try { channel.current?.postMessage(nonce); } catch { /* The storage event is an independent fallback. */ }
+    try { localStorage.setItem(changeKey, nonce); } catch { /* BroadcastChannel still works when storage is unavailable. */ }
+  };
+  const begin = (next: 'login' | 'logout') => {
+    if (operationRef.current) return false;
+    operationRef.current = next;
+    setOperation(next);
+    setError('');
+    setLogoutError('');
+    invalidateReads();
+    advanceAuthEpoch(audience);
+    return true;
+  };
+  const finish = () => {
+    operationRef.current = null;
+    setOperation(null);
+    if (refreshAfterAction.current) { refreshAfterAction.current = false; void refresh(); }
+  };
+  const authRequest = async (path: string, body: unknown, signal: AbortSignal) => {
+    const send = async () => {
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
+      return { response, value: await response.json() as { user?: AccountUser; error?: string } };
+    };
+    // Cookies are shared across tabs. Serialize response delivery as well as the
+    // POST so a delayed logout cannot erase a newer login's cookie. Browsers
+    // without Web Locks retain server revocation + cross-tab revalidation.
+    return navigator.locks ? navigator.locks.request(`artel:auth-mutation:${audience}`, { mode: 'exclusive', signal }, send) : send();
+  };
   const logout = async () => {
-    const usesPush = !logistics && session?.user?.role !== 'driver';
-    setBusy(true);
+    if (!begin('logout')) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await fetch('/api/auth/logout', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(usesPush ? { pushEndpoint: await currentPushEndpoint().catch(() => null) } : {}),
-      });
-      if (!response.ok && response.status !== 401) throw new Error('Не удалось завершить сеанс.');
-      if (usesPush) await disconnectPushDevice().catch(() => undefined);
-      sessionRequest.current++;
-      setShowPassword(false);
-      setSession(value => value ? { ...value, user: null } : value);
-    } catch (e) {
-      setError((e as Error).message);
+      const endpoint = pushEndpoint.current;
+      const { response } = await authRequest('/api/auth/logout', endpoint?.userId === currentSession.current?.user?.id ? { pushEndpoint: endpoint?.endpoint } : {}, controller.signal);
+      if (!response.ok && response.status !== 401) throw new Error('Не удалось подтвердить выход. Проверьте соединение и повторите.');
+      // Do not unsubscribe the browser transport: it can hang or finish after a
+      // new login and remove its subscription. The server has revoked access and
+      // unlinked this session's devices before returning success.
+      invalidateReads();
+      clearSession();
+      setChecking(false);
+      notifyTabs();
+    } catch {
+      setLogoutError('Не удалось подтвердить выход. Проверьте соединение и повторите.');
+      if (!currentSession.current?.user) setError('Не удалось подтвердить выход. Проверьте соединение и повторите.');
     } finally {
-      setBusy(false);
+      window.clearTimeout(timer);
+      finish();
     }
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy || !session || logistics && session.needsSetup) return;
-    setBusy(true);
-    setError('');
+    if (!session || logistics && session.needsSetup || !begin('login')) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 15000);
     try {
       const payload = session.needsSetup ? form : { login: form.login, password: form.password };
-      const response = await fetch(`/api/auth/${session.needsSetup ? 'setup' : 'login'}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      });
-      const value = await response.json();
+      const { response, value } = await authRequest(`/api/auth/${session.needsSetup ? 'setup' : 'login'}`, payload, controller.signal);
       if (!response.ok) throw new Error(value.error || 'Не удалось войти.');
       if (!value.user?.id) throw new Error('Не удалось подтвердить вход. Повторите попытку.');
-      // Login/setup commits the session and returns the same public user as
-      // /auth/session. Do not put a second store read on the login critical path.
-      // Ignore a focus/timer session response started before this login finished.
-      sessionRequest.current++;
-      setSession(previous => ({ user: value.user as AccountUser, needsSetup: false, setupTokenRequired: previous?.setupTokenRequired ?? false }));
+      invalidateReads();
+      advanceAuthEpoch(audience);
+      applySession({ user: value.user as AccountUser, needsSetup: false, setupTokenRequired: currentSession.current?.setupTokenRequired ?? false });
       setChecking(false);
       setForm(emptyForm);
       setShowPassword(false);
+      notifyTabs();
     } catch (e) {
-      setError((e as Error).message);
+      setError(controller.signal.aborted ? 'Не удалось подтвердить вход. Проверьте соединение и повторите.' : (e as Error).message);
     } finally {
-      setBusy(false);
+      window.clearTimeout(timer);
+      finish();
     }
   };
 
-  if (session?.user) return children(session.user, () => { if (!busy) void logout(); });
+  if (session?.user) return <>
+    <div className="auth-session-workspace" inert={operation === 'logout'}>{children(session.user, () => { void logout(); })}</div>
+    {operation === 'logout' ? <div className="auth-session-notice" role="status"><LoaderCircle className="auth-spinner" size={20} aria-hidden="true"/><span>Завершаем сеанс…</span></div>
+      : (logoutError || error) && <div className="auth-session-notice auth-session-error" role="alert"><span>{logoutError || error}</span><button type="button" className="button" onClick={() => logoutError ? void logout() : void refresh()}>{logoutError ? 'Повторить выход' : 'Проверить доступ'}</button><button type="button" className="button" onClick={() => { setError(''); setLogoutError(''); }}>Закрыть</button></div>}
+  </>;
 
   const needsSetup = !logistics && session?.needsSetup;
   return <main className="auth-screen">
@@ -178,7 +280,7 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
             </div>}
             {error && <p className="auth-error" role="alert">{error}</p>}
             <button className="auth-submit" type="submit">
-              <span>{busy ? (needsSetup ? 'Создаём…' : 'Входим…') : needsSetup ? 'Создать директора' : 'Войти'}</span>
+              <span>{operation === 'logout' ? 'Завершаем сеанс…' : busy ? (needsSetup ? 'Создаём…' : 'Входим…') : needsSetup ? 'Создать директора' : 'Войти'}</span>
               {busy ? <LoaderCircle className="auth-spinner" size={20} aria-hidden="true" /> : <ArrowRight size={20} aria-hidden="true" />}
             </button>
           </fieldset>

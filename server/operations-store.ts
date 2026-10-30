@@ -223,7 +223,7 @@ export function encodeOperations(data: OperationsData, sourceSha256 = data.sourc
   return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests'>>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth'>>;
 
 export class LegacyOperationsStore {
   readonly path: string;
@@ -342,6 +342,12 @@ export class OperationsStore extends LegacyOperationsStore {
       await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, false, true) : super.mutate(source, update));
     tripRequestQueues.set(this.path, pending);
     try { return await pending; } finally { if (tripRequestQueues.get(this.path) === pending) tripRequestQueues.delete(this.path); }
+  }
+  /** Login/logout share the existing interactive FIFO with trip requests. They
+   * bypass queued background core work, but retain the same fresh read, latch,
+   * validation and durable commit. No separate session store or lock is added. */
+  mutateAuth<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    return this.mutateTripRequests(source, update);
   }
   async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);

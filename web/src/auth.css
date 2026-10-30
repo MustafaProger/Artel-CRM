@@ -227,3 +227,9 @@
   .account-panel .panel-heading { align-items: stretch; flex-direction: column; gap: 12px; }
   .account-form input, .account-form select { font-size: 16px; }
 }
+
+.auth-session-workspace { display: contents; }
+.auth-session-notice { position: fixed; z-index: 10000; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; width: max-content; max-width: calc(100vw - 32px); padding: 14px 18px; border: 1px solid #d8dce4; border-radius: 16px; background: #fff; color: #202632; box-shadow: 0 8px 32px #17263a24; font-size: 14px; }
+.auth-session-notice > span { min-width: 0; overflow-wrap: anywhere; }
+.auth-session-error { border-color: #b64040; }
+.auth-session-notice .button { min-height: 44px; }

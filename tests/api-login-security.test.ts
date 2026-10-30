@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { login } from '../server/auth';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore, type OperationsData, type OperationsStorage } from '../server/operations-store';
+import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const globalKey = digest('artel:auth:global-login-limit:v2');
@@ -154,8 +155,10 @@ test('legacy throttles survive key migration and a sentinel-named account cannot
 
 test('login API does not rewrite storage for unchanged throttled requests and keeps its public response', async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-login-security-'));
-  const store = new OperationsStore(directory), base = await loadSnapshot();
-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: store });
+  const snapshotDirectory = resolve(directory, 'snapshot');
+  await writeTripsQaSnapshot(snapshotDirectory);
+  const store = new OperationsStore(directory), base = await loadSnapshot(snapshotDirectory);
+  const middleware = createSnapshotMiddleware(snapshotDirectory, { operationsStore: store });
   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/auth/login`;
@@ -186,7 +189,9 @@ test('login API does not rewrite storage for unchanged throttled requests and ke
 
 test('four pending logins bound the transaction queue without blocking authenticated reads; slots recover after failure', async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-login-gate-'));
-  const store = new OperationsStore(directory), base = await loadSnapshot();
+  const snapshotDirectory = resolve(directory, 'snapshot');
+  await writeTripsQaSnapshot(snapshotDirectory);
+  const store = new OperationsStore(directory), base = await loadSnapshot(snapshotDirectory);
   const token = 'c'.repeat(64);
   const accounts = fixture(true).accounts;
   accounts.sessions.push({ userId: accounts.users[0].id, hash: digest(token), expiresAt: Date.now() + 60000 });
@@ -204,7 +209,7 @@ test('four pending logins bound the transaction queue without blocking authentic
       return store.mutate(source, update);
     },
   };
-  const middleware = createSnapshotMiddleware(undefined, { operationsStore: guardedStore, operationsDirectory: directory });
+  const middleware = createSnapshotMiddleware(snapshotDirectory, { operationsStore: guardedStore, operationsDirectory: directory });
   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

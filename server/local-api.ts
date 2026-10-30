@@ -65,7 +65,7 @@ import { automaticSigningCapability } from './saby-auto-policy';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
 import { createTripSabyScheduler, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
-import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushDisplayBinding, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
 import { invoiceRequestBody, invoiceRouteAllowed, requireInvoiceAccount, type InvoiceBridge } from './invoice-bridge';
@@ -520,11 +520,15 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const allowedAuth = request.method === 'POST' && ['/api/auth/setup','/api/auth/login','/api/auth/logout','/api/auth/users'].includes(pathname) || ['PATCH', 'DELETE'].includes(request.method ?? '') && !!userId;
         if (!allowedAuth) throw new ApiError(405,'Метод не поддерживается.');
         const body = await jsonBody(request);
+        // Session changes use interactive admission, with the unchanged atomic
+        // callback below. Setup and account administration keep the core queue.
+        const mutateAuth = (pathname === '/api/auth/login' || pathname === '/api/auth/logout') && operations.mutateAuth
+          ? operations.mutateAuth.bind(operations) : operations.mutate.bind(operations);
         const result = await gateLogin(pathname === '/api/auth/login', async () => {
           // requestData supplies credentials only; completion rechecks its exact
           // identity and all authority in the fresh transaction after derivation.
           const completeLogin = pathname === '/api/auth/login' ? await prepareLogin(requestData, body, logistics ? 'logistics' : undefined) : undefined;
-          return operations.mutate<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
+          return mutateAuth<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
           if(pathname === '/api/auth/login'){
             let changed=false;
             const result=completeLogin!(data,()=>{changed=true;});
@@ -772,7 +776,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
         if (pathname === '/api/push/config' && request.method === 'GET') {
           const data = requestData;
-          return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300 }));
+          return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300, displayBinding: pushDisplayBinding(pushSessionHash(request)) }));
         }
         if (pathname === '/api/push/test-status') {
           if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
@@ -805,7 +809,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           });
           const sendTest = async () => {
           try {
-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
           } catch (error) {
             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
             // A browser receipt is stronger evidence than a sender timeout after delivery.
