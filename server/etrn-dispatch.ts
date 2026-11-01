@@ -213,9 +213,10 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
   const sideId = (side: SabySigningSide) => side === 'carrier' ? doc.dispatch?.carrierIdentity?.documentId ?? doc.id! : doc.id!;
   const directElectronic = doc.snapshot.documentMode === 'nk-direct-v1' && doc.snapshot.loadingActorMode === 'sender' && doc.senderTitleVersion === 2 && doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке';
   let senderRemoteForCarrier: SabyObject | undefined;
+  let sameIdReadyDraftVerified = false;
   const titleOptions = () => ({ senderTitleVersion: doc.senderTitleVersion });
-  const evidenceOptions = (remote: SabyObject, phase: 'unprepared' | 'prepared' = 'prepared') => ({
-    ...(doc.nativeSenderAmendment || doc.orderRedirectionApproval || doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке' ? nativeSenderAmendmentOptions(doc, directRecord!, remote.Идентификатор === doc.dispatch?.carrierIdentity?.documentId && senderRemoteForCarrier ? senderRemoteForCarrier : remote) : { ...titleOptions(), operatorUid: doc.dispatch?.operatorUid }), phase,
+  const evidenceOptions = (remote: SabyObject, phase: 'unprepared' | 'prepared' = 'prepared', side: SabySigningSide = 'sender') => ({
+    ...(doc.nativeSenderAmendment || doc.orderRedirectionApproval || doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке' ? nativeSenderAmendmentOptions(doc, directRecord!, side === 'carrier' && remote.Идентификатор === doc.dispatch?.carrierIdentity?.documentId && senderRemoteForCarrier ? senderRemoteForCarrier : remote) : { ...titleOptions(), operatorUid: doc.dispatch?.operatorUid }), phase,
   });
   const resolveCarrierIdentity = async () => {
     const eligible = doc.snapshot.documentMode !== 'nk-direct-v1' && doc.orderDraftVersion === 1 && doc.senderTitleVersion === 2 &&
@@ -230,11 +231,20 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     const url = new URL(String(meta.СсылкаВКабинет));
     const candidate = url.searchParams.get('guid');
     if (url.protocol !== 'https:' || url.hostname !== 'tms.saby.ru' || url.pathname !== '/opendoc.html' || !candidate || !/^[a-f0-9-]{36}$/i.test(candidate) || url.searchParams.getAll('guid').length !== 1 || url.searchParams.get('file') !== sourceTitle.id) fail('Не подтверждён адрес входящей ЭТрН.');
-    if (candidate === doc.id && !doc.dispatch?.carrierIdentity) return;
     if (doc.dispatch?.carrierIdentity && doc.dispatch.carrierIdentity.documentId !== candidate) fail('Привязка входящей ЭТрН изменилась.');
     const sourceBytes = await client.downloadSigningAttachment('sender', doc.id!, sourceTitle.id, sourceTitle.revision, 'ConsignmentNote');
     verifyConsignmentSenderBusiness(sourceBytes.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, 'address-order-v1', evidenceOptions(sourceRemote));
-    const incoming = await client.readSigningDocument('carrier', candidate!, 'ConsignmentNote');
+    const carrier = doc.dispatch!.carrier, draft = doc.dispatch!.carrierDraft;
+    // Older dispatches could create T2 before noticing that the same document ID
+    // has a different revision in the NK cabinet. Reconcile that exact ready
+    // intent by reads; never adopt a lost/partial signing or filling attempt.
+    const readySameId = candidate === doc.id && draft?.state === 'ready' && !carrier.binding && !carrier.prepared &&
+      !carrier.executeAttempted && carrier.dispatchState === undefined && !doc.dispatch!.carrierFill && !doc.dispatch!.carrierReconciliation;
+    if (readySameId) {
+      const current = await store.read(source); authority(current);
+      if (draft.binding.documentId !== doc.id || draft.binding.certificateThumbprint !== current.tripSaby!.trips[tripId].autoAuthorization!.selection.carrier) fail('Сохранённая подготовка ответа перевозчика не относится к выбранной подписи.');
+    }
+    const incoming = readySameId ? await readPreparedCarrierDraft(client, draft.binding) : await client.readSigningDocument('carrier', candidate!, 'ConsignmentNote');
     verifyIdentity(incoming, doc, 'carrier', candidate!);
     const incomingTitle = title(incoming, '1110339');
     const incomingBytes = await client.downloadSigningAttachment('carrier', candidate!, incomingTitle.id, incomingTitle.revision, 'ConsignmentNote');
@@ -246,10 +256,11 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     if (doc.dispatch?.carrierIdentity) {
       if (JSON.stringify(doc.dispatch.carrierIdentity) !== JSON.stringify(identity)) fail('Изменилось сохранённое доказательство входящей ЭТрН.');
     } else {
-      if (doc.dispatch!.carrier.binding || doc.dispatch!.carrier.prepared || doc.dispatch!.carrier.executeAttempted || doc.dispatch!.carrierDraft || doc.dispatch!.carrierFill) fail('Нельзя менять идентификатор после начала приёмки перевозчиком.');
+      if (carrier.binding || carrier.prepared || carrier.executeAttempted || carrier.dispatchState !== undefined || doc.dispatch!.carrierFill || doc.dispatch!.carrierReconciliation || draft && !readySameId) fail('Нельзя менять идентификатор после начала приёмки перевозчиком.');
       await update(row => { row.dispatch!.carrierIdentity = identity; });
     }
     senderRemoteForCarrier = sourceRemote;
+    sameIdReadyDraftVerified = readySameId;
   };
   const business = async (remote: SabyObject, side: SabySigningSide, phase: 'unprepared' | 'prepared' = 'prepared') => {
     verifyIdentity(remote, doc, side);
@@ -257,11 +268,11 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     const bytes = (await client.downloadSigningAttachment(side, sideId(side), sender.id, sender.revision, 'ConsignmentNote')).bytes;
     if (side === 'carrier' && doc.dispatch?.carrierIdentity && bytesHash(bytes) !== doc.dispatch.carrierIdentity.titleSha256) fail('Входящий титул изменился после привязки.');
     const expected = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions());
-    const evidence = verifyConsignmentSenderBusiness(bytes, expected.xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote, phase));
+    const evidence = verifyConsignmentSenderBusiness(bytes, expected.xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote, phase, side));
     if (side === 'carrier') {
       const carrier = title(remote, '1110340');
       const reply = await client.downloadSigningAttachment(side, sideId(side), carrier.id, carrier.revision, 'ConsignmentNote');
-      verifyConsignmentCarrierBusiness(reply.bytes, bytes, doc.snapshot, evidenceOptions(remote));
+      verifyConsignmentCarrierBusiness(reply.bytes, bytes, doc.snapshot, evidenceOptions(remote, 'prepared', side));
       const signature = await client.downloadSigningSignature(side, sideId(side), sender.id, sender.revision, doc.dispatch!.sender.prepared!.binding.certificateThumbprint, 'ConsignmentNote');
       verifyConsignmentCarrierSourceSignature(reply.bytes, signature);
     }
@@ -320,7 +331,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         !step.binding && !step.prepared && !step.executeAttempted && step.dispatchState === undefined;
       const reconcileCarrierTitle = side === 'carrier' && (!!doc.dispatch!.carrierIdentity || directElectronic) && doc.dispatch!.carrierDraft?.state === 'ready' &&
         doc.dispatch!.sender.state === 'confirmed' && !!step.binding && !step.prepared && !step.executeAttempted && step.dispatchState === undefined && !doc.dispatch!.carrierReconciliation;
-      if (!recoverApprovedPrepared && !reconcileCarrierDraft && !reconcileCarrierTitle && (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent'))) {
+      if (!recoverApprovedPrepared && !reconcileCarrierDraft && !reconcileCarrierTitle && !(side === 'carrier' && sameIdReadyDraftVerified) && (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent'))) {
         await update(row => { row.dispatch![side].state = 'unknown'; row.dispatch!.lastError = 'Результат подготовки ЭТрН неизвестен. Повторное действие не выполняется.'; }); break;
       }
       let remote = await client.readSigningDocument(side, sideId(side), 'ConsignmentNote'); verifyIdentity(remote, doc, side);
@@ -345,7 +356,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         const sender = title(remote, '1110339'), carrier = title(remote, '1110340');
         const sourceFile = await client.downloadSigningAttachment(side, sideId(side), sender.id, sender.revision, 'ConsignmentNote');
         if (doc.dispatch?.carrierIdentity && bytesHash(sourceFile.bytes) !== doc.dispatch.carrierIdentity.titleSha256) fail('Входящий титул изменился после привязки.');
-        verifyConsignmentSenderBusiness(sourceFile.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote));
+        verifyConsignmentSenderBusiness(sourceFile.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote, 'prepared', side));
         const reply = await client.downloadSigningAttachment(side, sideId(side), carrier.id, carrier.revision, 'ConsignmentNote');
         const sourceSignature = await client.downloadSigningSignature(side, sideId(side), sender.id, sender.revision, doc.dispatch!.sender.prepared!.binding.certificateThumbprint, 'ConsignmentNote');
         verifyConsignmentCarrierSourceSignature(reply.bytes, sourceSignature);
@@ -353,7 +364,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         if (previous) {
           if (previous.id !== carrier.id || previous.revision !== carrier.revision || previous.name !== reply.name || previous.afterHash !== bytesHash(reply.bytes)) fail('Результат заполнения ответа перевозчика ЭТрН неизвестен или изменён. Повторная запись не выполняется.');
         } else {
-          const filled = fillConsignmentCarrier(reply.bytes, sourceFile.bytes, doc.snapshot, evidenceOptions(remote));
+          const filled = fillConsignmentCarrier(reply.bytes, sourceFile.bytes, doc.snapshot, evidenceOptions(remote, 'prepared', side));
           if (filled.changed) {
             const before = bytesHash(reply.bytes), after = bytesHash(filled.bytes);
             const fresh = await client.downloadSigningAttachment(side, sideId(side), carrier.id, carrier.revision, 'ConsignmentNote');
