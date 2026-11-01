@@ -108,9 +108,9 @@
   .workflow-signing .etrn-actions > .button { width: 100%; justify-content: center; }
 }
 
-.trip-exchange-actions .button.danger { background: #a3372b; color: #fff; border-color: #a3372b; }
-.trip-exchange-actions .button.danger:hover:not(:disabled) { background: #84271f; border-color: #84271f; }
+.trip-exchange-actions .button.danger { background: #fcebed; color: #a5212c; border-color: #fcebed; }
+.trip-exchange-actions .button.danger:hover:not(:disabled) { background: #f8dce0; border-color: #f8dce0; }
 .trip-exchange-actions .button.trip-exchange-pause,
-.shipment-delete-dialog .button.trip-exchange-pause { background: #f4c95d; color: #342a0c; border-color: #f4c95d; }
+.shipment-delete-dialog .button.trip-exchange-pause { background: #fff1ae; color: #594500; border-color: #fff1ae; }
 .trip-exchange-actions .button.trip-exchange-pause:hover:not(:disabled),
-.shipment-delete-dialog .button.trip-exchange-pause:hover:not(:disabled) { background: #e4b747; border-color: #e4b747; }
+.shipment-delete-dialog .button.trip-exchange-pause:hover:not(:disabled) { background: #ffeb91; border-color: #ffeb91; }
