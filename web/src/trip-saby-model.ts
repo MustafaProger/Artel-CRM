@@ -62,6 +62,7 @@ export interface TripSabySigningStartRequest {
 export interface TripSabyAutomationCapability { enabled: boolean; message?: string }
 export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean; mode?: 'after_driver_departure' }
 export interface TripSabyResponse {
+  workflowIssues?: import('./trip-workflow-issues').TripWorkflowIssue[];
   notRequired?: boolean;
   documentMode?: 'nk_direct_etrn';
   parties?: { sender: string; carrier: string };

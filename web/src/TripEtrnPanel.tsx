@@ -1,8 +1,7 @@
-import TripWorkflowAlert from './TripWorkflowAlert'
-import { tripWorkflowIssues, type TripWorkflowIssue } from './trip-workflow-issues'
+import type { TripWorkflowIssue } from './trip-workflow-issues'
 import { requiresEtrn } from './trip-etrn-scope'
 import { apiFetch as fetch, apiUrl } from './workspace-api'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, Check, Clock3, Copy, Download, FilePlus2, LoaderCircle, RefreshCw } from 'lucide-react'
 import type { ShipmentTrip, DirectoryData } from './model'
 import type { EtrnTripResponse } from './etrn-api-model'
@@ -23,8 +22,7 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange }: { trip: Sh
   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
   const etrnEndpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/etrn`
   const [result, setResult] = useState<Workflow | null>(null), [etrn, setEtrn] = useState<EtrnTripResponse | null>(null)
-  const issues = useMemo(() => result ? tripWorkflowIssues(result) : [], [result])
-  useEffect(() => { if (result) onIssuesChange?.(trip.id, issues) }, [result, trip.id, issues, onIssuesChange])
+  useEffect(() => { if (result?.workflowIssues) onIssuesChange?.(trip.id, result.workflowIssues) }, [result, trip.id, onIssuesChange])
   const [legacy, setLegacy] = useState<SabyTripResponse | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [refreshError, setRefreshError] = useState(''), [copied, setCopied] = useState(false)
@@ -167,9 +165,9 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange }: { trip: Sh
   </section>
   if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление состояния"/>}</div>
-    {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}${issues.some(issue => issue.step === index) ? ' has-error' : ''}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{issues.some(issue => issue.step === index) ? index + 1 : step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}{issues.filter(issue => issue.step === index).map((issue, i) => <small className="workflow-step-error" key={i}>{issue.message}</small>)}</span></li>)}</ol>}
+    {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>}
     <p>НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик, без заказа-заявки. Состав документов определяется флажком «ЭТрН не нужна» у каждой доставки.</p>
-    <TripWorkflowAlert issues={issues}/><div className="workflow-current" role="status"><strong>{directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
+    <div className="workflow-current" role="status"><strong>{directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
     {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
     {error && <p className="shipment-error" role="alert">{error}</p>}
     {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
@@ -204,8 +202,8 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange }: { trip: Sh
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>АРТЭЛЬ → НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление документов"/>}</div>
     {error && <p className="shipment-error" role="alert">{error}</p>}
     {result && <>
-      <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}${issues.some(issue => issue.step === index) ? ' has-error' : ''}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{issues.some(issue => issue.step === index) ? index + 1 : step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}{issues.filter(issue => issue.step === index).map((issue, i) => <small className="workflow-step-error" key={i}>{issue.message}</small>)}</span></li>)}</ol>
-      <TripWorkflowAlert issues={issues}/><div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
+      <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>
+      <div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
       {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
       {(!savedFactsNeedReconciliation || !automatic) && result.automation?.message && result.automation.message !== view!.text && <p className="etrn-note">{result.automation.message}</p>}
       {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Фоновая проверка обмена' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'CRM проверяет данные водителя и документы Saby, в том числе после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span>{result.monitoring?.enabled && <span>Плановый интервал: {result.monitoring.intervalSeconds === 15 ? '15 секунд' : '1 минута'}. Проверка может длиться дольше.</span>}<span>Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}

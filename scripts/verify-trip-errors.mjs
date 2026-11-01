@@ -9,6 +9,8 @@ for (const engine of ['chromium', 'webkit']) {
   for (const width of [375, 1440]) {
    const page = await browser.newPage({ viewport: { width, height: 1100 } });
    page.setDefaultTimeout(10000); const errors = []; page.on('pageerror', e => errors.push(e.message));
+   await page.request.get('http://127.0.0.1:5197/__fixture?ready=0');
+   let workflowReads = 0; page.on('request', req => { if (req.url().includes('/saby-workflow')) workflowReads++; });
    await page.goto('http://127.0.0.1:5197/__preview');
    await page.getByRole('button', { name: 'Рейсы', exact: true }).click();
    const card = page.getByTestId('trip-card').filter({ hasText: '№52' });
@@ -20,23 +22,21 @@ for (const engine of ['chromium', 'webkit']) {
    await expect(card.locator('.trip-edit-action .trip-issue-label')).toHaveText('Дополнить данные');
    await expect(page.getByTestId('trip-card').filter({ hasText: '№51' }).locator('.trip-warning-icon')).toHaveCount(0);
    await page.screenshot({ path: output + `screenshots/${engine}-${width}-cards.png`, fullPage: true });
-   await card.getByRole('button', { name: 'Saby', exact: true }).click();
-   await expect(card.locator('.workflow-steps .has-error')).toContainText('Отправка клиентам');
-   await expect(card.locator('.workflow-step-error')).toContainText('Не заполнены сведения');
-   await page.route('**/saby-workflow', async route => {
-     const response = await route.fetch(); const body = await response.json();
-     await route.fulfill({ json: { ...body, documentMode: 'nk_direct_etrn' } });
-   });
-   await card.getByRole('button', { name: 'Saby', exact: true }).click();
-   await card.getByRole('button', { name: 'Saby', exact: true }).click();
-   await expect(card.locator('.workflow-steps .has-error')).toContainText('Подпись перевозчика НК');
-   await page.unroute('**/saby-workflow');
-   await page.route('**/saby-workflow', async route => {
-     const response = await route.fetch(); const body = await response.json();
-     await route.fulfill({ json: { ...body, phase: 'completed', deliveries: [] } });
-   });
-   await card.getByRole('button', { name: 'Saby', exact: true }).click();
-   await card.getByRole('button', { name: 'Saby', exact: true }).click();
+   expect(workflowReads).toBe(0);
+   await expect(page.getByTestId('trip-card').filter({ hasText: '№51' })).not.toHaveClass(/trip-has-error/);
+   const labelBox = await card.locator('.trip-issue-label').boundingBox();
+   const editBox = await card.getByRole('button', { name: 'Изменить рейс', exact: true }).boundingBox();
+   expect(labelBox.x + labelBox.width).toBeLessThanOrEqual(editBox.x);
+   await card.getByRole('button', { name: 'Дополнить данные', exact: true }).click();
+   await expect(card.locator('.workflow-steps')).toBeVisible();
+   await expect(card).toHaveClass(/trip-has-error/);
+   await expect(card.locator('.trip-workflow-alert, .workflow-step-error, .workflow-steps .has-error')).toHaveCount(0);
+   await expect(card).toContainText('Что мешает автоматическому обмену');
+   await expect(card).not.toContainText('Требуется внимание');
+   await page.screenshot({ path: output + `screenshots/${engine}-${width}-expanded.png`, fullPage: true });
+   await page.request.get('http://127.0.0.1:5197/__fixture?ready=1');
+   await page.reload();
+   await page.getByRole('button', { name: 'Рейсы', exact: true }).click();
    await expect(card).not.toHaveClass(/trip-has-error/);
    await expect(card.locator('.trip-issue-label')).toHaveCount(0);
    await expect(page.locator('body')).not.toContainText('Maximum update depth');

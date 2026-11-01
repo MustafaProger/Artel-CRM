@@ -3,22 +3,40 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 import { integrationRuntime } from '../tests/helpers/trip-saby-integration.ts';
 import { currentSnapshot } from '../server/shipment-operations.ts';
-import { tripWorkflowIssues } from '../web/src/trip-workflow-issues.ts';
+import { readTripWorkflowIssues } from '../server/trip-workflow-issues.ts';
+import { getShipmentTrip } from '../server/shipment-trips.ts';
+import { getTripSabyWorkflow } from '../server/trip-saby-workflow.ts';
+import { integrationConfig, integrationSettings } from '../tests/helpers/trip-saby-integration.ts';
 const root = resolve(import.meta.dirname, '..');
+process.env.SABY_AUTOFILL_PROFILE_JSON = JSON.stringify(integrationSettings);
 const rt = await integrationRuntime();
-const saved = await rt.store.read(rt.source);
-const snapshot = currentSnapshot(rt.base, saved);
-const state = { status: 'error', phase: 'sending_etrn', ready: true, blockers: [], locked: true, updatedAt: null, lastError: null, order: null, carrierConfirmed: true, lastCheckedAt: null, lastCheckAttemptAt: null, monitoring: { enabled: false, intervalSeconds: null }, history: [], deliveries: [{ shipmentId: rt.trip.customers[0].id, id: 'synthetic-doc', status: 'draft', lastError: 'Не заполнены сведения титула перевозчика. Проверьте данные автомобиля.', dispatch: { sender: { state: 'confirmed' }, carrier: { state: 'blocked' }, completedAt: null } }], loadingFacts: null };
-const trips = [ { ...rt.trip, number: 52, workflowIssues: tripWorkflowIssues(state) }, { ...rt.trip, id: 'healthy-trip', number: 51, workflowIssues: [] } ];
+const original = await rt.store.read(rt.source);
+const config = integrationConfig();
+config.automaticSigning = { id: 'synthetic-preview-policy', enabled: true, mode: 'deferred', approvedAt: '2026-10-01T00:00:00.000Z', sender: { ...config.customer, thumbprint: 'ab'.repeat(20) }, carrier: { ...config.carrier, thumbprint: 'cd'.repeat(20) } };
+let saved;
+function reset(ready) {
+  saved = structuredClone(original);
+  if (!ready) {
+    saved.directories.products[0].documentName = '';
+    for (const row of Object.values(saved.shipments)) Object.assign(row.fields, { trip_flow_version: 'driver-v1', quantity_tonnes: null, quantity_gross_tonnes: null, trip_total_tonnes: null });
+  }
+}
+reset(false);
+const snapshot = currentSnapshot(rt.base, original);
+function summary(data, number) {
+  const snapshot = currentSnapshot(rt.base, data), trip = getShipmentTrip(snapshot, rt.tripId);
+  return { ...trip, number, workflowIssues: readTripWorkflowIssues(data, rt.tripId, { snapshot, trip, config }) };
+}
 const server = await createServer({ configFile: false, envDir: false, root: resolve(root, 'web'), cacheDir: resolve(rt.directory, 'vite'), plugins: [react(), { name: 'synthetic-preview', configureServer(server) {
   server.middlewares.use(async (req, res, next) => {
     const path = req.url.split('?')[0];
     const json = data => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(data)); };
+    if (path === '/__fixture') { reset(req.url.includes('ready=1')); return json({ syntheticOnly: true }); }
     if (path.startsWith('/api/')) {
       if (req.method !== 'GET') { res.statusCode = 405; return json({ error: 'Локальный пример: изменения отключены.' }); }
-      if (path === '/api/shipment-trips') return json({ trips, automation: { enabled: false } });
+      if (path === '/api/shipment-trips') return json({ trips: [summary(saved, 52), { ...summary(original, 51), id: 'healthy-trip' }], automation: { enabled: false } });
       if (path === '/api/trip-requests') return json({ requests: [], companies: snapshot.companies, addresses: snapshot.directories.addresses });
-      if (path.endsWith('/saby-workflow')) return json(state);
+      if (path.endsWith('/saby-workflow')) return json({ ...getTripSabyWorkflow({ base: rt.base, data: saved, tripId: rt.tripId, config, prepare: rt.prepare }), workflowIssues: summary(saved, 52).workflowIssues, loadingFacts: null });
       if (path.endsWith('/etrn')) return json({ deliveries: [] });
       if (path.endsWith('/saby')) return json({ saby: { documents: [] } });
       return json({});
