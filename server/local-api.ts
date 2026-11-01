@@ -1,3 +1,4 @@
+import { readTripWorkflowIssues } from './trip-workflow-issues';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { directoryMutation } from './directory-access';
 import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
@@ -1118,7 +1119,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const currentActor = actor ? authorized(stored) : null;
           const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
             try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
-          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
+          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
           return write(response, 200, JSON.stringify({ trips, automation }));
         }

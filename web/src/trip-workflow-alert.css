@@ -1,0 +1,18 @@
+.trip-workflow-alert { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; background: #fff1f0; color: #9c241c; border: 1px solid #f4b4ae; border-radius: 12px; min-width: 0; overflow-wrap: anywhere; }
+.trip-workflow-alert ul { margin: 4px 0 0; padding-left: 18px; }
+.workflow-steps li.has-error { color: #b42318; }
+.workflow-steps li.has-error .workflow-step-number { background: #fff1f0; border-color: #b42318; color: #b42318; }
+.workflow-step-error { color: #b42318; overflow-wrap: anywhere; }
+.trip-card.trip-has-error .trip-identity-heading h2, .execution-trip.trip-has-error .execution-trip-identity strong { color: #212936; background: #ffd8d4; border-radius: 8px; padding: 5px 8px; }
+
+.trip-saby-action { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
+.trip-issue-label { color: #a52820; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.trip-card-footer { flex-wrap: wrap; }
+
+.trip-edit-action { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+@media (max-width: 600px) { .trip-card.trip-has-error .trip-card-heading { flex-wrap: wrap; } .trip-edit-action { margin-left: auto; } }
+.trip-card-heading > .trip-edit-action { flex: 0 0 auto; }
+@media (max-width: 600px) {
+  .trip-card.trip-has-error .trip-card-heading > div:first-child { flex-basis: 100%; }
+  .trip-card.trip-has-error .trip-card-heading > .trip-edit-action { flex: 0 0 100%; }
+}
