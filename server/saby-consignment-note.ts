@@ -8,7 +8,11 @@ import { exactSabyVolume, formatSabyVolume, sabyVolumeRoundedToZero, SABY_VOLUME
 
 export type { SabyConsignmentProfile } from '../web/src/etrn-model';
 /** New attempts leave the operator-issued GIS UID to Saby Prepare. Historical artifacts stay byte-for-byte stable. */
-export interface SabyConsignmentTitleOptions { senderTitleVersion?: 2; draftWithoutNumber?: true }
+export interface SabyConsignmentTitleOptions {
+  senderTitleVersion?: 2; draftWithoutNumber?: true;
+  /** Canonical native document date, independently proven and pinned before adoption. Never changes shipment facts. */
+  documentDate?: string;
+}
 export interface SabyConsignmentSnapshot {
   volumeRoundingVersion?: SabyVolumeRoundingVersion;
   /** Explicit direct title without an order relationship. Historical snapshots keep their original semantics. */
@@ -142,6 +146,13 @@ const day = (value: unknown): value is string => {
   const parsed = new Date(`${value}T00:00:00Z`); return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 };
 const ruDay = (value: string) => value.split('-').reverse().join('.');
+export const isSabyConsignmentDocumentDate = (value: unknown): value is string => typeof value === 'string' && /^\d{2}\.\d{2}\.\d{4}$/.test(value) && day(value.split('.').reverse().join('-'));
+/** Only a proven ordinary native note may supply its own document date. */
+export function sabyConsignmentDocumentDate(snapshot: SabyConsignmentSnapshot, documentDate?: string): string {
+  if (documentDate === undefined) return ruDay(snapshot.fields.date!);
+  if (snapshot.documentMode === 'nk-direct-v1' || !isSabyConsignmentDocumentDate(documentDate)) throw new SabyError('validation', 'Не подтверждена дата существующей ЭТрН. Автоматическая обработка остановлена.');
+  return documentDate;
+}
 function moscowTime(value: unknown): string | null {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(value)) return null;
   const [date, time] = value.split('T'); return day(date) ? `${ruDay(date)}T${time.length === 5 ? `${time}:00` : time}+03:00` : null;
@@ -314,6 +325,7 @@ export function serializeSabyConsignmentNote(snapshot: SabyConsignmentSnapshot, 
   if (!uuid(attemptId) || !Number.isFinite(Date.parse(createdAt))) throw new SabyError('validation', 'Некорректный идентификатор или время формирования ЭТрН.');
   if (options.draftWithoutNumber && (options.senderTitleVersion !== 2 || documentNumber !== undefined || snapshot.documentMode !== 'nk-direct-v1' && (!snapshot.profile.order.number || !snapshot.profile.order.date))) throw new SabyError('validation', 'Автонумерация требует нового полного титула ЭТрН и подтверждённой заявки либо прямого режима.');
   if (!options.draftWithoutNumber && (options.senderTitleVersion === 2 || documentNumber !== undefined) && !text(documentNumber)) throw new SabyError('validation', 'Saby не подтвердил номер ЭТрН.');
+  const documentDate = sabyConsignmentDocumentDate(snapshot, options.documentDate);
   const p = snapshot.profile; const c = p.cargo; const v = p.vehicle;
   const timestamp = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'medium' }).format(new Date(createdAt));
   const [createdDate, createdTime] = timestamp.split(' '); const number = options.draftWithoutNumber ? '' : documentNumber ?? `CRM-${attemptId}`;
@@ -331,7 +343,7 @@ export function serializeSabyConsignmentNote(snapshot: SabyConsignmentSnapshot, 
   const driver = tag('СвВодит', { ИННФЛ: snapshot.driver.inn, СерВУ: snapshot.driver.licenseSeries, НомВУ: snapshot.driver.licenseNumber, ДатаВыдВУ: snapshot.driver.licenseIssuedAt ? ruDay(snapshot.driver.licenseIssuedAt) : null }, tag('Тлф', {}, escape(snapshot.driver.phone)) + nameXml(p.driver));
   const vehicle = tag('СвТС', {}, tag('ТС', { РегНомер: snapshot.vehicle.plate, НомерВИН: snapshot.vehicle.vin, НомСТС: snapshot.vehicle.stsNumber, ТипВлад: v.ownershipType }, tag('ПарТС', { Тип: v.type, Марка: v.brand, Грузопод: v.payloadTonnes, Вместим: snapshot.volumeRoundingVersion === SABY_VOLUME_ROUNDING_VERSION ? formatSabyVolume(v.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion) : v.capacityCubicMetres }) + (v.ownershipDocument ? documentBasis(v.ownershipDocument) : '')));
   const loading = tag('СвПогруз', { ЗаявПогр: moscowTime(snapshot.fields.loading_planned_at), НалКоорТочВрЗаяв: '1', ФДатВрПриб: moscowTime(p.loading.arrivedAt), НалКоорТочВрФПогр: '1', ФДатВрУбыт: moscowTime(p.loading.departedAt), НалКоорТочВрФУбыт: '1', МасБрутОтгр: actualMass, МетОпрМасс: actualMassMethod, КолМестПрием: c.packageCount }, tag('ФАдресПогр', {}, location(snapshot, 'loading')) + loadingRole('СвЛицПогрГр', p.loadingActor, snapshot.customerOrganization.inn, snapshot.loadingDetailsVersion === 1) + loadingRole('ВладИнфр', p.infrastructureOwner, snapshot.customerOrganization.inn));
-  const content = tag('СодИнфГО', { УИД_ТрН: options.senderTitleVersion === 2 ? undefined : attemptId, СодОпер: options.senderTitleVersion === 2 ? CONSIGNMENT_SENDER_OPERATION : 'Составление транспортной накладной грузоотправителем', НомерТрН: options.draftWithoutNumber ? undefined : number, ДатаТрН: ruDay(snapshot.fields.date!), НомЗак: p.order.number, ДатаЗак: ruDay(p.order.date) }, tag('СвГО', { ГОЭксп: p.consignorIsForwarder }, tag('РекИдентГО', {}, organization(snapshot.customerOrganization))) +
+  const content = tag('СодИнфГО', { УИД_ТрН: options.senderTitleVersion === 2 ? undefined : attemptId, СодОпер: options.senderTitleVersion === 2 ? CONSIGNMENT_SENDER_OPERATION : 'Составление транспортной накладной грузоотправителем', НомерТрН: options.draftWithoutNumber ? undefined : number, ДатаТрН: documentDate, НомЗак: p.order.number, ДатаЗак: ruDay(p.order.date) }, tag('СвГО', { ГОЭксп: p.consignorIsForwarder }, tag('РекИдентГО', {}, organization(snapshot.customerOrganization))) +
     (p.consignorIsForwarder === '1' ? tag('СвЗак', {}, tag('РекИдентЗак', {}, organization(p.transportCustomer!)) + documentBasis(p.transportCustomerContract!, 'ДогУслПер')) : '') +
     tag('СвГП', {}, tag('РекИдентГП', {}, organization(p.recipient)) + tag('АдресДостГр', {}, location(snapshot, 'unloading'))) + cargo + instructions + tag('СвПер', {}, organization(snapshot.carrierOrganization, snapshot.carrierResponsibleVersion === 1 ? p.carrierResponsible : undefined)) + driver + vehicle + loading + tag('ИнфПол', {}, tag('ТекстИнф', { Идентиф: 'Рейс CRM', Значение: snapshot.tripId }) + tag('ТекстИнф', { Идентиф: 'Доставка CRM', Значение: snapshot.shipmentId })));
   const poa = p.signer.powerOfAttorney;
@@ -345,7 +357,7 @@ export function buildSabyConsignmentDocument(snapshot: SabyConsignmentSnapshot, 
     ...(/^\d{12}$/.test(value.inn) && 'person' in value && value.person
       ? { СвФЛ: { ИНН: value.inn, Фамилия: value.person.surname, Имя: value.person.name, Отчество: value.person.patronymic, ЧастноеЛицо: 'Нет' } }
       : { СвЮЛ: { ИНН: value.inn, КПП: value.kpp, Название: value.name } }) });
-  return { Тип: 'ConsignmentNote', Регламент: { Название: 'Транспортная накладная' }, ...(options.draftWithoutNumber ? {} : { Номер: number }), Дата: ruDay(snapshot.fields.date!), Примечание: marker,
+  return { Тип: 'ConsignmentNote', Регламент: { Название: 'Транспортная накладная' }, ...(options.draftWithoutNumber ? {} : { Номер: number }), Дата: sabyConsignmentDocumentDate(snapshot, options.documentDate), Примечание: marker,
     НашаОрганизация: requisites(snapshot.customerOrganization), Грузоотправитель: requisites(snapshot.customerOrganization), Грузополучатель: requisites(snapshot.profile.recipient), ТранспортнаяКомпания: requisites(snapshot.carrierOrganization),
     Вложение: [{ Файл: { ...(options.senderTitleVersion === 2 ? { Имя: name } : {}), ДвоичныеДанные: xml.toString('base64') } }],
   };

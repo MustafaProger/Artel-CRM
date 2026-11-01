@@ -11,7 +11,7 @@ import type { OperationsData, OperationsStorage } from './operations-store';
 import { currentSnapshot, currentShipmentAccess } from './shipment-operations';
 import { getShipmentTrip } from './shipment-trips';
 import { SabyClient, SabyError, SabyRequestError, isSabyRequestIntent, isSabyResponseDiagnostic, type SabyRequestIntent, type SabyResponseDiagnostic, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyDocumentWorkflow, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
-import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, readEtrnLoadingDetails, sabyConsignmentBlockers, buildSabyConsignmentDocument, serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
+import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, readEtrnLoadingDetails, sabyConsignmentBlockers, buildSabyConsignmentDocument, serializeSabyConsignmentNote, type SabyConsignmentSnapshot, type SabyConsignmentTitleOptions } from './saby-consignment-note';
 import { sabyCarrierAcceptance, type CreateTripSabyDelivery } from './trip-saby-workflow';
 import { discoverOrderConsignments } from './etrn-order-discovery';
 import { assertSigningManifest } from './saby-signing';
@@ -243,9 +243,20 @@ export function validateNativeSenderAmendment(doc: EtrnDocument, tripId: string,
         prepared?.preparedHash !== amendment.originalPreparedHash || manifestTitle?.length !== 1 || manifestTitle[0].sha256 !== amendment.sourceXmlSha256)) throw new Error('Unbound native sender amendment');
 }
 
+/** The document date comes only from exact persisted native evidence, never mutable metadata or the clock. */
+export function etrnConsignmentTitleOptions(doc: EtrnDocument): SabyConsignmentTitleOptions {
+  const options: SabyConsignmentTitleOptions = { senderTitleVersion: doc.senderTitleVersion };
+  const state = doc.linkedDraft;
+  if (!state) return options;
+  validateLinkedDraftState(state, doc.id);
+  if (doc.nativeDraftEnabled !== true || doc.snapshot.documentMode === 'nk-direct-v1' || doc.number !== state.documentNumber ||
+      doc.snapshot.profile.order.number !== state.sourceOrderNumber || doc.snapshot.profile.order.date !== state.sourceOrderDate) throw new SabyError('validation', 'Дата нативной ЭТрН не связана с сохранённым документом и заявкой.');
+  return { ...options, documentDate: state.documentDate };
+}
+
 /** Build verification context only from the current API title and the saved document/grant-bound instruction. */
 export function nativeSenderAmendmentOptions(doc: EtrnDocument, direct: NkDirectEtrnRecord | undefined, remote: SabyObject): SabyConsignmentEvidenceOptions {
-  const result: SabyConsignmentEvidenceOptions = { senderTitleVersion: doc.senderTitleVersion, phase: doc.dispatch?.operatorUid ? 'prepared' : 'unprepared', operatorUid: doc.dispatch?.operatorUid };
+  const result: SabyConsignmentEvidenceOptions = { ...etrnConsignmentTitleOptions(doc), phase: doc.dispatch?.operatorUid ? 'prepared' : 'unprepared', operatorUid: doc.dispatch?.operatorUid };
   const amendment = doc.nativeSenderAmendment;
   const frozenElectronic = (doc.orderDraftVersion === 1 || doc.snapshot.documentMode === 'nk-direct-v1' && doc.snapshot.loadingActorMode === 'sender') && doc.senderTitleVersion === 2 && doc.snapshot.profile.instructions.redirectionMethod === NATIVE_APPROVED_REDIRECTION_METHOD;
   if (!amendment && (doc.orderRedirectionApproval || frozenElectronic) && doc.dispatch?.sender.prepared) {
@@ -388,7 +399,7 @@ export function verifyPreparedLinkedConsignmentTitle(doc: EtrnDocument, remote: 
   if (remote.Идентификатор !== doc.id || binding.documentId !== doc.id || binding.side !== 'sender' || binding.documentType !== 'ConsignmentNote' ||
       sabyDocumentWorkflow(remote).revision !== binding.revision || titles.length !== 1 || titles[0].Идентификатор !== binding.attachmentId ||
       pinned.length !== 1 || pinned[0].sha256 !== bytesHash(bytes)) throw new SabyError('validation', 'Текущий титул ЭТрН отличается от проверенного задания на подпись. Требуется сверка.');
-  verifyConsignmentSenderBusiness(bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, { senderTitleVersion: doc.senderTitleVersion }).xml,
+  verifyConsignmentSenderBusiness(bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, etrnConsignmentTitleOptions(doc)).xml,
     doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, nativeSenderAmendmentOptions(doc, undefined, remote));
 }
 

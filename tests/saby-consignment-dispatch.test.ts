@@ -527,7 +527,17 @@ test('prepared linked refresh accepts exact verified T1 and refuses changed byte
   try {
     assert.ok((await f.run()).completedAt);
     const doc = structuredClone(f.saved());
-    doc.linkedDraft = { writeConfirmed: true } as EtrnDocument['linkedDraft'];
+    // This focused refresh unit starts with complete persisted native evidence;
+    // continuous adoption/signing is covered by stage6-new-trip.test.ts.
+    const original = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, { senderTitleVersion: doc.senderTitleVersion });
+    const bytesHash = createHash('sha256').update(original.xml).digest('hex');
+    doc.nativeDraftEnabled = true;
+    doc.linkedDraft = { version: 1, sourceOrderId: 'synthetic-order', sourceOrderNumber: doc.snapshot.profile.order.number, sourceOrderDate: doc.snapshot.profile.order.date,
+      documentId: doc.id!, documentNumber: doc.number!, documentDate: doc.snapshot.fields.date!.split('-').reverse().join('.'), originalMarker: '', originalRevision: doc.revision!, originalStateCode: '0', originalMetadataHash: 'a'.repeat(64), preservedHeadersHash: 'b'.repeat(64), existingRecipientHash: null,
+      attachmentId: doc.dispatch!.sender.prepared!.binding.attachmentId, attachmentName: original.name,
+      beforeBase64: Buffer.from(original.xml).toString('base64'), beforeHash: bytesHash, filledBase64: Buffer.from(original.xml).toString('base64'), filledHash: bytesHash,
+      writeAttempted: true, writeConfirmed: true, confirmedAt: doc.updatedAt };
+
     const remote = f.document('sender'), bytes = f.senderBytes();
     verifyPreparedLinkedConsignmentTitle(doc, remote, bytes);
     assert.throws(() => verifyPreparedLinkedConsignmentTitle(doc, remote, Buffer.from('changed')));

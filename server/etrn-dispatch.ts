@@ -6,12 +6,12 @@ import { authorizeNkDirectEtrn, type NkDirectEtrnRecord } from './nk-direct-etrn
 import { verifyNkRecipientAcceptance } from './nk-direct-recipient-evidence';
 import { createHash, randomUUID } from 'node:crypto';
 import { ApiError } from './api-error';
-import { nativeSenderAmendmentOptions, validateNativeSenderAmendment, validateOrderRedirectionApproval, type EtrnDocument, type EtrnOptions } from './etrn-service';
+import { etrnConsignmentTitleOptions, nativeSenderAmendmentOptions, validateNativeSenderAmendment, validateOrderRedirectionApproval, type EtrnDocument, type EtrnOptions } from './etrn-service';
 import { currentShipmentAccess } from './shipment-operations';
 import { authorizeAutomaticTripSaby } from './trip-saby-workflow';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyDocumentWorkflow, sabyObject, sabyText, type SabyObject } from './saby-client';
 import { assertSigningBinding, assertSigningManifest, captureSignedTitle, createCarrierDraftBinding, createSigningBinding, prepareBoundSigning, prepareCarrierDraft, readPreparedCarrierDraft, reconcileRegeneratedCarrierSigning, readSigningEvidence, restorePreparedSigning, verifyPreparedSigning, signingCertificateForOrganization, type SabySigningBinding, type SabySigningManifest, type SabySigningSide } from './saby-signing';
-import { serializeSabyConsignmentNote } from './saby-consignment-note';
+import { sabyConsignmentDocumentDate, serializeSabyConsignmentNote } from './saby-consignment-note';
 import { verifyConsignmentSenderBusiness, verifyConsignmentCarrierBusiness, verifyConsignmentCarrierSourceSignature, fillConsignmentCarrier, validConsignmentOperatorUid } from './saby-consignment-evidence';
 
 export interface EtrnDispatchStep {
@@ -99,7 +99,8 @@ function partyMatches(value: unknown, expected: { inn: string; kpp: string }): b
 function verifyIdentity(remote: SabyObject, doc: EtrnDocument, side: SabySigningSide, expectedId = side === 'carrier' ? doc.dispatch?.carrierIdentity?.documentId ?? doc.id : doc.id): void {
   const p = sabyObject(remote.Стороны) ? remote.Стороны : {};
   const own = side === 'sender' ? doc.snapshot.customerOrganization : doc.snapshot.carrierOrganization;
-  if (remote.Тип !== 'ConsignmentNote' || remote.Идентификатор !== expectedId || remote.Номер !== doc.number || remote.Дата !== doc.snapshot.fields.date?.split('-').reverse().join('.') || !partyMatches(remote.НашаОрганизация, own) || !partyMatches(p.Отправитель ?? remote.Грузоотправитель, doc.snapshot.customerOrganization) || !partyMatches(p.Перевозчик ?? remote.ТранспортнаяКомпания ?? remote.Перевозчик, doc.snapshot.carrierOrganization) || !partyMatches(p.Получатель ?? remote.Грузополучатель, doc.snapshot.profile.recipient) || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да') fail('Участники, номер или содержимое ЭТрН изменились. Автоматическая отправка остановлена.');
+  if (remote.Дата !== sabyConsignmentDocumentDate(doc.snapshot, etrnConsignmentTitleOptions(doc).documentDate)) fail('Дата ЭТрН отличается от сохранённой даты документа. Автоматическая отправка остановлена.');
+  if (remote.Тип !== 'ConsignmentNote' || remote.Идентификатор !== expectedId || remote.Номер !== doc.number || !partyMatches(remote.НашаОрганизация, own) || !partyMatches(p.Отправитель ?? remote.Грузоотправитель, doc.snapshot.customerOrganization) || !partyMatches(p.Перевозчик ?? remote.ТранспортнаяКомпания ?? remote.Перевозчик, doc.snapshot.carrierOrganization) || !partyMatches(p.Получатель ?? remote.Грузополучатель, doc.snapshot.profile.recipient) || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да') fail('Участники, номер или содержимое ЭТрН изменились. Автоматическая отправка остановлена.');
 }
 function title(remote: SabyObject, subtype: string) {
   const revision = sabyDocumentWorkflow(remote).revision;
@@ -216,7 +217,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
   const directElectronic = doc.snapshot.documentMode === 'nk-direct-v1' && doc.snapshot.loadingActorMode === 'sender' && doc.senderTitleVersion === 2 && doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке';
   let senderRemoteForCarrier: SabyObject | undefined;
   let sameIdReadyDraftVerified = false;
-  const titleOptions = () => ({ senderTitleVersion: doc.senderTitleVersion });
+  const titleOptions = () => etrnConsignmentTitleOptions(doc);
   const evidenceOptions = (remote: SabyObject, phase: 'unprepared' | 'prepared' = 'prepared', side: SabySigningSide = 'sender') => ({
     ...(doc.nativeSenderAmendment || doc.orderRedirectionApproval || doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке' ? nativeSenderAmendmentOptions(doc, directRecord!, side === 'carrier' && remote.Идентификатор === doc.dispatch?.carrierIdentity?.documentId && senderRemoteForCarrier ? senderRemoteForCarrier : remote) : { ...titleOptions(), operatorUid: doc.dispatch?.operatorUid }), phase,
   });

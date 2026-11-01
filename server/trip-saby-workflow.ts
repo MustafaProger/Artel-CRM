@@ -306,7 +306,10 @@ export function getTripSabyWorkflow({ base, data, tripId, prepare, config = saby
   }
   const automation = { ...capability, enrolled: !!record?.autoAuthorization, ...(capability.message ? {} : capability.enabled && !record ? { message: trip.fields.trip_flow_version === 'driver-v1' ? blockers.length ? 'Исправьте сведения рейса и обновите состояние. После проверки готовности нажмите «Запустить обмен».' : start?.mode === 'sign_and_send' ? 'Массы и убытие водителя уже сохранены и сверены. Кнопка «Запустить подписание и отправку» создаст заявку Saby, передаст её на подпись АРТЭЛЬ и НК АРТЭЛЬ и продолжит отправку ЭТрН клиентам.' : 'Обмен ещё не запущен. Нажмите «Запустить обмен», чтобы создать неподписанный черновик Saby. Подписание начнётся после масс и убытия водителя.' : 'Этот исторический рейс не включён в автоматический обмен. Сохранение изменений не запускает отправку.' } : record?.autoAuthorization ? { message: 'Автоотправка сохранена. CRM продолжит обмен в фоне.' } : {}) };
   if (record?.autoAuthorization) {
-    try { authorizeAutomaticTripSaby(snapshot, data, tripId, record, config); }
+    try {
+      authorizeAutomaticTripSaby(snapshot, data, tripId, record, config);
+      if (record.phase === 'error') automation.message = 'Автоотправка приостановлена после ошибки. Устраните её причину и выполните сверку; сохранённое разрешение не запускает повтор автоматически.';
+    }
     catch (error) { automation.message = error instanceof ApiError ? error.message : 'Автоотправка приостановлена. Проверьте настройку и доступ сотрудника.'; }
   }
   if (!record) return { status: 'not_sent', phase: 'preparation', ready: blockers.length === 0, blockers: [...new Set(blockers)], locked: false, updatedAt: null, lastError: null, order: null, deliveries: trip.customers.filter(requiresEtrn).map(row => ({ shipmentId: row.id, id: null, status: 'not_sent', lastError: null })), carrierConfirmed: false, lastCheckedAt: null, lastCheckAttemptAt: null, monitoring, history: [], automation, ...(start ? { start } : {}) };

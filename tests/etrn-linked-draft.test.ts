@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { parseXml } from '../server/saby-order-evidence';
+import { serializeXml, xmlChildren } from '../server/saby-carrier-details';
 import { SabyClient, SabyError, sabyObject, type SabyObject } from '../server/saby-client';
 import { serializeSabyConsignmentNote } from '../server/saby-consignment-note';
 import { encodeWindows1251 } from '../server/saby-transport-order';
@@ -15,20 +18,37 @@ import { runTripSabyWorkflow, type CreateTripSabyDelivery } from '../server/trip
 import { integrationApi, integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
 import { syntheticEtrnFixture } from './helpers/etrn-fixture';
 
-function fixture() {
+function fixture(options: { shipmentDate?: string; documentDate?: string; deliveryCount?: number; litres?: string } = {}) {
   const { snapshot } = syntheticEtrnFixture();
-  snapshot.profile.order = { number: '19', date: '2025-04-01' };
+  snapshot.profile.order = { number: '19', date: options.shipmentDate ?? '2025-04-01' };
+  snapshot.fields.date = options.shipmentDate ?? snapshot.fields.date;
+  if (options.litres) { snapshot.fields.quantity_litres = options.litres; snapshot.profile.vehicle.capacityCubicMetres = '30'; }
+  const shipmentDate = snapshot.fields.date.split('-').reverse().join('.');
+  const documentDate = options.documentDate ?? shipmentDate;
+  const allocation = Array.from({ length: options.deliveryCount ?? 1 }, (_, index) => {
+    const item = structuredClone(snapshot); if (index) { item.shipmentId += `-${index}`; item.fields.quantity_litres = '5500'; } return item;
+  });
   const serialized = serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000001', '2025-04-01T07:00:00Z', '17');
   const emptyRecipient = '<СвГП><РекИдентГП><ИдСв/><Контакт/></РекИдентГП><АдресДостГр/></СвГП>';
   let xml = encodeWindows1251(new TextDecoder('windows-1251').decode(serialized.xml)
     .replace(/<СвГП>.*?<\/СвГП>/s, emptyRecipient)
+    .replace(/ДатаТрН="[^"]*"/, `ДатаТрН="${documentDate}"`)
     .replace(/ (?:ФДатВрУбыт|НалКоорТочВрФУбыт|МасБрутОтгр|КолМестПрием)="[^"]*"/g, ''));
+  if (allocation.length > 1) {
+    const root = parseXml(xml), info = xmlChildren(xmlChildren(root, 'Документ')[0], 'СодИнфГО')[0];
+    const cargo = xmlChildren(info, 'СвГруз')[0];
+    for (const item of allocation.slice(1)) {
+      const title = parseXml(serializeSabyConsignmentNote(item, '00000000-0000-4000-8000-000000000001', '2025-04-01T07:00:00Z', '17').xml);
+      cargo.children.push(structuredClone(xmlChildren(xmlChildren(xmlChildren(title, 'Документ')[0], 'СодИнфГО')[0], 'СвГруз')[0].children[0]));
+    }
+    xml = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(root));
+  }
   const party = (organization: { inn: string; kpp: string }) => ({ СвЮЛ: { ИНН: organization.inn, КПП: organization.kpp } });
-  const order: SabyObject = { Идентификатор: 'synthetic-order', Тип: 'TransportOrder', Номер: '19', Дата: '01.04.2025', НашаОрганизация: party(snapshot.customerOrganization), Контрагент: party(snapshot.carrierOrganization), ДокументСледствие: [{ ВидСвязи: 'ПоОснованию', Документ: { Идентификатор: 'synthetic-note', Тип: 'ConsignmentNote', Номер: '17', Дата: '01.04.2025' } }] };
-  const remote: SabyObject = { Идентификатор: 'synthetic-note', Тип: 'ConsignmentNote', Номер: '17', Дата: '01.04.2025', Направление: 'Исходящий', Примечание: '',
+  const order: SabyObject = { Идентификатор: 'synthetic-order', Тип: 'TransportOrder', Номер: '19', Дата: shipmentDate, НашаОрганизация: party(snapshot.customerOrganization), Контрагент: party(snapshot.carrierOrganization), ДокументСледствие: [{ ВидСвязи: 'ПоОснованию', Документ: { Идентификатор: 'synthetic-note', Тип: 'ConsignmentNote', Номер: '17', Дата: documentDate } }] };
+  const remote: SabyObject = { Идентификатор: 'synthetic-note', Тип: 'ConsignmentNote', Номер: '17', Дата: documentDate, Направление: 'Исходящий', Примечание: '',
     НашаОрганизация: party(snapshot.customerOrganization), Грузоотправитель: party(snapshot.customerOrganization), ТранспортнаяКомпания: party(snapshot.carrierOrganization),
     Регламент: { Идентификатор: 'synthetic-regulation', Название: 'Транспортная накладная' },
-    ДокументОснование: [{ ВидСвязи: 'ПоОснованию', Документ: { Идентификатор: 'synthetic-order', Тип: 'TransportOrder', Номер: '19', Дата: '01.04.2025' } }],
+    ДокументОснование: [{ ВидСвязи: 'ПоОснованию', Документ: { Идентификатор: 'synthetic-order', Тип: 'TransportOrder', Номер: '19', Дата: shipmentDate } }],
     Редакция: [{ Идентификатор: 'synthetic-original-revision', Актуален: 'Да' }], Состояние: { Код: '0', Название: 'Документ редактируется' },
     Вложение: [{ Идентификатор: 'synthetic-title', Подтип: '1110339', ВерсияФормата: '5.01', Удален: 'Нет', Подпись: [], Файл: { Имя: serialized.name } }],
   };
@@ -73,10 +93,10 @@ function fixture() {
     }
   }
   const context: LinkedDraftContext = {
-    client: new Client(), order: { id: 'synthetic-order', number: '19', date: '2025-04-01' }, deliveryCount: 1,
+    client: new Client(), order: { id: 'synthetic-order', number: '19', date: snapshot.profile.order.date }, deliveryCount: allocation.length, ...(options.deliveryCount ? { allocationSnapshots: allocation } : {}),
     current: () => document, update: async patch => { updates.push(structuredClone(patch)); document = { ...document, ...structuredClone(patch) }; }, checkAccess: async () => check(),
   };
-  return { snapshot, serialized, remote, order, context, writes, updates, run: () => reconcileLinkedConsignmentDraft(context), doc: () => document, xml: () => xml,
+  return { snapshot, allocation, serialized, remote, order, context, writes, updates, run: () => reconcileLinkedConsignmentDraft(context), doc: () => document, xml: () => xml,
     refreshSignatureField: (field: string) => { signatureRefreshField = field; },
     replaceXml: (value: Uint8Array) => { xml = Buffer.from(value); }, restart: () => { document = JSON.parse(JSON.stringify(document)) as LinkedDraftDocument; },
     setCheck: (value: () => void) => { check = value; }, beforeCall: (value: () => void) => { beforeCall = value; }, afterCall: (value: () => void) => { afterCall = value; }, responseId: (value: string) => { responseId = value; },
@@ -503,4 +523,72 @@ test('signed refresh ignores rotating signature download URLs but rejects change
   const f = fixture(); await f.run(); f.context.readOnly = true;
   f.refreshSignatureField('Ссылка'); await f.run(); assert.equal(f.writes.length, 1);
   f.refreshSignatureField('Хеш'); await assert.rejects(f.run(), /изменились во время сверки/); assert.equal(f.writes.length, 1);
+});
+
+const delayedNativeCases = [
+  { label: 'trip52 two deliveries across month', shipmentDate: '2026-10-30', documentDate: '01.11.2026', deliveryCount: 2, litres: '12000' },
+  { label: 'trip54 one delivery across month', shipmentDate: '2026-10-31', documentDate: '01.11.2026', deliveryCount: 1, litres: '15048' },
+  { label: 'same day', shipmentDate: '2026-11-01', documentDate: '01.11.2026', deliveryCount: 1 },
+  { label: 'next day', shipmentDate: '2026-11-02', documentDate: '03.11.2026', deliveryCount: 1 },
+  { label: 'new year', shipmentDate: '2026-12-31', documentDate: '01.01.2027', deliveryCount: 2 },
+  { label: 'leap day', shipmentDate: '2028-02-28', documentDate: '29.02.2028', deliveryCount: 1 },
+];
+for (const options of delayedNativeCases) test(`native document date is pinned independently of frozen shipping date: ${options.label}`, async () => {
+  const f = fixture(options), snapshotBefore = structuredClone(f.snapshot), allocationBefore = structuredClone(f.allocation);
+  await f.run();
+  assert.equal(f.writes.length, 1); assert.equal(f.doc().id, 'synthetic-note');
+  assert.equal(f.doc().linkedDraft?.documentDate, options.documentDate);
+  assert.equal(f.doc().linkedDraft?.sourceOrderDate, options.shipmentDate);
+  assert.equal(f.writes[0].Дата, options.documentDate);
+  assert.deepEqual(f.snapshot, snapshotBefore); assert.deepEqual(f.allocation, allocationBefore);
+  const filled = xmlChildren(xmlChildren(parseXml(f.xml()), 'Документ')[0], 'СодИнфГО')[0];
+  assert.equal(filled.attributes.ДатаТрН, options.documentDate);
+  assert.equal(filled.attributes.ДатаЗак, options.shipmentDate.split('-').reverse().join('.'));
+  verifyDraftRequestedFields(f.xml(), f.snapshot, '17', options.documentDate);
+  const evidence = structuredClone(f.doc().linkedDraft);
+  f.restart(); f.context.readOnly = true; await f.run();
+  assert.deepEqual(f.doc().linkedDraft, evidence); assert.equal(f.writes.length, 1);
+});
+
+test('old source reproduces the reported stage6 date guard for both coherent real-shaped native envelopes', { skip: !process.env.ARTEL_TEST_BASELINE_SOURCE }, async () => {
+  const module = await import(pathToFileURL(resolve(process.env.ARTEL_TEST_BASELINE_SOURCE!, 'server/etrn-linked-draft.ts')).href) as { reconcileLinkedConsignmentDraft: typeof reconcileLinkedConsignmentDraft };
+  for (const options of delayedNativeCases.slice(0, 2)) {
+    const f = fixture(options);
+    await assert.rejects(module.reconcileLinkedConsignmentDraft(f.context), /Не подтверждена однозначная связь существующей ЭТрН с этой заявкой/);
+    assert.equal(f.writes.length, 0); assert.equal(f.updates.length, 0); assert.equal(f.doc().id, null);
+  }
+});
+
+test('later native date refuses incoherent XML, invalid calendar dates and changed pinned evidence without writes', async () => {
+  const mutations: ((f: ReturnType<typeof fixture>) => void)[] = [
+    f => { f.replaceXml(encodeWindows1251(new TextDecoder('windows-1251').decode(f.xml()).replace('ДатаТрН="01.11.2026"', 'ДатаТрН="31.10.2026"'))); },
+    f => { f.replaceXml(encodeWindows1251(new TextDecoder('windows-1251').decode(f.xml()).replace('ДатаЗак="31.10.2026"', 'ДатаЗак="01.11.2026"'))); },
+    f => { ((f.order.ДокументСледствие as SabyObject[])[0].Документ as SabyObject).Дата = '31.10.2026'; },
+    f => { f.remote.Дата = '31.11.2026'; ((f.order.ДокументСледствие as SabyObject[])[0].Документ as SabyObject).Дата = '31.11.2026'; f.replaceXml(encodeWindows1251(new TextDecoder('windows-1251').decode(f.xml()).replace('ДатаТрН="01.11.2026"', 'ДатаТрН="31.11.2026"'))); },
+    ...(['Номер', 'Дата'] as const).flatMap(key => [
+      (f: ReturnType<typeof fixture>) => { delete ((f.remote.ДокументОснование as SabyObject[])[0].Документ as SabyObject)[key]; },
+      (f: ReturnType<typeof fixture>) => { delete ((f.order.ДокументСледствие as SabyObject[])[0].Документ as SabyObject)[key]; },
+    ]),
+    f => { f.remote.Дата = '2026-11-01'; ((f.order.ДокументСледствие as SabyObject[])[0].Документ as SabyObject).Дата = '2026-11-01'; },
+  ];
+  for (const mutate of mutations) {
+    const f = fixture(delayedNativeCases[1]); mutate(f);
+    await assert.rejects(f.run()); assert.equal(f.writes.length, 0); assert.equal(f.updates.length, 0);
+  }
+  const f = fixture(delayedNativeCases[1]); await f.run();
+  for (const key of ['documentDate', 'documentNumber'] as const) {
+    const saved = f.doc().linkedDraft![key]; f.doc().linkedDraft![key] = key === 'documentDate' ? '02.11.2026' : 'other';
+    assert.throws(() => validateLinkedDraftState(f.doc().linkedDraft, 'synthetic-note'));
+    await assert.rejects(f.run()); assert.equal(f.writes.length, 1); f.doc().linkedDraft![key] = saved;
+  }
+});
+
+test('later native date survives a lost accepted fill and restart with one write and unchanged frozen dates', async () => {
+  const f = fixture(delayedNativeCases[0]); const snapshot = structuredClone(f.snapshot);
+  f.afterCall(() => { throw new SabyError('transport', 'Synthetic lost accepted native fill', true); });
+  await assert.rejects(f.run(), /Synthetic lost/); assert.equal(f.writes.length, 1);
+  assert.equal(f.doc().linkedDraft?.writeAttempted, true); assert.equal(f.doc().linkedDraft?.writeConfirmed, false);
+  f.restart(); f.afterCall(() => {}); await f.run();
+  assert.equal(f.doc().linkedDraft?.writeConfirmed, true); assert.equal(f.writes.length, 1);
+  assert.equal(f.doc().linkedDraft?.documentDate, '01.11.2026'); assert.deepEqual(f.snapshot, snapshot);
 });

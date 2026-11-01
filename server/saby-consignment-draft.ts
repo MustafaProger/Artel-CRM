@@ -3,7 +3,7 @@ import Decimal from 'decimal.js';
 import { formatSabyVolume } from './saby-volume';
 import { SabyError, sabyObject, type SabyObject } from './saby-client';
 import { serializeXml } from './saby-carrier-details';
-import { serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
+import { isSabyConsignmentDocumentDate, serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
 import { parseXml, type XmlNode } from './saby-order-evidence';
 import { encodeWindows1251 } from './saby-transport-order';
 
@@ -46,6 +46,18 @@ function title(bytes: Uint8Array) {
   return { root, document, content, cargo, loading, recipient: recipients[0] };
 }
 
+/** Header proof also accepts the original multi-delivery native title, before allocation. */
+export function verifyConsignmentDocumentIdentity(bytes: Uint8Array, number: string, documentDate: string, order?: { number: string; date: string }): void {
+  if (!isSabyConsignmentDocumentDate(documentDate)) fail('Не подтверждена календарная дата нативного документа');
+  const root = parseXml(bytes);
+  if (root.name !== 'Файл' || root.attributes.ВерсФорм !== '5.01' || elements(root).length !== 1) fail('Не подтверждён формат первого титула');
+  const document = only(root, 'Документ'), content = only(document, 'СодИнфГО');
+  if (document.attributes.КНД !== '1110339') fail('Не подтверждён первый титул');
+  if (normalized(content.attributes.НомерТрН) !== number) fail('Номер в XML не совпадает с номером существующей ЭТрН');
+  if (normalized(content.attributes.ДатаТрН) !== documentDate) fail('Дата в XML не совпадает с датой существующей ЭТрН');
+  if (order && (normalized(content.attributes.НомЗак) !== order.number || normalized(content.attributes.ДатаЗак) !== order.date.split('-').reverse().join('.'))) fail('Номер или дата исходной заявки в XML не совпадают с сохранённой заявкой');
+}
+
 function identity(party: XmlNode): { inn: string; kpp: string; name: string } {
   const id = only(party, 'ИдСв');
   if (elements(id).length !== 1) fail();
@@ -75,9 +87,9 @@ function address(actual: XmlNode, expected: XmlNode, allowMissingCoordinates = f
     equalNumber(actualCoordinates.attributes.Долгота, knownCoordinates.attributes.Долгота);
   }
 }
-function expectedTitle(snapshot: SabyConsignmentSnapshot, number: string) {
+function expectedTitle(snapshot: SabyConsignmentSnapshot, number: string, documentDate?: string) {
   // This supplies target values and anchors only. Its other business fields never replace the native title.
-  return title(serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000001', '2025-01-01T00:00:00.000Z', number).xml);
+  return title(serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000001', '2025-01-01T00:00:00.000Z', number, { documentDate }).xml);
 }
 function recipient(actual: XmlNode, expected: XmlNode) {
   sameParty(only(actual, 'РекИдентГП'), only(expected, 'РекИдентГП'));
@@ -93,7 +105,9 @@ function emptyNativeRecipient(value: XmlNode): boolean {
   return JSON.stringify(shape(value)) === JSON.stringify(['СвГП', [['РекИдентГП', [['ИдСв', []], ['Контакт', []]]], ['АдресДостГр', []]]]);
 }
 function anchors(actual: ReturnType<typeof title>, expected: ReturnType<typeof title>, allowMissingLoadingCoordinates = false, nativeOrderVolume?: string | null) {
-  for (const key of ['НомерТрН', 'ДатаТрН', 'НомЗак', 'ДатаЗак']) equal(actual.content.attributes[key], expected.content.attributes[key]);
+  for (const key of ['НомерТрН', 'ДатаТрН', 'НомЗак', 'ДатаЗак']) {
+    if (!normalized(expected.content.attributes[key]) || normalized(actual.content.attributes[key]) !== normalized(expected.content.attributes[key])) fail(`XML ${key} не совпадает с подтверждёнными реквизитами документа и заявки`);
+  }
   sameParty(only(only(actual.content, 'СвГО'), 'РекИдентГО'), only(only(expected.content, 'СвГО'), 'РекИдентГО'));
   sameParty(only(actual.content, 'СвПер'), only(expected.content, 'СвПер'));
   equal(actual.cargo.attributes.НаимГруз, expected.cargo.attributes.НаимГруз);
@@ -130,16 +144,16 @@ function targets(actual: ReturnType<typeof title>, expected: ReturnType<typeof t
 }
 
 /** Verify only the requested fields and frozen anchors, never the remainder or signing authority. */
-export function verifyDraftRequestedFields(bytes: Uint8Array, snapshot: SabyConsignmentSnapshot, number: string): void {
-  const actual = title(bytes), expected = expectedTitle(snapshot, number);
+export function verifyDraftRequestedFields(bytes: Uint8Array, snapshot: SabyConsignmentSnapshot, number: string, documentDate?: string): void {
+  const actual = title(bytes), expected = expectedTitle(snapshot, number, documentDate);
   anchors(actual, expected); targets(actual, expected);
 }
 
 /** Fill a separately proven unsigned native draft. The caller must freeze identity/revision/signatures first.
  * Only the missing recipient, driver loading events/count/gross mass and proven rounded volume may change; native business stays native.
  */
-export function fillConsignmentDraft(bytes: Uint8Array, snapshot: SabyConsignmentSnapshot, number: string): ConsignmentDraftFill {
-  const actual = title(bytes), expected = expectedTitle(snapshot, number);
+export function fillConsignmentDraft(bytes: Uint8Array, snapshot: SabyConsignmentSnapshot, number: string, documentDate?: string): ConsignmentDraftFill {
+  const actual = title(bytes), expected = expectedTitle(snapshot, number, documentDate);
   anchors(actual, expected, true, formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion));
   const before = JSON.stringify(canonical(actual.root));
   if (!equivalentNumber(actual.cargo.attributes.Объем, expected.cargo.attributes.Объем)) actual.cargo.attributes.Объем = expected.cargo.attributes.Объем;
@@ -165,7 +179,7 @@ export function fillConsignmentDraft(bytes: Uint8Array, snapshot: SabyConsignmen
   }
   const changed = before !== JSON.stringify(canonical(actual.root));
   const filled = changed ? encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(actual.root)) : bytes;
-  verifyDraftRequestedFields(filled, snapshot, number);
+  verifyDraftRequestedFields(filled, snapshot, number, documentDate);
   return { bytes: filled, changed, beforeHash: digest(bytes), afterHash: digest(filled), fields: requestedFields(expected) };
 }
 
@@ -217,7 +231,7 @@ export function hasExactConsignmentOrderLink(note: SabyObject, order: SabyObject
  * Positional matching is against the immutable order delivery list, never a search by mass alone.
  * The original bytes remain in LinkedDraftState; the replacement uses frozen CRM business data.
  */
-export function allocateNativeConsignmentDraft(bytes: Uint8Array, snapshots: SabyConsignmentSnapshot[], number: string): ConsignmentDraftFill {
+export function allocateNativeConsignmentDraft(bytes: Uint8Array, snapshots: SabyConsignmentSnapshot[], number: string, documentDate?: string): ConsignmentDraftFill {
   if (!snapshots.length || new Set(snapshots.map(x => x.shipmentId)).size !== snapshots.length) fail('Состав доставок заявки неоднозначен');
   const root = parseXml(bytes), document = only(root, 'Документ'), content = only(document, 'СодИнфГО');
   const cargo = only(content, 'СвГруз'), items = named(cargo, 'ОпГруз');
@@ -230,15 +244,15 @@ export function allocateNativeConsignmentDraft(bytes: Uint8Array, snapshots: Sab
     const copy = structuredClone(root), info = only(only(copy, 'Документ'), 'СодИнфГО');
     only(info, 'СвГруз').children = [structuredClone(items[index])];
     const actual = title(encodeWindows1251(serializeXml(copy)));
-    anchors(actual, expectedTitle(snapshot, number), true, formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion));
+    anchors(actual, expectedTitle(snapshot, number, documentDate), true, formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion));
   }
   const snapshot = snapshots[0];
-  const generated = serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000001', '2025-01-01T00:00:00.000Z', number, { senderTitleVersion: 2 });
+  const generated = serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000001', '2025-01-01T00:00:00.000Z', number, { senderTitleVersion: 2, documentDate });
   const filled = parseXml(generated.xml);
   filled.attributes.ИдФайл = root.attributes.ИдФайл;
   const resultDocument = only(filled, 'Документ');
   for (const key of ['ДатИнфГО', 'ВрИнфГО']) resultDocument.attributes[key] = document.attributes[key];
   const result = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(filled));
-  verifyDraftRequestedFields(result, snapshot, number);
-  return { bytes: result, changed: true, beforeHash: digest(bytes), afterHash: digest(result), fields: requestedFields(expectedTitle(snapshot, number)) };
+  verifyDraftRequestedFields(result, snapshot, number, documentDate);
+  return { bytes: result, changed: true, beforeHash: digest(bytes), afterHash: digest(result), fields: requestedFields(expectedTitle(snapshot, number, documentDate)) };
 }
