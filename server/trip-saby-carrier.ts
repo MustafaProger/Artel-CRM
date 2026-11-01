@@ -1,3 +1,4 @@
+import { TripExchangePausedError } from './trip-exchange-control';
 import type { Snapshot } from '../web/src/model';
 import type { TripSabyCarrierFill } from '../web/src/trip-saby-model';
 import type { TripSabyRecord } from './trip-saby-workflow';
@@ -108,6 +109,7 @@ export async function fillCarrierDetails(options: {
     if (patch.responsibleReady !== undefined) fill.responsibleSaved = patch.responsibleReady;
     fill.state = input.blockers.length ? 'partial' : 'saved'; fill.checkedAt = new Date().toISOString(); await save();
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     fill.state = attempted || fill.intent && !fill.intent.verified ? 'unknown' : 'blocked';
     // Provider error payloads may contain private XML. Only controlled messages reach UI.
     fill.blockers = [error instanceof SabyError && error.kind === 'validation' ? error.message : 'Не удалось подтвердить заполнение ответа НК. Обновите состояние; повторная запись без сверки не выполняется.'];

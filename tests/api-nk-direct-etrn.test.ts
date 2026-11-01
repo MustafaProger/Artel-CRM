@@ -22,8 +22,34 @@ import { integrationRuntime, integrationConfig, integrationSettings, integration
 import type { AccountUser } from '../web/src/auth-model';
 import { syntheticLoadingDetails } from './helpers/loading-details-fixture';
 import { getNkLoadingDetails, saveNkLoadingDetails } from '../server/nk-loading-details';
+import { setTripExchangeControl, TripExchangePausedError } from '../server/trip-exchange-control';
 
 const fp = 'cd'.repeat(20);
+test('direct pause stops the next provider request, preserves its grant and releases leases', async () => {
+  const f = await fixture([false, true]);
+  let release!: () => void, arrived!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { arrived = resolve; });
+  let calls = 0;
+  try {
+    await f.start();
+    const initial = await f.store.read(f.source);
+    const client = new SabyClient(f.config, async (_url, init) => {
+      calls++; const request = JSON.parse(String(init?.body)); arrived(); await gate;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: 'synthetic-session' }));
+    });
+    const running = assert.rejects(runNkDirectEtrn({ ...f, client, authorize: () => undefined }), TripExchangePausedError);
+    await waiting;
+    await f.store.mutate(f.source, data => ({ result: setTripExchangeControl(data, f.tripId, 'actor', { paused: true, version: 0 }), changed: true }));
+    release(); await running;
+    const stopped = await f.store.read(f.source), direct = stopped.etrn!.trips[f.tripId].direct!;
+    assert.equal(calls, 1); assert.equal(direct.leaseId, null); assert.equal(direct.lastError, initial.etrn!.trips[f.tripId].direct!.lastError);
+    assert.deepEqual(direct.authorization, initial.etrn!.trips[f.tripId].direct!.authorization);
+    assert.deepEqual(direct.deliveries, initial.etrn!.trips[f.tripId].direct!.deliveries);
+    assert.ok(Object.values(stopped.etrn!.trips[f.tripId].deliveries).every(row => !row.document?.leaseId));
+    await dispatchTripSaby({ ...f, enabled: true, client }); assert.equal(calls, 1);
+    assert.deepEqual(await f.store.read(f.source), stopped);
+  } finally { release(); await f.close(); }
+});
 const syntheticUuid = (label:string) => { const digest=createHash('sha256').update(label).digest('hex'); return `${digest.slice(0,8)}-${digest.slice(8,12)}-4${digest.slice(13,16)}-8${digest.slice(17,20)}-${digest.slice(20,32)}`; };
 async function fixture(skips = [false, false], oldPolicy = false, automatic = false, redirectionMethod = integrationSettings.instructions!.redirectionMethod, includeLoadingDetails = true, changeSourceBeforeDeparture = false, newSenderDefault = false) {
   const rt = await integrationRuntime(), config = integrationConfig();

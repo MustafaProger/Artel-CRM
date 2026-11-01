@@ -265,10 +265,17 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   return { trip: getShipmentTrip(updated, id, data.tripNumbers), shipments, shipment: shipments[0] };
 }
 
+export function tripDeletionBlocker(data: OperationsData, id: string, snapshot?: Pick<Snapshot, 'shipments'>): string | null {
+  if (data.tripExecutions?.[id] || data.driverTripProgress?.[id] || data.etrn?.trips[id]?.loadingFacts) return 'Рейс содержит сохранённые факты водителя или подтверждённые доставки. Удаление запрещено.';
+  if (hasSabyDocuments(data, id) || data.etrn?.trips[id]?.direct) return 'Рейс связан с документами Saby. Удаление запрещено. Можно остановить обмен.';
+  if (data.paymentAllocations?.some(row => (data.shipments[row.shipmentId]?.fields.trip_id ?? snapshot?.shipments.find(item => item.id === row.shipmentId)?.fields.trip_id) === id)) return 'Рейс связан с банковскими платежами. Удаление запрещено.';
+  return null;
+}
+
 /** Remove the whole truck under the same lock and full customer-version guard as editing. */
 export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, id: string): { deleted: true; id: string; deletedCount: number } {
-  if (data.tripExecutions?.[id]) throw new ApiError(409, 'Рейс содержит подтверждённые доставки. Удаление запрещено.');
-  if (hasSabyDocuments(data, id)) throw new ApiError(409, 'Рейс связан с документами Saby. Удаление запрещено до сверки документов.');
+  const reason = tripDeletionBlocker(data, id, currentSnapshot(base, data, false));
+  if (reason) throw new ApiError(409, reason);
   if (Object.keys(body).some(key => key !== 'versions')) throw new ApiError(400, 'В запросе удаления есть неизвестные параметры.');
   const rows = currentSnapshot(base, data, false).shipments.filter(row => row.fields.trip_id === id);
   if (!rows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');

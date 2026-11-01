@@ -107,3 +107,10 @@
   .etrn-panel .workflow-signing { padding: 16px; }
   .workflow-signing .etrn-actions > .button { width: 100%; justify-content: center; }
 }
+
+.trip-exchange-actions .button.danger { background: #a3372b; color: #fff; border-color: #a3372b; }
+.trip-exchange-actions .button.danger:hover:not(:disabled) { background: #84271f; border-color: #84271f; }
+.trip-exchange-actions .button.trip-exchange-pause,
+.shipment-delete-dialog .button.trip-exchange-pause { background: #f4c95d; color: #342a0c; border-color: #f4c95d; }
+.trip-exchange-actions .button.trip-exchange-pause:hover:not(:disabled),
+.shipment-delete-dialog .button.trip-exchange-pause:hover:not(:disabled) { background: #e4b747; border-color: #e4b747; }

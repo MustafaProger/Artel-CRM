@@ -2,6 +2,7 @@ import { readTripWorkflowIssues } from './trip-workflow-issues';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { directoryMutation } from './directory-access';
 import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
+import { assertTripExchangeRunning, exchangeControl, setTripExchangeControl } from './trip-exchange-control';
 import { archiveView, createArchiveEntry, saveArchiveCard, deleteArchiveEntry } from './document-archive';
 import { readOperator, mutateOperator } from './operator';
 import { readTripNumbers } from './trip-numbering';
@@ -48,7 +49,7 @@ import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
 import { allocateShipmentNumber } from './shipment-numbering';
-import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
+import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip, tripDeletionBlocker } from './shipment-trips';
 import { cancelTripRequest, listTripRequests, requireTripRequest, saveTripRequest, tripRequestCatalog } from './trip-requests';
 import { readTripRequestsMapConfig, tripRequestGeocodeTarget } from './trip-request-geocoding';
 import { createNominatimGeocoder, readNominatimCachedLocation } from './nominatim-geocoder';
@@ -976,7 +977,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }
-      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(start|loading-facts|carrier-details|signing|signing\/start))?$/);
+      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(control|start|loading-facts|carrier-details|signing|signing\/start))?$/);
       if (workflowMatch) {
         const tripId = decodeURIComponent(workflowMatch[1]);
         const authorize = (snapshot: ShipmentAccessContext, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
@@ -984,8 +985,23 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
         const read = (latest: import('./operations-store').OperationsData) => {
           const snapshot = currentSnapshot(base, latest);
-          return ({ workflowIssues: readTripWorkflowIssues(latest, tripId, { snapshot, trip: getShipmentTrip(snapshot, tripId), config: options.sabyClient?.config ?? sabyConfigFromEnv() }), ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+          return ({ exchangeControl: exchangeControl(latest, tripId), workflowIssues: readTripWorkflowIssues(latest, tripId, { snapshot, trip: getShipmentTrip(snapshot, tripId), config: options.sabyClient?.config ?? sabyConfigFromEnv() }), ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
         };
+        if (workflowMatch[2] === 'control') {
+          if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+          const body = await jsonBody(request);
+          const result = await operations.mutate(base.provenance.sourceSha256, latest => {
+            const employee = authorized(latest), snapshot = currentSnapshot(base, latest);
+            requireTripSection(employee, true); requireWholeTrip(employee, snapshot, tripId);
+            getShipmentTrip(snapshot, tripId);
+            const changed = setTripExchangeControl(latest, tripId, employee.id, body);
+            return { result: read(latest), changed };
+          });
+          write(response, 200, JSON.stringify(result));
+          if (!result.exchangeControl.paused) { try { options.requestSabyWorkflow?.(tripId); } catch { /* The durable state is retried by the scheduler. */ } }
+          return;
+        }
+        if (request.method !== 'GET') assertTripExchangeRunning(data, tripId);
         const direct = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, data), tripId), data);
         if (direct && workflowMatch[2] && workflowMatch[2] !== 'start') throw new ApiError(409, 'Прямые ЭТрН используют сохранённое подтверждение убытия водителя.');
         if (!direct && workflowMatch[2] !== 'loading-facts' && !(request.method === 'GET' && !workflowMatch[2])) assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
@@ -1000,6 +1016,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const signingConfig = options.sabyClient?.config ?? sabyConfigFromEnv();
           const queued = await operations.mutate(base.provenance.sourceSha256, latest => {
             const currentActor = authorized(latest);
+            assertTripExchangeRunning(latest, tripId);
             const start = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, latest), tripId), latest) ? startNkDirectEtrn : startAutomaticTripSaby;
             start({ base, data: latest, tripId, actorId: currentActor.id, config: signingConfig, previewToken: body.previewToken as string, mode: body.mode as 'draft' | 'sign_and_send' });
             return { result: read(latest), changed: true };
@@ -1130,7 +1147,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (tripIdMatch) {
           const id = decodeURIComponent(tripIdMatch[1]);
           if (actor) requireWholeTrip(authorized(stored), fullSnapshot, id);
-          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id, readTripNumbers(fullSnapshot, stored)), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
+          return write(response, 200, JSON.stringify({ deletion: { reason: tripDeletionBlocker(stored, id, fullSnapshot) }, trip: getShipmentTrip(snapshot, id, readTripNumbers(fullSnapshot, stored)), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
         }
         if (shipmentIdMatch) {
           const shipment = snapshot.shipments.find(row => row.id === decodeURIComponent(shipmentIdMatch[1]));

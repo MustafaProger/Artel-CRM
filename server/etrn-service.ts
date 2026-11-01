@@ -1,3 +1,4 @@
+import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { requiresEtrn, requireEtrnDelivery } from './trip-etrn-scope';
 import { createHash, randomUUID } from 'node:crypto';
@@ -398,6 +399,7 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
   const source = base.provenance.sourceSha256;
   const leaseId = randomUUID();
   const claimed = await store.mutate(source, data => {
+    assertTripExchangeRunning(data, tripId);
     const fullSnapshot = currentSnapshot(base, data);
     authorize(fullSnapshot, data);
     assertTripTransportDocumentsAllowed(getShipmentTrip(fullSnapshot, tripId), data);
@@ -432,7 +434,7 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
       const document = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
       if (!document || document.leaseId !== leaseId || !document.leaseUntil || Date.parse(document.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс обмена ЭТрН истёк или изменился. Выполните сверку.');
     };
-    client = client.withRequestGuard(checkAccess);
+    client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
     let beganWrite = false;
     let id = claimed.id;
     const update = async (patch: Partial<EtrnDocument>) => store.mutate(source, data => {
@@ -470,6 +472,7 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
       const remote = linked ?? await client.readConsignmentNote(id!);
       await update(confirmed(remote, { ...claimed, id }, !!linked));
     } catch (error) {
+      if (error instanceof TripExchangePausedError) throw error;
       const uncertain = !!id || claimed.status === 'unknown' || beganWrite && (!(error instanceof SabyError) || error.uncertain);
       await update({ id, status: uncertain ? 'unknown' : 'error', lastError: error instanceof SabyError || error instanceof ApiError ? error.message : 'Обмен ЭТрН не подтверждён. Выполните сверку состояния.', updatedAt: stamp() });
       if (error instanceof ApiError) throw error;
@@ -538,6 +541,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
   const allErrors = direct ? preparedNkDirectFromSnapshot(initialSnapshot, initial, tripId, client.config).blockers : (initial.tripSaby?.trips[tripId]?.deliveries ?? []).flatMap(row => sabyConsignmentBlockers(snapshotWithLoading(row.snapshot, facts, orderInput!.order)));
   if (allErrors.length) return { status: 'error', id: null, lastError: [...new Set(allErrors)].join(' ') };
   const claimed = await store.mutate(source, data => {
+    assertTripExchangeRunning(data, tripId);
     const current = currentSnapshot(base, data);
     authorize(current, data);
     if (direct) authorizeNkDirectFromSnapshot(base, current, data, tripId, client.config);
@@ -581,7 +585,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
     const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
     if (!current || current.leaseId !== leaseId || !current.leaseUntil || Date.parse(current.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс ЭТрН истёк. Выполните сверку.');
   };
-  client = client.withRequestGuard(checkAccess);
+  client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
   const validateReservation = (remote: SabyObject) => {
     const parties = sabyObject(remote.Стороны) ? remote.Стороны : {};
     if (remote.Идентификатор !== doc.id || remote.Тип !== 'ConsignmentNote' || remote.Примечание !== doc.marker || remote.Дата !== doc.snapshot.fields.date?.split('-').reverse().join('.') || !sabyText(remote.Номер) || doc.number && remote.Номер !== doc.number || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' || !partyMatches(remote.НашаОрганизация, doc.snapshot.customerOrganization) || direct && (!partyMatches(remote.Грузоотправитель ?? parties.Отправитель, doc.snapshot.customerOrganization) || !partyMatches(remote.ТранспортнаяКомпания ?? parties.Перевозчик, doc.snapshot.carrierOrganization) || !partyMatches(remote.Грузополучатель ?? parties.Получатель, doc.snapshot.profile.recipient) || !sabyDocumentWorkflow(remote).revision)) throw new SabyError('unknown', 'Saby не подтвердил номер, реквизиты и редакцию существующей ЭТрН. Новое создание запрещено.', true);
@@ -869,6 +873,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
     await checkAccess();
     await update(confirmed(remote, doc));
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     if (currentRequest && error instanceof SabyRequestError && hash(error.request) === hash(currentRequest)) {
       await update({ writeAttempts: doc.writeAttempts?.map(attempt => hash(attempt.request) === hash(currentRequest) ? { ...attempt, outcome: error.uncertain ? 'uncertain' : 'denied', ...(error.response ? { response: error.response } : {}) } : attempt) }, true);
     }

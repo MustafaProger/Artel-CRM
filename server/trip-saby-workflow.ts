@@ -1,3 +1,4 @@
+import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { requiresEtrn, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import { createHash, randomUUID } from 'node:crypto';
@@ -380,6 +381,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
   if (options.signingStart) validateSigningStart(options.signingStart.request);
   const source = base.provenance.sourceSha256; const leaseId = randomUUID();
   const claimed = await store.mutate(source, data => {
+    assertTripExchangeRunning(data, tripId);
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId); const existing = data.tripSaby?.trips[tripId];
     assertTripTransportDocumentsAllowed(trip, data);
@@ -426,6 +428,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
       // The dispatch marker may wait behind a revocation write. Recheck in its transaction,
       // not only in the earlier HTTP guard, before authorizing the one outbound request.
       if (requireSigningAccess) {
+        assertTripExchangeRunning(data, tripId);
         const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
         authorizeSigningActor(snapshot, data, tripId, current);
         authorizeAutomaticTripSaby(snapshot, data, tripId, current, client.config);
@@ -441,7 +444,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
     authorizeSigningActor(snapshot, data, tripId, current);
     authorizeAutomaticTripSaby(snapshot, data, tripId, current, client.config);
   };
-  client = client.withRequestGuard(checkAccess);
+  client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
   const signingContext = { client, record: () => record, update, checkAccess, allowSigningRecovery: options.allowSigningRecovery === true, allowVehicleCorrection: options.allowVehicleCorrection === true, recoveryRequestedBy: options.initiatorId };
   let signingStarted = !options.signingStart;
   let writing: 'reservation' | 'upload' | null = null;
@@ -577,6 +580,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
           // A partial network result stops further writes; already-created IDs are retained.
           if (result.status !== 'draft') break;
         } catch (error) {
+          if (error instanceof TripExchangePausedError) throw error;
           await update(row => { const current = row.deliveries.find(item => item.shipmentId === delivery.shipmentId)!; current.status = error instanceof ApiError && [400, 403, 422].includes(error.status) && !current.id ? 'error' : 'unknown'; current.lastError = error instanceof SabyError || error instanceof ApiError ? error.message : 'Результат создания ЭТрН не подтверждён. Выполните сверку.'; });
           if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
           break;
@@ -595,6 +599,7 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
       }
     }
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     if (!signingStarted) throw error;
     // If authorization/storage failed after intent persistence but before invoking the client, no external write ran.
     const definite = armedAction !== null || error instanceof SabyError && !error.uncertain && ['authorization', 'permission', 'configuration', 'validation'].includes(error.kind);
@@ -698,6 +703,7 @@ async function advanceDriverDraft(context: {
         }, true);
       });
     } catch (error) {
+      if (error instanceof TripExchangePausedError) throw error;
       if (context.record().driverFlow!.massUpdateAttempted) await update(row => { row.driverFlow!.massUpdateFailure ??= sabyFailureDiagnostic(error, 'dispatch', 'СБИС.ЗаписатьВложение'); });
       throw error;
     }

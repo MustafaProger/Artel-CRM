@@ -34,7 +34,7 @@ test('initial list flags missing input before Saby is opened, matches panel and 
     currentSnapshot(rt.base, before);
     const list = await get('/api/shipment-trips');
     assert.ok(list.trips[0].workflowIssues.some((issue: { message: string }) => /наименование для документов/.test(issue.message)));
-    assert.ok(list.trips[0].workflowIssues.some((issue: { shipmentId?: string; message: string }) => issue.shipmentId === rt.trip.customers[1].id && /масса/.test(issue.message)));
+    assert.ok(!list.trips[0].workflowIssues.some((issue: { message: string }) => /не указана масса/.test(issue.message)));
     assert.doesNotMatch(JSON.stringify(list), /private-integration-session|authorization|payloadHash/);
     const panel = await get(`/api/shipment-trips/${rt.tripId}/saby-workflow`);
     assert.deepEqual(panel.workflowIssues, list.trips[0].workflowIssues);
@@ -58,7 +58,9 @@ test('excluded deliveries and completed exchanges are not newly blocked by input
     for (const row of Object.values(data.shipments)) { row.fields.trip_flow_version = 'driver-v1'; row.fields.quantity_tonnes = null; row.fields.quantity_gross_tonnes = null; row.fields.trip_total_tonnes = null; }
     data.shipments[rt.trip.customers[1].id].fields.etrn_not_required = 'true';
     const read = () => { const snapshot = currentSnapshot(rt.base, data); return readTripWorkflowIssues(data, rt.tripId, { snapshot, trip: getShipmentTrip(snapshot, rt.tripId), config: integrationConfig() }); };
-    assert.ok(read().some(issue => issue.shipmentId === rt.trip.customers[0].id));
+    assert.deepEqual(read(), []);
+    data.directories!.products[0].documentName = '';
+    assert.ok(read().length);
     assert.ok(!read().some(issue => issue.shipmentId === rt.trip.customers[1].id));
     for (const row of Object.values(data.shipments)) { row.fields.organization_id = 'nk-artel'; row.fields.trip_document_policy = 'nk-direct-autostart-v1'; }
     const before = structuredClone(data);

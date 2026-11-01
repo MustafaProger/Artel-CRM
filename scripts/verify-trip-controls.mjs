@@ -1,0 +1,76 @@
+import { chromium, webkit } from 'playwright';
+import AxeBuilder from '@axe-core/playwright';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+const origin = process.env.TRIP_CONTROLS_ORIGIN || 'http://127.0.0.1:5199';
+const out = resolve(import.meta.dirname, '../../ui'); await mkdir(out, { recursive: true });
+const report = [];
+const color = locator => locator.evaluate(node => getComputedStyle(node).backgroundColor);
+for (const [engine, launcher] of Object.entries({ chromium, webkit })) for (const width of [375, 1440]) {
+  const browser = await launcher.launch();
+  const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
+  const page = await context.newPage();
+  const errors = []; page.on('pageerror', error => errors.push(String(error)));
+  const mutationRequests = []; page.on('request', request => { if (request.method() !== 'GET' && request.url().includes('/api/')) mutationRequests.push(request.url()); });
+  try {
+    await page.request.get(origin + '/__fixture');
+    await page.goto(origin + '/__preview');
+    const openTrips = async () => { await page.locator('.trips-section-tabs').getByRole('button', { name: 'Рейсы', exact: true }).click(); await page.locator('.trip-card').first().waitFor(); };
+    await openTrips();
+    const card = number => page.locator('.trip-card').filter({ has: page.getByRole('heading', { name: `Рейс №${number}`, exact: true }) });
+    assert.equal(await card(55).count(), 1);
+    assert.equal(await card(55).evaluate(node => node.classList.contains('trip-has-error')), false);
+    assert.equal(await card(57).evaluate(node => node.classList.contains('trip-has-error')), true);
+    assert.equal(await card(55).getByRole('button', { name: 'Удалить рейс', exact: true }).count(), 0);
+    await card(55).getByRole('button', { name: 'Saby', exact: true }).click();
+    await card(55).getByText('Черновик заявки · ожидаем водителя', { exact: true }).waitFor();
+    assert.equal(await card(55).evaluate(node => node.classList.contains('trip-has-error')), false);
+    assert.equal(await color(card(55).getByRole('button', { name: 'Удалить рейс', exact: true })), 'rgb(163, 55, 43)');
+    assert.equal(await color(card(55).getByRole('button', { name: 'Остановить обмен', exact: true })), 'rgb(244, 201, 93)');
+    await card(55).getByRole('button', { name: 'Проверить данные', exact: true }).click();
+    await card(55).getByText('Данные CRM проверены. Изменений нет.', { exact: true }).waitFor();
+    assert.equal(mutationRequests.length, 0, 'readiness check must not launch signing or provider exchange');
+    await card(55).getByRole('button', { name: 'Остановить обмен', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    assert.equal(await color(dialog.getByRole('button', { name: 'Остановить обмен', exact: true })), 'rgb(244, 201, 93)');
+    assert.deepEqual((await new AxeBuilder({ page }).include('dialog').analyze()).violations.map(row => row.id), []);
+    await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' }); assert.equal(mutationRequests.length, 0);
+    await card(55).getByRole('button', { name: 'Остановить обмен', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Остановить обмен', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await card(55).getByRole('button', { name: 'Возобновить обмен', exact: true }).waitFor();
+    assert.equal(await card(55).evaluate(node => node.classList.contains('trip-has-error')), false);
+    await page.reload(); await openTrips(); await card(55).getByRole('button', { name: 'Saby', exact: true }).click();
+    await card(55).getByRole('button', { name: 'Возобновить обмен', exact: true }).waitFor();
+    await card(55).getByRole('button', { name: 'Удалить рейс', exact: true }).click();
+    await dialog.getByText(/Рейс связан с документами Saby/).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: 'Удалить рейс', exact: true }).isDisabled(), true);
+    await dialog.getByRole('button', { name: 'Отмена', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+    await card(55).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: resolve(out, `${engine}-${width}-paused.png`), fullPage: true });
+    await card(55).getByRole('button', { name: 'Возобновить обмен', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Возобновить обмен', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+    await card(55).getByRole('button', { name: 'Остановить обмен', exact: true }).waitFor();
+    await card(58).getByRole('button', { name: 'Saby', exact: true }).click();
+    await card(58).getByRole('button', { name: 'Удалить рейс', exact: true }).click();
+    await dialog.getByText('Рейс и все его доставки будут удалены из общего учёта CRM.', { exact: true }).waitFor();
+    const axe = await new AxeBuilder({ page }).include('dialog').analyze();
+    assert.deepEqual(axe.violations.map(row => row.id), []);
+    await page.screenshot({ path: resolve(out, `${engine}-${width}-delete.png`), fullPage: true });
+    await dialog.getByRole('button', { name: 'Удалить рейс', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+    await page.getByText('Рейс и его доставки удалены.', { exact: true }).waitFor();
+    await card(55).waitFor(); await card(57).waitFor();
+    assert.equal(await card(58).count(), 0); assert.equal(await card(55).count(), 1); assert.equal(await card(57).count(), 1);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.equal(mutationRequests.filter(url => url.endsWith('/control')).length, 2);
+    assert.equal(mutationRequests.filter(url => !url.endsWith('/control')).length, 1);
+    assert.deepEqual(errors, []);
+    report.push({ engine, width, passed: true, axeViolations: 0, colorsVerified: true, mutations: mutationRequests.length });
+  } catch (error) { await page.screenshot({ path: resolve(out, `${engine}-${width}-failure.png`), fullPage: true }); throw error; }
+  finally { await browser.close(); }
+}
+await writeFile(resolve(out, 'report.json'), JSON.stringify({ passed: true, syntheticOnly: true, errors: [], checks: report }, null, 2));
+console.log(JSON.stringify(report));

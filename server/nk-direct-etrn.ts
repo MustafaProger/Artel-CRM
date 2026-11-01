@@ -1,3 +1,4 @@
+import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { createHash, randomUUID } from 'node:crypto';
 import { NATIVE_APPROVED_REDIRECTION_METHOD } from './saby-consignment-evidence';
@@ -180,13 +181,14 @@ export async function runNkDirectEtrn(options: EtrnOptions): Promise<void> {
     return authorizeNkDirectFromSnapshot(base, snapshot, data, tripId, config);
   };
   const claimed = await store.mutate(source, data => {
+    assertTripExchangeRunning(data, tripId);
     const record = authority(data);
     if (record.leaseId && Date.parse(record.leaseUntil ?? '') > Date.now()) throw new ApiError(409, 'Прямой обмен уже выполняется.');
     record.leaseId = leaseId; record.leaseUntil = new Date(Date.now() + 300_000).toISOString(); record.lastCheckAttemptAt = stamp();
     return { result: structuredClone(record), changed: true };
   });
   const check = async () => { const data = await store.read(source); const record = authority(data); if (record.attemptId !== claimed.attemptId || record.leaseId !== leaseId || Date.parse(record.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс прямого обмена изменился.'); };
-  const client = originalClient.forNkDirectEtrn().withRequestGuard(check);
+  const client = controlledTripClient(originalClient.forNkDirectEtrn().withRequestGuard(check), store, source, tripId);
   const context = { ...options, client, authorize: (snapshot: ShipmentAccessContext, data: OperationsData) => { authorize(snapshot, data); authorizeNkDirectEtrn(base, data, tripId, config); } };
   let released = false;
   const update = async (change: (record: NkDirectEtrnRecord, data: OperationsData) => void, release = false) => store.mutate(source, data => {
@@ -223,6 +225,7 @@ export async function runNkDirectEtrn(options: EtrnOptions): Promise<void> {
     // is no provider action between them; errors/early returns still release below.
     released = true;
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     // Even when permissions were revoked, preserve diagnostics without granting another request.
     await store.mutate(source, data => {
       const record = data.etrn?.trips[tripId]?.direct;

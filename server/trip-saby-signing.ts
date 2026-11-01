@@ -1,3 +1,4 @@
+import { TripExchangePausedError } from './trip-exchange-control';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { requiresEtrn } from './trip-etrn-scope';
 import { getShipmentTrip } from './shipment-trips';
@@ -438,6 +439,7 @@ export async function ensureSigningCarrierDraft(context: AdvanceContext): Promis
     await checkAccess(); await prepareCarrierDraft(client, binding);
     await update(row => { row.signing!.carrierDraft!.state = 'ready'; });
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     const definite = error instanceof SabyError && error.kind === 'validation' && !error.uncertain;
     await update(row => { if (row.signing!.carrierDraft) row.signing!.carrierDraft!.state = definite ? 'blocked' : 'unknown'; row.signing!.carrier = { state: definite ? 'blocked' : 'unknown', diagnostic: sabyFailureDiagnostic(error, 'preflight', 'СБИС.ПодготовитьДействие'), message: definite ? (error as SabyError).message : 'Результат подготовки ответа НК пока неизвестен. CRM сверяет его без повторной подготовки.' }; });
     if (error instanceof ApiError && [401, 403, 409].includes(error.status)) throw error;
@@ -564,6 +566,7 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
       }
     });
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     const latest = context.record().signing![side];
     // Read-only preflight failures must not consume the narrowly eligible legacy recovery.
     // The workflow records the error separately; the original blocked proof stays intact.

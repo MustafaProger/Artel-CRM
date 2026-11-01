@@ -18,9 +18,7 @@ import ShipmentTripEditor from './ShipmentTripEditor'
 import { mapLink } from './map-link'
 import { formatDate, number } from './utils'
 import TripEtrnPanel from './TripEtrnPanel'
-import type { TripSabyAutomationCapability, TripSabyResponse } from './trip-saby-model'
-import type { SabyTripResponse } from './saby-model'
-import type { EtrnTripResponse } from './etrn-api-model'
+import type { TripSabyAutomationCapability } from './trip-saby-model'
 import { readIntermediateStops } from './trip-route'
 import { compareTripsNewestFirst } from './trip-order'
 import './shipments.css'
@@ -102,8 +100,8 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
           <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}<TripMapLink address={trip.fields.loading_address} mapUrl={trip.fields.loading_map_url}/></div>
           <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{customer.fields.customer_name || companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.etrn_not_required === 'true' && <small className="trip-invoice-badge">ЭТрН не нужна</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}<TripMapLink address={customer.fields.unloading_address} mapUrl={customer.fields.unloading_map_url}/></div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
           {trip.fields.trip_notes && <p className="trip-card-notes">{trip.fields.trip_notes}</p>}
-          <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
-          {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
+          <footer className="trip-card-footer"><span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
+          {sabyId === trip.id && <TripEtrnPanel onDelete={allowDelete ? () => setDeleting(trip.id) : undefined} trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
         </article>
       })}</div>
       {!filtered.length && !error && <div className="panel trips-empty"><Truck size={30}/><h2>{query ? 'Рейсы не найдены' : 'Рейсов пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}</div>}
@@ -120,21 +118,21 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
 function DeleteTripDialog({ tripId, data, onClose: onDismiss, onDeleted }: { tripId: string; data: DirectoryData; onClose: () => void; onDeleted: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false)
   const [trip, setTrip] = useState<ShipmentTrip | null>(null), [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [blocked, setBlocked] = useState(false), [reload, setReload] = useState(0)
+  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [blocked, setBlocked] = useState(''), [reload, setReload] = useState(0)
   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   useEffect(() => {
     const controller = new AbortController(), endpoint = `/api/shipment-trips/${encodeURIComponent(tripId)}`
-    setLoading(true); setError(''); setTrip(null); setBlocked(false)
+    setLoading(true); setError(''); setTrip(null); setBlocked('')
     const read = async (suffix: string) => {
       const response = await fetch(`${endpoint}${suffix}`, { signal: controller.signal })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || 'Не удалось проверить рейс перед удалением.')
       return result
     }
-    void Promise.all([read(''), read('/saby-workflow'), read('/saby'), read('/etrn')]).then(([current, workflow, legacy, etrn]: [{ trip: ShipmentTrip }, TripSabyResponse, SabyTripResponse, EtrnTripResponse]) => {
+    void read('').then((current: { trip: ShipmentTrip; deletion?: { reason: string | null } }) => {
       if (controller.signal.aborted) return
       setTrip(current.trip)
-      setBlocked(workflow.locked || legacy.saby.documents.some(doc => doc.status !== 'error' || !!doc.id) || etrn.deliveries.some(delivery => delivery.document && (delivery.document.status !== 'error' || !!delivery.document.id)))
+      setBlocked(current.deletion?.reason || '')
     }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Не удалось проверить рейс.') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
@@ -152,9 +150,9 @@ function DeleteTripDialog({ tripId, data, onClose: onDismiss, onDeleted }: { tri
   }
   return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="trip-delete-title" onCancel={event => { event.preventDefault(); if (!inFlight.current) onClose() }}>
     <h2 id="trip-delete-title">Удалить рейс целиком?</h2>
-    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">Рейс связан с документами Saby. Удаление запрещено до сверки документов.</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
+    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">{blocked}</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={loading || saving} onClick={() => setReload(value => value + 1)}>Обновить состав</button></div>}
-    <footer><button type="button" className="button" disabled={saving} onClick={onClose} autoFocus>Отмена</button><button type="button" className="button danger" disabled={loading || saving || !trip || blocked || !!error} onClick={() => void remove()}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}Удалить рейс</button></footer>
+    <footer><button type="button" className="button" disabled={saving} onClick={onClose} autoFocus>Отмена</button><button type="button" className="button danger" disabled={loading || saving || !trip || !!blocked || !!error} onClick={() => void remove()}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}Удалить рейс</button></footer>
   </dialog>
 }
 

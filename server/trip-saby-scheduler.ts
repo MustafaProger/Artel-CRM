@@ -1,3 +1,4 @@
+import { exchangeControl } from './trip-exchange-control';
 import type { ShipmentAccessContext } from './shipment-operations';
 import type { Snapshot } from '../web/src/model';
 import { ApiError } from './api-error';
@@ -45,6 +46,7 @@ function workflowContinuing(record: TripSabyRecord, now: number): boolean {
   return ['awaiting_driver', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic || !!record.driverFlow && record.phase === 'completed' && !record.stage6CompletedAt;
 }
 function workflowDue(data: OperationsData, tripId: string, record: TripSabyRecord, now: number, carrierWaitingOnly: boolean): boolean {
+  if (exchangeControl(data, tripId).paused) return false;
   if (carrierWaitingOnly && (!carrierFastPolling(record, now) || now - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) return false;
   if (!(record.signing?.requestedBy ?? record.initiatorId)) return false;
   if (workflowContinuing(record, now)) return true;
@@ -85,7 +87,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
   const source = base.provenance.sourceSha256;
   const initial = await store.read(source);
   for (const [tripId, saved] of Object.entries(initial.etrn?.trips ?? {})) {
-    if (!saved.direct || options.carrierWaitingOnly || options.tripId && options.tripId !== tripId) continue;
+    if (exchangeControl(initial, tripId).paused || !saved.direct || options.carrierWaitingOnly || options.tripId && options.tripId !== tripId) continue;
     if (!directDue(saved.direct, options.now ?? Date.now())) continue;
     try {
       await runNkDirectEtrn({ base, store, tripId, authorize: () => {}, client: options.client ?? new SabyClient(config, options.send ?? fetch, undefined, options.runNetwork) });
@@ -190,7 +192,7 @@ export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 
       const scan = (async () => {
         const data = await options.store.read(options.base.provenance.sourceSha256);
         const now = options.now ?? Date.now();
-        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (saved.direct && directDue(saved.direct, now)) launch(tripId);
+        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (!exchangeControl(data, tripId).paused && saved.direct && directDue(saved.direct, now)) launch(tripId);
         if (!sabyCredentialBlockers(options.config).length) for (const [tripId, record] of Object.entries(data.tripSaby?.trips ?? {})) {
           if (workflowDue(data, tripId, record, now, carrierWaitingOnly)) launch(tripId, carrierWaitingOnly);
         }

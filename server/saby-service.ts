@@ -1,3 +1,4 @@
+import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import Decimal from 'decimal.js';
@@ -115,6 +116,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
   const source = base.provenance.sourceSha256;
   const leaseId = randomUUID();
   const claimed = await store.mutate(source, data => {
+    assertTripExchangeRunning(data, tripId);
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId);
     assertTripTransportDocumentsAllowed(trip, data);
@@ -137,7 +139,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
     return { result: structuredClone(records), changed: true };
   });
   if (claimed) {
-    client = client.withRequestGuard(async () => {
+    client = controlledTripClient(client, store, source, tripId).withRequestGuard(async () => {
       const data = await store.read(source); authorize(currentShipmentAccess(base, data), data);
       const record = data.saby?.trips[tripId];
       if (!record || record.leaseId !== leaseId || !record.leaseUntil || Date.parse(record.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс передачи Saby истёк или изменён. Выполните сверку состояния.');
@@ -153,6 +155,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
     try {
       try { await client.verifyOrganizations(claimed[0].snapshot.customerOrganization, claimed[0].snapshot.carrierOrganization); }
       catch (error) {
+        if (error instanceof TripExchangePausedError) throw error;
         const message = error instanceof SabyError ? error.message : 'Не удалось проверить доступ к Saby.';
         for (const record of claimed.filter(doc => doc.status !== 'draft')) await update(record.shipmentId, { status: record.status === 'unknown' || record.id ? 'unknown' : 'error', lastError: message, updatedAt: now() });
         throw error;
@@ -182,6 +185,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
           if (result.Идентификатор !== id || result.Номер !== `CRM-${record.attemptId}`) throw new SabyError('unknown', 'Ответ Saby не совпадает с идентификатором и номером созданного заказа.', true);
           await update(record.shipmentId, confirmed(result, record));
         } catch (error) {
+          if (error instanceof TripExchangePausedError) throw error;
           const known = error instanceof SabyError;
           const uncertain = record.status === 'unknown' || !!id || beganWrite && (!known || error.uncertain);
           await update(record.shipmentId, { status: uncertain ? 'unknown' : 'error', lastError: known ? error.message : error instanceof ApiError ? error.message : 'Не удалось выполнить передачу в Saby. Выполните сверку состояния.', updatedAt: now() });
@@ -189,6 +193,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
         }
       }
     } catch (error) {
+      if (error instanceof TripExchangePausedError) throw error;
       if (!(error instanceof SabyError)) throw error;
     } finally {
       await store.mutate(source, data => {

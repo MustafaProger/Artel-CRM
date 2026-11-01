@@ -39,9 +39,9 @@ export function readTripWorkflowIssues(data: OperationsData, tripId: string, con
     if (!(error instanceof ApiError)) throw error
     issues.push({ step: 0, stage: 'Подготовка', message: error.message })
   }
-  // Driver drafts may be created without masses, but the card must already show
-  // that they still need input. Do not change the workflow's permission to start.
-  if (trip.fields.trip_flow_version === 'driver-v1') {
+  // Masses belong to the driver's normal loading stage. Only an inconsistency
+  // after recorded departure/confirmation is an input error for the operator.
+  if (trip.fields.trip_flow_version === 'driver-v1' && (data.driverTripProgress?.[tripId]?.departedAt || workflow?.driverFlow?.state === 'ready')) {
     for (const [index, delivery] of trip.customers.entries()) {
       if (requiresEtrn(delivery) && !(Number(delivery.fields.quantity_tonnes) > 0)) {
         issues.push({ step: 1, stage: 'Подтверждение водителя', message: `Доставка ${index + 1}: не указана масса.`, shipmentId: delivery.id })

@@ -1,3 +1,4 @@
+import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
 import { requireEtrnDelivery } from './trip-etrn-scope';
 import { getShipmentTrip } from './shipment-trips';
 import { assertTripTransportDocumentsAllowed, isNkDirectEtrn } from './trip-document-mode';
@@ -187,6 +188,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     return workflow;
   };
   let doc = await store.mutate(source, data => {
+    assertTripExchangeRunning(data, tripId);
     authority(data);
     const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
     if (!current?.id || current.status !== 'draft') throw new ApiError(409, 'Сначала подтвердите создание ЭТрН.');
@@ -209,7 +211,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     const latest = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
     if (!latest || latest.leaseId !== leaseId || Date.parse(latest.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс отправки ЭТрН истёк.');
   };
-  client = client.withRequestGuard(checkAccess);
+  client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
   const sideId = (side: SabySigningSide) => side === 'carrier' ? doc.dispatch?.carrierIdentity?.documentId ?? doc.id! : doc.id!;
   const directElectronic = doc.snapshot.documentMode === 'nk-direct-v1' && doc.snapshot.loadingActorMode === 'sender' && doc.senderTitleVersion === 2 && doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке';
   let senderRemoteForCarrier: SabyObject | undefined;
@@ -471,6 +473,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
       await update(row => { if (delivered) { row.dispatch!.completedAt ??= stamp(); if (accepted) row.dispatch!.recipientAcceptedAt ??= stamp(); row.dispatch!.lastError = undefined; } else { delete row.dispatch!.completedAt; delete row.dispatch!.recipientAcceptedAt; row.dispatch!.lastError = 'Подписи получены. Saby ещё не подтвердил передачу на этап приёмки именно этому клиенту.'; } });
     }
   } catch (error) {
+    if (error instanceof TripExchangePausedError) throw error;
     await update(row => {
       delete row.dispatch!.completedAt; delete row.dispatch!.recipientAcceptedAt;
       const step = row.dispatch!.sender.state !== 'confirmed' ? row.dispatch!.sender : row.dispatch!.carrier;

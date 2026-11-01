@@ -1,3 +1,4 @@
+import { validateTripExchangeControls, type TripExchangeControl } from './trip-exchange-control';
 import { WorkPartition, isWorkPartition } from './work-partition';
 import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
 import { validateDocumentArchive } from './document-archive';
@@ -51,6 +52,7 @@ export interface OperationsData {
   companies: Company[];
   directories?: Directories;
   paymentAllocations?: PaymentAllocation[];
+  tripExchangeControls?: Record<string, TripExchangeControl>;
   tripExecutions?: Record<string, StoredTripExecution>;
   driverTripProgress?: Record<string, DriverTripProgress>;
   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
@@ -92,6 +94,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
     if (!object(data.tripCreateRequests)) throw new StoreError('Invalid trip requests');
     for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
   }
+  try { validateTripExchangeControls(data.tripExchangeControls); } catch { throw new StoreError('Invalid trip exchange controls'); }
   try { validateTripExecutions(data.tripExecutions); } catch { throw new StoreError('Invalid trip executions'); }
   try { validateDriverTripProgress(data.driverTripProgress); } catch { throw new StoreError('Invalid driver trip progress'); }
   try { validateTripRequests(data.tripRequests, data.tripRequestCreates); } catch { throw new StoreError('Invalid trip requests'); }
