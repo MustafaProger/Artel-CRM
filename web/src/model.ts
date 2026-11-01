@@ -234,6 +234,7 @@ export interface Directories {
 
 /** A whole truck, represented by one accounting row per customer. */
 export interface ShipmentTrip {
+  workflowIssues?: import('./trip-workflow-issues').TripWorkflowIssue[];
   execution?: import('./trip-execution-model').TripExecution;
   id: string;
   number?: number;

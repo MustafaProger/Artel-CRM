@@ -1,3 +1,4 @@
+import type { TripWorkflowIssue } from './trip-workflow-issues'
 import { requiresEtrn } from './trip-etrn-scope'
 import { apiFetch as fetch, apiUrl } from './workspace-api'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -17,10 +18,11 @@ const safeSabyUrl = (value: string | null | undefined) => {
   try { const url = new URL(value || ''); return url.protocol === 'https:' && !url.username && !url.password && ['saby.ru', 'sbis.ru'].some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ? url.href : null } catch { return null }
 }
 
-export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data: DirectoryData }) {
+export default function TripEtrnPanel({ trip, data, onIssuesChange }: { trip: ShipmentTrip; data: DirectoryData; onIssuesChange?: (tripId: string, issues: TripWorkflowIssue[]) => void }) {
   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
   const etrnEndpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/etrn`
   const [result, setResult] = useState<Workflow | null>(null), [etrn, setEtrn] = useState<EtrnTripResponse | null>(null)
+  useEffect(() => { if (result?.workflowIssues) onIssuesChange?.(trip.id, result.workflowIssues) }, [result, trip.id, onIssuesChange])
   const [legacy, setLegacy] = useState<SabyTripResponse | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [refreshError, setRefreshError] = useState(''), [copied, setCopied] = useState(false)

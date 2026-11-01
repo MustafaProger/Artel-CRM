@@ -1,10 +1,11 @@
+import { TripIssueLabel } from './TripWorkflowAlert'
 import TripProcessPanel from './TripProcessPanel'
 import { Activity } from 'lucide-react'
 import { tripLabel } from './trip-identity'
 import './trip-identity.css'
 import { useDialogMotion } from './useDialogMotion'
 import { apiFetch as fetch } from './workspace-api'
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map as MapIcon, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
 import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
 import type { TripRequest } from './trip-request-model'
@@ -26,6 +27,7 @@ import './shipments.css'
 import './trips.css'
 
 export default function TripsPage({ data, canManagePlaces, onChanged, allowDelete = false }: { data: DirectoryData; canManagePlaces: boolean; onChanged: () => void; allowDelete?: boolean }) {
+  const updateWorkflowIssues = useCallback((tripId: string, issues: import('./trip-workflow-issues').TripWorkflowIssue[]) => { setTrips(current => current.map(trip => trip.id === tripId ? { ...trip, workflowIssues: issues } : trip)) }, [])
   const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
   const [view, setView] = useState<'requests' | 'map' | 'trips' | 'process'>('requests')
   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
@@ -93,14 +95,15 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}
     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем рейсы…</div> : <>
       <div className="trips-list">{filtered.slice(currentPage * 20, (currentPage + 1) * 20).map(trip => {
+        const issues = trip.workflowIssues ?? []
         const vehicle = directories.vehicles.find(item => item.id === trip.fields.vehicle_id)
-        return <article className="panel trip-card" key={trip.id} data-testid="trip-card">
-          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></header>
+        return <article className={`panel trip-card${issues.length ? ' trip-has-error' : ''}`} key={trip.id} data-testid="trip-card">
+          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><div className="trip-edit-action"><TripIssueLabel issues={issues} onClick={() => setSabyId(trip.id)}/><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></div></header>
           <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}<TripMapLink address={trip.fields.loading_address} mapUrl={trip.fields.loading_map_url}/></div>
           <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{customer.fields.customer_name || companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.etrn_not_required === 'true' && <small className="trip-invoice-badge">ЭТрН не нужна</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}<TripMapLink address={customer.fields.unloading_address} mapUrl={customer.fields.unloading_map_url}/></div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
           {trip.fields.trip_notes && <p className="trip-card-notes">{trip.fields.trip_notes}</p>}
-          <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></footer>
-          {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data}/>}
+          <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
+          {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
         </article>
       })}</div>
       {!filtered.length && !error && <div className="panel trips-empty"><Truck size={30}/><h2>{query ? 'Рейсы не найдены' : 'Рейсов пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}</div>}

@@ -1,3 +1,4 @@
+import { readTripWorkflowIssues } from './trip-workflow-issues';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { directoryMutation } from './directory-access';
 import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
@@ -981,7 +982,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const authorize = (snapshot: ShipmentAccessContext, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
         const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
         const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
-        const read = (latest: import('./operations-store').OperationsData) => ({ ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+        const read = (latest: import('./operations-store').OperationsData) => {
+          const snapshot = currentSnapshot(base, latest);
+          return ({ workflowIssues: readTripWorkflowIssues(latest, tripId, { snapshot, trip: getShipmentTrip(snapshot, tripId), config: options.sabyClient?.config ?? sabyConfigFromEnv() }), ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+        };
         const direct = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, data), tripId), data);
         if (direct && workflowMatch[2] && workflowMatch[2] !== 'start') throw new ApiError(409, 'Прямые ЭТрН используют сохранённое подтверждение убытия водителя.');
         if (!direct && workflowMatch[2] !== 'loading-facts' && !(request.method === 'GET' && !workflowMatch[2])) assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
@@ -1115,10 +1119,11 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         if (pathname === '/api/shipment-trips') {
           const numbers = readTripNumbers(fullSnapshot, stored);
+          const config = options.sabyClient?.config ?? sabyConfigFromEnv();
           const currentActor = actor ? authorized(stored) : null;
           const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
             try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
-          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
+          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id, { snapshot: fullSnapshot, trip: getShipmentTrip(fullSnapshot, id, numbers), config }) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
           return write(response, 200, JSON.stringify({ trips, automation }));
         }
