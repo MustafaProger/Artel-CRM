@@ -1,3 +1,4 @@
+import { tripLabel } from './trip-identity'
 import TripExchangeActions from './TripExchangeActions'
 import type { TripWorkflowIssue } from './trip-workflow-issues'
 import { requiresEtrn } from './trip-etrn-scope'
@@ -185,13 +186,13 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
     : result.deliveries.some(delivery => delivery.dispatch?.sender.state !== 'confirmed') ? 'Подписание ЭТрН от имени НК'
     : result.deliveries.some(delivery => delivery.dispatch?.carrier.state !== 'confirmed') ? 'Подписание титула перевозчика'
     : 'Передача ЭТрН клиентам'
-  if (!result) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+  if (!result) return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`} aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>Документы Saby</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Загрузка документов"/>}</div>
     {error ? <p className="shipment-error" role="alert">{error}</p> : <p role="status">Загружаем маршрут и этапы обмена…</p>}
     {onDelete && !busy && <button type="button" className="button danger" onClick={onDelete}>Удалить рейс</button>}
     {!busy && <button type="button" className="button" onClick={() => { setBusy(true); setError(''); void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) }) }}><RefreshCw size={15}/>Повторить загрузку</button>}
   </section>
-  if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+  if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`} aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление состояния"/>}</div>
     {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>}
     <p>НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик, без заказа-заявки. Состав документов определяется флажком «ЭТрН не нужна» у каждой доставки.</p>
@@ -201,7 +202,7 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
     {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
     {result.lastError && <p className="shipment-error" role="alert">{result.lastError}</p>}
     {!!result.blockers.length && <div className="trip-saby-blockers"><p>Что требуется для прямой ЭТрН:</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
-    {!result.notRequired && <TripLoadingDetails key={trip.id} tripId={trip.id} disabled={busy} locked={result.locked} onSaved={async () => { await read() }}/>}
+    {!result.notRequired && <TripLoadingDetails labelSuffix={tripLabel(trip)} key={trip.id} tripId={trip.id} disabled={busy} locked={result.locked} onSaved={async () => { await read() }}/>}
     {!!result.previousExchanges?.length && <details className="workflow-history"><summary>Предыдущие накладные</summary><ol>{result.previousExchanges.flatMap((exchange, exchangeIndex) => exchange.documents.map((document, documentIndex) => {
       const url = safeSabyUrl(document.url)
       return <li key={`${exchangeIndex}-${documentIndex}`}><span>{url ? <a href={url} target="_blank" rel="noreferrer">{document.number ? `Накладная № ${document.number}` : 'Открыть накладную в Saby'} <ArrowUpRight size={13}/></a> : document.number ? `Накладная № ${document.number}` : 'Накладная без подтверждённого номера'}{document.status && <> · {document.status}</>}</span><time dateTime={exchange.at}>{workflowTime(exchange.at)}</time></li>
@@ -222,8 +223,8 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
     })}
     {actions}
   </section>
-  if (result?.notRequired) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby"><h3>ЭТрН не нужна</h3><p>Для всех клиентов рейса передача в Saby отключена. Задание водителя и факты погрузки сохраняются в CRM.</p>{actions}</section>
-  return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+  if (result?.notRequired) return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`}><h3>ЭТрН не нужна</h3><p>Для всех клиентов рейса передача в Saby отключена. Задание водителя и факты погрузки сохраняются в CRM.</p>{actions}</section>
+  return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`} aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>АРТЭЛЬ → НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление документов"/>}</div>
     {error && <p className="shipment-error" role="alert">{error}</p>}
     {result && <>
@@ -239,9 +240,9 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
       {startUncertain && <p className="workflow-sync-warning" role="status">Результат запуска пока не подтверждён. Нажмите «Проверить данные»; повторный запуск доступен только после успешной проверки.</p>}
       {!!result.blockers.length && <div className="trip-saby-blockers"><p>{savedFactsNeedReconciliation ? 'Что требует проверки:' : automatic ? 'Что мешает автоматическому обмену:' : 'Для создания заявки заполните:'}</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
       {result.order && <div className="etrn-result workflow-order"><div><span className="workflow-eyebrow">ОБЩАЯ ЗАЯВКА</span><h4>{result.order.number ? `№ ${result.order.number}` : 'Номер ожидается'}</h4><p>{result.order.remoteStatus || 'Состояние уточняется'}</p>{result.phase === 'completed' && <p className="etrn-note">Последнее состояние перед созданием ЭТрН. Дальше автоматически проверяются ЭТрН доставок.</p>}</div>{orderUrl && <a className="button" href={orderUrl} target="_blank" rel="noreferrer">Открыть заявку в Saby <ArrowUpRight size={14}/></a>}</div>}
-      {!waitingDriver && result.order?.id && (result.signing || (!result.carrierConfirmed && !['rejected', 'cancelled', 'operator_error'].includes(result.order.exchangeStage || ''))) && <TripSabySigningPanel key={`${trip.id}:${result.order.id}`} endpoint={endpoint} order={result.order} signing={result.signing} automation={result.automation} disabled={paused || busy} onBusyChange={signingBusyChanged} onWorkflowChange={signingChanged} onRefresh={async () => { await read() }} onReconcile={reconcileSigning}/>}
+      {!waitingDriver && result.order?.id && (result.signing || (!result.carrierConfirmed && !['rejected', 'cancelled', 'operator_error'].includes(result.order.exchangeStage || ''))) && <TripSabySigningPanel labelSuffix={tripLabel(trip)} key={`${trip.id}:${result.order.id}`} endpoint={endpoint} order={result.order} signing={result.signing} automation={result.automation} disabled={paused || busy} onBusyChange={signingBusyChanged} onWorkflowChange={signingChanged} onRefresh={async () => { await read() }} onReconcile={reconcileSigning}/>}
       {handoff && !result.carrierConfirmed && <details className="workflow-handoff" open={['carrier_details_required', 'carrier_action_required'].includes(result.order?.exchangeStage ?? '') || undefined}><summary>Данные водителя и автомобиля для НК АРТЭЛЬ</summary><p className="etrn-note">Сведения выбранного водителя и машины заполняются в ответе НК до подписи и утверждения.</p><dl>{[['Водитель', handoff.driverName], ['Телефон', handoff.driverPhone], ['Госномер', handoff.vehiclePlate], ['Автомобиль', handoff.vehicleType]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Не указано'}</dd></div>)}</dl><button className="button" type="button" onClick={() => void copyHandoff()}><Copy size={14}/>{copied ? 'Скопировано' : 'Скопировать данные'}</button></details>}
-      {result.locked && !result.carrierConfirmed && <section className="workflow-handoff workflow-carrier-fill" aria-label="Заполнение ответа НК">
+      {result.locked && !result.carrierConfirmed && <section className="workflow-handoff workflow-carrier-fill" aria-label={`Заполнение ответа НК · ${tripLabel(trip)}`}>
         <header><h4>Водитель и машина</h4>{result.carrierFill?.checkedAt && <span className="workflow-fill-checked">Проверено {workflowTime(result.carrierFill.checkedAt)} · Москва</span>}</header>
         {result.carrierFill ? <>
           <ul className="workflow-fill-statuses">{([

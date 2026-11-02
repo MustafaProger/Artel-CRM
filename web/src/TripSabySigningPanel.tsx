@@ -6,6 +6,7 @@ import { signingStepView, workflowDate, workflowOrderLabel, workflowTime } from 
 import { ourOrganizationDisplayName } from './our-organizations'
 
 interface Props {
+  labelSuffix?: string
   endpoint: string
   order: TripSabyOrderSummary
   signing?: TripSabySigning
@@ -19,7 +20,7 @@ interface Props {
 
 const sides = [['sender', 'АРТЭЛЬ', 'Подпись АРТЭЛЬ'], ['carrier', 'НК АРТЭЛЬ', 'Подпись НК АРТЭЛЬ']] as const
 
-export default function TripSabySigningPanel({ endpoint, order, signing, automation, disabled, onBusyChange, onWorkflowChange, onRefresh, onReconcile }: Props) {
+export default function TripSabySigningPanel({ endpoint, order, signing, automation, labelSuffix, disabled, onBusyChange, onWorkflowChange, onRefresh, onReconcile }: Props) {
   const [preview, setPreview] = useState<TripSabySigningPreview | null>(null)
   const [selections, setSelections] = useState({ sender: '', carrier: '' })
   const [confirmed, setConfirmed] = useState(false), [busy, setBusy] = useState(false)
@@ -98,7 +99,7 @@ export default function TripSabySigningPanel({ endpoint, order, signing, automat
     }
   }
 
-  return <section className="workflow-signing" aria-label="Подписание заявки" aria-busy={busy}>
+  return <section className="workflow-signing" aria-label={`Подписание заявки${labelSuffix ? ` · ${labelSuffix}` : ''}`} aria-busy={busy}>
     <header><h4>{automatic ? legacyAutomatic ? 'Состояние подписи' : 'Автоматическое подписание' : 'Подписание из CRM'}</h4><span>{workflowOrderLabel(order)}</span></header>
     <p className="etrn-note">{automatic ? legacyAutomatic ? 'Сохранено состояние ранее начатого обмена. Автоматический режим не запускает повторную отправку этой заявки.' : 'После сохранения рейса CRM автоматически обрабатывает заявку и запрашивает подписи обеих сторон. Результаты Saby показаны ниже.' : 'После запуска CRM запросит подпись и отправку заявки АРТЭЛЬ, затем заполнит ответ НК и запросит его подпись. Если Saby потребует согласие владельца, его нужно подтвердить.'}</p>
     {error && <p className="shipment-error" role="alert">{error}</p>}

@@ -117,7 +117,7 @@ try {
     await dialog.getByRole('button', { name: 'Закрыть редактор', exact: true }).click(); await expect(dialog).toHaveCount(0);
     const sabyButton = card.getByRole('button', { name: 'Saby', exact: true });
     if (await sabyButton.getAttribute('aria-expanded') !== 'true') await sabyButton.click();
-    const panel = card.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+    const panel = card.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
     await expect(panel.getByRole('heading', { name: 'ЭТрН не нужна', exact: true })).toBeVisible();
     await expect(panel).toContainText('Задание водителя и факты погрузки сохраняются в CRM');
     await expect(panel.getByRole('button')).toHaveCount(0);

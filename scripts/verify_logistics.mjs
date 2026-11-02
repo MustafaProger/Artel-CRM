@@ -320,7 +320,7 @@ try {
   await expect(sabyCard).toHaveCount(2);
   const ownSabyCard = sabyCard.filter({ hasNotText: 'QA-FOREIGN-PRIVATE-TRIP' });
   await ownSabyCard.getByRole('button', { name: 'Saby', exact: true }).click();
-  const panel = ownSabyCard.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+  const panel = ownSabyCard.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
   const workflowPath = `/api/logistics/shipment-trips/${rt.tripId}/saby-workflow`;
   const etrnPath = `/api/logistics/shipment-trips/${rt.tripId}/etrn`;
   const beforeSabyAccounting = structuredClone((await rt.store.read(rt.source)).shipments);

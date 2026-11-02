@@ -129,11 +129,11 @@ try {
     await expect(dialog).toHaveCount(0);
     const sabyButton = card.getByRole('button', { name: 'Saby', exact: true });
     if (await sabyButton.getAttribute('aria-expanded') !== 'true') await sabyButton.click();
-    const panel = card.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+    const panel = card.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
     await expect(panel.getByRole('heading', { name: 'НК АРТЭЛЬ → Клиенты', exact: true })).toBeVisible();
     await expect(panel.getByRole('button')).toHaveCount(2);
     await expect(panel.getByRole('button', { name: 'Обновить состояние', exact: true })).toBeVisible();
-    const loadingForm = panel.getByRole('region', { name: 'Сведения о погрузке', exact: true });
+    const loadingForm = panel.getByRole('region', { name: /^Сведения о погрузке(?: · .*)?$/ });
     await expect(loadingForm.getByLabel('Фамилия', { exact: true })).toHaveValue(syntheticLoadingDetails().worker.surname);
     await expect(loadingForm.getByRole('button', { name: 'Сохранить сведения', exact: true })).toBeDisabled();
     await expect(panel).not.toContainText('АРТЭЛЬ → НК АРТЭЛЬ');

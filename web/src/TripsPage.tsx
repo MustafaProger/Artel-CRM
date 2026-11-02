@@ -25,24 +25,67 @@ import './shipments.css'
 import './trips.css'
 
 export default function TripsPage({ data, canManagePlaces, onChanged, allowDelete = false }: { data: DirectoryData; canManagePlaces: boolean; onChanged: () => void; allowDelete?: boolean }) {
-  const updateWorkflowIssues = useCallback((tripId: string, issues: import('./trip-workflow-issues').TripWorkflowIssue[]) => { setTrips(current => current.map(trip => trip.id === tripId ? { ...trip, workflowIssues: issues } : trip)) }, [])
+  const issueVersions = useRef(new Map<string, number>())
+  const updateWorkflowIssues = useCallback((tripId: string, issues: import('./trip-workflow-issues').TripWorkflowIssue[]) => {
+    issueVersions.current.set(tripId, (issueVersions.current.get(tripId) ?? 0) + 1)
+    setTrips(current => current.map(trip => trip.id === tripId ? { ...trip, workflowIssues: issues } : trip))
+  }, [])
   const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
   const [view, setView] = useState<'requests' | 'map' | 'trips' | 'process'>('requests')
   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0), [requestRefresh, setRequestRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
-  const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyId, setSabyId] = useState<string | null>(null), [notice, setNotice] = useState('')
+  const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyIds, setSabyIds] = useState<ReadonlySet<string>>(() => new Set()), [notice, setNotice] = useState('')
   const [automation, setAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
   useEffect(() => {
     if (view !== 'trips' && view !== 'process') return
     const controller = new AbortController()
-    setLoading(true); setError('')
-    fetch('/api/shipment-trips', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы'); return result })
-      .then(result => { setTrips(previous => { const executions = new Map(previous.map(trip => [trip.id, trip.execution])); return (result.trips as ShipmentTrip[]).map(trip => { const saved = executions.get(trip.id); return saved && saved.version > (trip.execution?.version ?? 0) ? { ...trip, execution: saved } : trip }) }); setAutomation(result.automation ?? { enabled: false }) })
-      .catch(reason => { if (!controller.signal.aborted) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
+    let inFlight = false, hasList = false
+    const load = async (background = false) => {
+      if (inFlight || controller.signal.aborted) return
+      inFlight = true
+      const versions = new Map(issueVersions.current)
+      if (!background) { setLoading(true); setError('') }
+      try {
+        const response = await fetch('/api/shipment-trips', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]) })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы')
+        if (controller.signal.aborted) return
+        const indicatorsOnly = background && hasList && view === 'trips'
+        hasList = true
+        setTrips(previous => {
+          const fresh = new Map((result.trips as ShipmentTrip[]).map(trip => [trip.id, trip]))
+          // Updating indicators must not reorder cards, unmount open panels or
+          // replace a more recent verdict already returned by an expanded panel.
+          if (indicatorsOnly) return previous.map(trip => {
+            const row = fresh.get(trip.id)
+            return row && versions.get(trip.id) === issueVersions.current.get(trip.id) ? { ...trip, workflowIssues: row.workflowIssues } : trip
+          })
+          const old = new Map(previous.map(trip => [trip.id, trip]))
+          return (result.trips as ShipmentTrip[]).map(trip => {
+            const saved = old.get(trip.id)
+            return { ...trip,
+              ...(saved && versions.get(trip.id) !== issueVersions.current.get(trip.id) ? { workflowIssues: saved.workflowIssues } : {}),
+              ...(saved?.execution && saved.execution.version > (trip.execution?.version ?? 0) ? { execution: saved.execution } : {}),
+            }
+          })
+        })
+        setAutomation(result.automation ?? { enabled: false })
+        setError('')
+      } catch (reason) {
+        if (!controller.signal.aborted && !background) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }
+      } finally {
+        inFlight = false
+        if (!controller.signal.aborted && !background) setLoading(false)
+      }
+    }
+    void load()
+    const refreshVisible = () => { if (document.visibilityState === 'visible') void load(true) }
+    const timer = window.setInterval(refreshVisible, 30000)
+    document.addEventListener('visibilitychange', refreshVisible)
+    window.addEventListener('focus', refreshVisible)
+    return () => { controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', refreshVisible); window.removeEventListener('focus', refreshVisible) }
   }, [refresh, view])
   const requestGeneration = useRef(0)
   useEffect(() => {
@@ -55,11 +98,6 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       .finally(() => { if (!controller.signal.aborted && generation === requestGeneration.current) setRequestsLoading(false) })
     return () => controller.abort()
   }, [requestRefresh])
-  useEffect(() => {
-    if (view !== 'process') return
-    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') setRefresh(value => value + 1) }, 30000)
-    return () => window.clearInterval(timer)
-  }, [view])
   // Apply only acknowledged server results. In-flight older lists cannot undo a save.
   const requestSaved = (saved: TripRequest) => {
     requestGeneration.current++
@@ -96,12 +134,12 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
         const issues = trip.workflowIssues ?? []
         const vehicle = directories.vehicles.find(item => item.id === trip.fields.vehicle_id)
         return <article className={`panel trip-card${issues.length ? ' trip-has-error' : ''}`} key={trip.id} data-testid="trip-card">
-          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><div className="trip-edit-action"><TripIssueLabel issues={issues} onClick={() => setSabyId(trip.id)}/><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></div></header>
+          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><div className="trip-edit-action"><TripIssueLabel issues={issues} onClick={() => setSabyIds(current => new Set(current).add(trip.id))}/><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></div></header>
           <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}<TripMapLink address={trip.fields.loading_address} mapUrl={trip.fields.loading_map_url}/></div>
           <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{customer.fields.customer_name || companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.etrn_not_required === 'true' && <small className="trip-invoice-badge">ЭТрН не нужна</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}<TripMapLink address={customer.fields.unloading_address} mapUrl={customer.fields.unloading_map_url}/></div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
           {trip.fields.trip_notes && <p className="trip-card-notes">{trip.fields.trip_notes}</p>}
-          <footer className="trip-card-footer"><span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
-          {sabyId === trip.id && <TripEtrnPanel onDelete={allowDelete ? () => setDeleting(trip.id) : undefined} trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
+          <footer className="trip-card-footer"><span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyIds.has(trip.id)} onClick={() => setSabyIds(current => { const next = new Set(current); if (next.has(trip.id)) next.delete(trip.id); else next.add(trip.id); return next })}><Send size={15}/>Saby</button></div></footer>
+          {sabyIds.has(trip.id) && <TripEtrnPanel onDelete={allowDelete ? () => setDeleting(trip.id) : undefined} trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
         </article>
       })}</div>
       {!filtered.length && !error && <div className="panel trips-empty"><Truck size={30}/><h2>{query ? 'Рейсы не найдены' : 'Рейсов пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}</div>}
@@ -110,7 +148,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
     </>}
     {mapRequest && <TripRequestEditor request={mapRequest} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => { setMapRequest(null); reloadRequests() }} onSaved={saved => { setMapRequest(null); requestSaved(saved) }}/>}
     {deleting && allowDelete && <DeleteTripDialog tripId={deleting} data={data} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setNotice('Рейс и его доставки удалены.'); reloadAll(); onChanged() }}/> }
-    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={reloadRequests} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); reloadAll(); onChanged(); setSabyId(shipment.fields.trip_id ?? null) }}/>}
+    {editor && <ShipmentTripEditor shipment={null} tripId={editor.id} tripMode sabyAutomation={automation} onRequestsChanged={reloadRequests} companies={data.companies} directories={directories} canManagePlaces={canManagePlaces} onDirectoriesChanged={onChanged} onClose={() => { setEditor(null); if (editor.id) setRefresh(value => value + 1) }} onSaved={shipment => { setEditor(null); if (!editor.id) { setPage(0); setQuery('') } setNotice(editor.id ? 'Рейс обновлён. Изменения сохранены в «Отгрузках».' : 'Рейс сохранён. Доставки клиентов добавлены в «Отгрузки».'); reloadAll(); onChanged(); setSabyIds(current => shipment.fields.trip_id ? new Set(current).add(shipment.fields.trip_id) : current) }}/>}
   </div>
 }
 

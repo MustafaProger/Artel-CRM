@@ -79,8 +79,8 @@ try {
   page = await context.newPage();
   page.on('pageerror', reason => report.errors.push(reason.message));
   await page.clock.install();
-  const panel = page.getByRole('region', { name: 'Подписание заявки', exact: true });
-  const main = page.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+  const panel = page.getByRole('region', { name: /^Подписание заявки(?: · .*)?$/ });
+  const main = page.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
   const open = async () => {
     await page.goto(base + '/#trips');
     await page.getByRole('button', { name: 'Saby', exact: true }).click();

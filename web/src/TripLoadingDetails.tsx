@@ -47,7 +47,7 @@ function DocumentFields({ value, onChange, title }: { value: EtrnLoadingDocument
   </fieldset>
 }
 
-export default function TripLoadingDetails({ tripId, disabled, locked, onSaved }: { tripId: string; disabled: boolean; locked: boolean; onSaved: () => Promise<void> }) {
+export default function TripLoadingDetails({ tripId, disabled, locked, onSaved, labelSuffix }: { labelSuffix?: string; tripId: string; disabled: boolean; locked: boolean; onSaved: () => Promise<void> }) {
   const endpoint = `/api/shipment-trips/${encodeURIComponent(tripId)}/etrn/loading-details`
   const [record, setRecord] = useState<LoadingDetailsResponse | null>(null)
   const [details, setDetails] = useState<EtrnLoadingDetails>(emptyDetails)
@@ -96,7 +96,7 @@ export default function TripLoadingDetails({ tripId, disabled, locked, onSaved }
   const editable = record?.editable && !locked
   const dirty = JSON.stringify(cleanDetails(details)) !== JSON.stringify(cleanDetails(record?.details || emptyDetails()))
 
-  if (record?.mode === 'sender') return <section className="trip-loading-details" aria-label="Сведения о погрузке">
+  if (record?.mode === 'sender') return <section className="trip-loading-details" aria-label={`Сведения о погрузке${labelSuffix ? ` · ${labelSuffix}` : ''}`}>
     <header><h4>Погрузка в этом рейсе</h4></header>
     <p className="trip-loading-actor"><span>Отправитель:</span><strong>{record.loadingActor?.name || 'Организация не указана'}</strong></p>
     <p className="etrn-note">Отдельное лицо в поле «Отгружает» не указывается. Документ-основание и сотрудник погрузки не требуются.</p>
@@ -104,7 +104,7 @@ export default function TripLoadingDetails({ tripId, disabled, locked, onSaved }
     {record.carrierResponsible && <p className="trip-loading-actor"><span>Ответственный НК:</span><strong>{[record.carrierResponsible.surname, record.carrierResponsible.name, record.carrierResponsible.patronymic].filter(Boolean).join(' ')}</strong></p>}
   </section>
   if (record && !record.required) return null
-  return <section className="trip-loading-details" aria-label="Сведения о погрузке" aria-busy={loading || saving}>
+  return <section className="trip-loading-details" aria-label={`Сведения о погрузке${labelSuffix ? ` · ${labelSuffix}` : ''}`} aria-busy={loading || saving}>
     <header><h4>Кто передаёт груз перевозчику</h4>{(loading || saving) && <LoaderCircle size={18} className="spin" aria-label={saving ? 'Сохранение сведений' : 'Загрузка сведений'}/>}</header>
     {record?.loadingActor ? <p className="trip-loading-actor"><strong>{record.loadingActor.name}</strong><span>ИНН {record.loadingActor.inn}</span></p> : !loading && record && <p className="workflow-sync-warning">Организация, выполняющая погрузку, ещё не подтверждена. Сначала уточните её в данных рейса.</p>}
     {error && <p className="shipment-error" role="alert">{error}</p>}

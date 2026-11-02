@@ -47,7 +47,7 @@ try {
   await authenticateContext(context, runtime.base, cookie);
   page = await context.newPage(); await page.clock.install();
   page.on('pageerror', error => report.errors.push(error.message));
-  const main = page.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+  const main = page.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
   for (const scenario of ['waiting', 'error', 'completed']) {
     state = initial();
     if (scenario === 'error') {

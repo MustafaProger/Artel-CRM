@@ -1,15 +1,18 @@
-.trip-card.trip-has-error .trip-identity-heading h2, .execution-trip.trip-has-error .execution-trip-identity strong { color: #212936; background: #ffd8d4; border-radius: 8px; padding: 5px 8px; }
+.trip-card.trip-has-error .trip-identity-heading h2, .execution-trip.trip-has-error .execution-trip-identity strong { color: #212936; background: #ffd8d4; border-radius: 8px; }
+/* Error decoration must not resize the heading when a fresh verdict arrives. */
+.trip-card.trip-has-error .trip-identity-heading h2 { box-shadow: 0 0 0 5px #ffd8d4; }
+.execution-trip.trip-has-error .execution-trip-identity strong { padding: 5px 8px; }
 
 .trip-saby-action { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
 .trip-issue-label { color: #a52820; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .trip-card-footer { flex-wrap: wrap; }
 
 .trip-edit-action { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-@media (max-width: 600px) { .trip-card.trip-has-error .trip-card-heading { flex-wrap: wrap; } .trip-edit-action { margin-left: auto; } }
+@media (max-width: 600px) { .trip-card .trip-card-heading { flex-wrap: wrap; } .trip-edit-action { margin-left: auto; } }
 .trip-card-heading > .trip-edit-action { flex: 0 0 auto; }
 @media (max-width: 600px) {
-  .trip-card.trip-has-error .trip-card-heading > div:first-child { flex-basis: 100%; }
-  .trip-card.trip-has-error .trip-card-heading > .trip-edit-action { flex: 0 0 100%; }
+  .trip-card .trip-card-heading > div:first-child { flex-basis: 100%; }
+  .trip-card .trip-card-heading > .trip-edit-action { flex: 0 0 100%; }
 }
 
 button.trip-issue-label { background: transparent; border: 0; padding: 10px 0; font-family: inherit; cursor: pointer; }

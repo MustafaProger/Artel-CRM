@@ -468,7 +468,9 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
         id = sabyText((await client.writeConsignmentNote(request)).Идентификатор);
         if (!id) throw new SabyError('unknown', 'Saby не вернул идентификатор ЭТрН. Требуется сверка.', true);
       }
-      await update({ id, status: 'unknown', updatedAt: stamp() });
+      // A read-only refresh is not an uncertain write. Keep the last verdict
+      // (including errors) until readback succeeds or records a new failure.
+      await update({ id, status: refresh ? claimed.status : 'unknown', updatedAt: stamp() });
       const linked = claimed.linkedDraft ? await reconcileLinkedConsignmentDraft({
         client, order: { id: claimed.linkedDraft.sourceOrderId, number: claimed.linkedDraft.sourceOrderNumber, date: claimed.linkedDraft.sourceOrderDate },
         deliveryCount: latest.tripSaby?.trips[tripId]?.deliveries.length ?? 0,

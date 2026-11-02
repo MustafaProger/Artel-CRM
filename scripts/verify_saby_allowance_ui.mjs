@@ -118,7 +118,7 @@ try {
         await page.getByLabel('Поиск рейса', { exact: true }).fill(`№${fixtures[scenario].number}`);
         await expect(page.getByTestId('trip-card')).toHaveCount(1);
         await page.getByRole('button', { name: 'Saby', exact: true }).click();
-        const panel = page.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+        const panel = page.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
         await expect(panel.locator('.workflow-current strong')).toHaveText(expectedHeadings[scenario]);
         await expect(panel).not.toContainText('Согласованный срок обработки документов');
         await expect(panel).not.toContainText('Исправления документов выполняются в Saby');

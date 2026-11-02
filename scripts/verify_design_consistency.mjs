@@ -357,7 +357,7 @@ try {
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await visit('overview'); await visit('trips'); await page.getByRole('button', { name: 'Saby', exact: true }).click();
-      const panel = page.getByRole('region', { name: 'Заполнение ответа НК' });
+      const panel = page.getByRole('region', { name: /^Заполнение ответа НК(?: · .*)?$/ });
       await expect(panel).toBeVisible();
       await expect(panel.locator('.workflow-fill-statuses li')).toHaveCount(3);
       await expect(panel.locator('.is-saved')).toHaveCount(state === 'saved' ? 3 : 1);

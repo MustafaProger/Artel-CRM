@@ -48,7 +48,7 @@ try {
     const page = await context.newPage(), errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
-    const form = page.getByRole('region', { name: 'Сведения о погрузке', exact: true });
+    const form = page.getByRole('region', { name: /^Сведения о погрузке(?: · .*)?$/ });
     await page.goto(base); await expect(form.getByLabel('Фамилия', { exact: true })).toHaveValue('');
     await expect(page.getByText('Черновик ЭТрН: нужны сведения', { exact: true })).toBeVisible();
     await expect(form.getByText('Если водитель уже убыл, после заполнения всех сведений обработка ЭТрН продолжится автоматически.', { exact: true })).toBeVisible();
@@ -86,7 +86,7 @@ try {
     const senderPath = resolve(output, `${engine}-sender-320.png`); await form.screenshot({ path: senderPath }); report.screenshots.push(senderPath);
     const senderAxe = await new AxeBuilder({ page }).include('.trip-loading-details').withTags(['wcag2a', 'wcag2aa']).analyze(); report.accessibility.push({ engine, mode: 'sender', violations: senderAxe.violations }); assert.deepEqual(senderAxe.violations.map(row => row.id), []);
     record.carrierResponsible = null; await page.reload(); await expect(form).toContainText('Отправитель:Синтетический НК'); await expect(form).not.toContainText('Ответственный НК:');
-    record.mode = 'depot'; await page.reload(); await expect(page.getByRole('region', { name: 'Документы рейса в Saby' })).toBeVisible(); await expect(form).toHaveCount(0);
+    record.mode = 'depot'; await page.reload(); await expect(page.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ })).toBeVisible(); await expect(form).toHaveCount(0);
     const readsBefore = reads; state = { ...state, documentMode: 'artel_to_nk', locked: false, notRequired: true }; await page.reload(); await expect(page.getByRole('heading', { name: 'ЭТрН не нужна', exact: true })).toBeVisible(); assert.equal(reads, readsBefore);
     assert.deepEqual(otherWrites, []); assert.deepEqual(errors, []);
     report.checks.push(`${engine}: stale-write conflict preserved input, locked read-only, confirmed sender/infrastructure summary, same-sender depot hidden, ordinary path no details request`);

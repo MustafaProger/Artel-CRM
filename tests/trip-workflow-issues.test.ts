@@ -32,3 +32,22 @@ test('unknown result and failed automatic enrollment remain visible', () => {
   const data = { etrn: { trips: { one: { directAutostart: { state: 'blocked', lastError: 'Запуск приостановлен' }, deliveries: {} } } } } as unknown as OperationsData
   assert.equal(readTripWorkflowIssues(data, 'one')[0].message, 'Запуск приостановлен')
 })
+
+test('completed ordinary handoff never hides genuine stage 7 errors or unknown outcomes', () => {
+  const dispatch = { sender: { state: 'confirmed' as const }, carrier: { state: 'confirmed' as const }, completedAt: '2026-11-01T12:00:00Z', lastError: null as string | null };
+  const input = { phase: 'completed' as const, deliveries: [{ shipmentId: 'one', status: 'draft', lastError: null as string | null, dispatch }] };
+  assert.deepEqual(tripWorkflowIssues(input), []);
+  for (const status of ['unknown', 'error']) {
+    assert.equal(tripWorkflowIssues({ ...input, deliveries: [{ ...input.deliveries[0], status }] })[0].step, 6);
+  }
+  for (const message of ['Для автоматической сверки требуется одна ЭТрН, связанная с единственной доставкой заявки.', 'Получатель не совпадает', 'Документ отклонён']) {
+    const issue = tripWorkflowIssues({ ...input, deliveries: [{ ...input.deliveries[0], lastError: message }] });
+    assert.equal(issue[0].step, 6); assert.equal(issue[0].message, message);
+    const dispatchIssue = tripWorkflowIssues({ ...input, deliveries: [{ ...input.deliveries[0], dispatch: { ...dispatch, lastError: message } }] });
+    assert.equal(dispatchIssue[0].message, message);
+  }
+  for (const side of ['sender', 'carrier'] as const) for (const state of ['unknown', 'blocked'] as const) {
+    const issues = tripWorkflowIssues({ ...input, deliveries: [{ ...input.deliveries[0], dispatch: { ...dispatch, [side]: { state } } }] });
+    assert.equal(issues[0].step, 6);
+  }
+});

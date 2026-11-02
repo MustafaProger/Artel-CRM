@@ -108,7 +108,7 @@ try {
       await page.getByLabel('Поиск рейса', { exact: true }).fill(`№${trip.number}`);
       await expect(page.getByTestId('trip-card')).toHaveCount(1);
       await page.getByRole('button', { name: 'Saby', exact: true }).click();
-      const panel = page.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
+      const panel = page.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
       for (const [scenario, expected] of Object.entries(cases)) {
         activeScenario = scenario;
         await panel.getByRole('button', { name: 'Обновить сохранённое состояние', exact: true }).click();

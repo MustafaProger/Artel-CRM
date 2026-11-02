@@ -57,8 +57,8 @@ try {
   await authenticateContext(context, base, cookie);
   page = await context.newPage(); await page.clock.install();
   page.on('pageerror', reason => report.errors.push(reason.message));
-  const main = page.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
-  const signing = page.getByRole('region', { name: 'Подписание заявки', exact: true });
+  const main = page.getByRole('region', { name: /^Документы рейса в Saby(?: · Рейс(?: №.*)?)?$/ });
+  const signing = page.getByRole('region', { name: /^Подписание заявки(?: · .*)?$/ });
   const choose = async (scope, label, name) => { const picker = scope.getByRole('combobox', { name: new RegExp('^' + label) }); await picker.fill(name); await scope.getByRole('listbox').getByRole('option', { name: new RegExp(name) }).first().click(); };
   const refresh = async () => { const reads = workflowReads; await expect.poll(async () => { await page.evaluate(() => window.dispatchEvent(new Event('focus'))); return workflowReads; }).toBeGreaterThan(reads); await page.clock.runFor(100); };
   const shot = async name => { const path = resolve(output, `${name}.png`); await main.screenshot({ path }); report.screenshots.push(path); };

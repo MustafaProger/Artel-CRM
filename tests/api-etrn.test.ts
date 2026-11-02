@@ -223,3 +223,48 @@ test('ETRN cannot send an unsupported organization or a delivery outside the sel
     await assert.rejects(exchangeEtrn(options, rt.shipmentId), /Invalid shipment organization/); assert.equal(api.calls.length, 0);
   } finally { await rt.close(); }
 });
+
+test('read-only ETRN refresh preserves the last verdict while the provider is pending, and records failures', async () => {
+  for (const previousStatus of ['draft', 'unknown', 'error'] as const) {
+    const rt = await runtime(), api = fakeApi();
+    let release!: () => void, entered!: () => void, hold = false, fail = false;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const send: typeof fetch = async (url, init) => {
+      if (hold && init?.method !== 'GET' && JSON.parse(String(init?.body)).method === 'СБИС.ПрочитатьДокумент') {
+        entered(); await barrier;
+        if (fail) throw new Error('synthetic readback unavailable');
+      }
+      return api.send(url, init);
+    };
+    const options = { ...rt, client: new SabyClient(config(), send) };
+    try {
+      await saveEtrnProfile(options, rt.shipmentId, rt.profile);
+      await exchangeEtrn(options, rt.shipmentId);
+      const oldError = previousStatus === 'draft' ? null : 'Предыдущая проверка не подтверждена';
+      await rt.store.mutate(source, data => {
+        const doc = data.etrn!.trips[rt.tripId].deliveries[rt.shipmentId].document!;
+        doc.status = previousStatus; doc.lastError = oldError;
+        return { result: undefined, changed: true };
+      });
+      hold = true;
+      const pending = exchangeEtrn(options, rt.shipmentId, true);
+      try {
+        await started;
+        const data = await rt.store.read(source);
+        const doc = data.etrn!.trips[rt.tripId].deliveries[rt.shipmentId].document!;
+        assert.ok(doc.leaseId);
+        assert.equal(status(getEtrnTrip(rt.base, data, rt.tripId, config())), previousStatus);
+        assert.equal(doc.lastError, oldError);
+        await assert.rejects(exchangeEtrn(options, rt.shipmentId, true), conflict);
+      } finally { release(); await pending; }
+      assert.equal(status(await pending), 'draft');
+      assert.equal((await pending).deliveries[0].document?.lastError, null);
+      fail = true;
+      const failed = await exchangeEtrn(options, rt.shipmentId, true);
+      assert.notEqual(status(failed), 'draft');
+      assert.ok(failed.deliveries[0].document?.lastError);
+      assert.equal(api.count('СБИС.ЗаписатьДокумент'), 1, 'refresh must not write or create documents');
+    } finally { release(); await rt.close(); }
+  }
+});
