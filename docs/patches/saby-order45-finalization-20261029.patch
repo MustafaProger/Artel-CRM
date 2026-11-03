@@ -1,0 +1,180 @@
+--- a/server/etrn-service.ts
++++ b/server/etrn-service.ts
+@@ -797,14 +797,56 @@
+       let numbered = false;
+       try { verifyConsignmentSenderBusiness(uploadedTitle.bytes, expected, 'address-direct-v1'); numbered = true; } catch { /* Only the exact unnumbered draft below may be completed. */ }
+       if (!numbered) {
+-        verifyConsignmentSenderBusiness(uploadedTitle.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }).xml, 'address-direct-v1');
+-        if (doc.directDraftCreation?.numberFinalizationAttempted || doc.orderAutoNumber?.numberFinalizationAttempted || sabyDocumentWorkflow(remote).signatureStatus === 'reported_by_saby' || !sabyObject(remote.Состояние) || String(remote.Состояние.Код) !== '0') throw new SabyError('unknown', 'Номер первого титула не подтверждён после записи либо документ уже подписан. Повторная запись запрещена.', true);
++        const unnumbered = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }).xml;
++        verifyConsignmentSenderBusiness(uploadedTitle.bytes, unnumbered, 'address-direct-v1');
++        const finalizationAttempted = !!(doc.directDraftCreation?.numberFinalizationAttempted || doc.orderAutoNumber?.numberFinalizationAttempted);
++        const failFinalization = (): never => { throw new SabyError('unknown', 'Номер первого титула не подтверждён после записи либо документ уже подписан. Повторная запись запрещена.', true); };
++        // Old code saved this flag before the durable upload intent. Only our
++        // first v2 creation can prove that gap: one received reservation, the
++        // exact original request, and no upload intent of any outcome. The flag
++        // is preserved; a recovered same-ID update records its first intent.
++        const checkFlagOnlyGap = async () => {
++          const latest = await store.read(source); await checkAccess();
++          const workflow = latest.tripSaby?.trips[tripId], current = latest.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
++          const reservation = current?.writeAttempts?.length === 1 ? current.writeAttempts[0] : undefined;
++          if (!orderProtocol || direct || shipmentId !== firstShipmentId || !current?.id || current.id !== doc.id || current.number !== doc.number ||
++              current.orderAutoNumber?.numberFinalizationAttempted !== true || current.nativeDraftEnabled !== false || current.senderTitleVersion !== 2 ||
++              current.orderCreationAllocation?.version !== 2 || !current.reservationAttempted || !current.uploadAttempted || current.linkedDraft || current.dispatch || current.nativeAdoptionEvidence || current.nativeSenderAmendment || current.unexpectedDocumentIds?.length ||
++              !workflow?.autoAuthorization || workflow.orderConsignmentCreationVersion !== 2 || workflow.order.id !== orderInput!.order.id || workflow.attemptId !== current.orderCreationAllocation.workflowAttemptId ||
++              workflow.signing?.sender.state !== 'confirmed' || workflow.signing.carrier.state !== 'confirmed' || !workflow.signing.sender.prepared || !workflow.signing.carrier.prepared ||
++              hash(workflow.signing) !== hash(initial.tripSaby!.trips[tripId].signing) || hash(workflow.autoAuthorization) !== hash(initial.tripSaby!.trips[tripId].autoAuthorization) ||
++              hash([current.snapshot, current.attemptId, current.marker, current.createdAt, current.orderCreationAllocation, current.writeAttempts]) !== hash([doc.snapshot, doc.attemptId, doc.marker, doc.createdAt, doc.orderCreationAllocation, doc.writeAttempts]) ||
++              Object.entries(latest.etrn!.trips[tripId].deliveries).some(([id, row]) => id !== shipmentId && !!row.document) ||
++              !reservation || reservation.action !== 'reservation' || reservation.outcome !== 'received' || reservation.result?.id !== current.id) return failFinalization();
++          const original = orderDocument(buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }));
++          const originalBody = JSON.stringify({ jsonrpc: '2.0', method: 'СБИС.ЗаписатьДокумент', params: { Документ: original }, id: reservation.request.requestId });
++          if (bytesHash(Buffer.from(originalBody)) !== reservation.request.bodySha256 || Buffer.byteLength(originalBody) !== reservation.request.bodyBytes || !Buffer.from(uploadedTitle.bytes).equals(unnumbered)) return failFinalization();
++          await checkAllocation();
++          const sourceOrder = await client.readTransportOrder(orderInput!.order.id);
++          if (sourceOrder.Номер !== orderInput!.order.number || sourceOrder.Дата !== orderInput!.order.date.split('-').reverse().join('.') || sourceOrder.Удален === 'Да' || sourceOrder.ЧастичныеДанные === 'Да' ||
++              !partyMatches(sourceOrder.НашаОрганизация, doc.snapshot.customerOrganization) || !partyMatches(sourceOrder.Контрагент, doc.snapshot.carrierOrganization) ||
++              sabyCarrierAcceptance(sourceOrder)?.evidenceHash !== orderInput!.carrierEvidence.evidenceHash || orderSignatureIdentity(sourceOrder) !== orderSignatureIdentity(orderInput!.remoteOrder)) return failFinalization();
++          const fresh = await client.readConsignmentNote(doc.id!); validateReservation(fresh);
++          const freshWorkflow = sabyDocumentWorkflow(fresh), parties = sabyObject(fresh.Стороны) ? fresh.Стороны : {};
++          const hasSignature = (value: unknown) => value !== undefined && value !== null && (!Array.isArray(value) || value.length > 0);
++          const bases = Array.isArray(fresh.ДокументОснование) ? fresh.ДокументОснование.filter(sabyObject).map(row => row.Документ).filter(sabyObject) : [];
++          const files = Array.isArray(fresh.Вложение) ? fresh.Вложение.filter(sabyObject).filter(file => file.Удален !== 'Да') : [];
++          if (freshWorkflow.revision !== revision || freshWorkflow.signatureStatus === 'reported_by_saby' || !sabyObject(fresh.Состояние) || String(fresh.Состояние.Код) !== '0' ||
++              fresh.Ошибка || Number(fresh.КоличествоОшибок ?? 0) !== 0 || hasSignature(fresh.Подпись) || bases.length !== 1 || bases[0].Тип !== 'TransportOrder' || bases[0].Идентификатор !== orderInput!.order.id ||
++              !partyMatches(fresh.Грузоотправитель ?? parties.Отправитель, doc.snapshot.customerOrganization) || !partyMatches(fresh.ТранспортнаяКомпания ?? parties.Перевозчик, doc.snapshot.carrierOrganization) || !partyMatches(fresh.Грузополучатель ?? parties.Получатель, doc.snapshot.profile.recipient) ||
++              files.length !== 1 || files[0].Идентификатор !== titles[0].Идентификатор || files[0].Подтип !== '1110339' || files[0].ВерсияФормата !== '5.01' || files[0].Актуален === 'Нет' || hasSignature(files[0].Подпись) || files[0].Ошибка || Number(files[0].КоличествоОшибок ?? 0) !== 0) return failFinalization();
++          const file = await client.downloadAttachment(doc.id!, String(titles[0].Идентификатор), revision);
++          if (file.name !== uploadedTitle.name || !Buffer.from(file.bytes).equals(unnumbered) || !Buffer.from(file.bytes).equals(uploadedTitle.bytes)) return failFinalization();
++          await checkAccess();
++        };
++        if (doc.writeAttempts?.some(attempt => attempt.action === 'upload') || sabyDocumentWorkflow(remote).signatureStatus === 'reported_by_saby' || !sabyObject(remote.Состояние) || String(remote.Состояние.Код) !== '0') failFinalization();
++        if (finalizationAttempted) await checkFlagOnlyGap();
+         const request = { ...orderDocument(buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, doc.number, { senderTitleVersion: 2 })), Идентификатор: doc.id, Адресация: { Идентификатор: doc.id, Редакция: { Идентификатор: revision } }, Вложение: [{ Идентификатор: String(titles[0].Идентификатор), Файл: { Имя: uploadedTitle.name, ДвоичныеДанные: expected.toString('base64') } }] };
+         writing = 'upload';
+         const result = await client.writeConsignmentNote(request, async intent => {
+           await checkAccess();
+-          await update(direct ? { directDraftCreation: { ...doc.directDraftCreation!, numberFinalizationAttempted: true } } : { orderAutoNumber: { version: 1, numberFinalizationAttempted: true } });
+-          await beforeWrite('upload')(intent);
++          if (finalizationAttempted) await checkFlagOnlyGap();
++          await beforeWrite('upload', direct ? { directDraftCreation: { ...doc.directDraftCreation!, numberFinalizationAttempted: true } } : { orderAutoNumber: { version: 1, numberFinalizationAttempted: true } })(intent);
+         });
+         const returnedId = sabyText(result.Идентификатор);
+         if (returnedId) await receiveWrite(returnedId);
+--- a/tests/etrn-order-creation.test.ts
++++ b/tests/etrn-order-creation.test.ts
+@@ -33,7 +33,9 @@
+     return { result: undefined, changed: true };
+   });
+   let loseCreate = false, failList = false, appearDuringScan = false, created = 0;
++  let requestHook: ((url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => Promise<Response | undefined>) | undefined;
+   const send: typeof fetch = async (url, init) => {
++    const intercepted = await requestHook?.(url, init); if (intercepted) return intercepted;
+     if (init?.method === 'GET') return api.send(url, init);
+     const req = JSON.parse(String(init?.body));
+     if (req.method === 'СБИС.СписокДокументов' && req.params.Фильтр.Тип === 'ConsignmentNote') {
+@@ -63,8 +65,103 @@
+     return exchangePreparedEtrn({ ...rt, client }, input);
+   };
+   const readDoc = async (index = 0) => (await rt.store.read(rt.source)).etrn!.trips[rt.tripId].deliveries[rt.trip.customers[index].id].document!;
+-  return { ...rt, api, order, run, readDoc, created: () => created, lose: () => { loseCreate = true; }, incomplete: () => { failList = true; }, appear: () => { appearDuringScan = true; } };
++  return { ...rt, api, order, run, readDoc, created: () => created, lose: () => { loseCreate = true; }, incomplete: () => { failList = true; }, appear: () => { appearDuringScan = true; }, setHook: (hook: typeof requestHook) => { requestHook = hook; } };
+ }
++
++/** Fail the actual transaction that arms numbering, before its changed data can
++ * commit. The external writer has not been invoked at this failure point. */
++async function interruptNumberFinalization(f: Awaited<ReturnType<typeof fixture>>) {
++  const mutate = f.store.mutate.bind(f.store); let interrupted = false, flagAndIntentAtomic = false;
++  f.store.mutate = (source, update) => mutate(source, async data => {
++    const before = data.etrn?.trips[f.tripId]?.deliveries[f.trip.customers[0].id]?.document;
++    const wasAttempted = before?.orderAutoNumber?.numberFinalizationAttempted;
++    const result = await update(data), doc = data.etrn?.trips[f.tripId]?.deliveries[f.trip.customers[0].id]?.document;
++    if (!interrupted && !wasAttempted && doc?.orderAutoNumber?.numberFinalizationAttempted) {
++      interrupted = true; flagAndIntentAtomic = doc.writeAttempts?.filter(row => row.action === 'upload').length === 1;
++      throw new Error('Synthetic core queue busy before finalization transaction commit');
++    }
++    return result;
++  });
++  try { assert.equal((await f.run()).status, 'unknown'); } finally { f.store.mutate = mutate; }
++  assert.equal(interrupted, true); assert.equal(flagAndIntentAtomic, true);
++  const doc = await f.readDoc(); assert.equal(doc.orderAutoNumber?.numberFinalizationAttempted, undefined); assert.equal(doc.writeAttempts?.length, 1);
++  assert.equal(doc.writeAttempts?.[0].outcome, 'received'); assert.equal(f.created(), 1);
++}
++
++async function flagOnlyGap(f: Awaited<ReturnType<typeof fixture>>) {
++  await interruptNumberFinalization(f);
++  await f.store.mutate(f.source, data => {
++    const workflow = data.tripSaby!.trips[f.tripId], doc = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++    // Reproduce the historical committed flag whose following intent failed.
++    doc.orderAutoNumber!.numberFinalizationAttempted = true;
++    workflow.initiatorId = 'synthetic-employee';
++    workflow.autoAuthorization = { requestId: workflow.signing!.requestId, requestedBy: 'synthetic-employee', requestedAt: workflow.createdAt, policyId: 'synthetic-policy', policyHash: 'a'.repeat(64), mode: 'deferred', selection: structuredClone(workflow.signing!.selection) };
++    workflow.signing!.mode = 'automatic';
++    return { result: undefined, changed: true };
++  });
++}
++
++test('number finalization flag and upload intent commit together; a failed commit resumes once', async () => {
++  const f = await fixture();
++  try {
++    await interruptNumberFinalization(f);
++    assert.equal((await f.run()).status, 'draft'); assert.equal(f.created(), 1);
++    const doc = await f.readDoc(); assert.equal(doc.writeAttempts?.filter(row => row.action === 'upload').length, 1);
++    assert.equal(doc.orderAutoNumber?.numberFinalizationAttempted, true);
++    await f.run(); assert.equal(f.api.writes('ConsignmentNote').length, 2);
++  } finally { await f.close(); }
++});
++
++test('exact v2 flag-only gap preserves original evidence and numbers the same draft once', async () => {
++  const f = await fixture();
++  try {
++    await flagOnlyGap(f); const before = await f.readDoc(); const result = await f.run();
++    assert.equal(result.status, 'draft', result.lastError ?? ''); assert.equal(result.id, before.id); assert.equal(f.created(), 1);
++    const after = await f.readDoc(); assert.deepEqual(after.writeAttempts?.[0], before.writeAttempts?.[0]);
++    assert.deepEqual(after.snapshot, before.snapshot); assert.deepEqual(after.orderCreationAllocation, before.orderCreationAllocation);
++    assert.equal(after.orderAutoNumber?.numberFinalizationAttempted, true); assert.equal(after.writeAttempts?.length, 2);
++    await f.run(); assert.equal(f.api.writes('ConsignmentNote').length, 2);
++  } finally { await f.close(); }
++});
++
++test('any recorded finalization intent forbids a retry even when its draft remains unnumbered', async () => {
++  for (const outcome of ['attempted', 'uncertain', 'denied', 'received'] as const) {
++    const f = await fixture();
++    try {
++      await flagOnlyGap(f);
++      await f.store.mutate(f.source, data => {
++        const doc = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++        doc.writeAttempts!.push({ action: 'upload', request: { ...doc.writeAttempts![0].request, requestId: 999 }, outcome });
++        return { result: undefined, changed: true };
++      });
++      assert.equal((await f.run()).status, 'unknown'); assert.equal(f.api.writes('ConsignmentNote').length, 1);
++    } finally { await f.close(); }
++  }
++});
++
++test('flag-only recovery rejects changed bytes, signatures, revision races, legacy protocol and changed provenance', async () => {
++  for (const change of ['bytes', 'signed', 'revision-race', 'legacy', 'reservation-hash', 'grant'] as const) {
++    const f = await fixture();
++    try {
++      await flagOnlyGap(f); const doc = await f.readDoc(), remote = f.api.docs.get(doc.id!)!;
++      if (change === 'bytes') f.setHook(async (url, init) => init?.method === 'GET' && String(url).includes(`${doc.id}.xml`) ? new Response(Buffer.concat([Buffer.from(await (await f.api.send(url, init)).arrayBuffer()), Buffer.from(' ')])) : undefined);
++      if (change === 'signed') (remote.Вложение as SabyObject[])[0].Подпись = [{}];
++      if (change === 'revision-race') {
++        let reads = 0;
++        f.setHook(async (_url, init) => { if (init?.method === 'POST') { const req = JSON.parse(String(init.body)); if (req.method === 'СБИС.ПрочитатьДокумент' && req.params.Документ.Идентификатор === doc.id && ++reads === 2) remote.Редакция = [{ Идентификатор: 'changed-revision', Актуален: 'Да' }]; } return undefined; });
++      }
++      if (['legacy', 'reservation-hash', 'grant'].includes(change)) await f.store.mutate(f.source, data => {
++        const w = data.tripSaby!.trips[f.tripId], d = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++        if (change === 'legacy') delete w.orderConsignmentCreationVersion;
++        if (change === 'reservation-hash') d.writeAttempts![0].request.bodySha256 = 'f'.repeat(64);
++        if (change === 'grant') { delete w.autoAuthorization; delete w.signing!.mode; }
++        return { result: undefined, changed: true };
++      });
++      const result = await f.run(); assert.notEqual(result.status, 'draft', change);
++      assert.equal(f.api.writes('ConsignmentNote').length, 1, change); assert.equal((await f.readDoc()).orderAutoNumber?.numberFinalizationAttempted, true);
++    } finally { await f.close(); }
++  }
++});
+ 
+ test('version two creates the first full numbered T1 and each subsequent delivery exactly once with reciprocal order links', async () => {
+   const f = await fixture();

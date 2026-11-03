@@ -1,0 +1,369 @@
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -1,3 +1,4 @@
++import { readTripWorkflowIssues } from './trip-workflow-issues';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { directoryMutation } from './directory-access';
+ import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
+@@ -1118,7 +1119,7 @@
+           const currentActor = actor ? authorized(stored) : null;
+           const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
+             try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
+-          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
++          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
+           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
+           return write(response, 200, JSON.stringify({ trips, automation }));
+         }
+--- /dev/null
++++ b/server/trip-workflow-issues.ts
+@@ -0,0 +1,20 @@
++import type { OperationsData } from './operations-store'
++import { tripWorkflowIssues } from '../web/src/trip-workflow-issues'
++
++/** Read-only projection of saved state; no preparation, provider calls or writes. */
++export function readTripWorkflowIssues(data: OperationsData, tripId: string) {
++  const workflow = data.tripSaby?.trips[tripId]
++  const etrn = data.etrn?.trips[tripId]
++  const direct = etrn?.direct
++  const automatic = etrn?.directAutostart
++  const deliveries = new Map((workflow?.deliveries ?? []).map(row => [row.shipmentId, { shipmentId: row.shipmentId, status: row.status, lastError: row.lastError }]))
++  const documents = Object.entries(etrn?.deliveries ?? {}).flatMap(([shipmentId, row]) => row.document ? [{ shipmentId, ...row.document }] : [])
++  for (const doc of documents) deliveries.delete(doc.shipmentId)
++  return tripWorkflowIssues({
++    ...(direct || automatic ? { documentMode: 'nk_direct_etrn' as const, phase: direct?.phase, ...(!direct && automatic?.state === 'blocked' ? { blockers: [automatic.lastError || 'Автоматическая отправка приостановлена.'] } : {}), lastError: direct?.lastError || (automatic?.state === 'blocked' ? automatic.lastError || 'Автоматическая отправка приостановлена.' : null) } : workflow ? {
++      phase: workflow.phase, lastError: workflow.lastError, order: workflow.order,
++      signing: workflow.signing, carrierFill: workflow.carrierFill, carrierConfirmed: !!workflow.carrierEvidence,
++    } : {}),
++    deliveries: [...deliveries.values(), ...documents],
++  })
++}
+--- a/web/src/model.ts
++++ b/web/src/model.ts
+@@ -234,6 +234,7 @@
+ 
+ /** A whole truck, represented by one accounting row per customer. */
+ export interface ShipmentTrip {
++  workflowIssues?: import('./trip-workflow-issues').TripWorkflowIssue[];
+   execution?: import('./trip-execution-model').TripExecution;
+   id: string;
+   number?: number;
+--- a/web/src/TripsPage.tsx
++++ b/web/src/TripsPage.tsx
+@@ -1,10 +1,11 @@
++import { TripIssueLabel } from './TripWorkflowAlert'
+ import TripProcessPanel from './TripProcessPanel'
+ import { Activity } from 'lucide-react'
+ import { tripLabel } from './trip-identity'
+ import './trip-identity.css'
+ import { useDialogMotion } from './useDialogMotion'
+ import { apiFetch as fetch } from './workspace-api'
+-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
++import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map as MapIcon, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
+ import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
+ import type { TripRequest } from './trip-request-model'
+@@ -26,6 +27,7 @@
+ import './trips.css'
+ 
+ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelete = false }: { data: DirectoryData; canManagePlaces: boolean; onChanged: () => void; allowDelete?: boolean }) {
++  const updateWorkflowIssues = useCallback((tripId: string, issues: import('./trip-workflow-issues').TripWorkflowIssue[]) => { setTrips(current => current.map(trip => trip.id === tripId ? { ...trip, workflowIssues: issues } : trip)) }, [])
+   const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
+   const [view, setView] = useState<'requests' | 'map' | 'trips' | 'process'>('requests')
+   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
+@@ -93,14 +95,15 @@
+     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}
+     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем рейсы…</div> : <>
+       <div className="trips-list">{filtered.slice(currentPage * 20, (currentPage + 1) * 20).map(trip => {
++        const issues = trip.workflowIssues ?? []
+         const vehicle = directories.vehicles.find(item => item.id === trip.fields.vehicle_id)
+-        return <article className="panel trip-card" key={trip.id} data-testid="trip-card">
+-          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></header>
++        return <article className={`panel trip-card${issues.length ? ' trip-has-error' : ''}`} key={trip.id} data-testid="trip-card">
++          <header className="trip-card-heading"><div><div className="trip-identity-heading"><h2><Truck size={20}/>{tripLabel(trip)}</h2><span className="trip-identity-date">{formatDate(trip.fields.date)}</span></div><p>{driverName(trip.fields.driver_id)} · {vehicle?.plate ?? 'Автомобиль не указан'}</p></div><div className="trip-edit-action"><TripIssueLabel issues={issues}/><button className="button trip-edit-button" aria-label="Изменить рейс" onClick={() => setEditor({ id: trip.id })}><Pencil size={15}/><span>Изменить<span className="trip-edit-context"> рейс</span></span></button></div></header>
+           <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}<TripMapLink address={trip.fields.loading_address} mapUrl={trip.fields.loading_map_url}/></div>
+           <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{customer.fields.customer_name || companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.etrn_not_required === 'true' && <small className="trip-invoice-badge">ЭТрН не нужна</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}<TripMapLink address={customer.fields.unloading_address} mapUrl={customer.fields.unloading_map_url}/></div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
+           {trip.fields.trip_notes && <p className="trip-card-notes">{trip.fields.trip_notes}</p>}
+-          <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></footer>
+-          {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data}/>}
++          <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
++          {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
+         </article>
+       })}</div>
+       {!filtered.length && !error && <div className="panel trips-empty"><Truck size={30}/><h2>{query ? 'Рейсы не найдены' : 'Рейсов пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}</div>}
+--- a/web/src/TripProcessPanel.tsx
++++ b/web/src/TripProcessPanel.tsx
+@@ -1,3 +1,4 @@
++import TripWorkflowAlert, { TripIssueLabel } from './TripWorkflowAlert'
+ import { useState } from 'react'
+ import { Check, ChevronDown, MapPin, RefreshCw, Search, Truck } from 'lucide-react'
+ import type { DirectoryData, ShipmentTrip } from './model'
+@@ -43,9 +44,9 @@
+         const execution = trip.execution
+         const done = trip.customers.filter(c => execution?.deliveries[c.id]).length, total = trip.customers.length
+         const labels = [...new Set(trip.customers.map(c => name(c.fields.customer_id)))].join(' · ')
+-        return <div key={trip.id} className="execution-trip-entry"><AnimatedDetails className="execution-trip" testId="execution-trip" summary={<><div className="execution-trip-identity"><strong>{tripLabel(trip)}</strong><span>{formatDate(trip.fields.date)} · {driver(trip.fields.driver_id)}</span></div><div className="execution-trip-route"><span>{labels}</span><small>{number(trip.customers.reduce((n,c) => n + Number(c.fields.quantity_litres || 0), 0))} л</small></div><div className="execution-trip-status"><span className={`execution-stage stage-${execution?.stage || 'unknown'}`}>{execution ? executionStageLabel[execution.stage] : 'Статус уточняется'}</span><span className="execution-progress-label">Доставлено {done} из {total}</span><progress max={Math.max(total,1)} value={done} aria-label={`Доставлено ${done} из ${total}`}/></div><ChevronDown className="execution-chevron" size={18}/></>}>
++        return <div key={trip.id} className="execution-trip-entry"><AnimatedDetails className={`execution-trip${trip.workflowIssues?.length ? ' trip-has-error' : ''}`} testId="execution-trip" summary={<><div className="execution-trip-identity"><strong>{tripLabel(trip)}</strong><span>{formatDate(trip.fields.date)} · {driver(trip.fields.driver_id)}</span></div><div className="execution-trip-route"><span>{labels}</span><small>{number(trip.customers.reduce((n,c) => n + Number(c.fields.quantity_litres || 0), 0))} л</small></div><div className="execution-trip-status"><TripIssueLabel issues={trip.workflowIssues ?? []}/><span className={`execution-stage stage-${execution?.stage || 'unknown'}`}>{execution ? executionStageLabel[execution.stage] : 'Статус уточняется'}</span><span className="execution-progress-label">Доставлено {done} из {total}</span><progress max={Math.max(total,1)} value={done} aria-label={`Доставлено ${done} из ${total}`}/></div><ChevronDown className="execution-chevron" size={18}/></>}>
+           <div className="execution-trip-body">
+-            <p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
++            <TripWorkflowAlert issues={trip.workflowIssues ?? []}/><p className="execution-next">{execution ? executionStageHint[execution.stage] : 'Обновите рейсы, чтобы получить статус.'}</p>
+             <div className="execution-loading"><MapPin size={16}/><div><span>Погрузка</span><p>{trip.fields.loading_address || 'Адрес не указан'}</p></div></div>
+             <ol className="execution-deliveries">{trip.customers.map((c,i) => <li key={c.id} className={execution?.deliveries[c.id] ? 'is-delivered' : ''}><span className="execution-stop-number" aria-hidden="true">{execution?.deliveries[c.id] ? <Check size={16}/> : i+1}</span><div className="execution-customer"><strong>{name(c.fields.customer_id)}</strong><p>{c.fields.unloading_address || 'Адрес не указан'}</p><span>{number(c.fields.quantity_litres)} л</span></div>{execution?.deliveries[c.id] ? <div className="execution-record"><ExecutionEvent event={execution.deliveries[c.id]} elapsed/></div> : <>{execution && <TripExecutionAction key={`${c.id}-${execution.version}`} staff tripId={trip.id} versions={Object.fromEntries(trip.customers.map(row => [row.id, row.version]))} execution={execution} deliveryId={c.id} onSaved={onReload} onReload={onReload}/>}</>}</li>)}</ol>
+             {execution?.completed ? <div className="execution-completion"><span>Все доставки выполнены</span><ExecutionEvent event={execution.completed}/></div> : <p className="execution-auto-note">Рейс завершится автоматически после подтверждения последней доставки.</p>}
+--- a/web/src/TripEtrnPanel.tsx
++++ b/web/src/TripEtrnPanel.tsx
+@@ -1,6 +1,8 @@
++import TripWorkflowAlert from './TripWorkflowAlert'
++import { tripWorkflowIssues, type TripWorkflowIssue } from './trip-workflow-issues'
+ import { requiresEtrn } from './trip-etrn-scope'
+ import { apiFetch as fetch, apiUrl } from './workspace-api'
+-import { useCallback, useEffect, useRef, useState } from 'react'
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { ArrowUpRight, Check, Clock3, Copy, Download, FilePlus2, LoaderCircle, RefreshCw } from 'lucide-react'
+ import type { ShipmentTrip, DirectoryData } from './model'
+ import type { EtrnTripResponse } from './etrn-api-model'
+@@ -17,10 +19,12 @@
+   try { const url = new URL(value || ''); return url.protocol === 'https:' && !url.username && !url.password && ['saby.ru', 'sbis.ru'].some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ? url.href : null } catch { return null }
+ }
+ 
+-export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data: DirectoryData }) {
++export default function TripEtrnPanel({ trip, data, onIssuesChange }: { trip: ShipmentTrip; data: DirectoryData; onIssuesChange?: (tripId: string, issues: TripWorkflowIssue[]) => void }) {
+   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
+   const etrnEndpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/etrn`
+   const [result, setResult] = useState<Workflow | null>(null), [etrn, setEtrn] = useState<EtrnTripResponse | null>(null)
++  const issues = useMemo(() => result ? tripWorkflowIssues(result) : [], [result])
++  useEffect(() => { if (result) onIssuesChange?.(trip.id, issues) }, [result, trip.id, issues, onIssuesChange])
+   const [legacy, setLegacy] = useState<SabyTripResponse | null>(null)
+   const [busy, setBusy] = useState(false), [error, setError] = useState('')
+   const [refreshError, setRefreshError] = useState(''), [copied, setCopied] = useState(false)
+@@ -163,9 +167,9 @@
+   </section>
+   if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление состояния"/>}</div>
+-    {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>}
++    {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}${issues.some(issue => issue.step === index) ? ' has-error' : ''}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{issues.some(issue => issue.step === index) ? index + 1 : step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}{issues.filter(issue => issue.step === index).map((issue, i) => <small className="workflow-step-error" key={i}>{issue.message}</small>)}</span></li>)}</ol>}
+     <p>НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик, без заказа-заявки. Состав документов определяется флажком «ЭТрН не нужна» у каждой доставки.</p>
+-    <div className="workflow-current" role="status"><strong>{directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
++    <TripWorkflowAlert issues={issues}/><div className="workflow-current" role="status"><strong>{directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
+     {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
+     {error && <p className="shipment-error" role="alert">{error}</p>}
+     {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
+@@ -200,8 +204,8 @@
+     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>АРТЭЛЬ → НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление документов"/>}</div>
+     {error && <p className="shipment-error" role="alert">{error}</p>}
+     {result && <>
+-      <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>
+-      <div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
++      <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}${issues.some(issue => issue.step === index) ? ' has-error' : ''}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{issues.some(issue => issue.step === index) ? index + 1 : step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}{issues.filter(issue => issue.step === index).map((issue, i) => <small className="workflow-step-error" key={i}>{issue.message}</small>)}</span></li>)}</ol>
++      <TripWorkflowAlert issues={issues}/><div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
+       {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
+       {(!savedFactsNeedReconciliation || !automatic) && result.automation?.message && result.automation.message !== view!.text && <p className="etrn-note">{result.automation.message}</p>}
+       {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Фоновая проверка обмена' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'CRM проверяет данные водителя и документы Saby, в том числе после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span>{result.monitoring?.enabled && <span>Плановый интервал: {result.monitoring.intervalSeconds === 15 ? '15 секунд' : '1 минута'}. Проверка может длиться дольше.</span>}<span>Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
+--- /dev/null
++++ b/web/src/TripWorkflowAlert.tsx
+@@ -0,0 +1,15 @@
++import type { TripWorkflowIssue } from './trip-workflow-issues'
++import './trip-workflow-alert.css'
++export function tripIssueLabel(issues: TripWorkflowIssue[]) {
++  if (issues.some(issue => /не заполн|не указан|недоста|дополн|заполните/i.test(issue.message))) return 'Дополнить данные'
++  if (issues.some(issue => /нет связи|соединени|сервер не ответ|тайм-аут/i.test(issue.message))) return 'Проверить связь'
++  if (issues.some(issue => /подпис/i.test(issue.message))) return 'Проверить подпись'
++  return issues.length ? `Проверить этап ${issues[0].step + 1}` : ''
++}
++export function TripIssueLabel({ issues }: { issues: TripWorkflowIssue[] }) {
++  return issues.length ? <span className="trip-issue-label">{tripIssueLabel(issues)}</span> : null
++}
++export default function TripWorkflowAlert({ issues }: { issues: TripWorkflowIssue[] }) {
++  if (!issues.length) return null
++  return <div className="trip-workflow-alert" aria-label="Ошибки обработки ЭТрН"><div><strong>Требуется внимание</strong><ul>{issues.map((issue, index) => <li key={index}><b>{issue.stage}</b>{issue.shipmentId ? ' · ЭТрН доставки' : ''}: {issue.message}</li>)}</ul></div></div>
++}
+--- /dev/null
++++ b/web/src/trip-workflow-alert.css
+@@ -0,0 +1,18 @@
++.trip-workflow-alert { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; background: #fff1f0; color: #9c241c; border: 1px solid #f4b4ae; border-radius: 12px; min-width: 0; overflow-wrap: anywhere; }
++.trip-workflow-alert ul { margin: 4px 0 0; padding-left: 18px; }
++.workflow-steps li.has-error { color: #b42318; }
++.workflow-steps li.has-error .workflow-step-number { background: #fff1f0; border-color: #b42318; color: #b42318; }
++.workflow-step-error { color: #b42318; overflow-wrap: anywhere; }
++.trip-card.trip-has-error .trip-identity-heading h2, .execution-trip.trip-has-error .execution-trip-identity strong { color: #212936; background: #ffd8d4; border-radius: 8px; padding: 5px 8px; }
++
++.trip-saby-action { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
++.trip-issue-label { color: #a52820; font-size: 13px; font-weight: 600; white-space: nowrap; }
++.trip-card-footer { flex-wrap: wrap; }
++
++.trip-edit-action { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
++@media (max-width: 600px) { .trip-card.trip-has-error .trip-card-heading { flex-wrap: wrap; } .trip-edit-action { margin-left: auto; } }
++.trip-card-heading > .trip-edit-action { flex: 0 0 auto; }
++@media (max-width: 600px) {
++  .trip-card.trip-has-error .trip-card-heading > div:first-child { flex-basis: 100%; }
++  .trip-card.trip-has-error .trip-card-heading > .trip-edit-action { flex: 0 0 100%; }
++}
+--- /dev/null
++++ b/web/src/trip-workflow-issues.ts
+@@ -0,0 +1,40 @@
++import type { TripSabyResponse, TripSabySigningStep } from './trip-saby-model'
++
++export interface TripWorkflowIssue { step: number; stage: string; message: string; shipmentId?: string }
++type Delivery = { shipmentId: string; status?: string; lastError?: string | null; dispatch?: { sender: Pick<TripSabySigningStep, 'state'>; carrier: Pick<TripSabySigningStep, 'state'>; completedAt?: string | null; lastError?: string | null } }
++export type WorkflowIssueInput = Partial<Pick<TripSabyResponse, 'documentMode' | 'phase' | 'lastError' | 'order' | 'carrierFill' | 'blockers'>> & { signing?: { sender: TripSabySigningStep; carrier: TripSabySigningStep }; deliveries?: Delivery[]; carrierConfirmed?: boolean }
++const needsAttention = (state?: string) => state === 'blocked' || state === 'unknown' || state === 'error'
++/** Current errors only: history and ordinary waiting states are not failures. */
++export function tripWorkflowIssues(result: WorkflowIssueInput): TripWorkflowIssue[] {
++  const direct = result.documentMode === 'nk_direct_etrn'
++  const labels = direct
++    ? ['Подготовка', 'Подтверждение водителя', 'Создание ЭТрН', 'Подпись отправителя НК', 'Подпись перевозчика НК', 'Передача клиентам', 'Приёмка клиентами']
++    : ['Подготовка', 'Подтверждение водителя', 'Отправка АРТЭЛЬ', 'Водитель и машина', 'Подтверждение НК', 'Создание ЭТрН', 'Отправка клиентам']
++  const issues: TripWorkflowIssue[] = []
++  const add = (step: number, message: string, shipmentId?: string) => {
++    const text = message.trim()
++    if (text && !issues.some(issue => issue.step === step && issue.message === text && issue.shipmentId === shipmentId)) issues.push({ step, stage: labels[step], message: text, ...(shipmentId ? { shipmentId } : {}) })
++  }
++  for (const message of result.blockers ?? []) add(0, message)
++  for (const side of ['sender', 'carrier'] as const) {
++    const signing = result.signing?.[side]
++    if (needsAttention(signing?.state)) add(side === 'sender' ? 2 : 4, signing?.message || 'Подписание приостановлено. Требуется сверка с Saby.')
++  }
++  if (['partial', 'blocked', 'unknown'].includes(result.carrierFill?.state ?? '')) {
++    for (const message of result.carrierFill?.blockers.length ? result.carrierFill.blockers : ['Заполнение ответа НК требует проверки.']) add(3, message)
++  }
++  const stage = result.order?.exchangeStage
++  if (stage && ['rejected', 'cancelled', 'operator_error'].includes(stage)) add(stage === 'rejected' ? 4 : 2, result.lastError || (stage === 'rejected' ? 'Заявка отклонена.' : stage === 'cancelled' ? 'Заявка аннулирована.' : 'Ошибка обработки Saby.'))
++  for (const delivery of result.deliveries ?? []) {
++    const dispatch = delivery.dispatch
++    const step = direct ? needsAttention(dispatch?.sender.state) ? 3 : needsAttention(dispatch?.carrier.state) ? 4 : dispatch ? 5 : 2 : dispatch ? 6 : 5
++    if (delivery.lastError || dispatch?.lastError || needsAttention(delivery.status) || needsAttention(dispatch?.sender.state) || needsAttention(dispatch?.carrier.state)) {
++      add(step, dispatch?.lastError || delivery.lastError || 'Обработка ЭТрН приостановлена. Требуется сверка с Saby.', delivery.shipmentId)
++    }
++  }
++  if (result.lastError || needsAttention(result.phase)) {
++    const step = issues[0]?.step ?? (direct ? result.phase === 'sending_etrn' ? 5 : 2 : result.carrierConfirmed ? 5 : result.signing?.sender.state === 'confirmed' ? 4 : result.order?.id ? 2 : 0)
++    if (!issues.some(issue => issue.message === result.lastError)) add(step, result.lastError || 'Обмен приостановлен. Требуется сверка с Saby.')
++  }
++  return issues
++}
+--- /dev/null
++++ b/tests/trip-workflow-issues.test.ts
+@@ -0,0 +1,34 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { tripWorkflowIssues } from '../web/src/trip-workflow-issues'
++import { readTripWorkflowIssues } from '../server/trip-workflow-issues'
++import type { OperationsData } from '../server/operations-store'
++
++test('ordinary pending signatures and successful completion have no warning', () => {
++  for (const state of ['waiting', 'requested', 'confirmed'] as const) assert.deepEqual(tripWorkflowIssues({ phase: 'completed', signing: { sender: { state }, carrier: { state } } }), [])
++})
++test('each side and preparation can require attention independently', () => {
++  const issues = tripWorkflowIssues({ blockers: ['Не указан VIN'], signing: { sender: { state: 'blocked', message: 'Нет подписи' }, carrier: { state: 'unknown' } } })
++  assert.deepEqual(issues.map(row => row.step), [0, 2, 4])
++})
++test('direct carrier issue is marked at carrier signing; recovery clears indicator', () => {
++  const dispatch = { sender: { state: 'confirmed' as const }, carrier: { state: 'blocked' as 'blocked' | 'confirmed' }, lastError: 'Проверьте титул перевозчика' }
++  const input = { documentMode: 'nk_direct_etrn' as const, deliveries: [{ shipmentId: 'one', status: 'draft', dispatch }] }
++  assert.equal(tripWorkflowIssues(input)[0].step, 4)
++  dispatch.carrier.state = 'confirmed'; dispatch.lastError = ''
++  assert.deepEqual(tripWorkflowIssues(input), [])
++})
++test('saved projection includes document dispatch errors without exposing private fields or changing data', () => {
++  const data = { tripSaby: { trips: {} }, etrn: { trips: { one: { direct: { phase: 'sending_etrn', lastError: null, authorization: { secret: 'PRIVATE' } }, deliveries: { customer: { document: { status: 'draft', snapshot: { private: 'PRIVATE' }, dispatch: { sender: { state: 'confirmed' }, carrier: { state: 'blocked' }, lastError: 'Титул не заполнен' } } } } } } } } as unknown as OperationsData
++  const before = JSON.stringify(data)
++  const issues = readTripWorkflowIssues(data, 'one')
++  assert.equal(issues[0].step, 4)
++  assert.equal(issues[0].shipmentId, 'customer')
++  assert.doesNotMatch(JSON.stringify(issues), /PRIVATE|snapshot|authorization/)
++  assert.equal(JSON.stringify(data), before)
++})
++test('unknown result and failed automatic enrollment remain visible', () => {
++  assert.equal(tripWorkflowIssues({ phase: 'unknown' }).length, 1)
++  const data = { etrn: { trips: { one: { directAutostart: { state: 'blocked', lastError: 'Запуск приостановлен' }, deliveries: {} } } } } as unknown as OperationsData
++  assert.equal(readTripWorkflowIssues(data, 'one')[0].message, 'Запуск приостановлен')
++})
+--- /dev/null
++++ b/scripts/preview-trip-errors.mjs
+@@ -0,0 +1,34 @@
++import { createServer } from 'vite';
++import react from '@vitejs/plugin-react';
++import { resolve } from 'node:path';
++import { integrationRuntime } from '../tests/helpers/trip-saby-integration.ts';
++import { currentSnapshot } from '../server/shipment-operations.ts';
++import { tripWorkflowIssues } from '../web/src/trip-workflow-issues.ts';
++const root = resolve(import.meta.dirname, '..');
++const rt = await integrationRuntime();
++const saved = await rt.store.read(rt.source);
++const snapshot = currentSnapshot(rt.base, saved);
++const state = { status: 'error', phase: 'sending_etrn', ready: true, blockers: [], locked: true, updatedAt: null, lastError: null, order: null, carrierConfirmed: true, lastCheckedAt: null, lastCheckAttemptAt: null, monitoring: { enabled: false, intervalSeconds: null }, history: [], deliveries: [{ shipmentId: rt.trip.customers[0].id, id: 'synthetic-doc', status: 'draft', lastError: 'Не заполнены сведения титула перевозчика. Проверьте данные автомобиля.', dispatch: { sender: { state: 'confirmed' }, carrier: { state: 'blocked' }, completedAt: null } }], loadingFacts: null };
++const trips = [ { ...rt.trip, number: 52, workflowIssues: tripWorkflowIssues(state) }, { ...rt.trip, id: 'healthy-trip', number: 51, workflowIssues: [] } ];
++const server = await createServer({ configFile: false, envDir: false, root: resolve(root, 'web'), cacheDir: resolve(rt.directory, 'vite'), plugins: [react(), { name: 'synthetic-preview', configureServer(server) {
++  server.middlewares.use(async (req, res, next) => {
++    const path = req.url.split('?')[0];
++    const json = data => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(data)); };
++    if (path.startsWith('/api/')) {
++      if (req.method !== 'GET') { res.statusCode = 405; return json({ error: 'Локальный пример: изменения отключены.' }); }
++      if (path === '/api/shipment-trips') return json({ trips, automation: { enabled: false } });
++      if (path === '/api/trip-requests') return json({ requests: [], companies: snapshot.companies, addresses: snapshot.directories.addresses });
++      if (path.endsWith('/saby-workflow')) return json(state);
++      if (path.endsWith('/etrn')) return json({ deliveries: [] });
++      if (path.endsWith('/saby')) return json({ saby: { documents: [] } });
++      return json({});
++    }
++    if (path !== '/__preview') return next();
++    res.setHeader('Content-Type', 'text/html; charset=utf-8');
++    res.end(await server.transformIndexHtml('/__preview', `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ошибки ЭТрН — локальный пример</title></head><body><div style="padding:16px;max-width:1200px;margin:auto"><p>Локальный пример · синтетические данные</p><div id="root"></div></div><script type="module">import React from 'react';import {createRoot} from 'react-dom/client';import TripsPage from '/src/TripsPage.tsx';import '/src/styles.css';import '/src/apple-theme.css';import '/src/design-system.css';createRoot(document.getElementById('root')).render(React.createElement(TripsPage,{data:${JSON.stringify({ companies: snapshot.companies, directories: snapshot.directories })},canManagePlaces:false,onChanged:()=>{}}));</script></body></html>`));
++  });
++} }], server: { host: '127.0.0.1', port: 5197, strictPort: true, fs: { allow: [root] } } });
++await server.listen();
++console.log('http://127.0.0.1:5197/__preview');
++const close = async () => { await server.close(); await rt.close(); process.exit(); };
++process.on('SIGTERM', close); process.on('SIGINT', close);
+--- /dev/null
++++ b/scripts/verify-trip-errors.mjs
+@@ -0,0 +1,50 @@
++import { chromium, webkit, expect } from '@playwright/test';
++import { mkdir, writeFile } from 'node:fs/promises';
++const output = new URL('../../', import.meta.url).pathname;
++await mkdir(output + 'screenshots', { recursive: true });
++const report = [];
++for (const engine of ['chromium', 'webkit']) {
++ const browser = await (engine === 'chromium' ? chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true }) : webkit.launch());
++ try {
++  for (const width of [375, 1440]) {
++   const page = await browser.newPage({ viewport: { width, height: 1100 } });
++   page.setDefaultTimeout(10000); const errors = []; page.on('pageerror', e => errors.push(e.message));
++   await page.goto('http://127.0.0.1:5197/__preview');
++   await page.getByRole('button', { name: 'Рейсы', exact: true }).click();
++   const card = page.getByTestId('trip-card').filter({ hasText: '№52' });
++   await expect(card).toHaveClass(/trip-has-error/);
++   await expect(card.locator('h2')).toHaveCSS('background-color', 'rgb(255, 216, 212)');
++   await expect(card).not.toHaveCSS('background-color', 'rgb(255, 241, 240)');
++   await expect(card.locator('.trip-warning-icon')).toHaveCount(0);
++   await expect(card.locator(':scope > .trip-workflow-alert')).toHaveCount(0);
++   await expect(card.locator('.trip-edit-action .trip-issue-label')).toHaveText('Дополнить данные');
++   await expect(page.getByTestId('trip-card').filter({ hasText: '№51' }).locator('.trip-warning-icon')).toHaveCount(0);
++   await page.screenshot({ path: output + `screenshots/${engine}-${width}-cards.png`, fullPage: true });
++   await card.getByRole('button', { name: 'Saby', exact: true }).click();
++   await expect(card.locator('.workflow-steps .has-error')).toContainText('Отправка клиентам');
++   await expect(card.locator('.workflow-step-error')).toContainText('Не заполнены сведения');
++   await page.route('**/saby-workflow', async route => {
++     const response = await route.fetch(); const body = await response.json();
++     await route.fulfill({ json: { ...body, documentMode: 'nk_direct_etrn' } });
++   });
++   await card.getByRole('button', { name: 'Saby', exact: true }).click();
++   await card.getByRole('button', { name: 'Saby', exact: true }).click();
++   await expect(card.locator('.workflow-steps .has-error')).toContainText('Подпись перевозчика НК');
++   await page.unroute('**/saby-workflow');
++   await page.route('**/saby-workflow', async route => {
++     const response = await route.fetch(); const body = await response.json();
++     await route.fulfill({ json: { ...body, phase: 'completed', deliveries: [] } });
++   });
++   await card.getByRole('button', { name: 'Saby', exact: true }).click();
++   await card.getByRole('button', { name: 'Saby', exact: true }).click();
++   await expect(card).not.toHaveClass(/trip-has-error/);
++   await expect(card.locator('.trip-issue-label')).toHaveCount(0);
++   await expect(page.locator('body')).not.toContainText('Maximum update depth');
++   if (errors.length) throw new Error(errors.join('\n'));
++   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
++   if (overflow) throw new Error('Horizontal overflow at ' + width);
++   report.push({ engine, width, passed: true }); await page.close();
++  }
++ } finally { await browser.close(); }
++}
++await writeFile(output + 'ui-report.json', JSON.stringify(report, null, 2)); console.log(report);

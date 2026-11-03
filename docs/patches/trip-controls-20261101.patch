@@ -1,0 +1,1104 @@
+--- /dev/null
++++ b/scripts/preview-trip-controls.mjs
+@@ -0,0 +1,54 @@
++import { createServer as createVite } from 'vite';
++import react from '@vitejs/plugin-react';
++import { createServer } from 'node:http';
++import { randomUUID } from 'node:crypto';
++import { resolve } from 'node:path';
++import { integrationRuntime, integrationApi, integrationConfig, integrationSettings, integrationPrepare } from '../tests/helpers/trip-saby-integration.ts';
++import { createSnapshotMiddleware } from '../server/local-api.ts';
++import { currentSnapshot } from '../server/shipment-operations.ts';
++import { saveShipmentTrip } from '../server/shipment-trips.ts';
++import { enqueueAutomaticTripSaby, runTripSabyWorkflow } from '../server/trip-saby-workflow.ts';
++import { SabyClient } from '../server/saby-client.ts';
++
++const root = resolve(import.meta.dirname, '..'), port = Number(process.env.TRIP_CONTROLS_PORT || 5199);
++const rt = await integrationRuntime(), api = integrationApi(), config = integrationConfig();
++process.env.SABY_AUTOFILL_PROFILE_JSON = JSON.stringify(integrationSettings);
++config.automaticSigning = { id: 'synthetic-controls', enabled: true, mode: 'deferred', approvedAt: '2026-10-01T00:00:00.000Z', sender: { ...config.customer, thumbprint: 'ab'.repeat(20) }, carrier: { ...config.carrier, thumbprint: 'cd'.repeat(20) } };
++const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, sabyClient: new SabyClient(config, api.send), sabyWorkflowMonitoringEnabled: false });
++const bootstrap = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
++await new Promise(resolve => bootstrap.listen(0, '127.0.0.1', resolve));
++const setup = await fetch(`http://127.0.0.1:${bootstrap.address().port}/api/auth/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Локальный пример', login: 'synthetic-controls', password: randomUUID() }) });
++if (!setup.ok) throw new Error('Synthetic setup failed');
++const cookie = setup.headers.get('set-cookie').split(';')[0]; await setup.arrayBuffer();
++await new Promise(resolve => bootstrap.close(resolve));
++const created = await rt.store.mutate(rt.source, data => {
++  const actorId = data.accounts.users[0].id;
++  const fields = Object.fromEntries(['organization_id', 'supplier_id', 'carrier_id', 'oil_depot_id', 'product_id', 'purchase_price_unspecified_unit', 'driver_id', 'vehicle_id', 'additional_costs'].map(key => [key, rt.trip.fields[key]]));
++  Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2027-02-03T09:15' });
++  const customers = rt.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])) }));
++  const waiting = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, actorId);
++  const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId: waiting.trip.id, actorId, config, prepare: integrationPrepare });
++  if (!queued.enqueued) throw new Error(JSON.stringify(queued.blockers));
++  const invalid = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, actorId);
++  for (const row of invalid.trip.customers) data.shipments[row.id].fields.oil_depot_id = null;
++  data.tripNumbers = { [rt.tripId]: 58, [waiting.trip.id]: 55, [invalid.trip.id]: 57 };
++  return { result: { waiting: waiting.trip.id, invalid: invalid.trip.id, deletable: rt.tripId }, changed: true };
++});
++await runTripSabyWorkflow({ ...rt, tripId: created.waiting, client: new SabyClient(config, api.send), createDelivery: async () => { throw new Error('Synthetic preview does not send deliveries'); } });
++const initial = await rt.store.read(rt.source), snapshot = currentSnapshot(rt.base, initial);
++const server = await createVite({ configFile: false, envDir: false, root: resolve(root, 'web'), cacheDir: resolve(rt.directory, 'vite'), plugins: [react(), { name: 'trip-controls-preview', configureServer(server) {
++  server.middlewares.use(async (req, res, next) => {
++    const path = req.url.split('?')[0];
++    if (path === '/__fixture') {
++      await rt.store.mutate(rt.source, data => { for (const key of Object.keys(data)) delete data[key]; Object.assign(data, structuredClone(initial)); return { result: null, changed: true }; });
++      res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ ...created, syntheticOnly: true }));
++    }
++    if (path.startsWith('/api/')) { req.headers.cookie = cookie; return middleware(req, res, next); }
++    if (path !== '/__preview') return next();
++    res.setHeader('Content-Type', 'text/html; charset=utf-8');
++    res.end(await server.transformIndexHtml('/__preview', `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Управление рейсами — локальный пример</title></head><body><div style="padding:16px;max-width:1200px;margin:auto"><p>Локальный пример · вымышленные данные · №55 ожидает водителя, №57 требует данных, №58 можно удалить</p><div id="root"></div></div><script type="module">import React from 'react';import {createRoot} from 'react-dom/client';import TripsPage from '/src/TripsPage.tsx';import '/src/styles.css';import '/src/apple-theme.css';import '/src/design-system.css';createRoot(document.getElementById('root')).render(React.createElement(TripsPage,{data:${JSON.stringify({ companies: snapshot.companies, directories: snapshot.directories })},canManagePlaces:true,allowDelete:true,onChanged:()=>{}}));</script></body></html>`));
++  });
++} }], server: { host: '127.0.0.1', port, strictPort: true, fs: { allow: [root] } } });
++await server.listen(); console.log(`http://127.0.0.1:${port}/__preview`);
++const close = async () => { await server.close(); await rt.close(); process.exit(); };
++process.on('SIGTERM', close); process.on('SIGINT', close);
+--- /dev/null
++++ b/scripts/verify-trip-controls.mjs
+@@ -0,0 +1,71 @@
++import { chromium, webkit } from 'playwright';
++import AxeBuilder from '@axe-core/playwright';
++import assert from 'node:assert/strict';
++import { mkdir, writeFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++
++const origin = process.env.TRIP_CONTROLS_ORIGIN || 'http://127.0.0.1:5199';
++const out = resolve(import.meta.dirname, '../../ui'); await mkdir(out, { recursive: true });
++const report = [];
++for (const [engine, launcher] of Object.entries({ chromium, webkit })) for (const width of [375, 1440]) {
++  const browser = await launcher.launch();
++  const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
++  const page = await context.newPage();
++  const errors = []; page.on('pageerror', error => errors.push(String(error)));
++  const mutationRequests = []; page.on('request', request => { if (request.method() !== 'GET' && request.url().includes('/api/')) mutationRequests.push(request.url()); });
++  try {
++    await page.request.get(origin + '/__fixture');
++    await page.goto(origin + '/__preview');
++    const openTrips = async () => { await page.locator('.trips-section-tabs').getByRole('button', { name: 'Рейсы', exact: true }).click(); await page.locator('.trip-card').first().waitFor(); };
++    await openTrips();
++    const card = number => page.locator('.trip-card').filter({ has: page.getByRole('heading', { name: `Рейс №${number}`, exact: true }) });
++    assert.equal(await card(55).count(), 1);
++    assert.equal(await card(55).evaluate(node => node.classList.contains('trip-has-error')), false);
++    assert.equal(await card(57).evaluate(node => node.classList.contains('trip-has-error')), true);
++    assert.equal(await card(55).getByRole('button', { name: 'Удалить рейс', exact: true }).count(), 0);
++    await card(55).getByRole('button', { name: 'Saby', exact: true }).click();
++    await card(55).getByText('Черновик заявки · ожидаем водителя', { exact: true }).waitFor();
++    assert.equal(await card(55).evaluate(node => node.classList.contains('trip-has-error')), false);
++    await card(55).getByRole('button', { name: 'Проверить данные', exact: true }).click();
++    await card(55).getByText('Данные CRM проверены. Изменений нет.', { exact: true }).waitFor();
++    assert.equal(mutationRequests.length, 0, 'readiness check must not launch signing or provider exchange');
++    await card(55).getByRole('button', { name: 'Остановить обмен', exact: true }).click();
++    const dialog = page.getByRole('dialog');
++    await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
++    await dialog.waitFor({ state: 'hidden' }); assert.equal(mutationRequests.length, 0);
++    await card(55).getByRole('button', { name: 'Остановить обмен', exact: true }).click();
++    await dialog.getByRole('button', { name: 'Остановить обмен', exact: true }).click();
++    await dialog.waitFor({ state: 'hidden' });
++    await card(55).getByRole('button', { name: 'Возобновить обмен', exact: true }).waitFor();
++    assert.equal(await card(55).evaluate(node => node.classList.contains('trip-has-error')), false);
++    await page.reload(); await openTrips(); await card(55).getByRole('button', { name: 'Saby', exact: true }).click();
++    await card(55).getByRole('button', { name: 'Возобновить обмен', exact: true }).waitFor();
++    await card(55).getByRole('button', { name: 'Удалить рейс', exact: true }).click();
++    await dialog.getByText(/Рейс связан с документами Saby/).waitFor();
++    assert.equal(await dialog.getByRole('button', { name: 'Удалить рейс', exact: true }).isDisabled(), true);
++    await dialog.getByRole('button', { name: 'Отмена', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
++    await card(55).scrollIntoViewIfNeeded();
++    await page.screenshot({ path: resolve(out, `${engine}-${width}-paused.png`), fullPage: true });
++    await card(55).getByRole('button', { name: 'Возобновить обмен', exact: true }).click();
++    await dialog.getByRole('button', { name: 'Возобновить обмен', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
++    await card(55).getByRole('button', { name: 'Остановить обмен', exact: true }).waitFor();
++    await card(58).getByRole('button', { name: 'Saby', exact: true }).click();
++    await card(58).getByRole('button', { name: 'Удалить рейс', exact: true }).click();
++    await dialog.getByText('Рейс и все его доставки будут удалены из общего учёта CRM.', { exact: true }).waitFor();
++    const axe = await new AxeBuilder({ page }).include('dialog').analyze();
++    assert.deepEqual(axe.violations.map(row => row.id), []);
++    await page.screenshot({ path: resolve(out, `${engine}-${width}-delete.png`), fullPage: true });
++    await dialog.getByRole('button', { name: 'Удалить рейс', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
++    await page.getByText('Рейс и его доставки удалены.', { exact: true }).waitFor();
++    await card(55).waitFor(); await card(57).waitFor();
++    assert.equal(await card(58).count(), 0); assert.equal(await card(55).count(), 1); assert.equal(await card(57).count(), 1);
++    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
++    assert.equal(mutationRequests.filter(url => url.endsWith('/control')).length, 2);
++    assert.equal(mutationRequests.filter(url => !url.endsWith('/control')).length, 1);
++    assert.deepEqual(errors, []);
++    report.push({ engine, width, passed: true, axeViolations: 0, mutations: mutationRequests.length });
++  } catch (error) { await page.screenshot({ path: resolve(out, `${engine}-${width}-failure.png`), fullPage: true }); throw error; }
++  finally { await browser.close(); }
++}
++await writeFile(resolve(out, 'report.json'), JSON.stringify({ passed: true, syntheticOnly: true, checks: report }, null, 2));
++console.log(JSON.stringify(report));
+--- a/server/etrn-dispatch.ts
++++ b/server/etrn-dispatch.ts
+@@ -1,3 +1,4 @@
++import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
+ import { requireEtrnDelivery } from './trip-etrn-scope';
+ import { getShipmentTrip } from './shipment-trips';
+ import { assertTripTransportDocumentsAllowed, isNkDirectEtrn } from './trip-document-mode';
+@@ -187,6 +188,7 @@
+     return workflow;
+   };
+   let doc = await store.mutate(source, data => {
++    assertTripExchangeRunning(data, tripId);
+     authority(data);
+     const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+     if (!current?.id || current.status !== 'draft') throw new ApiError(409, 'Сначала подтвердите создание ЭТрН.');
+@@ -209,7 +211,7 @@
+     const latest = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+     if (!latest || latest.leaseId !== leaseId || Date.parse(latest.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс отправки ЭТрН истёк.');
+   };
+-  client = client.withRequestGuard(checkAccess);
++  client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
+   const sideId = (side: SabySigningSide) => side === 'carrier' ? doc.dispatch?.carrierIdentity?.documentId ?? doc.id! : doc.id!;
+   const directElectronic = doc.snapshot.documentMode === 'nk-direct-v1' && doc.snapshot.loadingActorMode === 'sender' && doc.senderTitleVersion === 2 && doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке';
+   let senderRemoteForCarrier: SabyObject | undefined;
+@@ -471,6 +473,7 @@
+       await update(row => { if (delivered) { row.dispatch!.completedAt ??= stamp(); if (accepted) row.dispatch!.recipientAcceptedAt ??= stamp(); row.dispatch!.lastError = undefined; } else { delete row.dispatch!.completedAt; delete row.dispatch!.recipientAcceptedAt; row.dispatch!.lastError = 'Подписи получены. Saby ещё не подтвердил передачу на этап приёмки именно этому клиенту.'; } });
+     }
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     await update(row => {
+       delete row.dispatch!.completedAt; delete row.dispatch!.recipientAcceptedAt;
+       const step = row.dispatch!.sender.state !== 'confirmed' ? row.dispatch!.sender : row.dispatch!.carrier;
+--- a/server/etrn-service.ts
++++ b/server/etrn-service.ts
+@@ -1,3 +1,4 @@
++import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { requiresEtrn, requireEtrnDelivery } from './trip-etrn-scope';
+ import { createHash, randomUUID } from 'node:crypto';
+@@ -398,6 +399,7 @@
+   const source = base.provenance.sourceSha256;
+   const leaseId = randomUUID();
+   const claimed = await store.mutate(source, data => {
++    assertTripExchangeRunning(data, tripId);
+     const fullSnapshot = currentSnapshot(base, data);
+     authorize(fullSnapshot, data);
+     assertTripTransportDocumentsAllowed(getShipmentTrip(fullSnapshot, tripId), data);
+@@ -432,7 +434,7 @@
+       const document = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+       if (!document || document.leaseId !== leaseId || !document.leaseUntil || Date.parse(document.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс обмена ЭТрН истёк или изменился. Выполните сверку.');
+     };
+-    client = client.withRequestGuard(checkAccess);
++    client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
+     let beganWrite = false;
+     let id = claimed.id;
+     const update = async (patch: Partial<EtrnDocument>) => store.mutate(source, data => {
+@@ -470,6 +472,7 @@
+       const remote = linked ?? await client.readConsignmentNote(id!);
+       await update(confirmed(remote, { ...claimed, id }, !!linked));
+     } catch (error) {
++      if (error instanceof TripExchangePausedError) throw error;
+       const uncertain = !!id || claimed.status === 'unknown' || beganWrite && (!(error instanceof SabyError) || error.uncertain);
+       await update({ id, status: uncertain ? 'unknown' : 'error', lastError: error instanceof SabyError || error instanceof ApiError ? error.message : 'Обмен ЭТрН не подтверждён. Выполните сверку состояния.', updatedAt: stamp() });
+       if (error instanceof ApiError) throw error;
+@@ -538,6 +541,7 @@
+   const allErrors = direct ? preparedNkDirectFromSnapshot(initialSnapshot, initial, tripId, client.config).blockers : (initial.tripSaby?.trips[tripId]?.deliveries ?? []).flatMap(row => sabyConsignmentBlockers(snapshotWithLoading(row.snapshot, facts, orderInput!.order)));
+   if (allErrors.length) return { status: 'error', id: null, lastError: [...new Set(allErrors)].join(' ') };
+   const claimed = await store.mutate(source, data => {
++    assertTripExchangeRunning(data, tripId);
+     const current = currentSnapshot(base, data);
+     authorize(current, data);
+     if (direct) authorizeNkDirectFromSnapshot(base, current, data, tripId, client.config);
+@@ -581,7 +585,7 @@
+     const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+     if (!current || current.leaseId !== leaseId || !current.leaseUntil || Date.parse(current.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс ЭТрН истёк. Выполните сверку.');
+   };
+-  client = client.withRequestGuard(checkAccess);
++  client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
+   const validateReservation = (remote: SabyObject) => {
+     const parties = sabyObject(remote.Стороны) ? remote.Стороны : {};
+     if (remote.Идентификатор !== doc.id || remote.Тип !== 'ConsignmentNote' || remote.Примечание !== doc.marker || remote.Дата !== doc.snapshot.fields.date?.split('-').reverse().join('.') || !sabyText(remote.Номер) || doc.number && remote.Номер !== doc.number || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' || !partyMatches(remote.НашаОрганизация, doc.snapshot.customerOrganization) || direct && (!partyMatches(remote.Грузоотправитель ?? parties.Отправитель, doc.snapshot.customerOrganization) || !partyMatches(remote.ТранспортнаяКомпания ?? parties.Перевозчик, doc.snapshot.carrierOrganization) || !partyMatches(remote.Грузополучатель ?? parties.Получатель, doc.snapshot.profile.recipient) || !sabyDocumentWorkflow(remote).revision)) throw new SabyError('unknown', 'Saby не подтвердил номер, реквизиты и редакцию существующей ЭТрН. Новое создание запрещено.', true);
+@@ -869,6 +873,7 @@
+     await checkAccess();
+     await update(confirmed(remote, doc));
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     if (currentRequest && error instanceof SabyRequestError && hash(error.request) === hash(currentRequest)) {
+       await update({ writeAttempts: doc.writeAttempts?.map(attempt => hash(attempt.request) === hash(currentRequest) ? { ...attempt, outcome: error.uncertain ? 'uncertain' : 'denied', ...(error.response ? { response: error.response } : {}) } : attempt) }, true);
+     }
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -2,6 +2,7 @@
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { directoryMutation } from './directory-access';
+ import { getNkLoadingDetails, saveNkLoadingDetails } from './nk-loading-details';
++import { assertTripExchangeRunning, exchangeControl, setTripExchangeControl } from './trip-exchange-control';
+ import { archiveView, createArchiveEntry, saveArchiveCard, deleteArchiveEntry } from './document-archive';
+ import { readOperator, mutateOperator } from './operator';
+ import { readTripNumbers } from './trip-numbering';
+@@ -48,7 +49,7 @@
+ import { addDirectoryEntry, normalizeName } from './directory-operations';
+ import { saveCompany, updateDirectoryEntry } from './directory-editing';
+ import { allocateShipmentNumber } from './shipment-numbering';
+-import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip } from './shipment-trips';
++import { deleteShipmentTrip, getShipmentTrip, saveShipmentTrip, tripDeletionBlocker } from './shipment-trips';
+ import { cancelTripRequest, listTripRequests, requireTripRequest, saveTripRequest, tripRequestCatalog } from './trip-requests';
+ import { readTripRequestsMapConfig, tripRequestGeocodeTarget } from './trip-request-geocoding';
+ import { createNominatimGeocoder, readNominatimCachedLocation } from './nominatim-geocoder';
+@@ -976,7 +977,7 @@
+         }
+         return write(response,result.created?201:200,JSON.stringify(result));
+       }
+-      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(start|loading-facts|carrier-details|signing|signing\/start))?$/);
++      const workflowMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/saby-workflow(?:\/(control|start|loading-facts|carrier-details|signing|signing\/start))?$/);
+       if (workflowMatch) {
+         const tripId = decodeURIComponent(workflowMatch[1]);
+         const authorize = (snapshot: ShipmentAccessContext, data: import('./operations-store').OperationsData) => { if (actor) requireWholeTrip(authorized(data), snapshot, tripId); };
+@@ -984,8 +985,23 @@
+         const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
+         const read = (latest: import('./operations-store').OperationsData) => {
+           const snapshot = currentSnapshot(base, latest);
+-          return ({ workflowIssues: readTripWorkflowIssues(latest, tripId, { snapshot, trip: getShipmentTrip(snapshot, tripId), config: options.sabyClient?.config ?? sabyConfigFromEnv() }), ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
++          return ({ exchangeControl: exchangeControl(latest, tripId), workflowIssues: readTripWorkflowIssues(latest, tripId, { snapshot, trip: getShipmentTrip(snapshot, tripId), config: options.sabyClient?.config ?? sabyConfigFromEnv() }), ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+         };
++        if (workflowMatch[2] === 'control') {
++          if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
++          const body = await jsonBody(request);
++          const result = await operations.mutate(base.provenance.sourceSha256, latest => {
++            const employee = authorized(latest), snapshot = currentSnapshot(base, latest);
++            requireTripSection(employee, true); requireWholeTrip(employee, snapshot, tripId);
++            getShipmentTrip(snapshot, tripId);
++            const changed = setTripExchangeControl(latest, tripId, employee.id, body);
++            return { result: read(latest), changed };
++          });
++          write(response, 200, JSON.stringify(result));
++          if (!result.exchangeControl.paused) { try { options.requestSabyWorkflow?.(tripId); } catch { /* The durable state is retried by the scheduler. */ } }
++          return;
++        }
++        if (request.method !== 'GET') assertTripExchangeRunning(data, tripId);
+         const direct = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+         if (direct && workflowMatch[2] && workflowMatch[2] !== 'start') throw new ApiError(409, 'Прямые ЭТрН используют сохранённое подтверждение убытия водителя.');
+         if (!direct && workflowMatch[2] !== 'loading-facts' && !(request.method === 'GET' && !workflowMatch[2])) assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
+@@ -1000,6 +1016,7 @@
+           const signingConfig = options.sabyClient?.config ?? sabyConfigFromEnv();
+           const queued = await operations.mutate(base.provenance.sourceSha256, latest => {
+             const currentActor = authorized(latest);
++            assertTripExchangeRunning(latest, tripId);
+             const start = isNkDirectEtrn(getShipmentTrip(currentSnapshot(base, latest), tripId), latest) ? startNkDirectEtrn : startAutomaticTripSaby;
+             start({ base, data: latest, tripId, actorId: currentActor.id, config: signingConfig, previewToken: body.previewToken as string, mode: body.mode as 'draft' | 'sign_and_send' });
+             return { result: read(latest), changed: true };
+@@ -1130,7 +1147,7 @@
+         if (tripIdMatch) {
+           const id = decodeURIComponent(tripIdMatch[1]);
+           if (actor) requireWholeTrip(authorized(stored), fullSnapshot, id);
+-          return write(response, 200, JSON.stringify({ trip: getShipmentTrip(snapshot, id, readTripNumbers(fullSnapshot, stored)), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
++          return write(response, 200, JSON.stringify({ deletion: { reason: tripDeletionBlocker(stored, id, fullSnapshot) }, trip: getShipmentTrip(snapshot, id, readTripNumbers(fullSnapshot, stored)), shipment: snapshot.shipments.find(row => row.fields.trip_id === id) }));
+         }
+         if (shipmentIdMatch) {
+           const shipment = snapshot.shipments.find(row => row.id === decodeURIComponent(shipmentIdMatch[1]));
+--- a/server/nk-direct-etrn.ts
++++ b/server/nk-direct-etrn.ts
+@@ -1,3 +1,4 @@
++import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { createHash, randomUUID } from 'node:crypto';
+ import { NATIVE_APPROVED_REDIRECTION_METHOD } from './saby-consignment-evidence';
+@@ -180,13 +181,14 @@
+     return authorizeNkDirectFromSnapshot(base, snapshot, data, tripId, config);
+   };
+   const claimed = await store.mutate(source, data => {
++    assertTripExchangeRunning(data, tripId);
+     const record = authority(data);
+     if (record.leaseId && Date.parse(record.leaseUntil ?? '') > Date.now()) throw new ApiError(409, 'Прямой обмен уже выполняется.');
+     record.leaseId = leaseId; record.leaseUntil = new Date(Date.now() + 300_000).toISOString(); record.lastCheckAttemptAt = stamp();
+     return { result: structuredClone(record), changed: true };
+   });
+   const check = async () => { const data = await store.read(source); const record = authority(data); if (record.attemptId !== claimed.attemptId || record.leaseId !== leaseId || Date.parse(record.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс прямого обмена изменился.'); };
+-  const client = originalClient.forNkDirectEtrn().withRequestGuard(check);
++  const client = controlledTripClient(originalClient.forNkDirectEtrn().withRequestGuard(check), store, source, tripId);
+   const context = { ...options, client, authorize: (snapshot: ShipmentAccessContext, data: OperationsData) => { authorize(snapshot, data); authorizeNkDirectEtrn(base, data, tripId, config); } };
+   let released = false;
+   const update = async (change: (record: NkDirectEtrnRecord, data: OperationsData) => void, release = false) => store.mutate(source, data => {
+@@ -223,6 +225,7 @@
+     // is no provider action between them; errors/early returns still release below.
+     released = true;
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     // Even when permissions were revoked, preserve diagnostics without granting another request.
+     await store.mutate(source, data => {
+       const record = data.etrn?.trips[tripId]?.direct;
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -1,3 +1,4 @@
++import { validateTripExchangeControls, type TripExchangeControl } from './trip-exchange-control';
+ import { WorkPartition, isWorkPartition } from './work-partition';
+ import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
+ import { validateDocumentArchive } from './document-archive';
+@@ -51,6 +52,7 @@
+   companies: Company[];
+   directories?: Directories;
+   paymentAllocations?: PaymentAllocation[];
++  tripExchangeControls?: Record<string, TripExchangeControl>;
+   tripExecutions?: Record<string, StoredTripExecution>;
+   driverTripProgress?: Record<string, DriverTripProgress>;
+   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
+@@ -92,6 +94,7 @@
+     if (!object(data.tripCreateRequests)) throw new StoreError('Invalid trip requests');
+     for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
+   }
++  try { validateTripExchangeControls(data.tripExchangeControls); } catch { throw new StoreError('Invalid trip exchange controls'); }
+   try { validateTripExecutions(data.tripExecutions); } catch { throw new StoreError('Invalid trip executions'); }
+   try { validateDriverTripProgress(data.driverTripProgress); } catch { throw new StoreError('Invalid driver trip progress'); }
+   try { validateTripRequests(data.tripRequests, data.tripRequestCreates); } catch { throw new StoreError('Invalid trip requests'); }
+--- a/server/saby-service.ts
++++ b/server/saby-service.ts
+@@ -1,3 +1,4 @@
++import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
+ import Decimal from 'decimal.js';
+@@ -115,6 +116,7 @@
+   const source = base.provenance.sourceSha256;
+   const leaseId = randomUUID();
+   const claimed = await store.mutate(source, data => {
++    assertTripExchangeRunning(data, tripId);
+     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+     const trip = getShipmentTrip(snapshot, tripId);
+     assertTripTransportDocumentsAllowed(trip, data);
+@@ -137,7 +139,7 @@
+     return { result: structuredClone(records), changed: true };
+   });
+   if (claimed) {
+-    client = client.withRequestGuard(async () => {
++    client = controlledTripClient(client, store, source, tripId).withRequestGuard(async () => {
+       const data = await store.read(source); authorize(currentShipmentAccess(base, data), data);
+       const record = data.saby?.trips[tripId];
+       if (!record || record.leaseId !== leaseId || !record.leaseUntil || Date.parse(record.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс передачи Saby истёк или изменён. Выполните сверку состояния.');
+@@ -153,6 +155,7 @@
+     try {
+       try { await client.verifyOrganizations(claimed[0].snapshot.customerOrganization, claimed[0].snapshot.carrierOrganization); }
+       catch (error) {
++        if (error instanceof TripExchangePausedError) throw error;
+         const message = error instanceof SabyError ? error.message : 'Не удалось проверить доступ к Saby.';
+         for (const record of claimed.filter(doc => doc.status !== 'draft')) await update(record.shipmentId, { status: record.status === 'unknown' || record.id ? 'unknown' : 'error', lastError: message, updatedAt: now() });
+         throw error;
+@@ -182,6 +185,7 @@
+           if (result.Идентификатор !== id || result.Номер !== `CRM-${record.attemptId}`) throw new SabyError('unknown', 'Ответ Saby не совпадает с идентификатором и номером созданного заказа.', true);
+           await update(record.shipmentId, confirmed(result, record));
+         } catch (error) {
++          if (error instanceof TripExchangePausedError) throw error;
+           const known = error instanceof SabyError;
+           const uncertain = record.status === 'unknown' || !!id || beganWrite && (!known || error.uncertain);
+           await update(record.shipmentId, { status: uncertain ? 'unknown' : 'error', lastError: known ? error.message : error instanceof ApiError ? error.message : 'Не удалось выполнить передачу в Saby. Выполните сверку состояния.', updatedAt: now() });
+@@ -189,6 +193,7 @@
+         }
+       }
+     } catch (error) {
++      if (error instanceof TripExchangePausedError) throw error;
+       if (!(error instanceof SabyError)) throw error;
+     } finally {
+       await store.mutate(source, data => {
+--- a/server/shipment-trips.ts
++++ b/server/shipment-trips.ts
+@@ -265,10 +265,17 @@
+   return { trip: getShipmentTrip(updated, id, data.tripNumbers), shipments, shipment: shipments[0] };
+ }
+ 
++export function tripDeletionBlocker(data: OperationsData, id: string, snapshot?: Pick<Snapshot, 'shipments'>): string | null {
++  if (data.tripExecutions?.[id] || data.driverTripProgress?.[id] || data.etrn?.trips[id]?.loadingFacts) return 'Рейс содержит сохранённые факты водителя или подтверждённые доставки. Удаление запрещено.';
++  if (hasSabyDocuments(data, id) || data.etrn?.trips[id]?.direct) return 'Рейс связан с документами Saby. Удаление запрещено. Можно остановить обмен.';
++  if (data.paymentAllocations?.some(row => (data.shipments[row.shipmentId]?.fields.trip_id ?? snapshot?.shipments.find(item => item.id === row.shipmentId)?.fields.trip_id) === id)) return 'Рейс связан с банковскими платежами. Удаление запрещено.';
++  return null;
++}
++
+ /** Remove the whole truck under the same lock and full customer-version guard as editing. */
+ export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: Record<string, unknown>, id: string): { deleted: true; id: string; deletedCount: number } {
+-  if (data.tripExecutions?.[id]) throw new ApiError(409, 'Рейс содержит подтверждённые доставки. Удаление запрещено.');
+-  if (hasSabyDocuments(data, id)) throw new ApiError(409, 'Рейс связан с документами Saby. Удаление запрещено до сверки документов.');
++  const reason = tripDeletionBlocker(data, id, currentSnapshot(base, data, false));
++  if (reason) throw new ApiError(409, reason);
+   if (Object.keys(body).some(key => key !== 'versions')) throw new ApiError(400, 'В запросе удаления есть неизвестные параметры.');
+   const rows = currentSnapshot(base, data, false).shipments.filter(row => row.fields.trip_id === id);
+   if (!rows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
+--- /dev/null
++++ b/server/trip-exchange-control.ts
+@@ -0,0 +1,35 @@
++import { ApiError } from './api-error';
++import type { OperationsData, OperationsStorage } from './operations-store';
++import type { SabyClient } from './saby-client';
++
++export interface TripExchangeControl { paused: boolean; version: number; updatedAt: string; updatedBy: string }
++export class TripExchangePausedError extends ApiError {
++  constructor() { super(409, 'Обмен рейса остановлен. Для продолжения нажмите «Возобновить обмен».'); }
++}
++export function exchangeControl(data: OperationsData, tripId: string) {
++  const row = data.tripExchangeControls?.[tripId];
++  return { paused: row?.paused ?? false, version: row?.version ?? 0, updatedAt: row?.updatedAt ?? null };
++}
++export function assertTripExchangeRunning(data: OperationsData, tripId: string) {
++  if (data.tripExchangeControls?.[tripId]?.paused) throw new TripExchangePausedError();
++}
++/** Runs again after acquiring provider network capacity, including queued requests.
++ * Receiving an already sent response and releasing leases remain allowed. */
++export function controlledTripClient(client: SabyClient, store: OperationsStorage, source: string, tripId: string) {
++  return client.withRequestGuard(async () => assertTripExchangeRunning(await store.read(source), tripId));
++}
++export function setTripExchangeControl(data: OperationsData, tripId: string, actorId: string, body: Record<string, unknown>) {
++  if (Object.keys(body).length !== 2 || typeof body.paused !== 'boolean' || !Number.isSafeInteger(body.version) || Number(body.version) < 0) throw new ApiError(400, 'Укажите действие и версию состояния обмена.');
++  const previous = exchangeControl(data, tripId);
++  if (previous.version !== body.version) throw new ApiError(409, 'Состояние обмена изменилось в другом окне. Обновите состояние.');
++  if (previous.paused === body.paused) return false;
++  (data.tripExchangeControls ??= {})[tripId] = { paused: body.paused, version: previous.version + 1, updatedAt: new Date().toISOString(), updatedBy: actorId };
++  return true;
++}
++export function validateTripExchangeControls(value: unknown) {
++  if (value === undefined) return;
++  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid trip exchange controls');
++  for (const [id, row] of Object.entries(value)) {
++    if (!id || !row || typeof row !== 'object' || typeof row.paused !== 'boolean' || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.updatedBy !== 'string' || !row.updatedBy || typeof row.updatedAt !== 'string' || !Number.isFinite(Date.parse(row.updatedAt))) throw new Error('Invalid trip exchange control');
++  }
++}
+--- a/server/trip-saby-carrier.ts
++++ b/server/trip-saby-carrier.ts
+@@ -1,3 +1,4 @@
++import { TripExchangePausedError } from './trip-exchange-control';
+ import type { Snapshot } from '../web/src/model';
+ import type { TripSabyCarrierFill } from '../web/src/trip-saby-model';
+ import type { TripSabyRecord } from './trip-saby-workflow';
+@@ -108,6 +109,7 @@
+     if (patch.responsibleReady !== undefined) fill.responsibleSaved = patch.responsibleReady;
+     fill.state = input.blockers.length ? 'partial' : 'saved'; fill.checkedAt = new Date().toISOString(); await save();
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     fill.state = attempted || fill.intent && !fill.intent.verified ? 'unknown' : 'blocked';
+     // Provider error payloads may contain private XML. Only controlled messages reach UI.
+     fill.blockers = [error instanceof SabyError && error.kind === 'validation' ? error.message : 'Не удалось подтвердить заполнение ответа НК. Обновите состояние; повторная запись без сверки не выполняется.'];
+--- a/server/trip-saby-scheduler.ts
++++ b/server/trip-saby-scheduler.ts
+@@ -1,3 +1,4 @@
++import { exchangeControl } from './trip-exchange-control';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import type { Snapshot } from '../web/src/model';
+ import { ApiError } from './api-error';
+@@ -45,6 +46,7 @@
+   return ['awaiting_driver', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'unknown'].includes(record.phase) || expiredSubmission || queuedAutomatic || !!record.driverFlow && record.phase === 'completed' && !record.stage6CompletedAt;
+ }
+ function workflowDue(data: OperationsData, tripId: string, record: TripSabyRecord, now: number, carrierWaitingOnly: boolean): boolean {
++  if (exchangeControl(data, tripId).paused) return false;
+   if (carrierWaitingOnly && (!carrierFastPolling(record, now) || now - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) return false;
+   if (!(record.signing?.requestedBy ?? record.initiatorId)) return false;
+   if (workflowContinuing(record, now)) return true;
+@@ -85,7 +87,7 @@
+   const source = base.provenance.sourceSha256;
+   const initial = await store.read(source);
+   for (const [tripId, saved] of Object.entries(initial.etrn?.trips ?? {})) {
+-    if (!saved.direct || options.carrierWaitingOnly || options.tripId && options.tripId !== tripId) continue;
++    if (exchangeControl(initial, tripId).paused || !saved.direct || options.carrierWaitingOnly || options.tripId && options.tripId !== tripId) continue;
+     if (!directDue(saved.direct, options.now ?? Date.now())) continue;
+     try {
+       await runNkDirectEtrn({ base, store, tripId, authorize: () => {}, client: options.client ?? new SabyClient(config, options.send ?? fetch, undefined, options.runNetwork) });
+@@ -190,7 +192,7 @@
+       const scan = (async () => {
+         const data = await options.store.read(options.base.provenance.sourceSha256);
+         const now = options.now ?? Date.now();
+-        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (saved.direct && directDue(saved.direct, now)) launch(tripId);
++        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (!exchangeControl(data, tripId).paused && saved.direct && directDue(saved.direct, now)) launch(tripId);
+         if (!sabyCredentialBlockers(options.config).length) for (const [tripId, record] of Object.entries(data.tripSaby?.trips ?? {})) {
+           if (workflowDue(data, tripId, record, now, carrierWaitingOnly)) launch(tripId, carrierWaitingOnly);
+         }
+--- a/server/trip-saby-signing.ts
++++ b/server/trip-saby-signing.ts
+@@ -1,3 +1,4 @@
++import { TripExchangePausedError } from './trip-exchange-control';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { requiresEtrn } from './trip-etrn-scope';
+ import { getShipmentTrip } from './shipment-trips';
+@@ -438,6 +439,7 @@
+     await checkAccess(); await prepareCarrierDraft(client, binding);
+     await update(row => { row.signing!.carrierDraft!.state = 'ready'; });
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     const definite = error instanceof SabyError && error.kind === 'validation' && !error.uncertain;
+     await update(row => { if (row.signing!.carrierDraft) row.signing!.carrierDraft!.state = definite ? 'blocked' : 'unknown'; row.signing!.carrier = { state: definite ? 'blocked' : 'unknown', diagnostic: sabyFailureDiagnostic(error, 'preflight', 'СБИС.ПодготовитьДействие'), message: definite ? (error as SabyError).message : 'Результат подготовки ответа НК пока неизвестен. CRM сверяет его без повторной подготовки.' }; });
+     if (error instanceof ApiError && [401, 403, 409].includes(error.status)) throw error;
+@@ -564,6 +566,7 @@
+       }
+     });
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     const latest = context.record().signing![side];
+     // Read-only preflight failures must not consume the narrowly eligible legacy recovery.
+     // The workflow records the error separately; the original blocked proof stays intact.
+--- a/server/trip-saby-workflow.ts
++++ b/server/trip-saby-workflow.ts
+@@ -1,3 +1,4 @@
++import { assertTripExchangeRunning, controlledTripClient, TripExchangePausedError } from './trip-exchange-control';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { requiresEtrn, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
+ import { createHash, randomUUID } from 'node:crypto';
+@@ -380,6 +381,7 @@
+   if (options.signingStart) validateSigningStart(options.signingStart.request);
+   const source = base.provenance.sourceSha256; const leaseId = randomUUID();
+   const claimed = await store.mutate(source, data => {
++    assertTripExchangeRunning(data, tripId);
+     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+     const trip = getShipmentTrip(snapshot, tripId); const existing = data.tripSaby?.trips[tripId];
+     assertTripTransportDocumentsAllowed(trip, data);
+@@ -426,6 +428,7 @@
+       // The dispatch marker may wait behind a revocation write. Recheck in its transaction,
+       // not only in the earlier HTTP guard, before authorizing the one outbound request.
+       if (requireSigningAccess) {
++        assertTripExchangeRunning(data, tripId);
+         const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+         authorizeSigningActor(snapshot, data, tripId, current);
+         authorizeAutomaticTripSaby(snapshot, data, tripId, current, client.config);
+@@ -441,7 +444,7 @@
+     authorizeSigningActor(snapshot, data, tripId, current);
+     authorizeAutomaticTripSaby(snapshot, data, tripId, current, client.config);
+   };
+-  client = client.withRequestGuard(checkAccess);
++  client = controlledTripClient(client.withRequestGuard(checkAccess), store, source, tripId);
+   const signingContext = { client, record: () => record, update, checkAccess, allowSigningRecovery: options.allowSigningRecovery === true, allowVehicleCorrection: options.allowVehicleCorrection === true, recoveryRequestedBy: options.initiatorId };
+   let signingStarted = !options.signingStart;
+   let writing: 'reservation' | 'upload' | null = null;
+@@ -577,6 +580,7 @@
+           // A partial network result stops further writes; already-created IDs are retained.
+           if (result.status !== 'draft') break;
+         } catch (error) {
++          if (error instanceof TripExchangePausedError) throw error;
+           await update(row => { const current = row.deliveries.find(item => item.shipmentId === delivery.shipmentId)!; current.status = error instanceof ApiError && [400, 403, 422].includes(error.status) && !current.id ? 'error' : 'unknown'; current.lastError = error instanceof SabyError || error instanceof ApiError ? error.message : 'Результат создания ЭТрН не подтверждён. Выполните сверку.'; });
+           if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
+           break;
+@@ -595,6 +599,7 @@
+       }
+     }
+   } catch (error) {
++    if (error instanceof TripExchangePausedError) throw error;
+     if (!signingStarted) throw error;
+     // If authorization/storage failed after intent persistence but before invoking the client, no external write ran.
+     const definite = armedAction !== null || error instanceof SabyError && !error.uncertain && ['authorization', 'permission', 'configuration', 'validation'].includes(error.kind);
+@@ -698,6 +703,7 @@
+         }, true);
+       });
+     } catch (error) {
++      if (error instanceof TripExchangePausedError) throw error;
+       if (context.record().driverFlow!.massUpdateAttempted) await update(row => { row.driverFlow!.massUpdateFailure ??= sabyFailureDiagnostic(error, 'dispatch', 'СБИС.ЗаписатьВложение'); });
+       throw error;
+     }
+--- a/server/trip-workflow-issues.ts
++++ b/server/trip-workflow-issues.ts
+@@ -39,9 +39,9 @@
+     if (!(error instanceof ApiError)) throw error
+     issues.push({ step: 0, stage: 'Подготовка', message: error.message })
+   }
+-  // Driver drafts may be created without masses, but the card must already show
+-  // that they still need input. Do not change the workflow's permission to start.
+-  if (trip.fields.trip_flow_version === 'driver-v1') {
++  // Masses belong to the driver's normal loading stage. Only an inconsistency
++  // after recorded departure/confirmation is an input error for the operator.
++  if (trip.fields.trip_flow_version === 'driver-v1' && (data.driverTripProgress?.[tripId]?.departedAt || workflow?.driverFlow?.state === 'ready')) {
+     for (const [index, delivery] of trip.customers.entries()) {
+       if (requiresEtrn(delivery) && !(Number(delivery.fields.quantity_tonnes) > 0)) {
+         issues.push({ step: 1, stage: 'Подтверждение водителя', message: `Доставка ${index + 1}: не указана масса.`, shipmentId: delivery.id })
+--- a/tests/api-nk-direct-etrn.test.ts
++++ b/tests/api-nk-direct-etrn.test.ts
+@@ -22,8 +22,34 @@
+ import type { AccountUser } from '../web/src/auth-model';
+ import { syntheticLoadingDetails } from './helpers/loading-details-fixture';
+ import { getNkLoadingDetails, saveNkLoadingDetails } from '../server/nk-loading-details';
++import { setTripExchangeControl, TripExchangePausedError } from '../server/trip-exchange-control';
+ 
+ const fp = 'cd'.repeat(20);
++test('direct pause stops the next provider request, preserves its grant and releases leases', async () => {
++  const f = await fixture([false, true]);
++  let release!: () => void, arrived!: () => void;
++  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { arrived = resolve; });
++  let calls = 0;
++  try {
++    await f.start();
++    const initial = await f.store.read(f.source);
++    const client = new SabyClient(f.config, async (_url, init) => {
++      calls++; const request = JSON.parse(String(init?.body)); arrived(); await gate;
++      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: 'synthetic-session' }));
++    });
++    const running = assert.rejects(runNkDirectEtrn({ ...f, client, authorize: () => undefined }), TripExchangePausedError);
++    await waiting;
++    await f.store.mutate(f.source, data => ({ result: setTripExchangeControl(data, f.tripId, 'actor', { paused: true, version: 0 }), changed: true }));
++    release(); await running;
++    const stopped = await f.store.read(f.source), direct = stopped.etrn!.trips[f.tripId].direct!;
++    assert.equal(calls, 1); assert.equal(direct.leaseId, null); assert.equal(direct.lastError, initial.etrn!.trips[f.tripId].direct!.lastError);
++    assert.deepEqual(direct.authorization, initial.etrn!.trips[f.tripId].direct!.authorization);
++    assert.deepEqual(direct.deliveries, initial.etrn!.trips[f.tripId].direct!.deliveries);
++    assert.ok(Object.values(stopped.etrn!.trips[f.tripId].deliveries).every(row => !row.document?.leaseId));
++    await dispatchTripSaby({ ...f, enabled: true, client }); assert.equal(calls, 1);
++    assert.deepEqual(await f.store.read(f.source), stopped);
++  } finally { release(); await f.close(); }
++});
+ const syntheticUuid = (label:string) => { const digest=createHash('sha256').update(label).digest('hex'); return `${digest.slice(0,8)}-${digest.slice(8,12)}-4${digest.slice(13,16)}-8${digest.slice(17,20)}-${digest.slice(20,32)}`; };
+ async function fixture(skips = [false, false], oldPolicy = false, automatic = false, redirectionMethod = integrationSettings.instructions!.redirectionMethod, includeLoadingDetails = true, changeSourceBeforeDeparture = false, newSenderDefault = false) {
+   const rt = await integrationRuntime(), config = integrationConfig();
+--- /dev/null
++++ b/tests/api-trip-controls.test.ts
+@@ -0,0 +1,139 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { randomUUID } from 'node:crypto';
++import { createSnapshotMiddleware } from '../server/local-api';
++import { SabyClient } from '../server/saby-client';
++import { currentSnapshot } from '../server/shipment-operations';
++import { getShipmentTrip, deleteShipmentTrip, tripDeletionBlocker } from '../server/shipment-trips';
++import { readTripWorkflowIssues } from '../server/trip-workflow-issues';
++import { runTripSabyWorkflow } from '../server/trip-saby-workflow';
++import { dispatchTripSaby, createTripSabyScheduler } from '../server/trip-saby-scheduler';
++import { controlledTripClient, exchangeControl, setTripExchangeControl, TripExchangePausedError } from '../server/trip-exchange-control';
++import { integrationApi, integrationConfig, integrationRuntime, integrationSettings } from './helpers/trip-saby-integration';
++
++test('control API uses fresh authorization and version, persists across reads and never contacts Saby', async () => {
++  const rt = await integrationRuntime(), api = integrationApi();
++  const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, sabyClient: api.client() });
++  const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));
++  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  const endpoint = `/api/shipment-trips/${rt.tripId}/saby-workflow`;
++  try {
++    const setup = await fetch(origin + '/api/auth/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Synthetic', login: 'synthetic', password: randomUUID() }) });
++    assert.equal(setup.status, 200);
++    const headers = { Cookie: setup.headers.get('set-cookie')!.split(';')[0], 'Content-Type': 'application/json' };
++    const request = (path: string, body?: unknown) => fetch(origin + path, { headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) });
++    const original = await rt.store.read(rt.source);
++    const stop = await request(endpoint + '/control', { paused: true, version: 0 });
++    assert.equal(stop.status, 200); assert.equal((await stop.json()).exchangeControl.paused, true);
++    const stopped = await rt.store.read(rt.source);
++    assert.deepEqual({ ...stopped, revision: original.revision, tripExchangeControls: undefined }, { ...original, tripExchangeControls: undefined });
++    assert.equal((await (await request(endpoint)).json()).exchangeControl.paused, true);
++    assert.equal((await request(endpoint + '/control', { paused: false, version: 0 })).status, 409);
++    assert.equal((await request(endpoint, {})).status, 409);
++    assert.equal((await request(endpoint + '/control', { paused: false, version: 1, extra: 1 })).status, 400);
++    assert.equal((await fetch(origin + endpoint + '/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"paused":false,"version":1}' })).status, 401);
++    assert.equal((await request(endpoint + '/control', { paused: false, version: 1 })).status, 200);
++    const resumed = await rt.store.read(rt.source);
++    assert.equal(exchangeControl(resumed, rt.tripId).version, 2);
++    await rt.store.mutate(rt.source, data => { data.accounts!.sessions = []; return { result: null, changed: true }; });
++    assert.equal((await request(endpoint + '/control', { paused: true, version: 2 })).status, 401);
++    assert.equal(api.calls.length, 0);
++  } finally { await new Promise<void>(resolve => server.close(() => resolve())); await rt.close(); }
++});
++
++test('normal driver waiting is neutral; actual missing fields and post-confirmation missing mass remain errors', async () => {
++  const rt = await integrationRuntime(), previous = process.env.SABY_AUTOFILL_PROFILE_JSON;
++  process.env.SABY_AUTOFILL_PROFILE_JSON = JSON.stringify(integrationSettings);
++  try {
++    const data = await rt.store.read(rt.source);
++    for (const row of Object.values(data.shipments)) Object.assign(row.fields, { trip_flow_version: 'driver-v1', quantity_tonnes: null, quantity_gross_tonnes: null, trip_total_tonnes: null });
++    const issues = () => { const snapshot = currentSnapshot(rt.base, data); return readTripWorkflowIssues(data, rt.tripId, { snapshot, trip: getShipmentTrip(snapshot, rt.tripId), config: integrationConfig() }); };
++    assert.deepEqual(issues(), []);
++    data.directories!.products[0].documentName = '';
++    assert.ok(issues().some(row => /наименование для документов/.test(row.message)));
++    data.directories!.products[0].documentName = 'Синтетическое дизельное топливо';
++    data.driverTripProgress = { [rt.tripId]: { departedAt: '2026-11-01T10:00:00Z' } as never };
++    assert.equal(issues().filter(row => /не указана масса/.test(row.message)).length, 2);
++  } finally { if (previous === undefined) delete process.env.SABY_AUTOFILL_PROFILE_JSON; else process.env.SABY_AUTOFILL_PROFILE_JSON = previous; await rt.close(); }
++});
++
++test('paused fresh workflows cannot create intents or provider calls; scheduler also skips direct records', async () => {
++  const rt = await integrationRuntime(), api = integrationApi();
++  try {
++    await rt.store.mutate(rt.source, data => ({ result: setTripExchangeControl(data, rt.tripId, 'synthetic', { paused: true, version: 0 }), changed: true }));
++    const before = await rt.store.read(rt.source);
++    await assert.rejects(runTripSabyWorkflow({ ...rt, client: api.client(), createDelivery: async () => { throw new Error('Unexpected delivery'); } }), TripExchangePausedError);
++    assert.deepEqual(await rt.store.read(rt.source), before);
++    // Selection must ignore a paused direct attempt even before its authorization is evaluated.
++    const fake = { ...before, etrn: { trips: { [rt.tripId]: { direct: { phase: 'creating_etrn' } } } } };
++    const store = { ...rt.store, read: async () => fake, mutate: async () => { throw new Error('Paused direct job mutated data'); } } as unknown as typeof rt.store;
++    assert.deepEqual(await dispatchTripSaby({ ...rt, store, enabled: true, config: integrationConfig(), client: api.client() }), { continued: 0, refreshed: 0, denied: 0, failed: 0 });
++    const scheduler = createTripSabyScheduler({ ...rt, store, enabled: true, config: integrationConfig(), client: api.client() });
++    await scheduler.tick(); await scheduler.drain(); await scheduler.stop();
++    assert.equal(api.calls.length, 0);
++  } finally { await rt.close(); }
++});
++
++test('pause during an in-flight request preserves the received document and stops the next request; resume reuses it', async () => {
++  const rt = await integrationRuntime(), api = integrationApi();
++  let arrived!: () => void, release!: () => void;
++  const arrival = new Promise<void>(resolve => { arrived = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
++  let hold = false;
++  const send: typeof fetch = async (input, init) => {
++    const response = await api.send(input, init);
++    if (hold) { hold = false; arrived(); await held; }
++    return response;
++  };
++  const run = () => runTripSabyWorkflow({ ...rt, client: new SabyClient(integrationConfig(), send), createDelivery: async () => { throw new Error('Unexpected delivery'); } });
++  try {
++    await run();
++    const before = (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId];
++    hold = true; const running = run(); const settled = assert.rejects(running, TripExchangePausedError);
++    await arrival;
++    await rt.store.mutate(rt.source, data => ({ result: setTripExchangeControl(data, rt.tripId, 'synthetic', { paused: true, version: 0 }), changed: true }));
++    const count = api.calls.length; release(); await settled;
++    const stopped = (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId];
++    assert.equal(api.calls.length, count); assert.equal(stopped.order.id, before.order.id); assert.equal(stopped.lastError, before.lastError); assert.equal(stopped.leaseId, null);
++    await rt.store.mutate(rt.source, data => ({ result: setTripExchangeControl(data, rt.tripId, 'synthetic', { paused: false, version: 1 }), changed: true }));
++    await run(); assert.equal(api.reserves('TransportOrder').length, 1);
++  } finally { release(); await rt.close(); }
++});
++
++test('provider requests waiting for network capacity check pause after admission', async () => {
++  const rt = await integrationRuntime(), api = integrationApi();
++  let admit!: () => void, queued!: () => void;
++  const gate = new Promise<void>(resolve => { admit = resolve; }), waiting = new Promise<void>(resolve => { queued = resolve; });
++  const client = controlledTripClient(api.client().withRequestBudget(async action => { queued(); await gate; return action(); }), rt.store, rt.source, rt.tripId);
++  try {
++    const request = assert.rejects(client.readTransportOrder('synthetic'), TripExchangePausedError);
++    await waiting;
++    await rt.store.mutate(rt.source, data => ({ result: setTripExchangeControl(data, rt.tripId, 'synthetic', { paused: true, version: 0 }), changed: true }));
++    admit(); await request; assert.equal(api.calls.length, 0);
++  } finally { admit(); await rt.close(); }
++});
++
++test('delete is version guarded and blocks documents, payments and driver facts without changing them', async () => {
++  const rt = await integrationRuntime(), api = integrationApi();
++  try {
++    const data = await rt.store.read(rt.source), versions = Object.fromEntries(rt.trip.customers.map(row => [row.id, row.version]));
++    const stale = structuredClone(data);
++    assert.throws(() => deleteShipmentTrip(rt.base, stale, { versions: {} }, rt.tripId), /изменены/); assert.deepEqual(stale, data);
++    for (const protectedData of [
++      { ...data, paymentAllocations: [{ shipmentId: rt.trip.customers[0].id } as never] },
++      { ...data, driverTripProgress: { [rt.tripId]: {} as never } },
++      { ...data, tripExecutions: { [rt.tripId]: {} as never } },
++    ]) {
++      const before = structuredClone(protectedData);
++      assert.ok(tripDeletionBlocker(protectedData, rt.tripId));
++      assert.throws(() => deleteShipmentTrip(rt.base, protectedData, { versions }, rt.tripId)); assert.deepEqual(protectedData, before);
++    }
++    await runTripSabyWorkflow({ ...rt, client: api.client(), createDelivery: async () => { throw new Error('Unexpected delivery'); } });
++    const linked = await rt.store.read(rt.source), before = structuredClone(linked);
++    assert.throws(() => deleteShipmentTrip(rt.base, linked, { versions }, rt.tripId), /Saby/); assert.deepEqual(linked, before);
++    const removed = deleteShipmentTrip(rt.base, data, { versions }, rt.tripId);
++    assert.equal(removed.deletedCount, 2); assert.ok(Object.values(data.shipments).every(row => row.deleted));
++  } finally { await rt.close(); }
++});
+--- a/tests/api-trip-input-alerts.test.ts
++++ b/tests/api-trip-input-alerts.test.ts
+@@ -34,7 +34,7 @@
+     currentSnapshot(rt.base, before);
+     const list = await get('/api/shipment-trips');
+     assert.ok(list.trips[0].workflowIssues.some((issue: { message: string }) => /наименование для документов/.test(issue.message)));
+-    assert.ok(list.trips[0].workflowIssues.some((issue: { shipmentId?: string; message: string }) => issue.shipmentId === rt.trip.customers[1].id && /масса/.test(issue.message)));
++    assert.ok(!list.trips[0].workflowIssues.some((issue: { message: string }) => /не указана масса/.test(issue.message)));
+     assert.doesNotMatch(JSON.stringify(list), /private-integration-session|authorization|payloadHash/);
+     const panel = await get(`/api/shipment-trips/${rt.tripId}/saby-workflow`);
+     assert.deepEqual(panel.workflowIssues, list.trips[0].workflowIssues);
+@@ -58,7 +58,9 @@
+     for (const row of Object.values(data.shipments)) { row.fields.trip_flow_version = 'driver-v1'; row.fields.quantity_tonnes = null; row.fields.quantity_gross_tonnes = null; row.fields.trip_total_tonnes = null; }
+     data.shipments[rt.trip.customers[1].id].fields.etrn_not_required = 'true';
+     const read = () => { const snapshot = currentSnapshot(rt.base, data); return readTripWorkflowIssues(data, rt.tripId, { snapshot, trip: getShipmentTrip(snapshot, rt.tripId), config: integrationConfig() }); };
+-    assert.ok(read().some(issue => issue.shipmentId === rt.trip.customers[0].id));
++    assert.deepEqual(read(), []);
++    data.directories!.products[0].documentName = '';
++    assert.ok(read().length);
+     assert.ok(!read().some(issue => issue.shipmentId === rt.trip.customers[1].id));
+     for (const row of Object.values(data.shipments)) { row.fields.organization_id = 'nk-artel'; row.fields.trip_document_policy = 'nk-direct-autostart-v1'; }
+     const before = structuredClone(data);
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -175,7 +175,7 @@
+       {page === 'payroll' && <PayrollPage/>}
+       {page === 'shipments' && data && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+       {page === 'directories' && data && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => canManage || ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
+-      {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} canManagePlaces={canManage && hasSection(user, 'directories')}/>}
++      {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} allowDelete={canManage} canManagePlaces={canManage && hasSection(user, 'directories')}/>}
+       {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
+       </div></Suspense></PageLoadBoundary>}
+       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}
+--- a/web/src/TripEtrnPanel.tsx
++++ b/web/src/TripEtrnPanel.tsx
+@@ -1,3 +1,4 @@
++import TripExchangeActions from './TripExchangeActions'
+ import type { TripWorkflowIssue } from './trip-workflow-issues'
+ import { requiresEtrn } from './trip-etrn-scope'
+ import { apiFetch as fetch, apiUrl } from './workspace-api'
+@@ -18,13 +19,14 @@
+   try { const url = new URL(value || ''); return url.protocol === 'https:' && !url.username && !url.password && ['saby.ru', 'sbis.ru'].some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ? url.href : null } catch { return null }
+ }
+ 
+-export default function TripEtrnPanel({ trip, data, onIssuesChange }: { trip: ShipmentTrip; data: DirectoryData; onIssuesChange?: (tripId: string, issues: TripWorkflowIssue[]) => void }) {
++export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: { trip: ShipmentTrip; data: DirectoryData; onDelete?: () => void; onIssuesChange?: (tripId: string, issues: TripWorkflowIssue[]) => void }) {
+   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
+   const etrnEndpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/etrn`
+   const [result, setResult] = useState<Workflow | null>(null), [etrn, setEtrn] = useState<EtrnTripResponse | null>(null)
+   useEffect(() => { if (result?.workflowIssues) onIssuesChange?.(trip.id, result.workflowIssues) }, [result, trip.id, onIssuesChange])
+   const [legacy, setLegacy] = useState<SabyTripResponse | null>(null)
+   const [busy, setBusy] = useState(false), [error, setError] = useState('')
++  const [refreshNotice, setRefreshNotice] = useState('')
+   const [refreshError, setRefreshError] = useState(''), [copied, setCopied] = useState(false)
+   const [facts, setFacts] = useState<LoadingFacts>(() => ({ arrivedAt: '', departedAt: '', deliveries: Object.fromEntries(trip.customers.filter(requiresEtrn).map(row => [row.id, { grossMassTonnes: '', massMethod: '' }])) }))
+   const [confirmed, setConfirmed] = useState(false)
+@@ -45,12 +47,13 @@
+       if (!mounted.current || generation !== requestGeneration.current) return
+       if (!response.ok) throw new Error(body.error || 'Не удалось загрузить состояние Saby')
+       setResult(body); setError(''); setRefreshError(''); setStartUncertain(false)
+-      if (body.documentMode === 'nk_direct_etrn') { setLegacy(null); await loadDocuments(generation); return }
++      if (body.documentMode === 'nk_direct_etrn') { setLegacy(null); await loadDocuments(generation); return body as Workflow }
+       await Promise.all([loadDocuments(generation), fetch(`/api/shipment-trips/${encodeURIComponent(trip.id)}/saby`, { signal: AbortSignal.timeout(20_000) }).then(async legacyResponse => {
+         if (!legacyResponse.ok) return
+         const legacyBody = await legacyResponse.json()
+         if (mounted.current && generation === requestGeneration.current) setLegacy(legacyBody)
+       }).catch(() => {})])
++      return body as Workflow
+     } catch (reason) {
+       if (!mounted.current || generation !== requestGeneration.current) return
+       if (reason instanceof DOMException && ['TimeoutError', 'AbortError'].includes(reason.name)) throw new Error('Сервер не ответил за 20 секунд. Повторите загрузку состояния.', { cause: reason })
+@@ -123,6 +126,30 @@
+     window.addEventListener('focus', onVisible)
+     return () => { active = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible) }
+   }, [result?.locked, result?.automation?.enrolled, result?.monitoring?.intervalSeconds, read])
++  const refreshState = async () => {
++    if (lock.current) return
++    lock.current = true; setBusy(true); setRefreshNotice(''); setError('')
++    try {
++      const latest = await read()
++      if (latest) setRefreshNotice(JSON.stringify(latest) === JSON.stringify(result) ? 'Данные CRM проверены. Изменений нет.' : 'Данные CRM и готовность рейса обновлены.')
++    } catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Не удалось проверить данные.') }
++    finally { lock.current = false; if (mounted.current) setBusy(false) }
++  }
++  const controlExchange = async (paused: boolean) => {
++    if (lock.current || !result?.exchangeControl) throw new Error('Дождитесь загрузки состояния рейса.')
++    lock.current = true; setBusy(true); requestGeneration.current++; setRefreshNotice('')
++    try {
++      const response = await fetch(`${endpoint}/control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(20_000), body: JSON.stringify({ paused, version: result.exchangeControl.version }) })
++      const body = await response.json()
++      if (!response.ok) throw new Error(body.error || 'Не удалось изменить состояние обмена.')
++      if (mounted.current) { setResult(body); setError('') }
++    } catch (reason) {
++      await read().catch(() => {})
++      throw reason
++    } finally { lock.current = false; if (mounted.current) setBusy(false) }
++  }
++  const paused = result?.exchangeControl?.paused === true
++  const actions = <><TripExchangeActions control={result?.exchangeControl} busy={busy} onRefresh={refreshState} onControl={controlExchange} onDelete={onDelete}/>{refreshNotice && <p className="etrn-note" role="status">{refreshNotice}</p>}</>
+   const title = (shipmentId: string, index: number) => {
+     const row = trip.customers.find(customer => customer.id === shipmentId)
+     return `Доставка ${index + 1} · ${data.companies.find(company => company.id === row?.fields.customer_id)?.name || 'Клиент'}`
+@@ -161,26 +188,27 @@
+   if (!result) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>Документы Saby</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Загрузка документов"/>}</div>
+     {error ? <p className="shipment-error" role="alert">{error}</p> : <p role="status">Загружаем маршрут и этапы обмена…</p>}
++    {onDelete && !busy && <button type="button" className="button danger" onClick={onDelete}>Удалить рейс</button>}
+     {!busy && <button type="button" className="button" onClick={() => { setBusy(true); setError(''); void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) }) }}><RefreshCw size={15}/>Повторить загрузку</button>}
+   </section>
+   if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление состояния"/>}</div>
+     {!result.notRequired && <ol className="workflow-steps" aria-label="Этапы прямой ЭТрН">{steps.map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`}>{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>}
+     <p>НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик, без заказа-заявки. Состав документов определяется флажком «ЭТрН не нужна» у каждой доставки.</p>
+-    <div className="workflow-current" role="status"><strong>{directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
++    <div className="workflow-current" role="status"><strong>{paused ? 'Обмен остановлен' : directTitle}</strong><p>{result.notRequired ? 'Все доставки исключены из ЭТрН. Задание водителя и факты погрузки сохраняются в CRM.' : result.automation?.message || (directAutostart ? 'После сохранения водителем масс и убытия CRM автоматически запускает подписание ЭТрН от имени НК и передачу клиентам.' : 'После убытия водителя сотрудник запускает подписание ЭТрН от имени НК и передачу клиентам.')}</p></div>
+     {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
+     {error && <p className="shipment-error" role="alert">{error}</p>}
+     {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
+     {result.lastError && <p className="shipment-error" role="alert">{result.lastError}</p>}
+     {!!result.blockers.length && <div className="trip-saby-blockers"><p>Что требуется для прямой ЭТрН:</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
+-    {!result.notRequired && <TripLoadingDetails key={trip.id} tripId={trip.id} disabled={busy} locked={result.locked} onSaved={read}/>}
++    {!result.notRequired && <TripLoadingDetails key={trip.id} tripId={trip.id} disabled={busy} locked={result.locked} onSaved={async () => { await read() }}/>}
+     {!!result.previousExchanges?.length && <details className="workflow-history"><summary>Предыдущие накладные</summary><ol>{result.previousExchanges.flatMap((exchange, exchangeIndex) => exchange.documents.map((document, documentIndex) => {
+       const url = safeSabyUrl(document.url)
+       return <li key={`${exchangeIndex}-${documentIndex}`}><span>{url ? <a href={url} target="_blank" rel="noreferrer">{document.number ? `Накладная № ${document.number}` : 'Открыть накладную в Saby'} <ArrowUpRight size={13}/></a> : document.number ? `Накладная № ${document.number}` : 'Накладная без подтверждённого номера'}{document.status && <> · {document.status}</>}</span><time dateTime={exchange.at}>{workflowTime(exchange.at)}</time></li>
+     }))}</ol></details>}
+-    {result.start && !directAutostart && !result.locked && !result.notRequired && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || startUncertain || !result.ready} onClick={() => void perform(undefined, false, result.start!)}><FilePlus2 size={16}/>Запустить подписание и отправку</button></div>}
+-    {startUncertain && <p className="workflow-sync-warning" role="status">Результат запуска пока не подтверждён. Обновите сохранённое состояние перед повтором.</p>}
+-    {result.locked && <p className="etrn-note">{result.monitoring.enabled ? 'CRM продолжает проверку документов в фоне.' : result.monitoring.reason || 'Фоновая проверка приостановлена.'} Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}.</p>}
++    {result.start && !directAutostart && !result.locked && !result.notRequired && <div className="etrn-actions"><button type="button" className="button primary" disabled={paused || busy || startUncertain || !result.ready} onClick={() => void perform(undefined, false, result.start!)}><FilePlus2 size={16}/>Запустить подписание и отправку</button></div>}
++    {startUncertain && <p className="workflow-sync-warning" role="status">Результат запуска пока не подтверждён. Нажмите «Проверить данные» перед повтором.</p>}
++    {!paused && result.locked && <p className="etrn-note">{result.monitoring.enabled ? 'CRM продолжает проверку документов в фоне.' : result.monitoring.reason || 'Фоновая проверка приостановлена.'} Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}.</p>}
+     {trip.customers.map((row, index) => {
+       const required = requiresEtrn(row), delivery = result.deliveries.find(item => item.shipmentId === row.id), doc = etrn?.deliveries.find(item => item.shipmentId === row.id)?.document
+       const dispatch = delivery?.dispatch, url = safeSabyUrl(doc?.url)
+@@ -192,29 +220,26 @@
+         {!!doc?.files.length && <ul>{doc.files.map(file => <li key={file.id}>{file.url.startsWith(`${etrnEndpoint}/files/${encodeURIComponent(row.id)}/`) && <a href={apiUrl(file.url)} download><Download size={14}/>{file.name}</a>}</li>)}</ul>}
+       </section>
+     })}
+-    <div className="etrn-actions"><button type="button" className="button" disabled={busy} onClick={() => {
+-      setBusy(true); setError('')
+-      void read().catch(reason => setError(reason instanceof Error ? reason.message : 'Нет связи с сервером')).finally(() => { if (mounted.current) setBusy(false) })
+-    }}><RefreshCw size={15}/>Обновить состояние</button></div>
++    {actions}
+   </section>
+-  if (result?.notRequired) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby"><h3>ЭТрН не нужна</h3><p>Для всех клиентов рейса передача в Saby отключена. Задание водителя и факты погрузки сохраняются в CRM.</p></section>
++  if (result?.notRequired) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby"><h3>ЭТрН не нужна</h3><p>Для всех клиентов рейса передача в Saby отключена. Задание водителя и факты погрузки сохраняются в CRM.</p>{actions}</section>
+   return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>АРТЭЛЬ → НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление документов"/>}</div>
+     {error && <p className="shipment-error" role="alert">{error}</p>}
+     {result && <>
+       <ol className="workflow-steps" aria-label="Этапы обмена">{workflowSteps(result, view!.step).map((step, index) => <li key={step.label} className={`is-${step.state}`} aria-current={step.state === 'current' ? 'step' : undefined}><span className="workflow-step-number" role="img" aria-label={step.state === 'done' ? `Этап ${index + 1} завершён` : `Этап ${index + 1}`} >{step.state === 'done' ? <Check size={14} aria-hidden="true"/> : index + 1}</span><span>{step.label}{step.note && <small>{step.note}</small>}</span></li>)}</ol>
+-      <div className="workflow-current" role="status"><strong>{view!.title}</strong><p>{view!.text}</p></div>
++      <div className="workflow-current" role="status"><strong>{paused ? 'Обмен остановлен' : view!.title}</strong><p>{paused ? 'Следующие действия в Saby приостановлены. Документы и текущий этап сохранены.' : view!.text}</p></div>
+       {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
+-      {(!savedFactsNeedReconciliation || !automatic) && result.automation?.message && result.automation.message !== view!.text && <p className="etrn-note">{result.automation.message}</p>}
+-      {result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Фоновая проверка обмена' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'CRM проверяет данные водителя и документы Saby, в том числе после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span>{result.monitoring?.enabled && <span>Плановый интервал: {result.monitoring.intervalSeconds === 15 ? '15 секунд' : '1 минута'}. Проверка может длиться дольше.</span>}<span>Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
++      {!paused && (!savedFactsNeedReconciliation || !automatic) && result.automation?.message && result.automation.message !== view!.text && <p className="etrn-note">{result.automation.message}</p>}
++      {!paused && result.locked && <div className="workflow-monitor"><Clock3 size={16}/><div><strong>{result.monitoring?.enabled ? 'Фоновая проверка обмена' : 'Автоматическая проверка не включена'}</strong><span>{result.monitoring?.enabled ? 'CRM проверяет данные водителя и документы Saby, в том числе после закрытия страницы.' : result.monitoring?.reason || 'Обновляйте состояние кнопкой ниже.'}</span>{result.monitoring?.enabled && <span>Плановый интервал: {result.monitoring.intervalSeconds === 15 ? '15 секунд' : '1 минута'}. Проверка может длиться дольше.</span>}<span>Последняя успешная проверка Saby: {workflowTime(result.lastCheckedAt)}{result.lastCheckedAt ? ' · Москва' : ''}</span></div></div>}
+       {refreshError && <p className="workflow-sync-warning" role="alert">{refreshError}</p>}
+       {result.lastError && <p className="shipment-error" role="alert">{result.lastError}</p>}
+-      {!automatic && !result.locked && !driverFlow && !savedFactsNeedReconciliation && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || !result.ready} onClick={() => void perform()}><FilePlus2 size={16}/>Создать заявку в Saby</button><button type="button" className="button" disabled={busy} onClick={() => { void read().catch(reason => setError(String(reason))) }}><RefreshCw size={15}/>Проверить готовность</button></div>}
+-      {result.start && !result.locked && !savedFactsNeedReconciliation && <div className="etrn-actions"><button type="button" className="button primary" disabled={busy || startUncertain || !result.ready} onClick={() => void perform(undefined, false, result.start!)}><FilePlus2 size={16}/>{result.start.mode === 'sign_and_send' ? 'Запустить подписание и отправку' : 'Запустить обмен'}</button></div>}
+-      {startUncertain && <p className="workflow-sync-warning" role="status">Результат запуска пока не подтверждён. Обновите сохранённое состояние; повторный запуск доступен только после успешной проверки.</p>}
++      {!automatic && !result.locked && !driverFlow && !savedFactsNeedReconciliation && <div className="etrn-actions"><button type="button" className="button primary" disabled={paused || busy || !result.ready} onClick={() => void perform()}><FilePlus2 size={16}/>Создать заявку в Saby</button></div>}
++      {result.start && !result.locked && !savedFactsNeedReconciliation && <div className="etrn-actions"><button type="button" className="button primary" disabled={paused || busy || startUncertain || !result.ready} onClick={() => void perform(undefined, false, result.start!)}><FilePlus2 size={16}/>{result.start.mode === 'sign_and_send' ? 'Запустить подписание и отправку' : 'Запустить обмен'}</button></div>}
++      {startUncertain && <p className="workflow-sync-warning" role="status">Результат запуска пока не подтверждён. Нажмите «Проверить данные»; повторный запуск доступен только после успешной проверки.</p>}
+       {!!result.blockers.length && <div className="trip-saby-blockers"><p>{savedFactsNeedReconciliation ? 'Что требует проверки:' : automatic ? 'Что мешает автоматическому обмену:' : 'Для создания заявки заполните:'}</p><ul>{result.blockers.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
+       {result.order && <div className="etrn-result workflow-order"><div><span className="workflow-eyebrow">ОБЩАЯ ЗАЯВКА</span><h4>{result.order.number ? `№ ${result.order.number}` : 'Номер ожидается'}</h4><p>{result.order.remoteStatus || 'Состояние уточняется'}</p>{result.phase === 'completed' && <p className="etrn-note">Последнее состояние перед созданием ЭТрН. Дальше автоматически проверяются ЭТрН доставок.</p>}</div>{orderUrl && <a className="button" href={orderUrl} target="_blank" rel="noreferrer">Открыть заявку в Saby <ArrowUpRight size={14}/></a>}</div>}
+-      {!waitingDriver && result.order?.id && (result.signing || (!result.carrierConfirmed && !['rejected', 'cancelled', 'operator_error'].includes(result.order.exchangeStage || ''))) && <TripSabySigningPanel key={`${trip.id}:${result.order.id}`} endpoint={endpoint} order={result.order} signing={result.signing} automation={result.automation} disabled={busy} onBusyChange={signingBusyChanged} onWorkflowChange={signingChanged} onRefresh={read} onReconcile={reconcileSigning}/>}
++      {!waitingDriver && result.order?.id && (result.signing || (!result.carrierConfirmed && !['rejected', 'cancelled', 'operator_error'].includes(result.order.exchangeStage || ''))) && <TripSabySigningPanel key={`${trip.id}:${result.order.id}`} endpoint={endpoint} order={result.order} signing={result.signing} automation={result.automation} disabled={paused || busy} onBusyChange={signingBusyChanged} onWorkflowChange={signingChanged} onRefresh={async () => { await read() }} onReconcile={reconcileSigning}/>}
+       {handoff && !result.carrierConfirmed && <details className="workflow-handoff" open={['carrier_details_required', 'carrier_action_required'].includes(result.order?.exchangeStage ?? '') || undefined}><summary>Данные водителя и автомобиля для НК АРТЭЛЬ</summary><p className="etrn-note">Сведения выбранного водителя и машины заполняются в ответе НК до подписи и утверждения.</p><dl>{[['Водитель', handoff.driverName], ['Телефон', handoff.driverPhone], ['Госномер', handoff.vehiclePlate], ['Автомобиль', handoff.vehicleType]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Не указано'}</dd></div>)}</dl><button className="button" type="button" onClick={() => void copyHandoff()}><Copy size={14}/>{copied ? 'Скопировано' : 'Скопировать данные'}</button></details>}
+       {result.locked && !result.carrierConfirmed && <section className="workflow-handoff workflow-carrier-fill" aria-label="Заполнение ответа НК">
+         <header><h4>Водитель и машина</h4>{result.carrierFill?.checkedAt && <span className="workflow-fill-checked">Проверено {workflowTime(result.carrierFill.checkedAt)} · Москва</span>}</header>
+@@ -228,7 +253,7 @@
+           </li>)}</ul>
+           {!!result.carrierFill.blockers.length && <ul className="workflow-fill-blockers">{result.carrierFill.blockers.map(message => <li key={message}>{message}</li>)}</ul>}
+           {result.carrierFill.state === 'saved' && <div className="workflow-fill-next"><Clock3 size={18} aria-hidden="true"/><div><strong>Сведения для ответа НК сохранены</strong><p>{result.signing ? 'Состояние подписи НК показано выше.' : automatic ? 'Готовность сведений сама по себе не подтверждает подписание ответа НК.' : 'CRM использует выбранную подпись НК после явного запуска подписания. Если Saby потребует согласие владельца, подождём его подтверждения.'}</p></div></div>}
+-        </> : <><p className="etrn-note">{legacyAutomatic ? 'Показаны сведения ранее созданной заявки. Новое заполнение автоматически не запускается.' : 'CRM дождётся готовности входящей заявки, заполнит ответ НК сведениями выбранного водителя и автомобиля и проверит результат.'}</p>{!automatic && !result.signing && <button type="button" className="button primary" disabled={busy} onClick={() => void perform(undefined, true)}>Заполнить водителя и машину</button>}</>}
++        </> : <><p className="etrn-note">{legacyAutomatic ? 'Показаны сведения ранее созданной заявки. Новое заполнение автоматически не запускается.' : 'CRM дождётся готовности входящей заявки, заполнит ответ НК сведениями выбранного водителя и автомобиля и проверит результат.'}</p>{!automatic && !result.signing && <button type="button" className="button primary" disabled={paused || busy} onClick={() => void perform(undefined, true)}>Заполнить водителя и машину</button>}</>}
+       </section>}
+       {!driverFlow && result.carrierConfirmed && !result.loadingFacts && <form className="etrn-loading-facts" onSubmit={event => { event.preventDefault(); if (confirmed) void perform(facts) }}>
+         <h3>Фактическая погрузка</h3><p className="etrn-note">Заполняется сотрудником по факту. Расчётный тоннаж автоматически сюда не переносится.</p>
+@@ -238,13 +263,13 @@
+         <button type="submit" className="button primary" disabled={busy || !confirmed}>Сохранить погрузку и продолжить</button>
+       </form>}
+       {result.loadingFacts && !confirmedByDriverAt && <p className="etrn-note">Факты погрузки сохранены в CRM.</p>}
+-      {(result.locked || automatic || driverFlow || savedFactsNeedReconciliation) && <button type="button" className="button" disabled={busy} onClick={() => { if (driverFlow || legacyAutomatic || savedFactsNeedReconciliation || !result.locked) void read().catch(reason => setError(reason instanceof Error ? reason.message : 'Не удалось обновить состояние')); else void perform() }}><RefreshCw size={15}/>{driverFlow || legacyAutomatic || savedFactsNeedReconciliation ? 'Обновить сохранённое состояние' : result.phase === 'unknown' || result.signing?.state === 'unknown' ? 'Сверить результат с Saby' : 'Обновить из Saby'}</button>}
+     </>}
+     {etrn?.deliveries.filter(delivery => delivery.document).map((delivery, index) => {
+       const doc = delivery.document!, url = safeSabyUrl(doc.url)
+       return <section className="etrn-delivery" key={delivery.shipmentId}><h3>{title(delivery.shipmentId, index)}</h3><p>{doc.remoteStatus || (doc.status === 'draft' ? 'Черновик ЭТрН создан в АРТЭЛЬ' : doc.status === 'pending' ? 'Передача выполняется' : 'Результат требует сверки')}</p>{doc.lastError && <p className="shipment-error">{doc.lastError}</p>}<p className="etrn-note">Последнее обновление: {workflowTime(doc.updatedAt)} · Москва.</p><p className="etrn-note">Подпись: {doc.signatureStatus === 'reported_by_saby' ? 'Saby сообщает о наличии подписи' : 'Пока не подтверждена'}. ГИС ЭПД: {doc.gisStatus || 'подтверждение не получено'}.</p>{!!doc.availableActions?.length && <p className="etrn-note">Следующее действие в Saby: {doc.availableActions.join(' · ')}.</p>}{url && <a className="button" href={url} target="_blank" rel="noreferrer">Открыть ЭТрН в Saby <ArrowUpRight size={14}/></a>}<ul>{doc.files.map(file => <li key={file.id}>{file.url.startsWith(`${etrnEndpoint}/files/${encodeURIComponent(delivery.shipmentId)}/`) && <a href={apiUrl(file.url)} download><Download size={14}/>{file.name}</a>}</li>)}</ul></section>
+     })}
+     {!!result?.history?.length && <details className="workflow-history"><summary>История обмена <span>{result.history.length}</span></summary><ol>{[...result.history].reverse().map((entry, index) => <li key={`${entry.at}-${index}`}><span>{exchangeStageLabels[entry.stage] ?? 'Состояние обновлено'}</span><time dateTime={entry.at}>{workflowTime(entry.at)}</time></li>)}</ol></details>}
++    {actions}
+     {haveLegacy && <details><summary>Ранее созданные документы</summary><p>Сохранённые связи доступны для сверки. Общая заявка поверх прежнего обмена автоматически не создаётся.</p>{legacy?.saby.documents.map(doc => <p key={doc.shipmentId}>{safeSabyUrl(doc.url) ? <a href={safeSabyUrl(doc.url)!} target="_blank" rel="noreferrer">Открыть прежний заказ в Saby</a> : doc.lastError || doc.status}</p>)}</details>}
+   </section>
+ }
+--- /dev/null
++++ b/web/src/TripExchangeActions.tsx
+@@ -0,0 +1,39 @@
++import { useRef, useState } from 'react'
++import { LoaderCircle, Pause, Play, RefreshCw, Trash2 } from 'lucide-react'
++import type { TripSabyResponse } from './trip-saby-model'
++import { useDialogMotion } from './useDialogMotion'
++
++export default function TripExchangeActions({ control, busy, onRefresh, onControl, onDelete }: {
++  control?: TripSabyResponse['exchangeControl']; busy: boolean; onRefresh: () => Promise<void>;
++  onControl: (paused: boolean) => Promise<void>; onDelete?: () => void;
++}) {
++  const [confirm, setConfirm] = useState<boolean | null>(null)
++  return <div className="trip-exchange-actions">
++    {control?.paused && <p className="soft-notice" role="status">Обмен остановлен. Следующие действия CRM в Saby не выполняются. Уже отправленный запрос может завершиться в Saby.</p>}
++    <div className="etrn-actions">
++      <button type="button" className="button" disabled={busy} onClick={() => void onRefresh()}>{busy ? <LoaderCircle size={15} className="spin"/> : <RefreshCw size={15}/>}Проверить данные</button>
++      {control && <button type="button" className="button" disabled={busy} onClick={() => setConfirm(!control.paused)}>{control.paused ? <Play size={15}/> : <Pause size={15}/>} {control.paused ? 'Возобновить обмен' : 'Остановить обмен'}</button>}
++      {onDelete && <button type="button" className="button danger" disabled={busy} onClick={onDelete}><Trash2 size={15}/>Удалить рейс</button>}
++    </div>
++    {confirm !== null && <ControlDialog paused={confirm} onClose={() => setConfirm(null)} onSave={() => onControl(confirm)}/>}
++  </div>
++}
++
++function ControlDialog({ paused, onClose, onSave }: { paused: boolean; onClose: () => void; onSave: () => Promise<void> }) {
++  const dialog = useRef<HTMLDialogElement>(null), savingRef = useRef(false)
++  const [saving, setSaving] = useState(false), [error, setError] = useState('')
++  const { close, complete } = useDialogMotion(dialog, onClose)
++  const save = async () => {
++    if (savingRef.current) return
++    savingRef.current = true; setSaving(true); setError('')
++    try { await onSave(); await complete(onClose) }
++    catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось сохранить действие. Проверьте состояние рейса.') }
++    finally { savingRef.current = false; setSaving(false) }
++  }
++  return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="trip-control-title" onCancel={event => { event.preventDefault(); if (!savingRef.current) close() }}>
++    <h2 id="trip-control-title">{paused ? 'Остановить обмен рейса?' : 'Возобновить обмен рейса?'}</h2>
++    <p>{paused ? 'CRM остановит следующие действия по документам этого рейса. Рейс, доставки, документы и подписи сохранятся. Уже отправленный запрос и действия других участников в Saby могут завершиться.' : 'CRM продолжит обмен по сохранённому поручению после проверки данных и прав. Уже созданные документы и подписи сохранятся.'}</p>
++    {error && <p className="shipment-error" role="alert">{error}</p>}
++    <footer><button type="button" className="button" disabled={saving} onClick={close} autoFocus>Отмена</button><button type="button" className="button primary" disabled={saving} onClick={() => void save()}>{saving && <LoaderCircle size={15} className="spin"/>}{paused ? 'Остановить обмен' : 'Возобновить обмен'}</button></footer>
++  </dialog>
++}
+--- a/web/src/TripsPage.tsx
++++ b/web/src/TripsPage.tsx
+@@ -18,9 +18,7 @@
+ import { mapLink } from './map-link'
+ import { formatDate, number } from './utils'
+ import TripEtrnPanel from './TripEtrnPanel'
+-import type { TripSabyAutomationCapability, TripSabyResponse } from './trip-saby-model'
+-import type { SabyTripResponse } from './saby-model'
+-import type { EtrnTripResponse } from './etrn-api-model'
++import type { TripSabyAutomationCapability } from './trip-saby-model'
+ import { readIntermediateStops } from './trip-route'
+ import { compareTripsNewestFirst } from './trip-order'
+ import './shipments.css'
+@@ -102,8 +100,8 @@
+           <div className="trip-origin"><span>Погрузка</span><strong>{companyName(trip.fields.supplier_id)}</strong>{trip.fields.loading_address && <p>{trip.fields.loading_address}</p>}<TripMapLink address={trip.fields.loading_address} mapUrl={trip.fields.loading_map_url}/></div>
+           <ol className="trip-deliveries">{trip.customers.flatMap(customer => [<li key={customer.id}><div><strong>{customer.fields.customer_name || companyName(customer.fields.customer_id)}</strong><p>{customer.fields.unloading_address || 'Место доставки не выбрано'}</p>{customer.fields.invoice_not_required === 'true' && <small className="trip-invoice-badge">Счёт не нужен</small>}{customer.fields.etrn_not_required === 'true' && <small className="trip-invoice-badge">ЭТрН не нужна</small>}{customer.fields.delivery_notes && <p>{customer.fields.delivery_notes}</p>}<TripMapLink address={customer.fields.unloading_address} mapUrl={customer.fields.unloading_map_url}/></div><div className="trip-delivery-amount"><strong>{number(customer.fields.quantity_litres)} л</strong><small>Доставка {number(customer.fields.transport_amount, 2)} ₽</small></div></li>, ...readIntermediateStops(customer.fields.intermediate_stops_after).map(stop => <li className="trip-intermediate-stop" key={`${customer.id}-${stop.id}`}><div><small>Промежуточная остановка</small><strong>{stop.name}</strong><p>{stop.address}</p></div></li>)])}</ol>
+           {trip.fields.trip_notes && <p className="trip-card-notes">{trip.fields.trip_notes}</p>}
+-          <footer className="trip-card-footer">{allowDelete && <button className="icon-button" aria-label={`Удалить рейс ${trip.id}`} title="Удалить рейс" onClick={() => setDeleting(trip.id)}><Trash2 size={16}/></button>}<span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
+-          {sabyId === trip.id && <TripEtrnPanel trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
++          <footer className="trip-card-footer"><span>Доставок: {trip.customers.length} · {trip.fields.quantity_tonnes ? `${number(trip.fields.quantity_tonnes, 3)} т` : 'масса ожидает водителя'}</span><div className="trip-saby-action"><button className="button" aria-expanded={sabyId === trip.id} onClick={() => setSabyId(current => current === trip.id ? null : trip.id)}><Send size={15}/>Saby</button></div></footer>
++          {sabyId === trip.id && <TripEtrnPanel onDelete={allowDelete ? () => setDeleting(trip.id) : undefined} trip={trip} data={data} onIssuesChange={updateWorkflowIssues}/>}
+         </article>
+       })}</div>
+       {!filtered.length && !error && <div className="panel trips-empty"><Truck size={30}/><h2>{query ? 'Рейсы не найдены' : 'Рейсов пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}</div>}
+@@ -120,21 +118,21 @@
+ function DeleteTripDialog({ tripId, data, onClose: onDismiss, onDeleted }: { tripId: string; data: DirectoryData; onClose: () => void; onDeleted: () => void }) {
+   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false)
+   const [trip, setTrip] = useState<ShipmentTrip | null>(null), [loading, setLoading] = useState(true)
+-  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [blocked, setBlocked] = useState(false), [reload, setReload] = useState(0)
++  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [blocked, setBlocked] = useState(''), [reload, setReload] = useState(0)
+   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
+   useEffect(() => {
+     const controller = new AbortController(), endpoint = `/api/shipment-trips/${encodeURIComponent(tripId)}`
+-    setLoading(true); setError(''); setTrip(null); setBlocked(false)
++    setLoading(true); setError(''); setTrip(null); setBlocked('')
+     const read = async (suffix: string) => {
+       const response = await fetch(`${endpoint}${suffix}`, { signal: controller.signal })
+       const result = await response.json()
+       if (!response.ok) throw new Error(result.error || 'Не удалось проверить рейс перед удалением.')
+       return result
+     }
+-    void Promise.all([read(''), read('/saby-workflow'), read('/saby'), read('/etrn')]).then(([current, workflow, legacy, etrn]: [{ trip: ShipmentTrip }, TripSabyResponse, SabyTripResponse, EtrnTripResponse]) => {
++    void read('').then((current: { trip: ShipmentTrip; deletion?: { reason: string | null } }) => {
+       if (controller.signal.aborted) return
+       setTrip(current.trip)
+-      setBlocked(workflow.locked || legacy.saby.documents.some(doc => doc.status !== 'error' || !!doc.id) || etrn.deliveries.some(delivery => delivery.document && (delivery.document.status !== 'error' || !!delivery.document.id)))
++      setBlocked(current.deletion?.reason || '')
+     }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Не удалось проверить рейс.') })
+       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+     return () => controller.abort()
+@@ -152,9 +150,9 @@
+   }
+   return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="trip-delete-title" onCancel={event => { event.preventDefault(); if (!inFlight.current) onClose() }}>
+     <h2 id="trip-delete-title">Удалить рейс целиком?</h2>
+-    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">Рейс связан с документами Saby. Удаление запрещено до сверки документов.</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
++    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">{blocked}</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
+     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={loading || saving} onClick={() => setReload(value => value + 1)}>Обновить состав</button></div>}
+-    <footer><button type="button" className="button" disabled={saving} onClick={onClose} autoFocus>Отмена</button><button type="button" className="button danger" disabled={loading || saving || !trip || blocked || !!error} onClick={() => void remove()}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}Удалить рейс</button></footer>
++    <footer><button type="button" className="button" disabled={saving} onClick={onClose} autoFocus>Отмена</button><button type="button" className="button danger" disabled={loading || saving || !trip || !!blocked || !!error} onClick={() => void remove()}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}Удалить рейс</button></footer>
+   </dialog>
+ }
+ 
+--- a/web/src/TripsWorkspace.tsx
++++ b/web/src/TripsWorkspace.tsx
+@@ -4,7 +4,7 @@
+ import TripsPage from './TripsPage'
+ 
+ /** This page needs operational directories, never a financial dashboard snapshot. */
+-export default function TripsWorkspace({ canManagePlaces }: { canManagePlaces: boolean }) {
++export default function TripsWorkspace({ canManagePlaces, allowDelete = false }: { canManagePlaces: boolean; allowDelete?: boolean }) {
+   const [data, setData] = useState<DirectoryData | null>(null)
+   const [error, setError] = useState('')
+   const [revision, setRevision] = useState(0)
+@@ -20,6 +20,6 @@
+   }, [revision])
+   return <>
+     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRevision(value => value + 1)}>Повторить загрузку справочников</button></div>}
+-    {data ? <TripsPage data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <p role="status">Загружаем справочники рейсов…</p>}
++    {data ? <TripsPage allowDelete={allowDelete} data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <p role="status">Загружаем справочники рейсов…</p>}
+   </>
+ }
+--- a/web/src/trip-saby-model.ts
++++ b/web/src/trip-saby-model.ts
+@@ -62,6 +62,7 @@
+ export interface TripSabyAutomationCapability { enabled: boolean; message?: string }
+ export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean; mode?: 'after_driver_departure' }
+ export interface TripSabyResponse {
++  exchangeControl?: { paused: boolean; version: number; updatedAt: string | null };
+   workflowIssues?: import('./trip-workflow-issues').TripWorkflowIssue[];
+   notRequired?: boolean;
+   documentMode?: 'nk_direct_etrn';

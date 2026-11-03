@@ -1,0 +1,263 @@
+--- a/server/etrn-dispatch.ts
++++ b/server/etrn-dispatch.ts
+@@ -213,9 +213,10 @@
+   const sideId = (side: SabySigningSide) => side === 'carrier' ? doc.dispatch?.carrierIdentity?.documentId ?? doc.id! : doc.id!;
+   const directElectronic = doc.snapshot.documentMode === 'nk-direct-v1' && doc.snapshot.loadingActorMode === 'sender' && doc.senderTitleVersion === 2 && doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке';
+   let senderRemoteForCarrier: SabyObject | undefined;
++  let sameIdReadyDraftVerified = false;
+   const titleOptions = () => ({ senderTitleVersion: doc.senderTitleVersion });
+-  const evidenceOptions = (remote: SabyObject, phase: 'unprepared' | 'prepared' = 'prepared') => ({
+-    ...(doc.nativeSenderAmendment || doc.orderRedirectionApproval || doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке' ? nativeSenderAmendmentOptions(doc, directRecord!, remote.Идентификатор === doc.dispatch?.carrierIdentity?.documentId && senderRemoteForCarrier ? senderRemoteForCarrier : remote) : { ...titleOptions(), operatorUid: doc.dispatch?.operatorUid }), phase,
++  const evidenceOptions = (remote: SabyObject, phase: 'unprepared' | 'prepared' = 'prepared', side: SabySigningSide = 'sender') => ({
++    ...(doc.nativeSenderAmendment || doc.orderRedirectionApproval || doc.snapshot.profile.instructions.redirectionMethod === 'Электронное уведомление перевозчика о переадресовке' ? nativeSenderAmendmentOptions(doc, directRecord!, side === 'carrier' && remote.Идентификатор === doc.dispatch?.carrierIdentity?.documentId && senderRemoteForCarrier ? senderRemoteForCarrier : remote) : { ...titleOptions(), operatorUid: doc.dispatch?.operatorUid }), phase,
+   });
+   const resolveCarrierIdentity = async () => {
+     const eligible = doc.snapshot.documentMode !== 'nk-direct-v1' && doc.orderDraftVersion === 1 && doc.senderTitleVersion === 2 &&
+@@ -230,11 +231,20 @@
+     const url = new URL(String(meta.СсылкаВКабинет));
+     const candidate = url.searchParams.get('guid');
+     if (url.protocol !== 'https:' || url.hostname !== 'tms.saby.ru' || url.pathname !== '/opendoc.html' || !candidate || !/^[a-f0-9-]{36}$/i.test(candidate) || url.searchParams.getAll('guid').length !== 1 || url.searchParams.get('file') !== sourceTitle.id) fail('Не подтверждён адрес входящей ЭТрН.');
+-    if (candidate === doc.id && !doc.dispatch?.carrierIdentity) return;
+     if (doc.dispatch?.carrierIdentity && doc.dispatch.carrierIdentity.documentId !== candidate) fail('Привязка входящей ЭТрН изменилась.');
+     const sourceBytes = await client.downloadSigningAttachment('sender', doc.id!, sourceTitle.id, sourceTitle.revision, 'ConsignmentNote');
+     verifyConsignmentSenderBusiness(sourceBytes.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, 'address-order-v1', evidenceOptions(sourceRemote));
+-    const incoming = await client.readSigningDocument('carrier', candidate!, 'ConsignmentNote');
++    const carrier = doc.dispatch!.carrier, draft = doc.dispatch!.carrierDraft;
++    // Older dispatches could create T2 before noticing that the same document ID
++    // has a different revision in the NK cabinet. Reconcile that exact ready
++    // intent by reads; never adopt a lost/partial signing or filling attempt.
++    const readySameId = candidate === doc.id && draft?.state === 'ready' && !carrier.binding && !carrier.prepared &&
++      !carrier.executeAttempted && carrier.dispatchState === undefined && !doc.dispatch!.carrierFill && !doc.dispatch!.carrierReconciliation;
++    if (readySameId) {
++      const current = await store.read(source); authority(current);
++      if (draft.binding.documentId !== doc.id || draft.binding.certificateThumbprint !== current.tripSaby!.trips[tripId].autoAuthorization!.selection.carrier) fail('Сохранённая подготовка ответа перевозчика не относится к выбранной подписи.');
++    }
++    const incoming = readySameId ? await readPreparedCarrierDraft(client, draft.binding) : await client.readSigningDocument('carrier', candidate!, 'ConsignmentNote');
+     verifyIdentity(incoming, doc, 'carrier', candidate!);
+     const incomingTitle = title(incoming, '1110339');
+     const incomingBytes = await client.downloadSigningAttachment('carrier', candidate!, incomingTitle.id, incomingTitle.revision, 'ConsignmentNote');
+@@ -246,10 +256,11 @@
+     if (doc.dispatch?.carrierIdentity) {
+       if (JSON.stringify(doc.dispatch.carrierIdentity) !== JSON.stringify(identity)) fail('Изменилось сохранённое доказательство входящей ЭТрН.');
+     } else {
+-      if (doc.dispatch!.carrier.binding || doc.dispatch!.carrier.prepared || doc.dispatch!.carrier.executeAttempted || doc.dispatch!.carrierDraft || doc.dispatch!.carrierFill) fail('Нельзя менять идентификатор после начала приёмки перевозчиком.');
++      if (carrier.binding || carrier.prepared || carrier.executeAttempted || carrier.dispatchState !== undefined || doc.dispatch!.carrierFill || doc.dispatch!.carrierReconciliation || draft && !readySameId) fail('Нельзя менять идентификатор после начала приёмки перевозчиком.');
+       await update(row => { row.dispatch!.carrierIdentity = identity; });
+     }
+     senderRemoteForCarrier = sourceRemote;
++    sameIdReadyDraftVerified = readySameId;
+   };
+   const business = async (remote: SabyObject, side: SabySigningSide, phase: 'unprepared' | 'prepared' = 'prepared') => {
+     verifyIdentity(remote, doc, side);
+@@ -257,11 +268,11 @@
+     const bytes = (await client.downloadSigningAttachment(side, sideId(side), sender.id, sender.revision, 'ConsignmentNote')).bytes;
+     if (side === 'carrier' && doc.dispatch?.carrierIdentity && bytesHash(bytes) !== doc.dispatch.carrierIdentity.titleSha256) fail('Входящий титул изменился после привязки.');
+     const expected = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions());
+-    const evidence = verifyConsignmentSenderBusiness(bytes, expected.xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote, phase));
++    const evidence = verifyConsignmentSenderBusiness(bytes, expected.xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote, phase, side));
+     if (side === 'carrier') {
+       const carrier = title(remote, '1110340');
+       const reply = await client.downloadSigningAttachment(side, sideId(side), carrier.id, carrier.revision, 'ConsignmentNote');
+-      verifyConsignmentCarrierBusiness(reply.bytes, bytes, doc.snapshot, evidenceOptions(remote));
++      verifyConsignmentCarrierBusiness(reply.bytes, bytes, doc.snapshot, evidenceOptions(remote, 'prepared', side));
+       const signature = await client.downloadSigningSignature(side, sideId(side), sender.id, sender.revision, doc.dispatch!.sender.prepared!.binding.certificateThumbprint, 'ConsignmentNote');
+       verifyConsignmentCarrierSourceSignature(reply.bytes, signature);
+     }
+@@ -320,7 +331,7 @@
+         !step.binding && !step.prepared && !step.executeAttempted && step.dispatchState === undefined;
+       const reconcileCarrierTitle = side === 'carrier' && (!!doc.dispatch!.carrierIdentity || directElectronic) && doc.dispatch!.carrierDraft?.state === 'ready' &&
+         doc.dispatch!.sender.state === 'confirmed' && !!step.binding && !step.prepared && !step.executeAttempted && step.dispatchState === undefined && !doc.dispatch!.carrierReconciliation;
+-      if (!recoverApprovedPrepared && !reconcileCarrierDraft && !reconcileCarrierTitle && (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent'))) {
++      if (!recoverApprovedPrepared && !reconcileCarrierDraft && !reconcileCarrierTitle && !(side === 'carrier' && sameIdReadyDraftVerified) && (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent'))) {
+         await update(row => { row.dispatch![side].state = 'unknown'; row.dispatch!.lastError = 'Результат подготовки ЭТрН неизвестен. Повторное действие не выполняется.'; }); break;
+       }
+       let remote = await client.readSigningDocument(side, sideId(side), 'ConsignmentNote'); verifyIdentity(remote, doc, side);
+@@ -345,7 +356,7 @@
+         const sender = title(remote, '1110339'), carrier = title(remote, '1110340');
+         const sourceFile = await client.downloadSigningAttachment(side, sideId(side), sender.id, sender.revision, 'ConsignmentNote');
+         if (doc.dispatch?.carrierIdentity && bytesHash(sourceFile.bytes) !== doc.dispatch.carrierIdentity.titleSha256) fail('Входящий титул изменился после привязки.');
+-        verifyConsignmentSenderBusiness(sourceFile.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote));
++        verifyConsignmentSenderBusiness(sourceFile.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : doc.orderDraftVersion === 1 ? 'address-order-v1' : undefined, evidenceOptions(remote, 'prepared', side));
+         const reply = await client.downloadSigningAttachment(side, sideId(side), carrier.id, carrier.revision, 'ConsignmentNote');
+         const sourceSignature = await client.downloadSigningSignature(side, sideId(side), sender.id, sender.revision, doc.dispatch!.sender.prepared!.binding.certificateThumbprint, 'ConsignmentNote');
+         verifyConsignmentCarrierSourceSignature(reply.bytes, sourceSignature);
+@@ -353,7 +364,7 @@
+         if (previous) {
+           if (previous.id !== carrier.id || previous.revision !== carrier.revision || previous.name !== reply.name || previous.afterHash !== bytesHash(reply.bytes)) fail('Результат заполнения ответа перевозчика ЭТрН неизвестен или изменён. Повторная запись не выполняется.');
+         } else {
+-          const filled = fillConsignmentCarrier(reply.bytes, sourceFile.bytes, doc.snapshot, evidenceOptions(remote));
++          const filled = fillConsignmentCarrier(reply.bytes, sourceFile.bytes, doc.snapshot, evidenceOptions(remote, 'prepared', side));
+           if (filled.changed) {
+             const before = bytesHash(reply.bytes), after = bytesHash(filled.bytes);
+             const fresh = await client.downloadSigningAttachment(side, sideId(side), carrier.id, carrier.revision, 'ConsignmentNote');
+--- a/tests/saby-consignment-dispatch.test.ts
++++ b/tests/saby-consignment-dispatch.test.ts
+@@ -1,7 +1,7 @@
+ import assert from 'node:assert/strict';
+ import { createHash, randomUUID } from 'node:crypto';
+ import test from 'node:test';
+-import { signingActionRequest } from '../server/saby-signing';
++import { createCarrierDraftBinding, prepareCarrierDraft, signingActionRequest, signingCertificateForOrganization } from '../server/saby-signing';
+ import { continueEtrnDispatch, consignmentClientDispatchConfirmed, validateEtrnDispatch } from '../server/etrn-dispatch';
+ import { CONSIGNMENT_CARRIER_ACCEPTANCE, NATIVE_APPROVED_REDIRECTION_METHOD } from '../server/saby-consignment-evidence';
+ import { serializeSabyConsignmentNote } from '../server/saby-consignment-note';
+@@ -14,7 +14,7 @@
+ import { enqueueAutomaticTripSaby } from '../server/trip-saby-workflow';
+ import { recordDriverTripAction, readDriverTrips } from '../server/driver-trips';
+ import type { OperationsData, OperationsStorage } from '../server/operations-store';
+-import { verifyPreparedLinkedConsignmentTitle, type EtrnDocument } from '../server/etrn-service';
++import { nativeSenderAmendmentOptions, verifyPreparedLinkedConsignmentTitle, type EtrnDocument } from '../server/etrn-service';
+ import type { AccountUser } from '../web/src/auth-model';
+ import { integrationRuntime, integrationConfig, integrationPrepare, type IntegrationRpc } from './helpers/trip-saby-integration';
+ import { syntheticEtrnFixture } from './helpers/etrn-fixture';
+@@ -24,7 +24,7 @@
+ const party = (org: { inn: string; kpp: string }) => org.inn.length === 10 ? { СвЮЛ: { ИНН: org.inn, КПП: org.kpp } } : { СвФЛ: { ИНН: org.inn } };
+ const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+ 
+-async function fixture(native?: 'phone' | 'electronic', alias?: 'valid' | 'title' | 'signature' | 'recipient') {
++async function fixture(native?: 'phone' | 'electronic', alias?: 'valid' | 'title' | 'signature' | 'recipient', sameIdRevision = false) {
+   const rt = await integrationRuntime();
+   const config: SabyConfig = { ...integrationConfig(), login: 'synthetic-login', password: 'synthetic-secret', accountNumber: 'sender-account', carrierAccountNumber: 'carrier-account' };
+   config.automaticSigning = { id: 'synthetic-dispatch-policy', enabled: true, approvedAt: '2026-01-01T00:00:00.000Z', mode: 'deferred', sender: { inn: config.customer.inn, kpp: config.customer.kpp, thumbprint: fps.sender }, carrier: { inn: config.carrier.inn, kpp: config.carrier.kpp, thumbprint: fps.carrier } };
+@@ -87,19 +87,25 @@
+   const stage = (side: Side) => ({ Идентификатор: `stage-${side}`, Название: side === 'sender' ? 'Отправка' : 'Получение груза', Действие: [{ Название: side === 'sender' ? 'Погружен' : 'Принят', ТребуетПодписания: 'Да', Сертификат: { Отпечаток: fps[side], Ключ: { Тип: 'Отложенный', Активирован: 'Да' } } }] });
+   let signedSender = false, signedCarrier = false, carrierPrepared = false, receipt = true, loss: 'prepare' | 'execute' | 'fill-accepted' | 'fill-unsent' | null = null, pending = false;
+   let regenerateCarrierTitle = false, nativeRecipientSummary = false;
++  let carrierMismatch: 'title' | 'signature' | 'revision' | 'stage' | 'missing-reply' | 'duplicate-reply' | null = null;
++  let carrierDraftPrepares = 0, carrierSigningPrepares = 0;
++  let changeSenderRevisionAfterCarrier = false;
+   const requests: { side: Side; req: IntegrationRpc }[] = [];
+   const document = (side: Side): SabyObject => {
+     const own = side === 'sender' ? config.customer : config.carrier;
+-    const revision = side === 'carrier' && alias ? incomingRevision : doc.revision;
+-    const file = (which: Side) => ({ Идентификатор: attachmentIds[which], Редакция: { Идентификатор: revision, Номер: '1' }, СсылкаВКабинет: cabinetUrl, Подтип: which === 'sender' ? '1110339' : '1110340', ВерсияФормата: '5.01', Направление: which === side ? 'Исходящий' : 'Входящий', Файл: { Имя: which === 'sender' ? t1.name : 'carrier.xml', Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && alias ? 'carrier-copy' : which}.xml` }, ...((which === 'sender' ? signedSender : signedCarrier) ? { Подпись: [{ Сертификат: { Отпечаток: fps[which], ИНН: (which === 'sender' ? config.customer : config.carrier).inn }, Файл: { Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && alias ? 'carrier-source' : which}.sgn` } }] } : {}) });
++    const revision = (side === 'carrier' && carrierMismatch === 'revision' || side === 'sender' && signedCarrier && changeSenderRevisionAfterCarrier) ? '99999999-9999-4999-8999-999999999998' : side === 'carrier' && (alias || sameIdRevision) ? incomingRevision : doc.revision;
++    const file = (which: Side) => ({ Идентификатор: attachmentIds[which], Редакция: { Идентификатор: revision, Номер: '1' }, СсылкаВКабинет: cabinetUrl, Подтип: which === 'sender' ? '1110339' : '1110340', ВерсияФормата: '5.01', Направление: which === side ? 'Исходящий' : 'Входящий', Файл: { Имя: which === 'sender' ? t1.name : 'carrier.xml', Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && (alias || sameIdRevision) ? 'carrier-copy' : which}.xml` }, ...((which === 'sender' ? signedSender : signedCarrier) ? { Подпись: [{ Сертификат: { Отпечаток: fps[which], ИНН: (which === 'sender' ? config.customer : config.carrier).inn }, Файл: { Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && (alias || sameIdRevision) ? 'carrier-source' : which}.sgn` } }] } : {}) });
+     const recipientStage = { Идентификатор: 'recipient-stage', Название: 'Приемка груза', Исполнитель: [{ Контрагент: party(snapshot.profile.recipient) }] };
+     const active = signedCarrier && receipt ? recipientStage : stage(side);
+-    return { Идентификатор: side === 'carrier' && alias ? incomingId : doc.id, Тип: 'ConsignmentNote', Номер: doc.number, Дата: '01.04.2025', Направление: side === 'sender' ? 'Исходящий' : 'Входящий', НашаОрганизация: party(own), Грузоотправитель: party(config.customer), ТранспортнаяКомпания: party(config.carrier), Грузополучатель: party(snapshot.profile.recipient), Стороны: { Отправитель: party(config.customer), Перевозчик: party(config.carrier), Получатель: party(alias === 'recipient' && side === 'carrier' ? config.carrier : snapshot.profile.recipient) }, Редакция: [{ Идентификатор: revision, Актуален: 'Да' }], Состояние: { Код: signedCarrier ? '7' : side === 'sender' && signedSender ? '4' : side === 'sender' ? '0' : '10' }, ...(nativeRecipientSummary && signedCarrier && side === 'sender' ? { Контрагент: party(snapshot.profile.recipient), ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор, Наименование: active.Название }] } : { Этап: [active], ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор }] }), Вложение: [file('sender'), ...(carrierPrepared ? [file('carrier')] : [])] };
++    if (side === 'carrier' && carrierMismatch === 'stage') active.Идентификатор = 'changed-carrier-stage';
++    const replies = carrierPrepared && !(side === 'carrier' && carrierMismatch === 'missing-reply') ? [file('carrier')] : [];
++    if (side === 'carrier' && carrierMismatch === 'duplicate-reply') replies.push({ ...file('carrier'), Идентификатор: 'another-carrier-title' });
++    return { Идентификатор: side === 'carrier' && alias ? incomingId : doc.id, Тип: 'ConsignmentNote', Номер: doc.number, Дата: '01.04.2025', Направление: side === 'sender' ? 'Исходящий' : 'Входящий', НашаОрганизация: party(own), Грузоотправитель: party(config.customer), ТранспортнаяКомпания: party(config.carrier), Грузополучатель: party(snapshot.profile.recipient), Стороны: { Отправитель: party(config.customer), Перевозчик: party(config.carrier), Получатель: party(alias === 'recipient' && side === 'carrier' ? config.carrier : snapshot.profile.recipient) }, Редакция: [{ Идентификатор: revision, Актуален: 'Да' }], Состояние: { Код: signedCarrier ? '7' : side === 'sender' && signedSender ? '4' : side === 'sender' ? '0' : '10' }, ...(nativeRecipientSummary && signedCarrier && side === 'sender' ? { Контрагент: party(snapshot.profile.recipient), ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор, Наименование: active.Название }] } : { Этап: [active], ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор }] }), Вложение: [file('sender'), ...replies] };
+   };
+   const cert = (side: Side) => { const org = side === 'sender' ? config.customer : config.carrier; return { Certificate: { Type: 'Client', CertificateInfo: { Thumbprint: fps[side], IsValid: true, IsQualified: true, NotBefore: '2020-01-01T00:00:00Z', NotAfter: '2099-01-01T00:00:00Z', SubjectName: { '1.2.643.100.4': org.inn, '2.5.4.4': 'Тестовый', '2.5.4.42': 'Подписант' } } }, OurCompany: { Inn: org.inn, Kpp: org.kpp } }; };
+   const send: typeof fetch = async (url, init) => {
+-    if (init?.method === 'GET' && String(url).endsWith('carrier-copy.xml') && alias === 'title') return new Response(Buffer.from('different title'));
+-    if (init?.method === 'GET' && String(url).endsWith('carrier-source.sgn') && alias === 'signature') return new Response(Buffer.from('different signature'));
++    if (init?.method === 'GET' && String(url).endsWith('carrier-copy.xml') && (alias === 'title' || carrierMismatch === 'title')) return new Response(Buffer.from('different title'));
++    if (init?.method === 'GET' && String(url).endsWith('carrier-source.sgn') && (alias === 'signature' || carrierMismatch === 'signature')) return new Response(Buffer.from('different signature'));
+     if (init?.method === 'GET') return new Response(String(url).endsWith('.sgn') ? senderSignature : String(url).includes('carrier.xml') ? t2 : senderBytes);
+     const req = JSON.parse(String(init?.body)) as IntegrationRpc;
+     const side: Side = new Headers(init?.headers).get('X-SBISSessionID') === 'synthetic-carrier-session' ? 'carrier' : 'sender';
+@@ -122,6 +128,7 @@
+     }
+     if (req.method === 'СБИС.ПодготовитьДействие') {
+       if (side === 'carrier') {
++        if (carrierPrepared) carrierSigningPrepares++; else carrierDraftPrepares++;
+         if (carrierPrepared && regenerateCarrierTitle) { attachmentIds.carrier = '99999999-9999-4999-8999-999999999999'; regenerateCarrierTitle = false; }
+         carrierPrepared = true;
+       }
+@@ -147,6 +154,25 @@
+   const run = () => continueEtrnDispatch({ base: rt.base, store, tripId, authorize: () => undefined, client: new SabyClient(config, send) }, shipmentId);
+   const saved = () => state.etrn!.trips[tripId].deliveries[shipmentId].document!;
+   return { ...rt, tripId, shipmentId, run, saved, requests, store, config, document, snapshot, senderBytes: () => senderBytes,
++    prepareLegacyReadyDraft: async (carrierState: 'blocked' | 'unknown') => {
++      assert.equal(saved().dispatch?.sender.executeAttempted, true);
++      signedSender = true; pending = false;
++      saved().dispatch!.sender.state = 'confirmed';
++      const client = new SabyClient(config, send), remote = await client.readSigningDocument('carrier', doc.id!, 'ConsignmentNote');
++      const certificate = signingCertificateForOrganization(await client.readSigningCertificate('carrier', fps.carrier), snapshot.carrierOrganization)!;
++      const binding = createCarrierDraftBinding(remote, certificate, config, 'Отложенный', 'ConsignmentNote');
++      saved().dispatch!.carrierDraft = { binding, state: 'preparing' };
++      const prepared = await prepareCarrierDraft(client, binding);
++      saved().dispatch!.carrierDraft!.state = 'ready';
++      // Reproduce the old guard failure with the actual prepared NK response.
++      assert.throws(() => nativeSenderAmendmentOptions(saved(), undefined, prepared), /Не подтверждён подготовленный титул/);
++      saved().dispatch!.carrier.state = carrierState;
++      saved().dispatch!.lastError = carrierState === 'blocked' ? 'Не подтверждён подготовленный титул согласованной ЭТрН заявки.' : 'Результат подготовки ЭТрН неизвестен. Повторное действие не выполняется.';
++      validateEtrnDispatch(saved().dispatch, doc.id);
++    },
++    setCarrierMismatch: (value: typeof carrierMismatch) => { carrierMismatch = value; },
++    changeSenderRevisionAfterCarrier: () => { changeSenderRevisionAfterCarrier = true; },
++    prepareCounts: () => ({ draft: carrierDraftPrepares, signing: carrierSigningPrepares }),
+     approveElectronic: () => {
+       const w = state.tripSaby!.trips[tripId]; const answerText = 'Принять электронное уведомление для этого рейса';
+       const approval = { version: 1 as const, tripId, workflowAttemptId: w.attemptId, authorizationSha256: hash(w.autoAuthorization), answerText, answerSha256: createHash('sha256').update(answerText).digest('hex'), recordedAt: new Date().toISOString() };
+@@ -332,6 +358,76 @@
+     const writes = f.writes().length; await f.run(); assert.equal(f.writes().length, writes);
+   } finally { await f.close(); }
+ });
++
++test('ordinary electronic ETRN binds one document ID with different sender and NK revisions', async () => {
++  const f = await fixture('electronic', undefined, true);
++  try {
++    await f.run();
++    const d = f.saved();
++    assert.equal(d.dispatch?.carrierIdentity?.documentId, d.id);
++    assert.equal(d.dispatch?.carrier.state, 'confirmed', d.dispatch?.lastError);
++    assert.equal(d.dispatch?.sender.prepared?.binding.revision, '22222222-2222-4222-8222-222222222222');
++    assert.equal(d.dispatch?.carrier.prepared?.binding.revision, '88888888-8888-4888-8888-888888888888');
++    assert.ok(d.dispatch?.completedAt);
++    const count = f.writes().length; await f.run(); assert.equal(f.writes().length, count);
++  } finally { await f.close(); }
++});
++
++for (const state of ['blocked', 'unknown'] as const) test(`same-ID ${state} ready draft resumes without repeating draft Prepare or sender Execute`, async () => {
++  const f = await fixture('electronic', undefined, true);
++  try {
++    f.setPending(true); await f.run(); await f.prepareLegacyReadyDraft(state);
++    const before = structuredClone(f.saved()), sender = before.dispatch!.sender, draft = before.dispatch!.carrierDraft;
++    assert.deepEqual(f.prepareCounts(), { draft: 1, signing: 0 });
++    await f.run();
++    const after = f.saved();
++    assert.equal(after.dispatch?.carrier.state, 'confirmed', after.dispatch?.lastError);
++    assert.ok(after.dispatch?.completedAt);
++    assert.deepEqual(after.dispatch?.sender, sender);
++    assert.deepEqual(after.dispatch?.carrierDraft, draft);
++    assert.deepEqual(after.snapshot, before.snapshot);
++    assert.deepEqual(f.prepareCounts(), { draft: 1, signing: 1 });
++    assert.equal(f.writes().filter(x => x.side === 'sender' && x.req.method === 'СБИС.ВыполнитьДействие').length, 1);
++    assert.equal(f.writes().filter(x => x.side === 'carrier' && x.req.method === 'СБИС.ВыполнитьДействие').length, 1);
++    const writes = f.writes().length; await f.run(); assert.equal(f.writes().length, writes);
++  } finally { await f.close(); }
++});
++
++for (const mismatch of ['title', 'signature', 'revision', 'stage', 'missing-reply', 'duplicate-reply', 'certificate', 'uncertain-draft', 'prior-fill', 'prior-signing-intent'] as const) test(`same-ID ready draft rejects ${mismatch} without provider writes or replacing its intent`, async () => {
++  const f = await fixture('electronic', undefined, true);
++  try {
++    f.setPending(true); await f.run(); await f.prepareLegacyReadyDraft('unknown');
++    if (mismatch === 'certificate') f.saved().dispatch!.carrierDraft!.binding.certificateThumbprint = 'ef'.repeat(20);
++    else if (mismatch === 'uncertain-draft') f.saved().dispatch!.carrierDraft!.state = 'preparing';
++    else if (mismatch === 'prior-fill') f.saved().dispatch!.carrierFill = { id: '55555555-5555-4555-8555-555555555555', revision: '88888888-8888-4888-8888-888888888888', name: 'carrier.xml', beforeHash: 'a'.repeat(64), afterHash: 'b'.repeat(64), attempted: true };
++    else if (mismatch === 'prior-signing-intent') f.saved().dispatch!.carrier.binding = { ...f.saved().dispatch!.carrierDraft!.binding, attachmentId: '55555555-5555-4555-8555-555555555555' };
++    else f.setCarrierMismatch(mismatch);
++    const before = structuredClone(f.saved()), writes = f.writes().length;
++    await f.run();
++    const after = f.saved();
++    assert.equal(f.writes().length, writes);
++    assert.equal(after.dispatch?.carrierIdentity, undefined);
++    assert.equal(after.dispatch?.carrier.prepared, undefined);
++    assert.equal(after.dispatch?.carrier.executeAttempted, undefined);
++    assert.equal(after.dispatch?.completedAt, undefined);
++    assert.deepEqual(after.dispatch?.carrierDraft, before.dispatch?.carrierDraft);
++    assert.deepEqual(after.dispatch?.carrierFill, before.dispatch?.carrierFill);
++    assert.deepEqual(after.dispatch?.carrier.binding, before.dispatch?.carrier.binding);
++    assert.deepEqual(after.dispatch?.sender, before.dispatch?.sender);
++  } finally { await f.close(); }
++});
++
++test('same-ID final sender evidence uses the fresh sender revision after carrier signing', async () => {
++  const f = await fixture('electronic', undefined, true);
++  try {
++    f.changeSenderRevisionAfterCarrier(); await f.run();
++    assert.equal(f.saved().dispatch?.completedAt, undefined);
++    assert.match(f.saved().dispatch?.lastError ?? '', /Не подтверждён подготовленный титул/);
++    assert.equal(f.saved().dispatch?.carrier.executeAttempted, true);
++    const writes = f.writes().length; await f.run(); assert.equal(f.writes().length, writes);
++  } finally { await f.close(); }
++});
++
+ for (const mismatch of ['title', 'signature', 'recipient'] as const) test(`different NK ${mismatch} blocks before any carrier write`, async () => {
+   const f = await fixture('electronic', mismatch);
+   try {

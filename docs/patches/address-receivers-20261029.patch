@@ -1,0 +1,317 @@
+--- /dev/null
++++ b/scripts/check_address_receivers.mjs
+@@ -0,0 +1,63 @@
++import {chromium,webkit,expect} from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import assert from 'node:assert/strict';
++import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
++import {tmpdir} from 'node:os';
++import {resolve} from 'node:path';
++import {writeTripsQaSnapshot} from './qa-trips-runtime.mjs';
++import {startOperatorQaServer} from './qa-operator-runtime.mjs';
++import {authenticateContext} from './qa-auth.mjs';
++const root=resolve(import.meta.dirname,'..'),directory=await mkdtemp(resolve(tmpdir(),'artel-receivers-'));
++const snapshotDirectory=resolve(directory,'snapshot'),operationsDirectory=resolve(directory,'store');await writeTripsQaSnapshot(snapshotDirectory);
++const rt=await startOperatorQaServer({root,snapshotDirectory,operationsDirectory}),auth=await rt.bootstrap();
++const out=resolve(root,'../ui',process.env.ARTEL_OPERATOR_QA_BUILT==='1'?'built':'source');await mkdir(out,{recursive:true});
++const report={passed:false,synthetic:true,checks:[],axe:[],errors:[],external:[]};
++const api=async(path,method='GET',body)=>{const response=await fetch(rt.base+path,{method,headers:{cookie:auth.cookie,Origin:rt.base,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,body:await response.json()}};
++try{
++ for(const [engine,launcher] of [['chromium',chromium],['webkit',webkit]]){
++  const name=`Клиент ${engine}`;
++  const created=await api('/api/directories','POST',{kind:'companies',name,roles:['customer'],addresses:[{name:'Первая площадка',kind:'delivery',receiverName:'Первый',receiverPhone:'+7 900 000-00-01'},{name:'Вторая площадка',kind:'delivery',receiverName:'Другой адрес',receiverPhone:'+7 900 000-00-09'}]});assert.equal(created.status,201,JSON.stringify(created.body));const id=created.body.entry.id;
++  const state=async()=>{const {body:s}=await api('/api/directories');return {company:s.companies.find(c=>c.id===id),addresses:s.directories.addresses.filter(a=>a.companyId===id)}};
++  const browser=await launcher.launch();try{
++   const context=await browser.newContext({viewport:{width:1440,height:1100},serviceWorkers:'block',reducedMotion:'reduce'});await authenticateContext(context,rt.base,auth.cookie);
++   await context.route('**/*',route=>{const url=new URL(route.request().url());if(url.origin!==rt.base){report.external.push(url.origin);return route.abort()}return route.continue()});
++   const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',e=>report.errors.push(e.message));
++   await page.goto(rt.base+'/#directories');
++   const edit=async()=>{await page.getByLabel('Поиск в справочнике',{exact:true}).fill(name);await page.getByRole('button',{name:`Редактировать: ${name}`,exact:true}).click();return page.getByRole('dialog')};
++   let dialog=await edit();let contacts=dialog.getByRole('region',{name:'Приёмщики: адрес 1',exact:true});
++   await expect(contacts.getByLabel('Имя приёмщика 1: адрес 1',{exact:true})).toHaveValue('Первый');
++   for(const i of [2,3]){await contacts.getByRole('button',{name:'Добавить приёмщика',exact:true}).click();await contacts.getByLabel(`Имя приёмщика ${i}: адрес 1`,{exact:true}).fill(`Приёмщик ${i}`);await contacts.getByLabel(`Телефон приёмщика ${i}: адрес 1`,{exact:true}).fill(`+7 900 000-00-0${i}`)}
++   for(const width of [320,375,390,768,1024,1440]){
++    await page.setViewportSize({width,height:1100});await contacts.scrollIntoViewIfNeeded();
++    assert.ok(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'dialog overflow');
++    assert.ok(await contacts.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'contacts overflow');
++    const a=await new AxeBuilder({page}).include('.directory-editor').withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa']).analyze();report.axe.push({engine,width,violations:a.violations});assert.equal(a.violations.length,0,JSON.stringify(a.violations));
++    await contacts.screenshot({path:resolve(out,`${engine}-${width}.png`)});report.checks.push({engine,width});
++   }
++   await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(dialog).toHaveCount(0);console.log('saved, restarting');await rt.replaceMiddleware();console.log('restarted');
++   dialog=await edit();contacts=dialog.getByRole('region',{name:'Приёмщики: адрес 1',exact:true});await expect(contacts.getByLabel('Имя приёмщика 3: адрес 1',{exact:true})).toHaveValue('Приёмщик 3');
++   await expect(dialog.getByLabel('Имя приёмщика 1: адрес 2',{exact:true})).toHaveValue('Другой адрес');
++   // Delete primary: next contact becomes primary and persists.
++   await contacts.getByRole('button',{name:'Удалить приёмщика 1: адрес 1',exact:true}).click();await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(dialog).toHaveCount(0);
++   console.log('deleted primary');let current=await state();assert.equal(current.addresses[0].receiverName,'Приёмщик 2');assert.equal(current.addresses[0].additionalReceivers[0].name,'Приёмщик 3');report.checks.push({engine,case:'save/restart/reopen, two addresses isolated, delete primary'});
++   dialog=await edit();contacts=dialog.getByRole('region',{name:'Приёмщики: адрес 1',exact:true});await contacts.getByLabel('Имя приёмщика 2: адрес 1',{exact:true}).fill('Моё изменение');
++   current=await state();const a=current.addresses[0];const updated=await api(`/api/directories/addresses/${a.id}`,'PATCH',{version:a.version??0,name:a.name,companyId:id,addressKind:a.kind,additionalReceivers:[{name:'Чужое изменение',phone:'+7 900 000-00-03'}]});assert.equal(updated.status,200);
++   await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(dialog.getByRole('region',{name:'Сверка изменений'})).toBeVisible();assert.equal((await state()).addresses[0].additionalReceivers[0].name,'Чужое изменение');
++   // Close without changing the remotely saved value.
++   await dialog.getByRole('button',{name:'Отмена',exact:true}).click();await dialog.getByRole('button',{name:'Не сохранять',exact:true}).click();await expect(dialog).toHaveCount(0);report.checks.push({engine,case:'concurrent contact conflict preserves remote and cancel discards local'});
++   // Direct address endpoint validates every contact atomically.
++   current=await state();const old=current.addresses[0];const bad=await api(`/api/directories/addresses/${old.id}`,'PATCH',{version:old.version,name:old.name,companyId:id,addressKind:old.kind,additionalReceivers:[{name:'Некорректный',phone:'не телефон'}]});assert.equal(bad.status,400);assert.deepEqual((await state()).addresses,current.addresses);report.checks.push({engine,case:'invalid phone rejected without writes'});
++   await page.reload();await page.getByRole('group',{name:'Справочники',exact:true}).getByRole('button',{name:'Места погрузки и доставки',exact:true}).click();await page.getByLabel('Поиск в справочнике',{exact:true}).fill(name);
++   await page.getByRole('button',{name:'Редактировать: Первая площадка',exact:true}).click();dialog=page.getByRole('dialog');contacts=dialog.getByRole('region',{name:'Приёмщики: адрес',exact:true});
++   await expect(contacts.getByLabel('Имя приёмщика 2: адрес',{exact:true})).toHaveValue('Чужое изменение');
++   await contacts.getByRole('button',{name:'Добавить приёмщика',exact:true}).click();await contacts.getByLabel('Имя приёмщика 3: адрес',{exact:true}).fill('Прямой редактор');await contacts.getByLabel('Телефон приёмщика 3: адрес',{exact:true}).fill('+7 900 000-00-04');
++   await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(dialog).toHaveCount(0);assert.equal((await state()).addresses[0].additionalReceivers[1].name,'Прямой редактор');
++   await page.getByRole('button',{name:'Редактировать: Первая площадка',exact:true}).click();dialog=page.getByRole('dialog');contacts=dialog.getByRole('region',{name:'Приёмщики: адрес',exact:true});
++   for(let i=0;i<3;i++)await contacts.getByRole('button',{name:'Удалить приёмщика 1: адрес',exact:true}).click();
++   await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(dialog).toHaveCount(0);const cleared=(await state()).addresses[0];assert.equal(cleared.receiverName,undefined);assert.equal(cleared.receiverPhone,undefined);assert.equal(cleared.additionalReceivers,undefined);report.checks.push({engine,case:'standalone editor persists extras and supports explicit removal of all contacts'});
++
++  }finally{await browser.close()}
++ }
++ assert.deepEqual(report.errors,[]);assert.deepEqual(report.external,[]);report.passed=true;
++}finally{await writeFile(resolve(out,'report.json'),JSON.stringify(report,null,2));await rt.server.close();await rm(directory,{recursive:true,force:true,maxRetries:5})}
++console.log(JSON.stringify(report));
+--- a/server/directory-editing.ts
++++ b/server/directory-editing.ts
+@@ -67,7 +67,7 @@
+         const address = existingAddresses.find(address => address.kind === raw.kind && normalizeName(address.name) === normalizeName(raw.name));
+         if (address) {
+           const fields = { ...raw };
+-          for (const key of locationDetailKeys) if (fields[key] === undefined || typeof fields[key] === 'string' && !fields[key].trim()) delete fields[key];
++          for (const key of locationDetailKeys) if (fields[key] === undefined || typeof fields[key] === 'string' && !fields[key].trim() || key === 'additionalReceivers' && Array.isArray(fields[key]) && !fields[key].length) delete fields[key];
+           return { ...fields, id: address.id };
+         }
+       }
+@@ -110,7 +110,7 @@
+     if (Object.hasOwn(raw, 'version') && (raw.version !== (previousAddress?.version ?? 0))) throw new ApiError(409, 'Адрес компании уже изменён. Закройте карточку и откройте её снова.');
+     const details = locationDetails({ ...previousAddress, ...raw }, { companies: snapshot.companies, previous: previousAddress });
+     const oilDepotDistancesKm = deliveryDistances(raw, snapshot, previousAddress);
+-    return { ...details, ...(oilDepotDistancesKm ? { oilDepotDistancesKm } : {}), id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => previousAddress[key] === details[key]) && sameDeliveryDistances(previousAddress.oilDepotDistancesKm, oilDepotDistancesKm) ? 0 : 1) } : {}) };
++    return { ...details, ...(oilDepotDistancesKm ? { oilDepotDistancesKm } : {}), id: raw.id || `addresses-${randomUUID()}`, companyId, name, kind: raw.kind, ...(previousAddress ? { version: (previousAddress.version ?? 0) + (previousAddress.name === name && locationDetailKeys.every(key => JSON.stringify(previousAddress[key]) === JSON.stringify(details[key])) && sameDeliveryDistances(previousAddress.oilDepotDistancesKm, oilDepotDistancesKm) ? 0 : 1) } : {}) };
+   });
+   const removed = oldAddresses.filter(address => !addresses.some(row => row.id === address.id));
+   if (activeRequests.some(request => removed.some(address => address.id === request.addressId))) throw new ApiError(409, 'Адрес используется в активной заявке на рейс. Его можно изменить, но нельзя удалить.');
+--- a/server/location-details.ts
++++ b/server/location-details.ts
+@@ -4,15 +4,26 @@
+ import type { Company, ShipmentAddress } from '../web/src/model';
+ 
+ export const loadingRoleKeys = ['loadingActorCompanyId', 'infrastructureOwnerCompanyId'] as const;
+-export const locationDetailKeys = ['address', 'mapUrl', 'latitude', 'longitude', 'receiverName', 'receiverPhone', ...loadingRoleKeys] as const;
++const locationStringKeys = ['address', 'mapUrl', 'latitude', 'longitude', 'receiverName', 'receiverPhone', ...loadingRoleKeys] as const;
++export const locationDetailKeys = [...locationStringKeys, 'additionalReceivers'] as const;
+ export function locationDetails(input: Record<string, unknown>, selection?: { companies: readonly Company[]; previous?: ShipmentAddress }) {
+-  const result: Partial<Record<typeof locationDetailKeys[number], string>> = {};
+-  for (const key of locationDetailKeys) {
++  const result: Partial<Pick<ShipmentAddress, typeof locationDetailKeys[number]>> = {};
++  for (const key of locationStringKeys) {
+     const raw = input[key];
+     if (raw === undefined || raw === '') continue;
+     if (typeof raw !== 'string' || raw.length > 500) throw new ApiError(400, 'Проверьте адрес, ссылку на карту и координаты.');
+     const value = raw.trim();
+     if (value) result[key] = value;
++  }
++  if (input.additionalReceivers !== undefined) {
++    if (!Array.isArray(input.additionalReceivers) || input.additionalReceivers.length > 49) throw new ApiError(400, 'Можно указать до 50 приёмщиков адреса.');
++    result.additionalReceivers = input.additionalReceivers.map(raw => {
++      if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['name', 'phone'].includes(key)) || typeof raw.name !== 'string' || typeof raw.phone !== 'string' || raw.name.length > 500 || raw.phone.length > 500) throw new ApiError(400, 'Проверьте имя и телефон приёмщика.');
++      const name = raw.name.trim(), phone = raw.phone.trim();
++      if (phone && !validPhone(phone)) throw new ApiError(400, 'Проверьте телефон приёмщика площадки.');
++      return { name, phone };
++    }).filter(row => row.name || row.phone);
++    if (!result.additionalReceivers.length) delete result.additionalReceivers;
+   }
+   if (result.mapUrl) {
+     let url: URL;
+--- /dev/null
++++ b/tests/address-receivers.test.ts
+@@ -0,0 +1,41 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { locationDetails } from '../server/location-details';
++import { emptyDirectories } from '../server/directory-operations';
++import { saveCompany, updateDirectoryEntry } from '../server/directory-editing';
++import { directoryDraft, directoryPayload } from '../web/src/directory-editor-data';
++import type { Snapshot, ShipmentAddress } from '../web/src/model';
++import type { OperationsData } from '../server/operations-store';
++
++const contact={name:'Второй',phone:'+7 900 000-00-02'};
++function fixture(){
++ const address:ShipmentAddress={id:'a',companyId:'c',name:'Площадка',kind:'delivery',receiverName:'Первый',receiverPhone:'+7 900 000-00-01',latitude:'55',longitude:'37',oilDepotDistancesKm:{d:'10'}};
++ const data={companies:[{id:'c',name:'Клиент',roles:['customer'],managerLabels:[],shipmentIds:[],paymentIds:[],flags:[]}],directories:{...emptyDirectories(),addresses:[address]},shipments:{},tripRequests:{}} as unknown as OperationsData;
++ const snapshot=()=>({...data,shipments:[],directories:structuredClone(data.directories)}) as unknown as Snapshot;
++ return {data,snapshot};
++}
++test('receiver list validates shape, length, unknown fields and every phone',()=>{
++ for(const value of [null,'name',{},[null],[{name:4,phone:''}],[{name:'x',phone:'bad'}],[{name:'x',phone:'',rights:true}],Array(50).fill(contact)])assert.throws(()=>locationDetails({additionalReceivers:value}),{status:400});
++ assert.deepEqual(locationDetails({additionalReceivers:[{name:'  Второй ',phone:' +7 900 000-00-02 '},{name:'',phone:''}]}).additionalReceivers,[contact]);
++});
++test('company edits preserve legacy primary, coordinates and distances, increment versions only on actual contact change',()=>{
++ const {data,snapshot}=fixture();
++ const payload=()=>({version:data.companies[0].version??0,name:'Клиент',roles:['customer'],addresses:data.directories!.addresses.map(({companyId:_companyId,...a})=>({...a,version:a.version??0,additionalReceivers:[contact]}))});
++ saveCompany(payload(),snapshot(),data,'c');
++ const saved=structuredClone(data.directories!.addresses[0]);assert.equal(saved.receiverName,'Первый');assert.equal(saved.latitude,'55');assert.deepEqual(saved.oilDepotDistancesKm,{d:'10'});assert.deepEqual(saved.additionalReceivers,[contact]);assert.equal(saved.version,1);
++ saveCompany(payload(),snapshot(),data,'c');assert.deepEqual(data.directories!.addresses[0],saved);
++ const {companyId:_companyId,...stale}=saved;assert.throws(()=>saveCompany({...payload(),addresses:[{...stale,version:0}]},snapshot(),data,'c'),{status:409});
++});
++test('legacy address edits preserve extras, explicit clearing removes extras, stale versions reject',()=>{
++ const {data,snapshot}=fixture();data.directories!.addresses[0].additionalReceivers=[contact];
++ const fields={name:'Площадка',companyId:'c',addressKind:'delivery'};
++ updateDirectoryEntry('addresses','a',{...fields,version:0,receiverName:'Исправлен'},snapshot(),data);
++ assert.deepEqual(data.directories!.addresses[0].additionalReceivers,[contact]);
++ assert.throws(()=>updateDirectoryEntry('addresses','a',{...fields,version:0,additionalReceivers:[]},snapshot(),data),{status:409});
++ updateDirectoryEntry('addresses','a',{...fields,version:1,additionalReceivers:[]},snapshot(),data);assert.equal(data.directories!.addresses[0].additionalReceivers,undefined);assert.equal(data.directories!.addresses[0].receiverName,'Исправлен');
++});
++test('both directory drafts preserve all contacts for merge and save',()=>{
++ const {data,snapshot}=fixture();data.directories!.addresses[0].additionalReceivers=[contact];
++ const direct=directoryPayload('addresses',directoryDraft(snapshot(),'addresses','a'));assert.deepEqual(direct.additionalReceivers,[contact]);
++ const company=directoryPayload('customers',directoryDraft(snapshot(),'customers','c'));assert.deepEqual((company.addresses as ShipmentAddress[])[0].additionalReceivers,[contact]);
++});
+--- a/tests/trip-copy-text.test.ts
++++ b/tests/trip-copy-text.test.ts
+@@ -96,3 +96,10 @@
+   const text = tripDriverCopyText(value, directory)
+   assert.ok(text.includes('Позднее изменённый адрес\nhttps://yandex.ru/maps/-/different\nПриёмщик 79919688774'))
+ })
++
++ test('driver handoff includes all receiver contacts only for the matched site',()=>{
++ const {value,directory}=driverFixture();
++ directory.directories!.addresses[0].additionalReceivers=[{name:'Второй приёмщик',phone:'+7 900 111-22-33'}];
++ const text=tripDriverCopyText(value,directory);assert.ok(text.includes('Второй приёмщик +7 900 111-22-33'));
++ assert.equal(text.split('Второй приёмщик').length-1,1);
++ });
+--- /dev/null
++++ b/web/src/AddressReceiversEditor.tsx
+@@ -0,0 +1,17 @@
++import { Plus, Trash2 } from 'lucide-react'
++import type { AddressReceiver, ShipmentAddress } from './model'
++
++type Contacts = { receiverName: string; receiverPhone: string; additionalReceivers: AddressReceiver[] }
++export default function AddressReceiversEditor({value,label,disabled,onChange}:{value:Pick<ShipmentAddress,'receiverName'|'receiverPhone'|'additionalReceivers'>;label:string;disabled:boolean;onChange:(value:Contacts)=>void}) {
++  const rows=[{name:value.receiverName??'',phone:value.receiverPhone??''},...(value.additionalReceivers??[])]
++  const change=(next:AddressReceiver[])=>onChange({receiverName:next[0]?.name??'',receiverPhone:next[0]?.phone??'',additionalReceivers:next.slice(1)})
++  return <section className="address-receivers form-field-wide" aria-label={`Приёмщики: ${label}`}>
++    <div className="address-receivers-heading"><h4>Приёмщики адреса</h4><button type="button" className="button" disabled={disabled||rows.length>=50} onClick={()=>change([...rows,{name:'',phone:''}])}><Plus size={15}/>Добавить приёмщика</button></div>
++    {rows.map((row,index)=><div className="address-receiver-row" key={index}>
++      <label className="shipment-field"><span>{index===0?'Приёмщик (основной)':`Приёмщик ${index+1}`}</span><input aria-label={`Имя приёмщика ${index+1}: ${label}`} maxLength={500} value={row.name} disabled={disabled} onChange={event=>change(rows.map((item,i)=>i===index?{...item,name:event.target.value}:item))}/></label>
++      <label className="shipment-field"><span>Телефон приёмщика</span><input aria-label={`Телефон приёмщика ${index+1}: ${label}`} type="tel" maxLength={500} value={row.phone} disabled={disabled} onChange={event=>change(rows.map((item,i)=>i===index?{...item,phone:event.target.value}:item))}/></label>
++      <button type="button" className="icon-button" aria-label={`Удалить приёмщика ${index+1}: ${label}`} disabled={disabled} onClick={()=>change(rows.filter((_,i)=>i!==index))}><Trash2 size={17}/></button>
++    </div>)}
++    <p className="muted">Первый приёмщик — основной контакт адреса. Контакты не дают права подписывать документы.</p>
++  </section>
++}
+--- a/web/src/DirectoriesPage.tsx
++++ b/web/src/DirectoriesPage.tsx
+@@ -1,3 +1,4 @@
++import AddressReceiversEditor from './AddressReceiversEditor'
+ import OperatorServiceColorPicker from './OperatorServiceColorPicker'
+ import OperatorServiceBadge from './OperatorServiceBadge'
+ import { useDialogMotion } from './useDialogMotion'
+@@ -145,7 +146,8 @@
+   const relatedCompanies = [...data.companies.filter(company=>!savedCompanies.some(saved=>saved.id===company.id)),...savedCompanies]
+   const [companyId,setCompanyId] = useState(id??'')
+   const [managerId,setManagerId] = useState(()=>customerManagerId(catalog,id??'') || (tab==='customers' ? catalog.currentEmployeeId ?? '' : ''))
+-  const [addresses,setAddresses] = useState<(Omit<ShipmentAddress,'companyId'> & {pointAddress?:string})[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind,version,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})=>({id,name,kind,version:version??0,address,mapUrl,latitude,longitude,receiverName,receiverPhone,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})))
++  const [addresses,setAddresses] = useState<(Omit<ShipmentAddress,'companyId'> & {pointAddress?:string})[]>(()=>catalog.addresses.filter(address=>address.companyId===id).map(({id,name,kind,version,address,mapUrl,latitude,longitude,receiverName,receiverPhone,additionalReceivers,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})=>({id,name,kind,version:version??0,address,mapUrl,latitude,longitude,receiverName,receiverPhone,additionalReceivers,loadingActorCompanyId,infrastructureOwnerCompanyId,oilDepotDistancesKm})))
++  const [additionalReceivers,setAdditionalReceivers] = useState<ShipmentAddress['additionalReceivers']>(()=>tab==='addresses'?(entry as ShipmentAddress|undefined)?.additionalReceivers:undefined)
+   const [oilDepotDistancesKm,setOilDepotDistancesKm] = useState<ShipmentAddress['oilDepotDistancesKm']>(()=>tab==='addresses'?(entry as ShipmentAddress|undefined)?.oilDepotDistancesKm:undefined)
+   const [lookupBusy,setLookupBusy] = useState(false), [lookupNotice,setLookupNotice] = useState('')
+   const [saving,setSaving] = useState(false), [error,setError] = useState(''), [dirty,setDirty] = useState(false), [confirmClose,setConfirmClose] = useState(false)
+@@ -171,7 +173,7 @@
+   const save = async(event:React.FormEvent)=>{
+     event.preventDefault();if(busy.current||lookupBusy||conflict)return;busy.current=true;setSaving(true);setError('');setConfirmClose(false)
+     try {
+-      const payload=editablePayload(directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm}))
++      const payload=editablePayload(directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}))
+       const updating=!!id&&tab!=='customerManagers',kind=companyTab(tab)?'companies':tab
+       let result: {entry?:Company;created?:boolean;error?:string} = {}
+       for(let attempt=0;attempt<2;attempt++) {
+@@ -206,6 +208,7 @@
+     for(const key of conflict.keys)if(conflict.choices[key]==='saved')resolved[key]=conflict.latest[key]
+     setFields(Object.fromEntries(Object.entries(resolved).filter(([,value])=>typeof value==='string')) as Record<string,string>)
+     setSections((resolved.compartmentsLitres as string[]|undefined)?.join(' + ')??'')
++    if(tab==='addresses')setAdditionalReceivers(resolved.additionalReceivers as ShipmentAddress['additionalReceivers'])
+     if(tab==='addresses')setOilDepotDistancesKm(resolved.oilDepotDistancesKm as ShipmentAddress['oilDepotDistancesKm'])
+     if(companyTab(tab)){setRoles(resolved.roles as string[]);setAddresses(withCurrentAddressVersions(resolved,conflict.latest).addresses as Omit<ShipmentAddress,'companyId'>[]);setManagerId(resolved.managerId as string||'')}
+     setBaseline(conflict.snapshot);setConflict(null);setDirty(true);setError('')
+@@ -232,11 +235,11 @@
+         {field('name',kind==='loading'?'Адрес загрузки':'Адрес отгрузки клиента',true)}
+         {kind==='delivery'&&distanceFields(address.oilDepotDistancesKm,(depotId,value)=>setAddresses(old=>old.map((row,i)=>i===index?{...row,oilDepotDistancesKm:{...row.oilDepotDistancesKm,[depotId]:value}}:row)),`адрес ${number}`)}
+         {kind==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={address.latitude} longitude={address.longitude} mapUrl={address.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:row.address||row.name}:row));setDirty(true)}}/></div>}
+-        {kind==='delivery'&&<>{field('receiverName','Приёмщик адреса')}{field('receiverPhone','Телефон приёмщика адреса')}</>}
++        {kind==='delivery'&&<AddressReceiversEditor value={address} label={`адрес ${number}`} disabled={saving||lookupBusy} onChange={contacts=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,...contacts}:row));setDirty(true)}}/>}
+         {kind==='loading'&&(['loadingActorCompanyId','infrastructureOwnerCompanyId'] as const).map(key=><div key={key}>{loadingRoleSelect(`${key==='loadingActorCompanyId'?'Погрузчик':'Владелец площадки'} ${number}`,address[key]??'',value=>{setAddresses(old=>old.map((row,i)=>i===index?{...row,[key]:value}:row));setDirty(true)})}</div>)}
+       </div><button type="button" className="icon-button" aria-label={`Удалить адрес ${address.name||index+1}`} disabled={saving||lookupBusy} onClick={()=>{if(window.confirm(`Удалить адрес «${address.name||'Новый адрес'}»? Изменение сохранится вместе с карточкой компании.`)){setAddresses(old=>old.filter((_,i)=>i!==index));setDirty(true)}}}><Trash2 size={17}/></button></div>
+     })}
+-    {kind==='delivery'&&<p className="muted">У каждого адреса один приёмщик. Этот контакт сам по себе не даёт права подписывать документы.</p>}
++
+     {kind==='loading'&&<p className="muted">Укажите компании, которые выполняют погрузку и владеют площадкой. Эти сведения используются в транспортных документах.</p>}
+   </section>
+   return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
+@@ -258,7 +261,7 @@
+       :tab==='operatorServices'?<>{input('Название сервиса','name',true)}<label className="shipment-field"><span>Скидка, % *</span><input aria-label="Скидка, %" inputMode="decimal" value={fields.discountPercent??''} required maxLength={32} disabled={saving||lookupBusy} onChange={event=>update('discountPercent',event.target.value)}/></label><OperatorServiceColorPicker name={fields.name??''} id={id} color={fields.backgroundColor} disabled={saving||lookupBusy} onChange={color=>update('backgroundColor',color)}/><p className="operator-service-terms-note">Название и цвет обновляются во всех операциях. Новая скидка действует для новых операций с сегодняшней датой и позже; сохранённые суммы и скидки не меняются.</p></>
+       :tab==='vehicles'?<>{input('Автомобиль / номер','plate',true)}{input('Название для выбора','name')}{input('Марка','brand')}{input('Модель','model')}{input('Прицеп','trailer')}{input('Объём автомобиля, л','capacityLitres')}<label className="shipment-field"><span>Секции, л (через +)</span><input aria-label="Секции, л (через +)" value={sections} disabled={saving||lookupBusy} onChange={event=>{setSections(event.target.value);setDirty(true)}}/></label></>
+       :tab==='customerManagers'?<><DirectorySelect label="Клиент" entries={data.companies.filter(company=>company.roles.includes('customer'))} value={companyId} onChange={id=>{setCompanyId(id);setManagerId(customerManagerId(catalog,id));setDirty(true)}} required disabled={saving||!!id}/><DirectorySelect label="Менеджер" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} required disabled={saving}/></>
+-      :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя сотрудника':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={fields.latitude} longitude={fields.longitude} mapUrl={fields.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setFields(old=>({...old,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:old.address||old.name||''}));setDirty(true)}}/></div>}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<>{input('Приёмщик','receiverName')}{input('Телефон приёмщика','receiverPhone')}</>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
++      :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя сотрудника':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={fields.latitude} longitude={fields.longitude} mapUrl={fields.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setFields(old=>({...old,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:old.address||old.name||''}));setDirty(true)}}/></div>}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<AddressReceiversEditor value={{receiverName:fields.receiverName,receiverPhone:fields.receiverPhone,additionalReceivers}} label="адрес" disabled={saving||lookupBusy} onChange={contacts=>{setFields(old=>({...old,receiverName:contacts.receiverName,receiverPhone:contacts.receiverPhone}));setAdditionalReceivers(contacts.additionalReceivers);setDirty(true)}}/>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
+     </div>
+     {lookupNotice&&<p className="directory-notice" role="status">{lookupNotice}</p>}
+     {companyTab(tab)&&<>{extraGroup('Реквизиты организации',companyFields.slice(0,5),true)}{extraGroup(isLogisticsWorkspace()?'Контакты':'Контакты и банковские реквизиты',isLogisticsWorkspace()?companyFields.slice(5,7):companyFields.slice(5))}{(roles.includes('customer')||addresses.some(address=>address.kind==='delivery'))&&addressGroup('delivery','Фактические адреса отгрузки клиента')}</>}
+--- a/web/src/directories.css
++++ b/web/src/directories.css
+@@ -22,3 +22,6 @@
+ .operator-color-options > label { display:flex; align-items:center; gap:8px; }
+ .app-shell .directory-editor .operator-color-picker .operator-color-options input[type=color] { width:44px; height:44px; min-height:44px; padding:6px; border-radius:12px; cursor:pointer; }
+ .operator-service-terms-note { grid-column:1/-1; margin:0; font-size:13px; line-height:1.6; color:#526b5b; }
++
++.address-receivers{min-width:0;display:grid;gap:14px}.address-receivers-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.address-receivers-heading h4{margin:0;font-size:15px;font-weight:600}.address-receiver-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 44px;gap:12px;align-items:end}.address-receiver-row>.icon-button{width:44px;min-height:44px}.address-receivers>.muted{margin:0;font-size:13px;line-height:1.5}
++@media(max-width:600px){.address-receiver-row{grid-template-columns:minmax(0,1fr) 44px;gap:10px}.address-receiver-row>.shipment-field{grid-column:1}.address-receiver-row>.icon-button{grid-column:2;grid-row:1/3;align-self:center}.address-receivers-heading .button{white-space:normal;text-align:left}}
+--- a/web/src/directory-editor-data.ts
++++ b/web/src/directory-editor-data.ts
+@@ -16,17 +16,19 @@
+     sections:tab==='vehicles'?(entry as Vehicle|undefined)?.compartmentsLitres?.join(' + ')??'':'',
+     roles:company?.roles.filter(role=>['customer','supplier','carrier','other'].includes(role))??[tab==='customers'?'customer':tab==='suppliers'?'supplier':'other'],
+     companyId:id??'', managerId:customerManagerId(data.directories!,id??''),
++    additionalReceivers:tab==='addresses'?(entry as ShipmentAddress|undefined)?.additionalReceivers:undefined,
+     oilDepotDistancesKm:tab==='addresses'?(entry as ShipmentAddress|undefined)?.oilDepotDistancesKm:undefined,
+     addresses:data.directories!.addresses.filter(address=>address.companyId===id).map(({companyId:_companyId,location:_location,...address})=>address),
+   }
+ }
+-type Draft = { fields:Record<string,string>; sections:string; roles:string[]; companyId:string; managerId:string; addresses:Omit<ShipmentAddress,'companyId'>[]; oilDepotDistancesKm?: ShipmentAddress['oilDepotDistancesKm'] }
+-export function directoryPayload(tab: EditorTab, {fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm}: Draft) {
++type Draft = { fields:Record<string,string>; sections:string; roles:string[]; companyId:string; managerId:string; addresses:Omit<ShipmentAddress,'companyId'>[]; additionalReceivers?: ShipmentAddress['additionalReceivers']; oilDepotDistancesKm?: ShipmentAddress['oilDepotDistancesKm'] }
++export function directoryPayload(tab: EditorTab, {fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}: Draft) {
+   const payload:Record<string,unknown> = companyTab(tab) ? {...Object.fromEntries(companyFields.map(([key])=>[key,fields[key]??''])),name:fields.name,inn:fields.inn??'',roles,defaultDriverId:fields.defaultDriverId??'',defaultVehicleId:fields.defaultVehicleId??'',managerId:managerId||null,addresses:addresses.map(({id,...address})=>({...(id?{id}:{}),...address}))}
+         : tab === 'vehicles' ? Object.fromEntries(['plate','name','brand','model','trailer','capacityLitres','carrierId',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)].map(key=>[key,fields[key]??'']))
+         : tab === 'products' ? {name:fields.name,...Object.fromEntries(productTransportFields.map(([key])=>[key,fields[key]??'']))}
+         : tab === 'operatorServices' ? {name:fields.name,discountPercent:fields.discountPercent??'',...(fields.backgroundColor?{backgroundColor:fields.backgroundColor}:{})}
+         : tab === 'drivers' ? {...Object.fromEntries(driverFields.map(([key])=>[key,fields[key]??''])),name:fields.name,phone:fields.phone??'',vehicleId:fields.vehicleId??'',carrierId:fields.carrierId??''} : tab === 'oilDepots' ? Object.fromEntries(['name','address','mapUrl','latitude','longitude','ownerCompanyId','loadingActorCompanyId','infrastructureOwnerCompanyId'].map(key=>[key,fields[key]??''])) : tab === 'addresses' ? {name:fields.name,companyId:fields.companyId,addressKind:fields.addressKind??fields.kind??'delivery',...(fields.pointAddress?{pointAddress:fields.pointAddress}:{}),address:fields.address??'',mapUrl:fields.mapUrl??'',latitude:fields.latitude??'',longitude:fields.longitude??'',receiverName:fields.receiverName??'',receiverPhone:fields.receiverPhone??'',loadingActorCompanyId:fields.loadingActorCompanyId??'',infrastructureOwnerCompanyId:fields.infrastructureOwnerCompanyId??''} : tab === 'customerManagers' ? {companyId,managerId:managerId||null} : {name:fields.name}
++  if(tab==='addresses'&&additionalReceivers!==undefined)payload.additionalReceivers=additionalReceivers
+   if(tab==='vehicles')payload.compartmentsLitres=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):undefined
+   if(tab==='addresses'&&oilDepotDistancesKm!==undefined)payload.oilDepotDistancesKm=oilDepotDistancesKm
+   return payload
+@@ -51,7 +53,7 @@
+ export const directoryFieldLabel = (key:string) => Object.fromEntries([
+   ...companyFields,...driverFields,...allVehicleFields,...productTransportFields,...vehicleTransportFields,
+   ['discountPercent','Скидка, %'],['backgroundColor','Цвет фона'],
+-  ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
++  ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['additionalReceivers','Дополнительные приёмщики'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
+ ])[key]??key
+ 
+ export function withCurrentAddressVersions(payload:Record<string,unknown>,latest:Record<string,unknown>) {
+--- a/web/src/model.ts
++++ b/web/src/model.ts
+@@ -202,7 +202,8 @@
+ export interface Product extends NamedEntry, ProductTransportDetails {}
+ export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
+ export interface Driver extends NamedEntry, DriverDetails { carrierId?: string; vehicleId: string; phone?: string }
+-export interface ShipmentAddress extends NamedEntry { location?: TripRequestLocationResult; companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string; oilDepotDistancesKm?: Record<string, string> }
++export interface AddressReceiver { name: string; phone: string }
++export interface ShipmentAddress extends NamedEntry { location?: TripRequestLocationResult; companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; additionalReceivers?: AddressReceiver[]; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string; oilDepotDistancesKm?: Record<string, string> }
+ export interface OilDepot extends NamedEntry { address?: string; mapUrl?: string; latitude?: string; longitude?: string; ownerCompanyId?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string }
+ export type ProfitRule = 'azs-payment-form' | 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
+ export interface CalculationRules {
+--- a/web/src/trip-copy-text.ts
++++ b/web/src/trip-copy-text.ts
+@@ -47,7 +47,7 @@
+       `${line(customer?.name, 'Контрагент не указан')} ${amount(fields.quantity_litres)} л`,
+       line(address, 'Адрес не указан'),
+       link ? `${link.label === 'Найти адрес в Яндекс.Картах' ? 'Яндекс (поиск адреса): ' : ''}${link.href}` : 'Ссылка Яндекса не указана',
+-      `${line(place?.receiverName, 'Приёмщик')} ${line(place?.receiverPhone, 'телефон не указан')}`,
++      ...[{name:place?.receiverName,phone:place?.receiverPhone},...(place?.additionalReceivers??[])].map(contact=>`${line(contact.name, 'Приёмщик')} ${line(contact.phone, 'телефон не указан')}`),
+     ].join('\n')
+   })
+   return [`Погрузка на ${line(depot?.name, 'нефтебаза не указана')} от ${line(supplier?.name, 'поставщик не указан')}`, ...deliveries].join('\n\n')

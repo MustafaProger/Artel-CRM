@@ -1,0 +1,1329 @@
+--- /dev/null
++++ b/scripts/check-saby-native-wait.mjs
+@@ -0,0 +1,93 @@
++// Synthetic UI states, temporary store, loopback only. Provider lifecycle is tested separately.
++import assert from 'node:assert/strict';
++import { mkdir, writeFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { chromium, webkit, expect } from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++import { SabyClient } from '../server/saby-client.ts';
++import { integrationRuntime, integrationConfig } from '../tests/helpers/trip-saby-integration.ts';
++import { authenticateContext } from './qa-auth.mjs';
++import { startOperatorQaServer } from './qa-operator-runtime.mjs';
++
++const root = resolve(import.meta.dirname, '..');
++const engine = process.env.QA_WEBKIT === '1' ? 'webkit' : 'chromium';
++const mode = process.env.ARTEL_OPERATOR_QA_BUILT === '1' ? 'built' : 'source';
++const output = resolve(root, 'qa', `saby-native-wait-${mode}-${engine}`);
++await mkdir(output, { recursive: true });
++const rt = await integrationRuntime();
++const report = { passed: false, synthetic: true, workingStoreAccessed: false, realSabyRequests: 0, mode, engine, checks: [], axe: [], errors: [], externalRequests: [], screenshots: [] };
++const initial = () => ({
++  status: 'sent', phase: 'creating_etrn', ready: true, blockers: [], locked: true,
++  updatedAt: '2026-10-29T14:00:00Z', lastError: null, carrierConfirmed: true,
++  lastCheckedAt: '2026-10-29T14:00:00Z', lastCheckAttemptAt: '2026-10-29T14:00:00Z',
++  monitoring: { enabled: true, intervalSeconds: 60 }, history: [],
++  automation: { enabled: true, enrolled: true },
++  driverFlow: { state: 'ready', processingAllowanceHours: 10 },
++  driverConfirmation: { arrivedAt: '2026-10-29T13:00:00Z', confirmedAt: '2026-10-29T13:48:00Z' },
++  signing: { state: 'completed', mode: 'automatic', requestedAt: '2026-10-29T12:00:00Z', sender: { state: 'confirmed' }, carrier: { state: 'confirmed' } },
++  order: { id: 'synthetic-order', number: 'QA-45', date: '2026-10-29', status: 'draft', url: null, revision: 'synthetic-revision', remoteStatus: 'Выполнение завершено успешно', signatureStatus: 'reported_by_saby', exchangeStage: 'carrier_confirmed', remoteStateCode: '7' },
++  deliveries: rt.trip.customers.map((row, index) => ({ shipmentId: row.id, id: null, status: index === 0 ? 'pending' : 'not_sent', lastError: null, ...(index === 0 ? { waitingForNativeDraft: true } : {}) })),
++});
++let state = initial(), reads = 0, posts = 0, runtime, browser, page;
++try {
++  runtime = await startOperatorQaServer({ root, snapshotDirectory: rt.snapshotDirectory, operationsDirectory: resolve(rt.directory, 'store'), sabyClient: new SabyClient(integrationConfig(), async () => { throw new Error('External provider calls forbidden'); }) });
++  report.runtimeMode = runtime.mode; report.artifacts = runtime.artifacts;
++  const { cookie } = await runtime.bootstrap();
++  browser = await (engine === 'webkit' ? webkit : chromium).launch({ headless: true, ...(engine === 'chromium' ? { executablePath: process.env.PLAYWRIGHT_CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' } : {}) });
++  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'Europe/Moscow' });
++  await context.route('**/*', async route => {
++    const req = route.request(), url = new URL(req.url());
++    if (url.origin !== runtime.base) { report.externalRequests.push(url.href); return route.abort(); }
++    const json = value => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
++    if (/\/saby-workflow$/.test(url.pathname)) { if (req.method() === 'GET') reads++; else posts++; return json(state); }
++    if (/\/shipment-trips\/[^/]+\/etrn$/.test(url.pathname)) return json({ deliveries: [] });
++    if (/\/shipment-trips\/[^/]+\/saby$/.test(url.pathname)) return json({ saby: { documents: [] } });
++    return route.continue();
++  });
++  await authenticateContext(context, runtime.base, cookie);
++  page = await context.newPage(); await page.clock.install();
++  page.on('pageerror', error => report.errors.push(error.message));
++  const main = page.getByRole('region', { name: 'Документы рейса в Saby', exact: true });
++  for (const scenario of ['waiting', 'error', 'completed']) {
++    state = initial();
++    if (scenario === 'error') {
++      state.phase = 'error'; state.status = 'error'; state.lastError = 'Синтетическая неоднозначная связь ЭТрН требует проверки.';
++      state.monitoring = { enabled: false, intervalSeconds: null, reason: 'Автопроверка приостановлена после ошибки. Исправьте документ и выполните сверку.' };
++      state.deliveries[0] = { ...state.deliveries[0], status: 'error', lastError: state.lastError }; delete state.deliveries[0].waitingForNativeDraft;
++    } else if (scenario === 'completed') {
++      state.phase = 'completed'; state.stage6CompletedAt = '2026-10-29T14:10:00Z';
++      state.deliveries = state.deliveries.map((row, index) => ({ shipmentId: row.shipmentId, id: `synthetic-note-${index}`, status: 'draft', lastError: null }));
++    }
++    for (const width of [320, 390, 768, 1440]) {
++      await page.setViewportSize({ width, height: 1100 });
++      await page.goto(runtime.base + `/?qa=${scenario}-${width}#trips`); await page.locator('.trips-section-tabs').getByRole('button', { name: 'Рейсы', exact: true }).click(); await page.getByRole('button', { name: 'Saby', exact: true }).click();
++      await expect(main).toBeVisible();
++      const heading = main.locator('.workflow-current strong');
++      await expect(heading).toHaveText(scenario === 'waiting' ? 'Ожидаем ЭТрН от Saby' : scenario === 'error' ? 'Создание ЭТрН приостановлено' : 'Все этапы рейса завершены');
++      if (scenario === 'waiting') {
++        await expect(main).toContainText('CRM автоматически проверяет появление связанной ЭТрН');
++        await expect(main.getByRole('alert')).toHaveCount(0);
++        await expect(main).not.toContainText('Автопроверка приостановлена');
++      } else if (scenario === 'error') await expect(main).toContainText(state.lastError);
++      else await expect(main).toContainText('Подписи и отправка ЭТрН клиентам подтверждены');
++      assert.ok(await main.locator('.workflow-current').evaluate(node => node.scrollWidth <= node.clientWidth + 1), `${scenario} ${width}: status text horizontal overflow`);
++      const accessibility = await new AxeBuilder({ page }).include('.trip-saby-panel').withTags(['wcag2a', 'wcag2aa']).analyze();
++      const violations = accessibility.violations.map(item => item.id); assert.deepEqual(violations, []);
++      report.axe.push({ scenario, width, violations }); report.checks.push(`${scenario}-${width}`);
++      const shot = resolve(output, `${scenario}-${width}.png`); await main.screenshot({ path: shot }); report.screenshots.push(shot);
++      if (scenario === 'waiting' && width === 1440) {
++        const before = reads; await page.clock.fastForward(60_001); await expect.poll(() => reads).toBeGreaterThan(before);
++        assert.equal(posts, 0); report.checks.push('waiting-polls-get-without-post');
++      }
++    }
++  }
++  assert.equal(posts, 0); assert.deepEqual(report.errors, []); assert.deepEqual(report.externalRequests, []);
++  report.passed = true; console.log(JSON.stringify({ passed: true, mode, engine, checks: report.checks.length, axe: report.axe.length }));
++} catch (error) {
++  report.failure = error.message;
++  await page?.screenshot({ path: resolve(output, 'failure.png') }).catch(() => {});
++  throw error;
++} finally {
++  await browser?.close(); await runtime?.server.close(); await rt.close();
++  await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2));
++}
+--- /dev/null
++++ b/server/etrn-order-discovery.ts
+@@ -0,0 +1,93 @@
++import { SabyClient, SabyError, sabyObject, type SabyObject, type SabyOrganization } from './saby-client';
++import type { SabyConsignmentSnapshot } from './saby-consignment-note';
++
++export interface ConsignmentSourceOrder { id: string; number: string; date: string }
++const PAGE_SIZE = 200;
++const MAX_PAGES = 20;
++const fail = (message: string): never => { throw new SabyError('unknown', message, true); };
++const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 1024 && value.trim() === value && ![...value].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
++function isoDay(value: unknown): string {
++  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(`${value}T00:00:00Z`)) || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value) return fail('Не подтверждён период поиска ЭТрН заявки.');
++  return value;
++}
++const ruDay = (value: string) => value.split('-').reverse().join('.');
++function remoteDay(value: unknown): string {
++  if (typeof value !== 'string' || !/^\d{2}\.\d{2}\.\d{4}$/.test(value)) return fail('Saby вернул ЭТрН без подтверждённой даты. Создание остановлено.');
++  return isoDay(value.split('.').reverse().join('-'));
++}
++function moscowDay(): string {
++  const parts = new Intl.DateTimeFormat('en', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
++  return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
++}
++function partyIdentity(value: unknown): { inn: string; kpp: string } {
++  const legal = sabyObject(value) && sabyObject(value.СвЮЛ) ? value.СвЮЛ : null;
++  const person = sabyObject(value) && sabyObject(value.СвФЛ) ? value.СвФЛ : null;
++  if (legal && person) return fail('Неоднозначные стороны ЭТрН при поиске связанных документов.');
++  if (legal && /^\d{10}$/.test(String(legal.ИНН)) && /^\d{9}$/.test(String(legal.КПП))) return { inn: String(legal.ИНН), kpp: String(legal.КПП) };
++  if (person && /^\d{12}$/.test(String(person.ИНН))) return { inn: String(person.ИНН), kpp: '' };
++  return fail('Не подтверждены стороны ЭТрН при поиске связанных документов.');
++}
++const matches = (identity: { inn: string; kpp: string }, expected: SabyOrganization) => identity.inn === expected.inn && (identity.inn.length === 12 || identity.kpp === expected.kpp);
++function roleMatches(remote: SabyObject, role: 'sender' | 'carrier', expected: SabyOrganization): boolean {
++  const parties = sabyObject(remote.Стороны) ? remote.Стороны : {};
++  const values = (role === 'sender' ? [remote.Грузоотправитель, parties.Отправитель] : [remote.ТранспортнаяКомпания, remote.Перевозчик, parties.Перевозчик]).filter(value => value !== undefined && value !== null);
++  if (!values.length) return fail('Не подтверждены стороны ЭТрН при поиске связанных документов.');
++  const identities = values.map(partyIdentity);
++  if (identities.some(identity => identity.inn !== identities[0].inn || identity.kpp !== identities[0].kpp)) return fail('Стороны ЭТрН противоречат друг другу. Новое создание остановлено.');
++  return matches(identities[0], expected);
++}
++function baseDocuments(remote: SabyObject): SabyObject[] {
++  if (remote.ДокументОснование === undefined || remote.ДокументОснование === null) return [];
++  if (!Array.isArray(remote.ДокументОснование)) return fail('Saby вернул неполные связи ЭТрН. Создание остановлено.');
++  return remote.ДокументОснование.map(value => {
++    if (!sabyObject(value) || !sabyObject(value.Документ) || !text(value.Документ.Идентификатор) || !text(value.Документ.Тип)) return fail('Saby вернул неполные связи ЭТрН. Создание остановлено.');
++    return value.Документ;
++  });
++}
++
++/** Read-only absence check before a first order-linked write. A marker search
++ * alone cannot discover Saby-native documents, whose marker may be empty.
++ * No documented relation filter exists: enumerate the complete dated register
++ * and read each document. Ambiguous orphan notes block, never become permission
++ * to create another note. The caller still validates the current signed order,
++ * exact candidate contents and reciprocal links before adopting or writing. */
++export async function discoverOrderConsignments(client: SabyClient, order: ConsignmentSourceOrder, snapshot: SabyConsignmentSnapshot, marker: string): Promise<SabyObject[]> {
++  if (!text(order.id) || !text(order.number) || !text(marker)) return fail('Не подтверждена исходная заявка для поиска ЭТрН.');
++  const sender = snapshot.customerOrganization;
++  if (!/^\d{10}$/.test(sender.inn) || !/^\d{9}$/.test(sender.kpp) || !matches(client.config.customer, sender)) return fail('Кабинет поиска ЭТрН не соответствует отправителю сохранённой доставки.');
++  const documentDays = [isoDay(order.date), isoDay(snapshot.fields.date)].sort();
++  const firstDay = documentDays[0], lastDay = [...documentDays, moscowDay()].sort().at(-1)!;
++  const ids: string[] = [], seen = new Set<string>();
++  let complete = false;
++  for (let page = 0; page < MAX_PAGES; page++) {
++    const result = await client.call('СБИС.СписокДокументов', { Фильтр: {
++      Тип: 'ConsignmentNote', Направление: 'Исходящий', ДатаС: ruDay(firstDay), ДатаПо: ruDay(lastDay),
++      НашаОрганизация: { СвЮЛ: { ИНН: snapshot.customerOrganization.inn, КПП: snapshot.customerOrganization.kpp } },
++      Навигация: { РазмерСтраницы: String(PAGE_SIZE), Страница: String(page) },
++    } }, false, true);
++    if (!sabyObject(result) || result.ЧастичныеДанные === 'Да' || !Array.isArray(result.Документ) || result.Документ.length > PAGE_SIZE || !sabyObject(result.Навигация) || !['Да', 'Нет'].includes(String(result.Навигация.ЕстьЕще)) ||
++        result.Навигация.Страница !== undefined && String(result.Навигация.Страница) !== String(page) ||
++        result.Навигация.РазмерСтраницы !== undefined && (!/^\d+$/.test(String(result.Навигация.РазмерСтраницы)) || Number(result.Навигация.РазмерСтраницы) < 1 || Number(result.Навигация.РазмерСтраницы) > PAGE_SIZE)) return fail('Saby не подтвердил полный список ЭТрН. Новое создание запрещено.');
++    for (const value of result.Документ) {
++      if (!sabyObject(value) || !text(value.Идентификатор) || value.Тип !== 'ConsignmentNote' || value.ЧастичныеДанные === 'Да' || seen.has(value.Идентификатор)) return fail('Список ЭТрН изменился или неполон. Новое создание запрещено.');
++      seen.add(value.Идентификатор); ids.push(value.Идентификатор);
++    }
++    if (result.Навигация.ЕстьЕще === 'Нет') { complete = true; break; }
++    if (!result.Документ.length) return fail('Saby вернул пустую промежуточную страницу ЭТрН. Создание остановлено.');
++  }
++  if (!complete) return fail('Список ЭТрН превышает предел безопасной сверки. Новое создание запрещено.');
++  const candidates: SabyObject[] = [];
++  for (const id of ids) {
++    const remote = await client.readConsignmentNote(id);
++    if (remote.Идентификатор !== id || remote.Тип !== 'ConsignmentNote' || remote.ЧастичныеДанные === 'Да' || remote.Удален === 'Да' || remote.Направление !== undefined && remote.Направление !== 'Исходящий') return fail('ЭТрН изменилась во время поиска. Новое создание запрещено.');
++    const date = remoteDay(remote.Дата);
++    if (date < firstDay || date > lastDay || !matches(partyIdentity(remote.НашаОрганизация), snapshot.customerOrganization)) return fail('Saby вернул ЭТрН вне подтверждённой области поиска.');
++    const bases = baseDocuments(remote);
++    if (remote.Примечание === marker || bases.some(base => base.Идентификатор === order.id)) { candidates.push(remote); continue; }
++    // A foreign order link unambiguously excludes this document. Other kinds of
++    // bases do not establish that a plausible native note belongs to another trip.
++    if (bases.some(base => base.Тип === 'TransportOrder')) continue;
++    if (roleMatches(remote, 'sender', snapshot.customerOrganization) && roleMatches(remote, 'carrier', snapshot.carrierOrganization)) return fail('Найдена ЭТрН тех же сторон без подтверждённой связи с заявкой. Требуется сверка; новый документ не создаётся.');
++  }
++  return candidates;
++}
+--- a/server/etrn-service.ts
++++ b/server/etrn-service.ts
+@@ -11,7 +11,8 @@
+ import { getShipmentTrip } from './shipment-trips';
+ import { SabyClient, SabyError, SabyRequestError, isSabyRequestIntent, isSabyResponseDiagnostic, type SabyRequestIntent, type SabyResponseDiagnostic, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyDocumentWorkflow, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
+ import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, readEtrnLoadingDetails, sabyConsignmentBlockers, buildSabyConsignmentDocument, serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from './saby-consignment-note';
+-import type { CreateTripSabyDelivery } from './trip-saby-workflow';
++import { sabyCarrierAcceptance, type CreateTripSabyDelivery } from './trip-saby-workflow';
++import { discoverOrderConsignments } from './etrn-order-discovery';
+ import { assertSigningManifest } from './saby-signing';
+ import { validateEtrnDispatch, type EtrnDispatch } from './etrn-dispatch';
+ import { reconcileLinkedConsignmentDraft, validateLinkedDraftState, type LinkedDraftState } from './etrn-linked-draft';
+@@ -61,6 +62,10 @@
+ export function validateOrderRedirectionApproval(value: unknown): asserts value is OrderRedirectionApproval | undefined {
+   if (value === undefined) return;
+   if (!sabyObject(value) || Object.keys(value).some(k => !['version','tripId','workflowAttemptId','authorizationSha256','answerText','answerSha256','recordedAt'].includes(k)) || value.version !== 1 || !sabyText(value.tripId) || !sabyText(value.workflowAttemptId) || !sabyText(value.answerText) || !/^[a-f0-9]{64}$/.test(String(value.authorizationSha256)) || value.answerSha256 !== bytesHash(Buffer.from(String(value.answerText))) || !isDate(value.recordedAt)) throw new Error('Invalid order redirection approval');
++}
++export interface OrderCreationAllocation {
++  version: 2; sourceOrderId: string; workflowAttemptId: string; evidenceHash: string;
++  shipmentIds: string[]; snapshotHashes: string[];
+ }
+ export interface EtrnDocument extends Omit<EtrnDocumentSummary, 'files'> {
+   dispatch?: EtrnDispatch;
+@@ -78,6 +83,7 @@
+   nativeDraftEnabled?: boolean;
+   /** Frozen order allocation protocol; historical attempts require explicit scoped adoption. */
+   orderDraftVersion?: 1;
++  orderCreationAllocation?: OrderCreationAllocation;
+   orderRedirectionApproval?: OrderRedirectionApproval;
+   orderAutoNumber?: { version: 1; numberFinalizationAttempted?: true };
+   number?: string; reservationAttempted?: boolean; uploadAttempted?: boolean;
+@@ -158,6 +164,10 @@
+       if (sabyObject(doc) && doc.senderTitleVersion === 2 && sabyObject(doc.dispatch) && sabyObject(doc.dispatch.sender) && doc.dispatch.sender.verified === true && !validConsignmentOperatorUid(doc.dispatch.operatorUid)) throw new Error('Missing verified ETRN operator UID');
+       if (sabyObject(doc) && doc.senderTitleVersion !== undefined && doc.senderTitleVersion !== 2) throw new Error('Invalid ETRN title protocol');
+       if (sabyObject(doc) && doc.orderDraftVersion !== undefined && (doc.orderDraftVersion !== 1 || doc.senderTitleVersion !== 2 || sabyObject(doc.snapshot) && doc.snapshot.documentMode === 'nk-direct-v1')) throw new Error('Invalid order allocation protocol');
++      if (sabyObject(doc) && doc.orderCreationAllocation !== undefined) {
++        const proof = doc.orderCreationAllocation;
++        if (!sabyObject(proof) || Object.keys(proof).some(key => !['version', 'sourceOrderId', 'workflowAttemptId', 'evidenceHash', 'shipmentIds', 'snapshotHashes'].includes(key)) || proof.version !== 2 || !sabyText(proof.sourceOrderId) || !sabyText(proof.workflowAttemptId) || !/^[a-f0-9]{64}$/.test(String(proof.evidenceHash)) || !Array.isArray(proof.shipmentIds) || !proof.shipmentIds.length || proof.shipmentIds.some(id => !sabyText(id)) || new Set(proof.shipmentIds).size !== proof.shipmentIds.length || !Array.isArray(proof.snapshotHashes) || proof.snapshotHashes.length !== proof.shipmentIds.length || proof.snapshotHashes.some(value => !/^[a-f0-9]{64}$/.test(String(value))) || doc.orderDraftVersion !== 1 || doc.nativeDraftEnabled || doc.linkedDraft || !doc.orderAutoNumber) throw new Error('Invalid first order consignment allocation');
++      }
+       if (sabyObject(doc) && doc.orderAutoNumber !== undefined && (!sabyObject(doc.orderAutoNumber) || doc.orderAutoNumber.version !== 1 || Object.keys(doc.orderAutoNumber).some(key => !['version', 'numberFinalizationAttempted'].includes(key)) || doc.orderAutoNumber.numberFinalizationAttempted !== undefined && doc.orderAutoNumber.numberFinalizationAttempted !== true || doc.orderDraftVersion !== 1 || doc.nativeDraftEnabled)) throw new Error('Invalid order auto-number protocol');
+       if (sabyObject(doc) && doc.directDraftCreation !== undefined && (!sabyObject(doc.directDraftCreation) || doc.directDraftCreation.version !== 'auto-number-v1' || Object.keys(doc.directDraftCreation).some(key => !['version', 'numberFinalizationAttempted', 'filenameCorrection'].includes(key)) || doc.directDraftCreation.numberFinalizationAttempted !== undefined && doc.directDraftCreation.numberFinalizationAttempted !== true || doc.senderTitleVersion !== 2 || !sabyObject(doc.snapshot) || doc.snapshot.documentMode !== 'nk-direct-v1')) throw new Error('Invalid direct ETRN auto-number protocol');
+       if (sabyObject(doc) && sabyObject(doc.directDraftCreation) && doc.directDraftCreation.filenameCorrection !== undefined) {
+@@ -509,7 +519,7 @@
+ }
+ 
+ /** Recover a linked native draft for a single driver delivery; preserve the existing legacy path. */
+-export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTripSabyDelivery | { documentMode: 'nk-direct-v1'; shipmentId: string; snapshot: SabyConsignmentSnapshot }): Promise<{ status: 'pending' | 'unknown' | 'draft' | 'error'; id: string | null; lastError: string | null; waitingForLoading?: boolean }> {
++export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTripSabyDelivery | { documentMode: 'nk-direct-v1'; shipmentId: string; snapshot: SabyConsignmentSnapshot }): Promise<{ status: 'pending' | 'unknown' | 'draft' | 'error'; id: string | null; lastError: string | null; waitingForLoading?: boolean; waitingForNativeDraft?: boolean }> {
+   const { base, store, tripId, authorize } = options;
+   let client = options.client ?? new SabyClient(sabyConfigFromEnv());
+   const source = base.provenance.sourceSha256, shipmentId = input.shipmentId;
+@@ -582,26 +592,90 @@
+   const orderDocument = (request: SabyObject): SabyObject => orderProtocol ? { ...request,
+     ДокументОснование: [{ ВидСвязи: 'Обычная связь', Документ: { Идентификатор: orderInput!.order.id, Тип: 'TransportOrder', Номер: orderInput!.order.number, Дата: orderInput!.order.date.split('-').reverse().join('.') } }],
+   } : request;
++  const firstShipmentId = initial.tripSaby?.trips[tripId]?.deliveries[0].shipmentId;
++  const firstCreationEligible = () => orderProtocol && initial.tripSaby?.trips[tripId]?.orderConsignmentCreationVersion === 2 &&
++    shipmentId === firstShipmentId && doc.nativeDraftEnabled === true && !doc.id && !doc.reservationAttempted && !doc.uploadAttempted &&
++    !doc.writeAttempts?.length && !doc.linkedDraft && !doc.dispatch && !doc.nativeAdoptionEvidence && !doc.orderCreationAllocation;
++  const creationAllocation = (): OrderCreationAllocation => ({ version: 2, sourceOrderId: orderInput!.order.id,
++    workflowAttemptId: initial.tripSaby!.trips[tripId].attemptId, evidenceHash: orderInput!.carrierEvidence.evidenceHash,
++    shipmentIds: allocationSnapshots!.map(row => row.shipmentId), snapshotHashes: allocationSnapshots!.map(hash) });
++  const orderLinks = (remote: SabyObject) => {
++    const raw = remote.ДокументСледствие;
++    if (raw === undefined || raw === null) return [];
++    if (!Array.isArray(raw) || raw.some(row => !sabyObject(row) || !sabyObject(row.Документ) || !sabyText(row.Документ.Идентификатор) || !sabyText(row.Документ.Тип))) throw new SabyError('unknown', 'Состав связанных документов заявки не подтверждён.', true);
++    return raw.map(row => row.Документ as SabyObject).filter(row => row.Тип === 'ConsignmentNote').map(row => String(row.Идентификатор));
++  };
++  // Pin the two signatures already verified by the workflow; expiring download
++  // links are not signature identity. No signing action is launched here.
++  const orderSignatureIdentity = (remote: SabyObject) => {
++    const files = Array.isArray(remote.Вложение) ? remote.Вложение.filter(sabyObject).filter(row => row.Удален !== 'Да' && row.Актуален !== 'Нет') : [];
++    const invalidSignatureData = (value: SabyObject) => !!value.Ошибка || Number(value.КоличествоОшибок ?? 0) !== 0 || Array.isArray(value.Ошибки) && value.Ошибки.length > 0;
++    const identity = ['1110361', '1110362'].map(type => {
++      const titles = files.filter(row => row.Подтип === type);
++      const signatures = titles.length === 1 && Array.isArray(titles[0].Подпись) ? titles[0].Подпись.filter(sabyObject) : [];
++      const side = type === '1110361' ? 'sender' : 'carrier';
++      const signing = initial.tripSaby!.trips[tripId].signing;
++      if (titles.length !== 1 || invalidSignatureData(titles[0]) || !signatures.length || !signing || signatures.some(signature => invalidSignatureData(signature) || !sabyObject(signature.Сертификат) || String(signature.Сертификат.Отпечаток ?? '').replace(/[\s:]/g, '').toLowerCase() !== signing.selection[side].toLowerCase() || !sabyObject(signature.Файл) || !sabyText(signature.Файл.Ссылка) && !sabyText(signature.Файл.ДвоичныеДанные))) throw new SabyError('unknown', 'Подписи принятой заявки не подтверждены перед созданием ЭТрН.', true);
++      return [titles[0].Идентификатор, signatures.map(signature => [signature.ДатаВремя, signature.Тип, signature.Сертификат,
++        sabyObject(signature.Файл) ? signature.Файл.Хеш ?? signature.Файл.ДвоичныеДанные ?? null : null])];
++    });
++    return hash([sabyDocumentWorkflow(remote).revision, identity]);
++  };
++  const checkFirstCreation = async () => {
++    const data = await store.read(source); await checkAccess();
++    const workflow = data.tripSaby?.trips[tripId];
++    if (!firstCreationEligible() || !workflow || workflow.orderConsignmentCreationVersion !== 2 || workflow.attemptId !== initial.tripSaby!.trips[tripId].attemptId || workflow.order.id !== orderInput!.order.id || workflow.carrierEvidence?.evidenceHash !== orderInput!.carrierEvidence.evidenceHash ||
++        !workflow.signing || workflow.signing.sender.state !== 'confirmed' || workflow.signing.carrier.state !== 'confirmed' || !workflow.signing.sender.prepared || !workflow.signing.carrier.prepared ||
++        hash(workflow.signing) !== hash(initial.tripSaby!.trips[tripId].signing ?? null) ||
++        hash(workflow.autoAuthorization ?? null) !== hash(initial.tripSaby!.trips[tripId].autoAuthorization ?? null) ||
++        JSON.stringify(workflow.deliveries.map(row => row.shipmentId)) !== JSON.stringify(allocationSnapshots!.map(row => row.shipmentId)) ||
++        JSON.stringify(workflow.deliveries.map(row => hash(snapshotWithLoading(row.snapshot, data.etrn!.trips[tripId].loadingFacts!, orderInput!.order)))) !== JSON.stringify(allocationSnapshots!.map(hash)) ||
++        Object.entries(data.etrn?.trips[tripId]?.deliveries ?? {}).some(([id, row]) => id !== shipmentId && !!row.document)) throw new SabyError('unknown', 'Основание создания первой ЭТрН изменилось. Новые документы не создаются.', true);
++    const remote = await client.readTransportOrder(orderInput!.order.id);
++    const evidence = sabyCarrierAcceptance(remote);
++    if (remote.Номер !== orderInput!.order.number || remote.Дата !== orderInput!.order.date.split('-').reverse().join('.') || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' ||
++        !partyMatches(remote.НашаОрганизация, doc.snapshot.customerOrganization) || !partyMatches(remote.Контрагент, doc.snapshot.carrierOrganization) ||
++        !evidence || evidence.evidenceHash !== orderInput!.carrierEvidence.evidenceHash || orderSignatureIdentity(remote) !== orderSignatureIdentity(orderInput!.remoteOrder) || orderLinks(remote).length) throw new SabyError('unknown', 'Заявка или её связанные ЭТрН изменились. Новые документы не создаются.', true);
++    const candidates = await discoverOrderConsignments(client, orderInput!.order, doc.snapshot, doc.marker);
++    if (candidates.length) throw new SabyError('unknown', 'В Saby уже найдена возможная ЭТрН этой заявки. Требуется сверка существующего документа.', true);
++    // A native link may appear during the complete list scan.
++    const latest = await client.readTransportOrder(orderInput!.order.id);
++    if (latest.Номер !== remote.Номер || latest.Дата !== remote.Дата || latest.Удален === 'Да' || latest.ЧастичныеДанные === 'Да' || !partyMatches(latest.НашаОрганизация, doc.snapshot.customerOrganization) || !partyMatches(latest.Контрагент, doc.snapshot.carrierOrganization) || orderLinks(latest).length || orderSignatureIdentity(latest) !== orderSignatureIdentity(remote) || sabyCarrierAcceptance(latest)?.evidenceHash !== evidence.evidenceHash) throw new SabyError('unknown', 'Связанные документы заявки изменились перед созданием ЭТрН.', true);
++    await checkAccess();
++  };
+   const checkAllocation = async () => {
+     if (!orderProtocol || doc.nativeDraftEnabled) return;
+     const data = await store.read(source); const workflow = data.tripSaby!.trips[tripId];
+     const deliveries = data.etrn!.trips[tripId].deliveries;
+     const first = deliveries[workflow.deliveries[0].shipmentId]?.document;
+-    const allocation = first?.linkedDraft?.allocation;
+-    if (!first?.id || first.status !== 'draft' || !first.linkedDraft?.writeConfirmed || !allocation ||
++    const native = first?.linkedDraft?.writeConfirmed ? first.linkedDraft.allocation : undefined;
++    const created = first?.orderCreationAllocation;
++    const allocation = native ?? created;
++    const completingOwnFirst = shipmentId === firstShipmentId && first?.id === doc.id && !!created;
++    if (!first?.id || first.status !== 'draft' && !completingOwnFirst || !allocation ||
++        created && (workflow.orderConsignmentCreationVersion !== 2 || created.workflowAttemptId !== workflow.attemptId || created.sourceOrderId !== orderInput!.order.id || created.evidenceHash !== orderInput!.carrierEvidence.evidenceHash) ||
+         JSON.stringify(allocation.shipmentIds) !== JSON.stringify(workflow.deliveries.map(x => x.shipmentId)) ||
+         JSON.stringify(allocation.snapshotHashes) !== JSON.stringify(allocationSnapshots!.map(hash))) throw new SabyError('unknown', 'Исходная ЭТрН ещё не распределена по подтверждённым доставкам. Новая ЭТрН не создаётся.', true);
++    if (created && !completingOwnFirst) {
++      const remoteFirst = await client.readConsignmentNote(first.id);
++      const bases = Array.isArray(remoteFirst.ДокументОснование) ? remoteFirst.ДокументОснование.filter(sabyObject).map(row => row.Документ).filter(sabyObject).filter(row => row.Тип === 'TransportOrder') : [];
++      const titles = Array.isArray(remoteFirst.Вложение) ? remoteFirst.Вложение.filter(sabyObject).filter(row => row.Подтип === '1110339' && row.Удален !== 'Да' && row.Актуален !== 'Нет') : [];
++      const revision = sabyDocumentWorkflow(remoteFirst).revision;
++      if (remoteFirst.Примечание !== first.marker || remoteFirst.Номер !== first.number || remoteFirst.Удален === 'Да' || remoteFirst.ЧастичныеДанные === 'Да' || bases.length !== 1 || bases[0].Идентификатор !== orderInput!.order.id || titles.length !== 1 || !sabyText(titles[0].Идентификатор) || !revision) throw new SabyError('unknown', 'Первая ЭТрН изменилась до создания следующей доставки.', true);
++      const title = await client.downloadAttachment(first.id, String(titles[0].Идентификатор), revision);
++      verifyConsignmentSenderBusiness(title.bytes, serializeSabyConsignmentNote(first.snapshot, first.attemptId, first.createdAt, first.number, { senderTitleVersion: 2 }).xml, 'address-direct-v1');
++    }
+     const remoteOrder = await client.readTransportOrder(orderInput!.order.id);
+-    const links = Array.isArray(remoteOrder.ДокументСледствие) ? remoteOrder.ДокументСледствие.filter(sabyObject).map(x => x.Документ).filter(sabyObject).filter(x => x.Тип === 'ConsignmentNote') : [];
++    const links = orderLinks(remoteOrder);
+     const known = workflow.deliveries.map(x => deliveries[x.shipmentId]?.document?.id).filter(Boolean).sort();
+-    if (links.length !== known.length || JSON.stringify(links.map(x => x.Идентификатор).sort()) !== JSON.stringify(known)) throw new SabyError('unknown', 'Связанные ЭТрН заявки изменились. Создание следующей доставки остановлено для исключения дублей.', true);
++    if (links.length !== known.length || JSON.stringify(links.sort()) !== JSON.stringify(known)) throw new SabyError('unknown', 'Связанные ЭТрН заявки изменились. Создание следующей доставки остановлено для исключения дублей.', true);
+     await checkAccess();
+   };
+   let currentRequest: SabyRequestIntent | null = null;
+-  const beforeWrite = (action: EtrnWriteAttempt['action']) => async (request: SabyRequestIntent) => {
++  const beforeWrite = (action: EtrnWriteAttempt['action'], patch: Partial<EtrnDocument> = {}) => async (request: SabyRequestIntent) => {
+     await checkAccess();
+     if ((doc.writeAttempts?.length ?? 0) >= 20) throw new SabyError('validation', 'Журнал попыток ЭТрН требует сверки.');
+-    await update({ ...(action === 'reservation' ? { reservationAttempted: true } : { uploadAttempted: true }), status: 'pending', writeAttempts: [...(doc.writeAttempts ?? []), { action, request, outcome: 'attempted' }] });
++    await update({ ...patch, ...(action === 'reservation' ? { reservationAttempted: true } : { uploadAttempted: true }), status: 'pending', writeAttempts: [...(doc.writeAttempts ?? []), { action, request, outcome: 'attempted' }] });
+     currentRequest = request;
+   };
+   const receiveWrite = async (id: string, patch: Partial<EtrnDocument> = {}) => {
+@@ -613,25 +687,6 @@
+   let armedAction: 'reservation' | 'upload' | null = null;
+   try {
+     await client.verifyOrganizations(doc.snapshot.customerOrganization, doc.snapshot.carrierOrganization); await checkAccess();
+-    if ((direct || orderProtocol && !doc.nativeDraftEnabled) && !doc.id && !doc.reservationAttempted) {
+-      if (doc.uploadAttempted || doc.writeAttempts?.length || doc.dispatch || doc.nativeAdoptionEvidence) throw new SabyError('unknown', 'Прежняя попытка ЭТрН требует сверки; новое создание запрещено.', true);
+-      // Official WriteDocument accepts T1 at creation and assigns an omitted number.
+-      // This is an unsigned draft; final numbering and every business field are
+-      // checked before the ordinary dispatch code can see status=draft.
+-      await checkAllocation();
+-      const request = orderDocument(buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }));
+-      writing = 'reservation';
+-      const created = await client.writeConsignmentNote(request, async intent => {
+-        await checkAccess();
+-        await checkAllocation();
+-        await update({ senderTitleVersion: 2, ...(direct ? { directDraftCreation: { version: 'auto-number-v1' as const } } : { orderAutoNumber: { version: 1 as const } }), uploadAttempted: true });
+-        await beforeWrite('reservation')(intent);
+-      });
+-      const id = sabyText(created.Идентификатор);
+-      if (!id) throw new SabyError('unknown', 'Saby не вернул идентификатор новой прямой ЭТрН. Повторное создание запрещено.', true);
+-      await receiveWrite(id, { id, status: 'unknown' });
+-      writing = null; await checkAccess();
+-    }
+     const linked = doc.nativeDraftEnabled ? await reconcileLinkedConsignmentDraft({
+       client, order: orderInput!.order, deliveryCount: initial.tripSaby!.trips[tripId].deliveries.length,
+       current: () => doc, update, checkAccess, ...(orderProtocol ? { allocationSnapshots } : {}),
+@@ -639,6 +694,25 @@
+     if (linked) {
+       await update(confirmed(linked, doc, true));
+       return { status: doc.status, id: doc.id, lastError: doc.lastError };
++    }
++    if ((direct || orderProtocol && !doc.nativeDraftEnabled || firstCreationEligible()) && !doc.id && !doc.reservationAttempted) {
++      if (doc.uploadAttempted || doc.writeAttempts?.length || doc.dispatch || doc.nativeAdoptionEvidence) throw new SabyError('unknown', 'Прежняя попытка ЭТрН требует сверки; новое создание запрещено.', true);
++      // Official WriteDocument accepts T1 at creation and assigns an omitted number.
++      // This is an unsigned draft; final numbering and every business field are
++      // checked before the ordinary dispatch code can see status=draft.
++      if (firstCreationEligible()) await checkFirstCreation(); else await checkAllocation();
++      const request = orderDocument(buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }));
++      writing = 'reservation';
++      const created = await client.writeConsignmentNote(request, async intent => {
++        await checkAccess();
++        const creatingFirst = firstCreationEligible();
++        if (creatingFirst) await checkFirstCreation(); else await checkAllocation();
++        await beforeWrite('reservation', { ...(creatingFirst ? { nativeDraftEnabled: false, orderCreationAllocation: creationAllocation() } : {}), senderTitleVersion: 2, ...(direct ? { directDraftCreation: { version: 'auto-number-v1' as const } } : { orderAutoNumber: { version: 1 as const } }), uploadAttempted: true })(intent);
++      });
++      const id = sabyText(created.Идентификатор);
++      if (!id) throw new SabyError('unknown', 'Saby не вернул идентификатор новой прямой ЭТрН. Повторное создание запрещено.', true);
++      await receiveWrite(id, { id, status: 'unknown' });
++      writing = null; await checkAccess();
+     }
+     if (!doc.id && doc.reservationAttempted) {
+       const found = await client.findDocuments(doc.marker, doc.snapshot.fields.date!.split('-').reverse().join('.'), doc.snapshot.customerOrganization, doc.number, 'ConsignmentNote');
+@@ -670,7 +744,13 @@
+     if (!doc.id) {
+       // Saby creates a native consignment from the accepted driver-flow order.
+       // Wait for that exact relationship instead of reserving a duplicate shell.
+-      if (doc.nativeDraftEnabled) throw new SabyError('unknown', 'Saby ещё не подтвердил связанную ЭТрН принятой заявки. CRM ожидает документ; повторное создание не выполняется.', true);
++      if (doc.nativeDraftEnabled) {
++        // An accepted order may expose its generated note on a later read. This
++        // successful, read-only wait must remain schedulable; it is not a failed
++        // creation attempt and can never authorize a replacement document.
++        await update({ status: 'pending', lastError: null });
++        return { status: 'pending', id: null, lastError: null, waitingForNativeDraft: true };
++      }
+       if (direct) throw new SabyError('validation', DIRECT_ETRN_NUMBER_BLOCKER);
+       const full = buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, '1');
+       const { Номер: _number, Вложение: _attachments, ...metadata } = full; void _number; void _attachments;
+@@ -717,14 +797,56 @@
+       let numbered = false;
+       try { verifyConsignmentSenderBusiness(uploadedTitle.bytes, expected, 'address-direct-v1'); numbered = true; } catch { /* Only the exact unnumbered draft below may be completed. */ }
+       if (!numbered) {
+-        verifyConsignmentSenderBusiness(uploadedTitle.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }).xml, 'address-direct-v1');
+-        if (doc.directDraftCreation?.numberFinalizationAttempted || doc.orderAutoNumber?.numberFinalizationAttempted || sabyDocumentWorkflow(remote).signatureStatus === 'reported_by_saby' || !sabyObject(remote.Состояние) || String(remote.Состояние.Код) !== '0') throw new SabyError('unknown', 'Номер первого титула не подтверждён после записи либо документ уже подписан. Повторная запись запрещена.', true);
++        const unnumbered = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }).xml;
++        verifyConsignmentSenderBusiness(uploadedTitle.bytes, unnumbered, 'address-direct-v1');
++        const finalizationAttempted = !!(doc.directDraftCreation?.numberFinalizationAttempted || doc.orderAutoNumber?.numberFinalizationAttempted);
++        const failFinalization = (): never => { throw new SabyError('unknown', 'Номер первого титула не подтверждён после записи либо документ уже подписан. Повторная запись запрещена.', true); };
++        // Old code saved this flag before the durable upload intent. Only our
++        // first v2 creation can prove that gap: one received reservation, the
++        // exact original request, and no upload intent of any outcome. The flag
++        // is preserved; a recovered same-ID update records its first intent.
++        const checkFlagOnlyGap = async () => {
++          const latest = await store.read(source); await checkAccess();
++          const workflow = latest.tripSaby?.trips[tripId], current = latest.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
++          const reservation = current?.writeAttempts?.length === 1 ? current.writeAttempts[0] : undefined;
++          if (!orderProtocol || direct || shipmentId !== firstShipmentId || !current?.id || current.id !== doc.id || current.number !== doc.number ||
++              current.orderAutoNumber?.numberFinalizationAttempted !== true || current.nativeDraftEnabled !== false || current.senderTitleVersion !== 2 ||
++              current.orderCreationAllocation?.version !== 2 || !current.reservationAttempted || !current.uploadAttempted || current.linkedDraft || current.dispatch || current.nativeAdoptionEvidence || current.nativeSenderAmendment || current.unexpectedDocumentIds?.length ||
++              !workflow?.autoAuthorization || workflow.orderConsignmentCreationVersion !== 2 || workflow.order.id !== orderInput!.order.id || workflow.attemptId !== current.orderCreationAllocation.workflowAttemptId ||
++              workflow.signing?.sender.state !== 'confirmed' || workflow.signing.carrier.state !== 'confirmed' || !workflow.signing.sender.prepared || !workflow.signing.carrier.prepared ||
++              hash(workflow.signing) !== hash(initial.tripSaby!.trips[tripId].signing) || hash(workflow.autoAuthorization) !== hash(initial.tripSaby!.trips[tripId].autoAuthorization) ||
++              hash([current.snapshot, current.attemptId, current.marker, current.createdAt, current.orderCreationAllocation, current.writeAttempts]) !== hash([doc.snapshot, doc.attemptId, doc.marker, doc.createdAt, doc.orderCreationAllocation, doc.writeAttempts]) ||
++              Object.entries(latest.etrn!.trips[tripId].deliveries).some(([id, row]) => id !== shipmentId && !!row.document) ||
++              !reservation || reservation.action !== 'reservation' || reservation.outcome !== 'received' || reservation.result?.id !== current.id) return failFinalization();
++          const original = orderDocument(buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, undefined, { senderTitleVersion: 2, draftWithoutNumber: true }));
++          const originalBody = JSON.stringify({ jsonrpc: '2.0', method: 'СБИС.ЗаписатьДокумент', params: { Документ: original }, id: reservation.request.requestId });
++          if (bytesHash(Buffer.from(originalBody)) !== reservation.request.bodySha256 || Buffer.byteLength(originalBody) !== reservation.request.bodyBytes || !Buffer.from(uploadedTitle.bytes).equals(unnumbered)) return failFinalization();
++          await checkAllocation();
++          const sourceOrder = await client.readTransportOrder(orderInput!.order.id);
++          if (sourceOrder.Номер !== orderInput!.order.number || sourceOrder.Дата !== orderInput!.order.date.split('-').reverse().join('.') || sourceOrder.Удален === 'Да' || sourceOrder.ЧастичныеДанные === 'Да' ||
++              !partyMatches(sourceOrder.НашаОрганизация, doc.snapshot.customerOrganization) || !partyMatches(sourceOrder.Контрагент, doc.snapshot.carrierOrganization) ||
++              sabyCarrierAcceptance(sourceOrder)?.evidenceHash !== orderInput!.carrierEvidence.evidenceHash || orderSignatureIdentity(sourceOrder) !== orderSignatureIdentity(orderInput!.remoteOrder)) return failFinalization();
++          const fresh = await client.readConsignmentNote(doc.id!); validateReservation(fresh);
++          const freshWorkflow = sabyDocumentWorkflow(fresh), parties = sabyObject(fresh.Стороны) ? fresh.Стороны : {};
++          const hasSignature = (value: unknown) => value !== undefined && value !== null && (!Array.isArray(value) || value.length > 0);
++          const bases = Array.isArray(fresh.ДокументОснование) ? fresh.ДокументОснование.filter(sabyObject).map(row => row.Документ).filter(sabyObject) : [];
++          const files = Array.isArray(fresh.Вложение) ? fresh.Вложение.filter(sabyObject).filter(file => file.Удален !== 'Да') : [];
++          if (freshWorkflow.revision !== revision || freshWorkflow.signatureStatus === 'reported_by_saby' || !sabyObject(fresh.Состояние) || String(fresh.Состояние.Код) !== '0' ||
++              fresh.Ошибка || Number(fresh.КоличествоОшибок ?? 0) !== 0 || hasSignature(fresh.Подпись) || bases.length !== 1 || bases[0].Тип !== 'TransportOrder' || bases[0].Идентификатор !== orderInput!.order.id ||
++              !partyMatches(fresh.Грузоотправитель ?? parties.Отправитель, doc.snapshot.customerOrganization) || !partyMatches(fresh.ТранспортнаяКомпания ?? parties.Перевозчик, doc.snapshot.carrierOrganization) || !partyMatches(fresh.Грузополучатель ?? parties.Получатель, doc.snapshot.profile.recipient) ||
++              files.length !== 1 || files[0].Идентификатор !== titles[0].Идентификатор || files[0].Подтип !== '1110339' || files[0].ВерсияФормата !== '5.01' || files[0].Актуален === 'Нет' || hasSignature(files[0].Подпись) || files[0].Ошибка || Number(files[0].КоличествоОшибок ?? 0) !== 0) return failFinalization();
++          const file = await client.downloadAttachment(doc.id!, String(titles[0].Идентификатор), revision);
++          if (file.name !== uploadedTitle.name || !Buffer.from(file.bytes).equals(unnumbered) || !Buffer.from(file.bytes).equals(uploadedTitle.bytes)) return failFinalization();
++          await checkAccess();
++        };
++        if (doc.writeAttempts?.some(attempt => attempt.action === 'upload') || sabyDocumentWorkflow(remote).signatureStatus === 'reported_by_saby' || !sabyObject(remote.Состояние) || String(remote.Состояние.Код) !== '0') failFinalization();
++        if (finalizationAttempted) await checkFlagOnlyGap();
+         const request = { ...orderDocument(buildSabyConsignmentDocument(doc.snapshot, doc.marker, doc.attemptId, doc.createdAt, doc.number, { senderTitleVersion: 2 })), Идентификатор: doc.id, Адресация: { Идентификатор: doc.id, Редакция: { Идентификатор: revision } }, Вложение: [{ Идентификатор: String(titles[0].Идентификатор), Файл: { Имя: uploadedTitle.name, ДвоичныеДанные: expected.toString('base64') } }] };
+         writing = 'upload';
+         const result = await client.writeConsignmentNote(request, async intent => {
+           await checkAccess();
+-          await update(direct ? { directDraftCreation: { ...doc.directDraftCreation!, numberFinalizationAttempted: true } } : { orderAutoNumber: { version: 1, numberFinalizationAttempted: true } });
+-          await beforeWrite('upload')(intent);
++          if (finalizationAttempted) await checkFlagOnlyGap();
++          await beforeWrite('upload', direct ? { directDraftCreation: { ...doc.directDraftCreation!, numberFinalizationAttempted: true } } : { orderAutoNumber: { version: 1, numberFinalizationAttempted: true } })(intent);
+         });
+         const returnedId = sabyText(result.Идентификатор);
+         if (returnedId) await receiveWrite(returnedId);
+--- a/server/saby-client.ts
++++ b/server/saby-client.ts
+@@ -1,9 +1,17 @@
+ import { createHash } from 'node:crypto';
++import { AsyncLocalStorage } from 'node:async_hooks';
+ import { readSabyResponseBody, sabyRequestIntent, sabyResponseDiagnostic, type SabyBeforeDispatch, type SabyRequestIntent, type SabyResponseDiagnostic } from './saby-request-audit';
+ export { isSabyRequestIntent, isSabyResponseDiagnostic, type SabyBeforeDispatch, type SabyRequestIntent, type SabyResponseDiagnostic } from './saby-request-audit';
+ import { readSabyTransportProfile, type SabyTransportProfile } from './saby-transport-order';
+ import { signingActionRequest, verifyPreparedSigning, type SabyPreparedSigning, type SabySigningBinding, type SabySigningSide } from './saby-signing';
+ import { readAutomaticSigningPolicy, type SabyAutomaticSigningPolicy } from './saby-auto-policy';
++
++type SabyRequestBudget = <T>(action: () => Promise<T>) => Promise<T>;
++interface HeldPreDispatchBudget { budget: SabyRequestBudget; active: boolean; tail: Promise<void> }
++// A pre-dispatch check runs inside an already reserved network slot. Its nested
++// reads reuse that slot, serially, rather than waiting for a second slot. The
++// scope is account-independent but bound to this exact runtime budget function.
++const heldPreDispatchBudget = new AsyncLocalStorage<HeldPreDispatchBudget | undefined>();
+ 
+ /** Server-only Saby TMS JSON-RPC transport. See docs/saby-integration.md. */
+ export type SabyObject = Record<string, unknown>;
+@@ -248,11 +256,37 @@
+     }, this.send, this.beforeRequest, this.runRequest, this.sessionPool);
+   }
+ 
++  private async withBudget<T>(action: () => Promise<T>): Promise<T> {
++    const held = heldPreDispatchBudget.getStore();
++    if (this.runRequest && held?.active && held.budget === this.runRequest) {
++      // Sibling reads inside one callback share one physical slot. A nested
++      // request's own callback receives a fresh scope, so deeper checks also
++      // remain reentrant without allowing parallel transports in this slot.
++      const operation = held.tail.then(() => heldPreDispatchBudget.run(undefined, action));
++      held.tail = operation.then(() => undefined, () => undefined);
++      return operation;
++    }
++    return this.runRequest ? this.runRequest(action) : action();
++  }
++
++  private async beforeDispatchWithinBudget(beforeDispatch: SabyBeforeDispatch | undefined, intent: SabyRequestIntent): Promise<void> {
++    if (!beforeDispatch) return;
++    if (!this.runRequest) return beforeDispatch(structuredClone(intent));
++    const held: HeldPreDispatchBudget = { budget: this.runRequest, active: true, tail: Promise.resolve() };
++    try { await heldPreDispatchBudget.run(held, () => beforeDispatch(structuredClone(intent))); }
++    finally {
++      // Even an accidentally unawaited read must settle before the outer write
++      // uses its slot. Escaped asynchronous contexts cannot borrow it later.
++      try { for (;;) { const tail = held.tail; await tail; if (tail === held.tail) break; } }
++      finally { held.active = false; }
++    }
++  }
++
+   private async request(url: string, method: string, params: SabyObject, session?: string, writing = false, beforeDispatch?: SabyBeforeDispatch): Promise<unknown> {
+     const dispatch = () => this.dispatchRequest(url, method, params, session, writing, beforeDispatch);
+     // Wait for runtime capacity before checking the lease, writing a dispatch
+     // marker or starting the transport timeout. Keep the slot through body read.
+-    return this.runRequest ? this.runRequest(dispatch) : dispatch();
++    return this.withBudget(dispatch);
+   }
+ 
+   private async dispatchRequest(url: string, method: string, params: SabyObject, session?: string, writing = false, beforeDispatch?: SabyBeforeDispatch): Promise<unknown> {
+@@ -263,7 +297,7 @@
+     await this.beforeRequest?.();
+     const intent = sabyRequestIntent(method, id, bodyText);
+     // A durable marker failure must never reach fetch. The callback gets only safe evidence.
+-    await beforeDispatch?.(structuredClone(intent));
++    await this.beforeDispatchWithinBudget(beforeDispatch, intent);
+     const controller = new AbortController();
+     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 25_000);
+     try {
+@@ -530,7 +564,7 @@
+       const mimeType = ({ xml: 'application/xml', pdf: 'application/pdf', zip: 'application/zip', sig: 'application/octet-stream', sgn: 'application/octet-stream' } as Record<string, string>)[info.extension] ?? 'application/octet-stream';
+       return { ...info, bytes, mimeType };
+     };
+-    return this.runRequest ? this.runRequest(download) : download();
++    return this.withBudget(download);
+   }
+   private document(result: unknown, writing = false): SabyObject {
+     const doc = sabyObject(result) && sabyObject(result.Документ) ? result.Документ : result;
+--- a/server/trip-saby-workflow.ts
++++ b/server/trip-saby-workflow.ts
+@@ -45,6 +45,7 @@
+ interface DeliveryRecord {
+   shipmentId: string; snapshot: SabyConsignmentSnapshot; payloadHash: string;
+   waitingForLoading?: boolean;
++  waitingForNativeDraft?: boolean;
+   id: string | null; status: 'not_sent' | 'pending' | 'unknown' | 'draft' | 'error'; lastError: string | null;
+ }
+ export interface TripSabyAutomaticAuthorization {
+@@ -53,6 +54,8 @@
+   selection: { sender: string; carrier: string };
+ }
+ export interface TripSabyRecord {
++  /** New order flows may create the first linked T1 after complete absence checks. */
++  orderConsignmentCreationVersion?: 2;
+   /** Frozen only on creation; absence preserves the historical serializer and verification rules. */
+   senderVerificationPolicy?: SabySenderVerificationPolicy;
+   driverFlow?: {
+@@ -112,7 +115,7 @@
+ 
+ function newTripSabyRecord(prepared: TripSabyPreparation, initiatorId?: string): TripSabyRecord {
+   const stamp = now();
+-  return { senderVerificationPolicy: newSenderVerificationPolicy, ...(initiatorId ? { initiatorId } : {}), ...(prepared.order.fields.trip_flow_version === 'driver-v1' ? { driverFlow: { state: 'waiting_driver', processingAllowanceHours: 10 } as const } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill('По договору'), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
++  return { senderVerificationPolicy: newSenderVerificationPolicy, ...(initiatorId ? { initiatorId } : {}), ...(prepared.order.fields.trip_flow_version === 'driver-v1' ? { orderConsignmentCreationVersion: 2 as const, driverFlow: { state: 'waiting_driver', processingAllowanceHours: 10 } as const } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill('По договору'), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
+ }
+ 
+ /** Called from a successful new trip save or explicit start, inside its storage transaction. No network. */
+@@ -212,6 +215,7 @@
+     if (sabyObject(record)) { validateCarrierFill(record.carrierFill); validateTripSigning(record.signing); }
+     if (sabyObject(record) && record.initiatorId !== undefined && !sabyText(record.initiatorId)) throw new Error('Invalid trip Saby initiator');
+     if (!tripId || !sabyObject(record) || !['artel_customer', 'nk_own_customer'].includes(String(record.scenario)) || !sabyObject(record.snapshot) || record.snapshot.tripId !== tripId || record.snapshot.shipmentId !== tripId || !digest(record.payloadHash) || record.payloadHash !== hash(record.snapshot) || !dated(record.createdAt) || !dated(record.updatedAt) || !nullable(record.leaseId) || !(record.leaseUntil === null || dated(record.leaseUntil)) || typeof record.reservationAttempted !== 'boolean' || typeof record.uploadAttempted !== 'boolean' || typeof record.marker !== 'string' || !record.marker.startsWith('ARTEL-CRM:TRIP:') || typeof record.attemptId !== 'string' || !record.attemptId || !phases.includes(String(record.phase)) || !nullable(record.lastError) || !sabyObject(record.order) || !Array.isArray(record.deliveries) || !record.deliveries.length || record.deliveries.length > 100) throw new Error('Invalid trip Saby record');
++    if (record.orderConsignmentCreationVersion !== undefined && (record.orderConsignmentCreationVersion !== 2 || !record.driverFlow)) throw new Error('Invalid order consignment creation protocol');
+     if (record.senderVerificationPolicy !== undefined && record.senderVerificationPolicy !== 'address-multidelivery-v1') throw new Error('Invalid sender verification policy');
+     if (record.unexpectedDocumentIds !== undefined && (!Array.isArray(record.unexpectedDocumentIds) || record.unexpectedDocumentIds.some(id => typeof id !== 'string' || !id))) throw new Error('Invalid unexpected Saby document identifiers');
+     if (record.autoAuthorization !== undefined) {
+@@ -249,6 +253,7 @@
+     const ids = new Set<string>();
+     for (const delivery of record.deliveries) {
+       if (!sabyObject(delivery) || !sabyText(delivery.shipmentId) || ids.has(String(delivery.shipmentId)) || !sabyObject(delivery.snapshot) || delivery.snapshot.tripId !== tripId || delivery.snapshot.shipmentId !== delivery.shipmentId || !digest(delivery.payloadHash) || delivery.payloadHash !== hash(delivery.snapshot) || !nullable(delivery.id) || !nullable(delivery.lastError) || !['not_sent', 'pending', 'unknown', 'draft', 'error'].includes(String(delivery.status)) || delivery.status === 'draft' && !delivery.id) throw new Error('Invalid trip Saby delivery');
++      if (delivery.waitingForNativeDraft !== undefined && (delivery.waitingForNativeDraft !== true || delivery.status !== 'pending' || delivery.id !== null || delivery.lastError !== null)) throw new Error('Invalid native consignment wait');
+       ids.add(String(delivery.shipmentId));
+     }
+     if (record.phase === 'completed' && record.signing && ((record.signing as unknown as TripSigningRecord).sender.state !== 'confirmed' || (record.signing as unknown as TripSigningRecord).carrier.state !== 'confirmed')) throw new Error('Unconfirmed completed signing workflow');
+@@ -307,7 +312,7 @@
+   const expired = record.leaseId !== null && (!record.leaseUntil || Date.parse(record.leaseUntil) <= Date.now());
+   const phase = expired && ['submitting', 'creating_etrn'].includes(record.phase) ? 'unknown' : record.phase;
+   const sent = !!record.carrierEvidence || ['3', '4', '7'].includes(record.order.remoteStateCode ?? '');
+-  return { status: ['error', 'unknown'].includes(phase) ? 'error' : sent ? 'sent' : 'not_sent', phase, ready: blockers.length === 0, blockers, locked: true, updatedAt: record.updatedAt, lastError: record.lastError, order: { ...record.order, exchangeStage: record.order.exchangeStage ?? (record.carrierEvidence ? 'carrier_confirmed' : 'unknown'), status: expired && record.order.status === 'pending' ? 'unknown' : record.order.status }, deliveries: record.deliveries.map(({ shipmentId, id, status, lastError }) => ({ shipmentId, id, status: expired && status === 'pending' ? 'unknown' : status, lastError })), carrierConfirmed: !!record.carrierEvidence, lastCheckedAt: record.lastCheckedAt ?? null, lastCheckAttemptAt: record.lastCheckAttemptAt ?? null, monitoring, automation, history: record.history ?? [], ...(record.driverFlow ? { driverFlow: { state: record.driverFlow.state, processingAllowanceHours: 10 as const }, stage6CompletedAt: record.stage6CompletedAt ?? null } : {}), ...(record.carrierFill ? { carrierFill: { state: record.carrierFill.state, blockers: record.carrierFill.blockers, driverSaved: record.carrierFill.driverSaved, vehicleSaved: record.carrierFill.vehicleSaved, ...(record.carrierFill.responsibleSaved !== undefined ? { responsibleSaved: record.carrierFill.responsibleSaved } : {}), checkedAt: record.carrierFill.checkedAt } } : {}), ...(record.signing ? { signing: publicTripSigning(record.signing) } : {}), carrierHandoff: { driverName: record.snapshot.driver?.name ?? null, driverPhone: record.snapshot.driver?.phone ?? null, vehiclePlate: record.snapshot.vehicle?.plate ?? null, vehicleType: record.snapshot.vehicle?.type ?? null } };
++  return { status: ['error', 'unknown'].includes(phase) ? 'error' : sent ? 'sent' : 'not_sent', phase, ready: blockers.length === 0, blockers, locked: true, updatedAt: record.updatedAt, lastError: record.lastError, order: { ...record.order, exchangeStage: record.order.exchangeStage ?? (record.carrierEvidence ? 'carrier_confirmed' : 'unknown'), status: expired && record.order.status === 'pending' ? 'unknown' : record.order.status }, deliveries: record.deliveries.map(({ shipmentId, id, status, lastError, waitingForNativeDraft }) => ({ shipmentId, id, ...(waitingForNativeDraft ? { waitingForNativeDraft } : {}), status: expired && status === 'pending' && !waitingForNativeDraft ? 'unknown' : status, lastError })), carrierConfirmed: !!record.carrierEvidence, lastCheckedAt: record.lastCheckedAt ?? null, lastCheckAttemptAt: record.lastCheckAttemptAt ?? null, monitoring, automation, history: record.history ?? [], ...(record.driverFlow ? { driverFlow: { state: record.driverFlow.state, processingAllowanceHours: 10 as const }, stage6CompletedAt: record.stage6CompletedAt ?? null } : {}), ...(record.carrierFill ? { carrierFill: { state: record.carrierFill.state, blockers: record.carrierFill.blockers, driverSaved: record.carrierFill.driverSaved, vehicleSaved: record.carrierFill.vehicleSaved, ...(record.carrierFill.responsibleSaved !== undefined ? { responsibleSaved: record.carrierFill.responsibleSaved } : {}), checkedAt: record.carrierFill.checkedAt } } : {}), ...(record.signing ? { signing: publicTripSigning(record.signing) } : {}), carrierHandoff: { driverName: record.snapshot.driver?.name ?? null, driverPhone: record.snapshot.driver?.phone ?? null, vehiclePlate: record.snapshot.vehicle?.plate ?? null, vehicleType: record.snapshot.vehicle?.type ?? null } };
+ }
+ function sameOrganization(raw: unknown, organization: SabyTransportSnapshot['customerOrganization']) {
+   return sabyObject(raw) && sabyObject(raw.СвЮЛ) && raw.СвЮЛ.ИНН === organization.inn && raw.СвЮЛ.КПП === organization.kpp;
+@@ -365,7 +370,7 @@
+   signingStart?: { request: TripSabySigningStartRequest; requestedBy: string };
+   authorize: (snapshot: ShipmentAccessContext, data: OperationsData) => void; client?: SabyClient;
+   /** Must preserve ETRN ID-before-read and unknown-result recovery in its own durable record. */
+-  createDelivery: (input: CreateTripSabyDelivery, client: SabyClient) => Promise<{ status: 'pending' | 'unknown' | 'draft' | 'error'; id: string | null; lastError: string | null; waitingForLoading?: boolean }>;
++  createDelivery: (input: CreateTripSabyDelivery, client: SabyClient) => Promise<{ status: 'pending' | 'unknown' | 'draft' | 'error'; id: string | null; lastError: string | null; waitingForLoading?: boolean; waitingForNativeDraft?: boolean }>;
+ }
+ 
+ /** One durable lease covers documents and an explicitly requested signing chain. */
+@@ -407,7 +412,7 @@
+       record.carrierFill = newCarrierFill();
+       if (options.initiatorId) record.initiatorId = options.initiatorId;
+     }
+-    for (const row of record.deliveries) if (row.status === 'pending') row.status = 'unknown';
++    for (const row of record.deliveries) if (row.status === 'pending' && !row.waitingForNativeDraft) row.status = 'unknown';
+     if (record.order.status === 'pending' && record.reservationAttempted) record.order.status = 'unknown';
+     record.leaseId = leaseId; record.leaseUntil = new Date(Date.now() + 300_000).toISOString(); record.updatedAt = now();
+     return { result: structuredClone(record), changed: true };
+@@ -564,7 +569,7 @@
+           await advanceTripSigning(signingContext, 'sender'); await advanceTripSigning(signingContext, 'carrier');
+           if (record.signing.sender.state !== 'confirmed' || record.signing.carrier.state !== 'confirmed') throw new SabyError('validation', 'Подписи сторон больше не подтверждены. Создание ЭТрН остановлено.');
+         }
+-        await update(row => { const current = row.deliveries.find(item => item.shipmentId === delivery.shipmentId)!; current.status = current.status === 'unknown' ? 'unknown' : 'pending'; current.lastError = null; current.waitingForLoading = false; });
++        await update(row => { const current = row.deliveries.find(item => item.shipmentId === delivery.shipmentId)!; current.status = current.status === 'unknown' ? 'unknown' : 'pending'; current.lastError = null; current.waitingForLoading = false; delete current.waitingForNativeDraft; });
+         try {
+           const result = await createDelivery({ shipmentId: delivery.shipmentId, snapshot: structuredClone(delivery.snapshot), order: { id: record.order.id!, number: record.order.number!, date: record.order.date! }, carrierEvidence: evidence, remoteOrder: remote }, client);
+           await update(row => { Object.assign(row.deliveries.find(item => item.shipmentId === delivery.shipmentId)!, result); });
+@@ -577,7 +582,7 @@
+           break;
+         }
+       }
+-      await update(row => { const failure = row.deliveries.find(item => item.status !== 'draft'); row.phase = !failure ? row.driverFlow ? 'sending_etrn' : 'completed' : failure.waitingForLoading ? 'awaiting_loading' : failure.status === 'unknown' || failure.status === 'pending' ? 'unknown' : 'error'; row.lastError = failure?.lastError ?? null; });
++      await update(row => { const failure = row.deliveries.find(item => item.status !== 'draft'); row.phase = !failure ? row.driverFlow ? 'sending_etrn' : 'completed' : failure.waitingForLoading ? 'awaiting_loading' : failure.waitingForNativeDraft ? 'creating_etrn' : failure.status === 'unknown' || failure.status === 'pending' ? 'unknown' : 'error'; row.lastError = failure?.lastError ?? null; });
+       if (record.driverFlow && record.phase === 'sending_etrn') {
+         let allSent = true;
+         for (const delivery of record.deliveries) {
+--- a/tests/etrn-linked-draft.test.ts
++++ b/tests/etrn-linked-draft.test.ts
+@@ -383,7 +383,7 @@
+       }
+     }
+     const client = new StoreClient();
+-    return { ...rt, client, shipmentId, input, snapshot, note, writes, readDocument, serialized,
++    return { ...rt, client, shipmentId, input, snapshot, order, note, writes, readDocument, serialized,
+       run: () => exchangePreparedEtrn({ ...rt, store, client }, input),
+       refresh: () => exchangeEtrn({ ...rt, store, client }, shipmentId, true),
+       restart: () => { store = new OperationsStore(resolve(rt.directory, 'store')); },
+@@ -402,6 +402,44 @@
+   } catch (error) { await rt.close(); throw error; }
+ }
+ 
++
++test('a delayed native link stays pending across restart and adopts the later exact note without creating another', async () => {
++  const f = await storeFixture();
++  try {
++    const links = structuredClone(f.order.ДокументСледствие);
++    f.order.ДокументСледствие = [];
++    const waiting = { status: 'pending', id: null, lastError: null, waitingForNativeDraft: true };
++    assert.deepEqual(await f.run(), waiting);
++    const first = (await f.readDocument())!;
++    assert.equal(first.reservationAttempted, false); assert.equal(first.uploadAttempted, false);
++    assert.equal(first.leaseId, null); assert.equal(first.linkedDraft, undefined);
++    assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 }); assert.equal(f.writes.length, 0);
++    f.restart(); assert.deepEqual(await f.run(), waiting);
++    const second = (await f.readDocument())!;
++    for (const key of ['attemptId', 'marker', 'payloadHash', 'snapshot'] as const) assert.deepEqual(second[key], first[key]);
++    assert.equal(f.writes.length, 0);
++    f.order.ДокументСледствие = links;
++    const ready = await f.run(); assert.equal(ready.status, 'draft', ready.lastError ?? '');
++    assert.equal(ready.id, 'native-store-note'); assert.equal(f.writes.length, 1);
++    f.restart(); assert.equal((await f.run()).status, 'draft'); assert.equal(f.writes.length, 1);
++    assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 });
++  } finally { await f.close(); }
++});
++
++test('ambiguous native links after a safe wait remain an error and never create or update documents', async () => {
++  const f = await storeFixture();
++  try {
++    const links = structuredClone(f.order.ДокументСледствие) as SabyObject[];
++    f.order.ДокументСледствие = [];
++    assert.equal((await f.run()).waitingForNativeDraft, true);
++    f.order.ДокументСледствие = [...links, ...links];
++    const result = await f.run();
++    assert.equal(result.status, 'error'); assert.equal(result.waitingForNativeDraft, undefined);
++    assert.match(result.lastError!, /одна ЭТрН/); assert.equal(f.writes.length, 0);
++    assert.deepEqual(f.counts(), { reserves: 0, lookups: 0 });
++  } finally { await f.close(); }
++});
++
+ test('OperationsStore wrapper adopts native driver draft once and refreshes after restart using frozen order data without reserving another document', async () => {
+   const f = await storeFixture();
+   try {
+--- /dev/null
++++ b/tests/etrn-order-creation.test.ts
+@@ -0,0 +1,252 @@
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { test } from 'node:test';
++import { SabyClient, type SabyObject } from '../server/saby-client';
++import { signingManifestHash, type SabySigningBinding } from '../server/saby-signing';
++import { exchangePreparedEtrn, saveTripLoadingFacts } from '../server/etrn-service';
++import { runTripSabyWorkflow, type CreateTripSabyDelivery } from '../server/trip-saby-workflow';
++import { integrationApi, integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
++
++const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
++async function fixture() {
++  const rt = await integrationRuntime(), api = integrationApi();
++  const wait = async () => ({ status: 'error' as const, id: null, lastError: 'Synthetic loading wait', waitingForLoading: true });
++  await runTripSabyWorkflow({ ...rt, client: api.client(), createDelivery: wait }); api.accept();
++  const order = [...api.docs.values()].find(doc => doc.Тип === 'TransportOrder')!;
++  for (const [index, file] of (order.Вложение as SabyObject[]).entries()) file.Подпись = [{ Сертификат: { Отпечаток: (index ? 'b' : 'a').repeat(40) }, Файл: { Ссылка: 'https://disk.saby.ru/synthetic-signature.sig' } }];
++  await runTripSabyWorkflow({ ...rt, client: api.client(), createDelivery: wait });
++  await saveTripLoadingFacts({ ...rt, client: api.client() }, rt.facts(), 'synthetic-employee');
++  const signingFiles = await Promise.all((order.Вложение as SabyObject[]).map(file => api.client().downloadTransportOrderAttachment(String(order.Идентификатор), String(file.Идентификатор), `${order.Идентификатор}-revision`)));
++  await rt.store.mutate(rt.source, data => {
++    const record = data.tripSaby!.trips[rt.tripId], original = structuredClone(record.snapshot);
++    record.snapshot.fields.trip_flow_version = 'driver-v1'; record.payloadHash = hash(record.snapshot);
++    record.driverFlow = { state: 'ready', processingAllowanceHours: 10, draftSnapshot: original, draftAttachment: { id: 'synthetic-original-title', revision: record.order.revision!, name: 'synthetic-original.xml', sha256: 'a'.repeat(64) } };
++    record.orderConsignmentCreationVersion = 2;
++    const steps = (['sender', 'carrier'] as const).map((side, index) => {
++      const file = signingFiles[index], party = side === 'sender' ? record.snapshot.customerOrganization : record.snapshot.carrierOrganization;
++      const counterparty = side === 'sender' ? record.snapshot.carrierOrganization : record.snapshot.customerOrganization;
++      const binding: SabySigningBinding = { side, documentId: record.order.id!, revision: record.order.revision!, stageId: 'observed-signed', stageName: side === 'sender' ? 'Отправка' : 'Утверждение', actionName: side === 'sender' ? 'Отправить' : 'Утвердить', certificateThumbprint: (index ? 'b' : 'a').repeat(40), organizationInn: party.inn, organizationKpp: party.kpp, counterpartyInn: counterparty.inn, counterpartyKpp: counterparty.kpp, attachmentSubtype: side === 'sender' ? '1110361' : '1110362', attachmentId: file.id };
++      const attachments = [{ id: file.id, name: file.name, subtype: binding.attachmentSubtype, sha256: createHash('sha256').update(file.bytes).digest('hex') }];
++      return { state: 'confirmed' as const, binding, prepared: { binding, attachments, preparedHash: signingManifestHash({ binding, attachments }) }, preparedVerified: true };
++    });
++    record.signing = { requestedBy: 'synthetic-employee', requestedAt: record.createdAt, requestId: 'synthetic-signing-request', previewToken: 'a'.repeat(64), workflowAttemptId: record.attemptId, documentId: record.order.id!, revision: record.order.revision!, payloadHash: record.payloadHash, selection: { sender: 'a'.repeat(40), carrier: 'b'.repeat(40) }, sender: steps[0], carrier: steps[1] };
++    return { result: undefined, changed: true };
++  });
++  let loseCreate = false, failList = false, appearDuringScan = false, created = 0;
++  let requestHook: ((url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => Promise<Response | undefined>) | undefined;
++  const send: typeof fetch = async (url, init) => {
++    const intercepted = await requestHook?.(url, init); if (intercepted) return intercepted;
++    if (init?.method === 'GET') return api.send(url, init);
++    const req = JSON.parse(String(init?.body));
++    if (req.method === 'СБИС.СписокДокументов' && req.params.Фильтр.Тип === 'ConsignmentNote') {
++      if (failList) return api.json(req, { Документ: [] });
++      if (appearDuringScan) { appearDuringScan = false; order.ДокументСледствие = [{ Документ: { Идентификатор: 'appeared-native', Тип: 'ConsignmentNote' } }]; }
++      const notes = [...api.docs.values()].filter(doc => doc.Тип === 'ConsignmentNote');
++      return api.json(req, { Документ: notes, Навигация: { ЕстьЕще: 'Нет', РазмерСтраницы: '200', Страница: '0' } });
++    }
++    const response = await api.send(url, init);
++    if (req.method === 'СБИС.ЗаписатьДокумент' && req.params.Документ.Тип === 'ConsignmentNote') {
++      const result = await response.json(); const note = api.docs.get(result.result.Идентификатор)!;
++      note.Состояние = { Код: '0', Название: 'Черновик' };
++      if (!req.params.Документ.Идентификатор) {
++        created++;
++        order.ДокументСледствие = [...(order.ДокументСледствие as SabyObject[] ?? []), { Документ: { Идентификатор: note.Идентификатор, Тип: 'ConsignmentNote' } }];
++        if (loseCreate) { loseCreate = false; throw new Error('Synthetic lost creation response'); }
++      }
++      return api.json(req, note);
++    }
++    return response;
++  };
++  const client = new SabyClient(integrationConfig(), send);
++  const run = async (index = 0) => {
++    const record = (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId];
++    const row = record.deliveries[index];
++    const input: CreateTripSabyDelivery = { shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), order: { id: record.order.id!, number: record.order.number!, date: record.order.date! }, carrierEvidence: record.carrierEvidence!, remoteOrder: structuredClone(order) };
++    return exchangePreparedEtrn({ ...rt, client }, input);
++  };
++  const readDoc = async (index = 0) => (await rt.store.read(rt.source)).etrn!.trips[rt.tripId].deliveries[rt.trip.customers[index].id].document!;
++  return { ...rt, api, order, run, readDoc, created: () => created, lose: () => { loseCreate = true; }, incomplete: () => { failList = true; }, appear: () => { appearDuringScan = true; }, setHook: (hook: typeof requestHook) => { requestHook = hook; } };
++}
++
++/** Fail the actual transaction that arms numbering, before its changed data can
++ * commit. The external writer has not been invoked at this failure point. */
++async function interruptNumberFinalization(f: Awaited<ReturnType<typeof fixture>>) {
++  const mutate = f.store.mutate.bind(f.store); let interrupted = false, flagAndIntentAtomic = false;
++  f.store.mutate = (source, update) => mutate(source, async data => {
++    const before = data.etrn?.trips[f.tripId]?.deliveries[f.trip.customers[0].id]?.document;
++    const wasAttempted = before?.orderAutoNumber?.numberFinalizationAttempted;
++    const result = await update(data), doc = data.etrn?.trips[f.tripId]?.deliveries[f.trip.customers[0].id]?.document;
++    if (!interrupted && !wasAttempted && doc?.orderAutoNumber?.numberFinalizationAttempted) {
++      interrupted = true; flagAndIntentAtomic = doc.writeAttempts?.filter(row => row.action === 'upload').length === 1;
++      throw new Error('Synthetic core queue busy before finalization transaction commit');
++    }
++    return result;
++  });
++  try { assert.equal((await f.run()).status, 'unknown'); } finally { f.store.mutate = mutate; }
++  assert.equal(interrupted, true); assert.equal(flagAndIntentAtomic, true);
++  const doc = await f.readDoc(); assert.equal(doc.orderAutoNumber?.numberFinalizationAttempted, undefined); assert.equal(doc.writeAttempts?.length, 1);
++  assert.equal(doc.writeAttempts?.[0].outcome, 'received'); assert.equal(f.created(), 1);
++}
++
++async function flagOnlyGap(f: Awaited<ReturnType<typeof fixture>>) {
++  await interruptNumberFinalization(f);
++  await f.store.mutate(f.source, data => {
++    const workflow = data.tripSaby!.trips[f.tripId], doc = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++    // Reproduce the historical committed flag whose following intent failed.
++    doc.orderAutoNumber!.numberFinalizationAttempted = true;
++    workflow.initiatorId = 'synthetic-employee';
++    workflow.autoAuthorization = { requestId: workflow.signing!.requestId, requestedBy: 'synthetic-employee', requestedAt: workflow.createdAt, policyId: 'synthetic-policy', policyHash: 'a'.repeat(64), mode: 'deferred', selection: structuredClone(workflow.signing!.selection) };
++    workflow.signing!.mode = 'automatic';
++    return { result: undefined, changed: true };
++  });
++}
++
++test('number finalization flag and upload intent commit together; a failed commit resumes once', async () => {
++  const f = await fixture();
++  try {
++    await interruptNumberFinalization(f);
++    assert.equal((await f.run()).status, 'draft'); assert.equal(f.created(), 1);
++    const doc = await f.readDoc(); assert.equal(doc.writeAttempts?.filter(row => row.action === 'upload').length, 1);
++    assert.equal(doc.orderAutoNumber?.numberFinalizationAttempted, true);
++    await f.run(); assert.equal(f.api.writes('ConsignmentNote').length, 2);
++  } finally { await f.close(); }
++});
++
++test('exact v2 flag-only gap preserves original evidence and numbers the same draft once', async () => {
++  const f = await fixture();
++  try {
++    await flagOnlyGap(f); const before = await f.readDoc(); const result = await f.run();
++    assert.equal(result.status, 'draft', result.lastError ?? ''); assert.equal(result.id, before.id); assert.equal(f.created(), 1);
++    const after = await f.readDoc(); assert.deepEqual(after.writeAttempts?.[0], before.writeAttempts?.[0]);
++    assert.deepEqual(after.snapshot, before.snapshot); assert.deepEqual(after.orderCreationAllocation, before.orderCreationAllocation);
++    assert.equal(after.orderAutoNumber?.numberFinalizationAttempted, true); assert.equal(after.writeAttempts?.length, 2);
++    await f.run(); assert.equal(f.api.writes('ConsignmentNote').length, 2);
++  } finally { await f.close(); }
++});
++
++test('any recorded finalization intent forbids a retry even when its draft remains unnumbered', async () => {
++  for (const outcome of ['attempted', 'uncertain', 'denied', 'received'] as const) {
++    const f = await fixture();
++    try {
++      await flagOnlyGap(f);
++      await f.store.mutate(f.source, data => {
++        const doc = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++        doc.writeAttempts!.push({ action: 'upload', request: { ...doc.writeAttempts![0].request, requestId: 999 }, outcome });
++        return { result: undefined, changed: true };
++      });
++      assert.equal((await f.run()).status, 'unknown'); assert.equal(f.api.writes('ConsignmentNote').length, 1);
++    } finally { await f.close(); }
++  }
++});
++
++test('flag-only recovery rejects changed bytes, signatures, revision races, legacy protocol and changed provenance', async () => {
++  for (const change of ['bytes', 'signed', 'revision-race', 'legacy', 'reservation-hash', 'grant'] as const) {
++    const f = await fixture();
++    try {
++      await flagOnlyGap(f); const doc = await f.readDoc(), remote = f.api.docs.get(doc.id!)!;
++      if (change === 'bytes') f.setHook(async (url, init) => init?.method === 'GET' && String(url).includes(`${doc.id}.xml`) ? new Response(Buffer.concat([Buffer.from(await (await f.api.send(url, init)).arrayBuffer()), Buffer.from(' ')])) : undefined);
++      if (change === 'signed') (remote.Вложение as SabyObject[])[0].Подпись = [{}];
++      if (change === 'revision-race') {
++        let reads = 0;
++        f.setHook(async (_url, init) => { if (init?.method === 'POST') { const req = JSON.parse(String(init.body)); if (req.method === 'СБИС.ПрочитатьДокумент' && req.params.Документ.Идентификатор === doc.id && ++reads === 2) remote.Редакция = [{ Идентификатор: 'changed-revision', Актуален: 'Да' }]; } return undefined; });
++      }
++      if (['legacy', 'reservation-hash', 'grant'].includes(change)) await f.store.mutate(f.source, data => {
++        const w = data.tripSaby!.trips[f.tripId], d = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++        if (change === 'legacy') delete w.orderConsignmentCreationVersion;
++        if (change === 'reservation-hash') d.writeAttempts![0].request.bodySha256 = 'f'.repeat(64);
++        if (change === 'grant') { delete w.autoAuthorization; delete w.signing!.mode; }
++        return { result: undefined, changed: true };
++      });
++      const result = await f.run(); assert.notEqual(result.status, 'draft', change);
++      assert.equal(f.api.writes('ConsignmentNote').length, 1, change); assert.equal((await f.readDoc()).orderAutoNumber?.numberFinalizationAttempted, true);
++    } finally { await f.close(); }
++  }
++});
++
++test('version two creates the first full numbered T1 and each subsequent delivery exactly once with reciprocal order links', async () => {
++  const f = await fixture();
++  try {
++    const before = await f.store.read(f.source);
++    const first = await f.run(); assert.equal(first.status, 'draft', first.lastError ?? '');
++    const saved = await f.readDoc();
++    assert.equal(saved.nativeDraftEnabled, false); assert.equal(saved.orderCreationAllocation?.version, 2);
++    assert.deepEqual(saved.orderCreationAllocation?.shipmentIds, f.trip.customers.map(row => row.id));
++    assert.equal(saved.writeAttempts?.[0].outcome, 'received');
++    const second = await f.run(1); assert.equal(second.status, 'draft', second.lastError ?? '');
++    assert.notEqual(first.id, second.id); assert.equal(f.created(), 2);
++    await f.run(); await f.run(1); assert.equal(f.created(), 2);
++    const after = await f.store.read(f.source);
++    assert.deepEqual(after.tripSaby, before.tripSaby); assert.deepEqual(after.etrn!.trips[f.tripId].loadingFacts, before.etrn!.trips[f.tripId].loadingFacts);
++    assert.ok(f.api.writes('ConsignmentNote').every(row => (row.params.Документ.ДокументОснование as SabyObject[])[0].Документ));
++  } finally { await f.close(); }
++});
++
++test('a lost first creation response is reconciled by the same marker and never repeats creation', async () => {
++  const f = await fixture();
++  try {
++    f.lose(); const first = await f.run(); assert.equal(first.status, 'unknown'); assert.equal(f.created(), 1);
++    const attempted = await f.readDoc(); assert.equal(attempted.reservationAttempted, true); assert.equal(attempted.nativeDraftEnabled, false);
++    assert.equal(attempted.orderCreationAllocation?.version, 2); assert.equal(attempted.writeAttempts?.[0].outcome, 'uncertain');
++    const recovered = await f.run(); assert.equal(recovered.status, 'draft', recovered.lastError ?? ''); assert.equal(f.created(), 1);
++    assert.equal((await f.readDoc()).attemptId, attempted.attemptId);
++  } finally { await f.close(); }
++});
++
++test('incomplete discovery or a native link appearing during discovery prevents the first write', async () => {
++  for (const change of ['incomplete', 'appear'] as const) {
++    const f = await fixture();
++    try {
++      f[change](); const result = await f.run(); assert.notEqual(result.status, 'draft');
++      assert.equal(f.created(), 0); assert.equal((await f.readDoc()).reservationAttempted, false);
++      assert.equal((await f.readDoc()).nativeDraftEnabled, true); assert.equal((await f.readDoc()).orderCreationAllocation, undefined);
++    } finally { await f.close(); }
++  }
++});
++
++test('historical native-only flow and an existing uncertain first attempt never opt into first creation', async () => {
++  const f = await fixture();
++  try {
++    await f.store.mutate(f.source, data => { delete data.tripSaby!.trips[f.tripId].orderConsignmentCreationVersion; return { result: undefined, changed: true }; });
++    assert.equal((await f.run()).waitingForNativeDraft, true); assert.equal(f.created(), 0);
++    await f.store.mutate(f.source, data => {
++      data.tripSaby!.trips[f.tripId].orderConsignmentCreationVersion = 2;
++      const doc = data.etrn!.trips[f.tripId].deliveries[f.trip.customers[0].id].document!;
++      doc.reservationAttempted = true; doc.status = 'unknown';
++      return { result: undefined, changed: true };
++    });
++    const result = await f.run(); assert.equal(result.status, 'unknown'); assert.equal(f.created(), 0);
++    assert.equal((await f.readDoc()).orderCreationAllocation, undefined);
++  } finally { await f.close(); }
++});
++
++test('missing order signatures and a changed first draft stop creation without a replacement', async () => {
++  const f = await fixture();
++  try {
++    const sender = (f.order.Вложение as SabyObject[])[0], signature = sender.Подпись;
++    delete sender.Подпись;
++    assert.notEqual((await f.run()).status, 'draft'); assert.equal(f.created(), 0);
++    sender.Подпись = signature;
++    const first = await f.run(); assert.equal(first.status, 'draft', first.lastError ?? '');
++    f.api.docs.get(first.id!)!.Номер = '999';
++    assert.notEqual((await f.run(1)).status, 'draft'); assert.equal(f.created(), 1);
++  } finally { await f.close(); }
++});
++
++test('an unresolved lost creation result does not repeat Write even when marker search returns no note', async () => {
++  const f = await fixture();
++  try {
++    f.lose(); assert.equal((await f.run()).status, 'unknown'); assert.equal(f.created(), 1);
++    for (const [id, doc] of f.api.docs) if (doc.Тип === 'ConsignmentNote') f.api.docs.delete(id);
++    assert.equal((await f.run()).status, 'unknown'); assert.equal(f.created(), 1);
++    assert.equal((await f.readDoc()).reservationAttempted, true);
++  } finally { await f.close(); }
++});
++
++test('a version marker alone does not authorize first creation without confirmed signing manifests', async () => {
++  const f = await fixture();
++  try {
++    await f.store.mutate(f.source, data => { delete data.tripSaby!.trips[f.tripId].signing; return { result: undefined, changed: true }; });
++    const result = await f.run(); assert.notEqual(result.status, 'draft'); assert.equal(f.created(), 0);
++    assert.equal((await f.readDoc()).reservationAttempted, false);
++  } finally { await f.close(); }
++});
+--- /dev/null
++++ b/tests/etrn-order-discovery.test.ts
+@@ -0,0 +1,110 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { discoverOrderConsignments } from '../server/etrn-order-discovery';
++import { SabyClient, SabyError, type SabyObject } from '../server/saby-client';
++import { syntheticEtrnFixture, sender, carrier } from './helpers/etrn-fixture';
++
++const order = { id: 'source-order', number: '45', date: '2025-04-01' }, marker = 'ARTEL-CRM:ETRN:synthetic-discovery';
++const organization = (inn = sender.inn, kpp = sender.kpp) => ({ СвЮЛ: { ИНН: inn, КПП: kpp } });
++const base = (id: string, type = 'TransportOrder') => ({ Документ: { Идентификатор: id, Тип: type } });
++const note = (id: string, extra: SabyObject = {}): SabyObject => ({ Идентификатор: id, Тип: 'ConsignmentNote', Дата: '01.04.2025', НашаОрганизация: organization(), Грузоотправитель: organization(), ТранспортнаяКомпания: organization(carrier.inn, carrier.kpp), ...extra });
++const page = (documents: SabyObject[], more = 'Нет') => ({ Документ: documents.map(row => ({ Идентификатор: row.Идентификатор, Тип: row.Тип })), Навигация: { ЕстьЕще: more } });
++function fixture(pages: unknown[], documents: SabyObject[] = []) {
++  const calls: { method: string; params: SabyObject }[] = [], lookup = new Map(documents.map(row => [row.Идентификатор, row]));
++  const send: typeof fetch = async (_url, init) => {
++    const request = JSON.parse(String(init?.body)); calls.push(request);
++    let result: unknown;
++    if (request.method === 'СБИС.СписокДокументов') result = pages[Number(request.params.Фильтр.Навигация.Страница)];
++    else if (request.method === 'СБИС.ПрочитатьДокумент') result = lookup.get(request.params.Документ.Идентификатор);
++    else throw new Error('Discovery must never mutate provider data');
++    if (result instanceof Error) throw result;
++    return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }));
++  };
++  const snapshot = syntheticEtrnFixture().snapshot;
++  const client = new SabyClient({ sessionId: 'synthetic-session', customer: sender, carrier }, send);
++  return { calls, snapshot, client, run: () => discoverOrderConsignments(client, order, snapshot, marker) };
++}
++
++test('complete empty register permits an absence result without marker filtering or provider writes', async () => {
++  const f = fixture([page([])]);
++  assert.deepEqual(await f.run(), []);
++  const filter = f.calls[0].params.Фильтр as SabyObject;
++  assert.equal(filter.Тип, 'ConsignmentNote'); assert.equal(filter.Направление, 'Исходящий'); assert.equal(filter.ДатаС, '01.04.2025'); assert.equal(filter.Маска, undefined);
++  assert.deepEqual(filter.НашаОрганизация, organization());
++  assert.equal(f.calls.length, 1);
++});
++
++test('all pages are read and native notes without a CRM marker are found by exact base ID', async () => {
++  const foreign = note('foreign', { ДокументОснование: [base('other-order')] });
++  const native = note('native', { Примечание: '', ДокументОснование: [base(order.id)] });
++  const own = note('own', { Примечание: marker });
++  const f = fixture([page([foreign], 'Да'), page([native, own])], [foreign, native, own]);
++  assert.deepEqual((await f.run()).map(row => row.Идентификатор), ['native', 'own']);
++  assert.deepEqual(f.calls.map(row => row.method), ['СБИС.СписокДокументов', 'СБИС.СписокДокументов', 'СБИС.ПрочитатьДокумент', 'СБИС.ПрочитатьДокумент', 'СБИС.ПрочитатьДокумент']);
++});
++
++for (const bases of [undefined, [], [base('invoice', 'СчетИсх')]]) test(`plausible orphan notes fail closed instead of authorizing a duplicate (${JSON.stringify(bases)})`, async () => {
++  const orphan = note('orphan', { ДокументОснование: bases }), f = fixture([page([orphan])], [orphan]);
++  await assert.rejects(f.run(), /тех же сторон без подтверждённой связи/);
++});
++
++test('notes with another exact order or another carrier are excluded', async () => {
++  const otherOrder = note('other-order-note', { ДокументОснование: [base('other-order')] });
++  const otherCarrier = note('other-carrier', { ТранспортнаяКомпания: organization('7707083893', '770701001') });
++  const f = fixture([page([otherOrder, otherCarrier])], [otherOrder, otherCarrier]);
++  assert.deepEqual(await f.run(), []);
++});
++
++for (const response of [{ Документ: [] }, { Документ: [], Навигация: {} }, { Документ: [], Навигация: { ЕстьЕще: true } }, { Документ: [], Навигация: { ЕстьЕще: 'Да' } }, { Документ: [], Навигация: { ЕстьЕще: 'Нет', Страница: '1' } }, { Документ: [], Навигация: { ЕстьЕще: 'Нет', РазмерСтраницы: '201' } }, { ...page([]), ЧастичныеДанные: 'Да' }]) test(`incomplete navigation cannot prove absence: ${JSON.stringify(response)}`, async () => {
++  const f = fixture([response]); await assert.rejects(f.run(), SabyError);
++  assert.equal(f.calls.length, 1);
++});
++
++test('duplicate IDs across pages stop discovery before reading or writing documents', async () => {
++  const repeated = note('repeat'), f = fixture([page([repeated], 'Да'), page([repeated])]);
++  await assert.rejects(f.run(), /Список ЭТрН изменился или неполон/);
++  assert.equal(f.calls.length, 2);
++});
++
++test('a failed later page cannot be interpreted as an empty complete register', async () => {
++  const f = fixture([page([note('first')], 'Да'), new Error('synthetic transport loss')]);
++  await assert.rejects(f.run(), SabyError);
++  assert.ok(f.calls.every(row => row.method === 'СБИС.СписокДокументов'));
++});
++
++test('an unbounded register stops after twenty pages without document reads or writes', async () => {
++  const f = fixture(Array.from({ length: 20 }, (_, index) => page([note(`note-${index}`)], 'Да')));
++  await assert.rejects(f.run(), /превышает предел/); assert.equal(f.calls.length, 20);
++});
++
++for (const extra of [{ ЧастичныеДанные: 'Да' }, { Удален: 'Да' }, { Дата: '31.02.2025' }, { Дата: '31.03.2025' }, { НашаОрганизация: organization('7707083893', '770701001') }, { ДокументОснование: [{ Документ: { Тип: 'TransportOrder' } }] }, { Грузоотправитель: undefined }, { Стороны: { Отправитель: organization('7707083893', '770701001') } }]) test(`unsafe full document prevents absence proof: ${JSON.stringify(extra)}`, async () => {
++  const value = note('unsafe', extra), f = fixture([page([value])], [value]);
++  await assert.rejects(f.run(), SabyError);
++});
++
++test('the date window covers a future frozen shipment date and input dates are validated before requests', async () => {
++  const f = fixture([page([])]); f.snapshot.fields.date = '2099-01-02';
++  assert.deepEqual(await f.run(), []); assert.equal((f.calls[0].params.Фильтр as SabyObject).ДатаПо, '02.01.2099');
++  const invalid = fixture([page([])]); invalid.snapshot.fields.date = '2025-02-30';
++  await assert.rejects(invalid.run(), SabyError); assert.equal(invalid.calls.length, 0);
++});
++
++test('the date window starts at an earlier frozen shipment date so a backdated native note is discovered', async () => {
++  const f = fixture([page([])]); f.snapshot.fields.date = '2025-03-31';
++  assert.deepEqual(await f.run(), []);
++  assert.equal((f.calls[0].params.Фильтр as SabyObject).ДатаС, '31.03.2025');
++});
++
++test('request guards still run for discovery and can stop the next read', async () => {
++  const value = note('native', { ДокументОснование: [base(order.id)] }), f = fixture([page([value])], [value]);
++  let checks = 0;
++  const guarded = f.client.withRequestGuard(async () => { if (++checks > 1) throw new SabyError('permission', 'synthetic access revoked'); });
++  await assert.rejects(discoverOrderConsignments(guarded, order, f.snapshot, marker), /synthetic access revoked/);
++  assert.equal(f.calls.length, 1);
++});
++
++test('an empty list from a different configured sender cannot prove absence', async () => {
++  const f = fixture([page([])]); f.snapshot.customerOrganization = { ...sender, inn: '7707083893', kpp: '770701001' };
++  await assert.rejects(f.run(), /не соответствует отправителю/);
++  assert.equal(f.calls.length, 0);
++});
+--- /dev/null
++++ b/tests/saby-client-budget-reentrancy.test.ts
+@@ -0,0 +1,94 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { SabyClient, type SabyObject } from '../server/saby-client';
++import { integrationConfig } from './helpers/trip-saby-integration';
++
++const gate = () => { let release!: () => void; const promise = new Promise<void>(done => { release = done; }); return { promise, release }; };
++const delay = () => new Promise<void>(done => setTimeout(done, 4));
++function budget(limit: number) {
++  let active = 0, maximum = 0, acquisitions = 0;
++  const queue: Array<() => void> = [];
++  const run = async <T>(action: () => Promise<T>): Promise<T> => {
++    if (active >= limit) await new Promise<void>(done => queue.push(done)); else active++;
++    acquisitions++; maximum = Math.max(maximum, active);
++    try { return await action(); }
++    finally { const next = queue.shift(); if (next) next(); else active--; }
++  };
++  return { run, stats: () => ({ active, maximum, acquisitions }) };
++}
++function api() {
++  let transports = 0, maximum = 0, writes = 0, reads = 0;
++  const document = (id: string): SabyObject => ({ Идентификатор: id, Тип: 'ConsignmentNote', Редакция: [{ Идентификатор: 'revision', Актуален: 'Да' }], Вложение: [{ Идентификатор: 'title', Подтип: '1110339', Файл: { Имя: 'title.xml', Ссылка: 'https://disk.saby.ru/synthetic-budget.xml' } }] });
++  const send: typeof fetch = async (_url, init) => {
++    transports++; maximum = Math.max(maximum, transports);
++    try {
++      await delay();
++      if (init?.method === 'GET') return new Response('<synthetic/>');
++      const request = JSON.parse(String(init?.body));
++      if (request.method === 'СБИС.ЗаписатьДокумент') writes++; else reads++;
++      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: document(request.params.Документ?.Идентификатор ?? 'created-note') }));
++    } finally { transports--; }
++  };
++  return { send, stats: () => ({ transports, maximum, writes, reads }) };
++}
++
++for (const concurrency of [1, 4]) test(`pre-dispatch nested reads and downloads complete with budget ${concurrency}, while sibling calls respect its limit`, { timeout: 5_000 }, async () => {
++  const slots = budget(concurrency), transport = api();
++  const client = new SabyClient(integrationConfig(), transport.send).withRequestBudget(slots.run);
++  let guarded = 0, beforeWrites = 0;
++  const wrapped = client.withRequestGuard(async () => { guarded++; });
++  await Promise.all(Array.from({ length: concurrency * 2 }, (_, index) => wrapped.writeConsignmentNote({ Тип: 'ConsignmentNote', Примечание: `synthetic-${index}` }, async () => {
++    beforeWrites++;
++    await Promise.all([
++      wrapped.readConsignmentNote('existing-note'),
++      wrapped.downloadAttachment('existing-note', 'title', 'revision'),
++    ]);
++  })));
++  assert.equal(beforeWrites, concurrency * 2); assert.equal(transport.stats().writes, concurrency * 2);
++  assert.ok(transport.stats().maximum <= concurrency, JSON.stringify(transport.stats()));
++  assert.equal(slots.stats().acquisitions, concurrency * 2, 'nested calls reuse each reserved slot');
++  assert.equal(slots.stats().active, 0); assert.ok(guarded >= concurrency * 8, 'every nested request retains its access guard');
++});
++
++test('an unrelated caller remains queued behind an active pre-dispatch slot and keeps FIFO budget accounting', { timeout: 5_000 }, async () => {
++  const slots = budget(1), transport = api(), started = gate(), release = gate();
++  const client = new SabyClient(integrationConfig(), transport.send).withRequestBudget(slots.run);
++  const writing = client.writeConsignmentNote({ Тип: 'ConsignmentNote' }, async () => {
++    started.release(); await release.promise;
++    await client.readConsignmentNote('preflight-note');
++  });
++  await started.promise;
++  const reading = client.readConsignmentNote('independent-note');
++  await delay(); assert.equal(transport.stats().reads, 0); assert.equal(slots.stats().acquisitions, 1);
++  release.release(); await Promise.all([writing, reading]);
++  assert.equal(slots.stats().acquisitions, 2); assert.equal(transport.stats().maximum, 1);
++});
++
++test('nested calls under a different runtime budget still acquire their own budget', { timeout: 5_000 }, async () => {
++  const a = budget(1), b = budget(1), transport = api();
++  const first = new SabyClient(integrationConfig(), transport.send).withRequestBudget(a.run);
++  const second = new SabyClient(integrationConfig(), transport.send).withRequestBudget(b.run);
++  await first.writeConsignmentNote({ Тип: 'ConsignmentNote' }, async () => { await second.readConsignmentNote('separate-budget'); });
++  assert.equal(a.stats().acquisitions, 1); assert.equal(b.stats().acquisitions, 1);
++});
++
++test('escaped asynchronous pre-dispatch context cannot borrow a released slot', { timeout: 5_000 }, async () => {
++  const slots = budget(1), transport = api(), later = gate();
++  const client = new SabyClient(integrationConfig(), transport.send).withRequestBudget(slots.run);
++  let escaped!: Promise<unknown>;
++  await client.writeConsignmentNote({ Тип: 'ConsignmentNote' }, async () => {
++    escaped = later.promise.then(() => client.readConsignmentNote('later-note'));
++    await client.readConsignmentNote('preflight-note');
++  });
++  later.release(); await escaped;
++  assert.equal(slots.stats().acquisitions, 2); assert.equal(slots.stats().active, 0);
++});
++
++test('a failed access guard in a nested read prevents the outer mutation and releases its slot', { timeout: 5_000 }, async () => {
++  const slots = budget(1), transport = api(); let revoked = false;
++  const client = new SabyClient(integrationConfig(), transport.send).withRequestBudget(slots.run).withRequestGuard(async () => { if (revoked) throw new Error('Synthetic revoked'); });
++  await assert.rejects(client.writeConsignmentNote({ Тип: 'ConsignmentNote' }, async () => {
++    revoked = true; await client.readConsignmentNote('denied-read');
++  }), /Synthetic revoked/);
++  assert.equal(transport.stats().writes, 0); assert.equal(transport.stats().reads, 0); assert.equal(slots.stats().active, 0);
++});
+--- /dev/null
++++ b/tests/saby-electronic-defaults.test.ts
+@@ -0,0 +1,107 @@
++import assert from 'node:assert/strict';
++import { createHash, randomUUID } from 'node:crypto';
++import test from 'node:test';
++import { validateNkDirectEtrn, type NkDirectEtrnRecord } from '../server/nk-direct-etrn';
++import { NATIVE_APPROVED_REDIRECTION_METHOD } from '../server/saby-consignment-evidence';
++import { serializeSabyConsignmentNote, type SabyConsignmentSnapshot } from '../server/saby-consignment-note';
++import { currentSnapshot } from '../server/shipment-operations';
++import { getShipmentTrip, saveShipmentTrip } from '../server/shipment-trips';
++import { prepareNkDirectEtrn, prepareTripSaby } from '../server/trip-saby-preparation';
++import { validateTripSabyData, type TripSabyRecord } from '../server/trip-saby-workflow';
++import { integrationConfig, integrationRuntime, integrationSettings } from './helpers/trip-saby-integration';
++
++const at = '2026-10-29T10:00:00.000Z';
++const attempt = '11111111-1111-4111-8111-111111111111';
++const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
++const settings = (method: string) => ({ ...integrationSettings, instructions: { ...integrationSettings.instructions, redirectionMethod: method } });
++
++async function fixture(direct: boolean) {
++  const runtime = await integrationRuntime();
++  try {
++    const created = await runtime.store.mutate(runtime.source, data => {
++      const fields = Object.fromEntries(['supplier_id', 'carrier_id', 'oil_depot_id', 'product_id', 'purchase_price_unspecified_unit', 'driver_id', 'vehicle_id', 'additional_costs'].map(key => [key, runtime.trip.fields[key]]));
++      Object.assign(fields, { organization_id: direct ? 'nk-artel' : 'artel', trip_flow_version: 'driver-v1', loading_at: '2026-10-29T09:00' });
++      const customers = runtime.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'quantity_litres'].map(key => [key, row.fields[key]])) }));
++      return { result: saveShipmentTrip(runtime.base, data, { fields, customers, idempotencyKey: randomUUID() }), changed: true };
++    });
++    const data = await runtime.store.read(runtime.source), source = currentSnapshot(runtime.base, data);
++    const trip = getShipmentTrip(source, created.trip.id), config = integrationConfig();
++    config.login = 'synthetic-login'; config.password = 'synthetic-password'; config.accountNumber = 'synthetic-artel'; config.carrierAccountNumber = 'synthetic-nk';
++    config.nkConsignmentSigner = { surname: 'НКПодписант', name: 'Тест', patronymic: '', position: 'Директор' };
++    config.nkRegulatoryInstructions = 'Синтетические подтверждённые указания НК';
++    const prepare = (method: string) => direct
++      ? prepareNkDirectEtrn(source, data, trip, config, settings(method))
++      : prepareTripSaby(source, data, trip, config, settings(method));
++    return { runtime, data, source, trip, config, prepare };
++  } catch (error) { await runtime.close(); throw error; }
++}
++
++function senderXml(snapshot: SabyConsignmentSnapshot): string {
++  const completed = structuredClone(snapshot);
++  completed.profile.order = { number: completed.documentMode === 'nk-direct-v1' ? 'Без номера' : '45', date: '2026-10-29' };
++  completed.profile.deliveryMassTonnes = '5'; completed.profile.plannedGrossMassTonnes = '5';
++  completed.profile.loading = { arrivedAt: '2026-10-29T09:01', departedAt: '2026-10-29T10:03', grossMassTonnes: '5', massMethod: '03' };
++  return new TextDecoder('windows-1251').decode(serializeSabyConsignmentNote(completed, attempt, at, '100', { senderTitleVersion: 2 }).xml);
++}
++
++for (const direct of [false, true]) test(`new ${direct ? 'NK direct' : 'ARTEL order'} trips select electronic Saby terms despite a telephone autofill setting`, async () => {
++  const f = await fixture(direct);
++  try {
++    const before = structuredClone({ data: f.data, source: f.source, trip: f.trip });
++    if (direct) assert.equal(f.data.etrn!.trips[f.trip.id].loadingActorMode, 'sender', 'The normal trip-save route must opt into the new direct policy');
++    for (const method of ['По телефону', 'Телефон', NATIVE_APPROVED_REDIRECTION_METHOD]) {
++      const prepared = f.prepare(method);
++      assert.deepEqual(prepared.blockers, []);
++      assert.equal(prepared.deliveries.length, 2);
++      for (const row of prepared.deliveries) {
++        const xml = senderXml(row.snapshot);
++        assert.match(xml, /СпосПерУкПА="Электронное уведомление перевозчика о переадресовке"/);
++        assert.doesNotMatch(xml, /СпосПерУкПА="(?:По телефону|Телефон)"/);
++        assert.equal(row.snapshot.profile.loadingActor.sameAsConsignor, true);
++        assert.equal(row.snapshot.profile.infrastructureOwner.party.inn, f.source.companies.find(company => company.id === 'supplier')!.inn);
++      }
++    }
++    assert.deepEqual({ data: f.data, source: f.source, trip: f.trip }, before, 'Preflight must not rewrite data or authorize an exchange');
++  } finally { await f.runtime.close(); }
++});
++
++for (const direct of [false, true]) test(`electronic defaults preserve each frozen ${direct ? 'NK direct' : 'ARTEL order'} delivery and its authorization`, async () => {
++  const f = await fixture(direct);
++  try {
++    const prepared = f.prepare('По телефону');
++    assert.deepEqual(prepared.blockers, []);
++    const deliveries = structuredClone(prepared.deliveries);
++    // An old first delivery and an electronic second delivery share the same
++    // customer/address: preservation must bind by delivery ID, not by recipient.
++    deliveries[0].snapshot.profile.instructions.redirectionMethod = 'По телефону';
++    if (direct) {
++      const record: NkDirectEtrnRecord = {
++        version: 'nk-direct-v1', attemptId: attempt, createdAt: at, updatedAt: at, phase: 'creating_etrn', lastError: null, leaseId: null, leaseUntil: null,
++        authorization: { actorId: 'synthetic-actor', requestedAt: at, mode: 'sign_and_send', grantedRoles: ['sender', 'carrier'], selection: { sender: 'ab'.repeat(20), carrier: 'ab'.repeat(20) }, policyHash: hash('policy'), factsHash: hash('facts'), sourceHash: hash('source') },
++        deliveries,
++      };
++      validateNkDirectEtrn(record, f.trip.id);
++      f.data.etrn!.trips[f.trip.id].direct = record;
++    } else {
++      const order = prepareTripSaby(f.source, f.data, f.trip, f.config, settings('По телефону'));
++      const record: TripSabyRecord = {
++        scenario: order.scenario, snapshot: order.order, payloadHash: hash(order.order), marker: 'ARTEL-CRM:TRIP:synthetic-history', attemptId: attempt, createdAt: at, updatedAt: at,
++        leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, phase: 'submitting', lastError: null, carrierEvidence: null,
++        driverFlow: { state: 'waiting_driver', processingAllowanceHours: 10 }, initiatorId: 'synthetic-actor',
++        order: { id: null, number: null, date: f.trip.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' },
++        autoAuthorization: { requestId: 'synthetic-authorization', requestedBy: 'synthetic-actor', requestedAt: at, policyId: 'synthetic-policy', policyHash: hash('policy'), mode: 'deferred', selection: { sender: 'ab'.repeat(20), carrier: 'cd'.repeat(20) } },
++        deliveries: deliveries.map(row => ({ ...row, payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })),
++      };
++      f.data.tripSaby = { trips: { [f.trip.id]: record } };
++      validateTripSabyData(f.data.tripSaby);
++    }
++    const before = structuredClone(f.data), xmlBefore = deliveries.map(row => senderXml(row.snapshot));
++    for (const method of ['По телефону', NATIVE_APPROVED_REDIRECTION_METHOD]) {
++      const refreshed = f.prepare(method);
++      assert.deepEqual(refreshed.blockers, []);
++      assert.deepEqual(refreshed.deliveries.map(row => senderXml(row.snapshot)), xmlBefore);
++      assert.deepEqual(refreshed.deliveries.map(row => row.snapshot.profile.instructions.redirectionMethod), ['По телефону', NATIVE_APPROVED_REDIRECTION_METHOD]);
++      assert.deepEqual(f.data, before, 'A new default must not amend old snapshots, hashes or signing grants');
++    }
++  } finally { await f.runtime.close(); }
++});
+--- a/tests/trip-saby-scheduler.test.ts
++++ b/tests/trip-saby-scheduler.test.ts
+@@ -308,3 +308,24 @@
+     finally { await scheduler.stop(); }
+   } finally { await f.close(); }
+ });
++
++test('waiting for the native note keeps the workflow and scheduler active without treating terminal errors as waits', async () => {
++  const f = await fixture();
++  try {
++    await f.start(); f.api.accept();
++    let calls = 0;
++    const waiting = await runTripSabyWorkflow({ ...f.context, monitoringEnabled: true, createDelivery: async () => {
++      calls++; return { status: 'pending', id: null, lastError: null, waitingForNativeDraft: true };
++    } });
++    assert.equal(calls, 1, 'later deliveries must wait for the native note');
++    assert.equal(waiting.phase, 'creating_etrn'); assert.equal(waiting.lastError, null);
++    assert.equal(waiting.monitoring.enabled, true); assert.equal(waiting.deliveries[0].waitingForNativeDraft, true);
++    assert.equal(f.api.reserves('ConsignmentNote').length, 0);
++    const persisted = await f.store.read(f.source);
++    assert.equal((await selectedPass(f, persisted, Date.now())).selected, true);
++    const failed = await runTripSabyWorkflow({ ...f.context, monitoringEnabled: true, createDelivery: async () => ({ status: 'error', id: null, lastError: 'Synthetic ambiguous relation' }) });
++    assert.equal(failed.phase, 'error'); assert.equal(failed.monitoring.enabled, false);
++    assert.equal(failed.deliveries[0].waitingForNativeDraft, undefined);
++    assert.equal((await selectedPass(f, await f.store.read(f.source), Date.now())).selected, false);
++  } finally { await f.close(); }
++});
+--- a/tests/trip-workflow-view.test.ts
++++ b/tests/trip-workflow-view.test.ts
+@@ -373,3 +373,13 @@
+   assert.equal(workflowSteps(state, 0)[0].state, 'current');
+   assert.equal(workflowSteps(state, 0)[1].state, 'done');
+ });
++
++test('a confirmed order waiting for its native note displays automatic waiting at stage six without an error', () => {
++  const state = failedWorkflow('carrier_confirmed', true);
++  state.phase = 'creating_etrn'; state.status = 'not_sent'; state.lastError = null;
++  state.monitoring = { enabled: true, intervalSeconds: 60 };
++  state.deliveries = [{ shipmentId: 'delivery-id', id: null, status: 'pending', lastError: null, waitingForNativeDraft: true }];
++  const view = workflowView(state);
++  assert.equal(view.title, 'Ожидаем ЭТрН от Saby'); assert.equal(view.step, 5);
++  assert.match(view.text, /автоматически проверяет/); assert.doesNotMatch(view.title, /ошибк|приостановлено|завершены/);
++});
+--- a/web/src/trip-saby-model.ts
++++ b/web/src/trip-saby-model.ts
+@@ -74,7 +74,7 @@
+   updatedAt: string | null;
+   lastError: string | null;
+   order: TripSabyOrderSummary | null;
+-  deliveries: { shipmentId: string; id: string | null; status: 'not_sent' | 'pending' | 'unknown' | 'draft' | 'error'; lastError: string | null; dispatch?: { sender: TripSabySigningStep; carrier: TripSabySigningStep; completedAt: string | null; recipientAcceptedAt?: string | null } }[];
++  deliveries: { shipmentId: string; id: string | null; waitingForNativeDraft?: boolean; status: 'not_sent' | 'pending' | 'unknown' | 'draft' | 'error'; lastError: string | null; dispatch?: { sender: TripSabySigningStep; carrier: TripSabySigningStep; completedAt: string | null; recipientAcceptedAt?: string | null } }[];
+   carrierConfirmed: boolean;
+   lastCheckedAt: string | null;
+   lastCheckAttemptAt: string | null;
+--- a/web/src/trip-workflow-view.ts
++++ b/web/src/trip-workflow-view.ts
+@@ -126,6 +126,7 @@
+   }
+   if (result.phase === 'sending_etrn' || result.phase === 'completed' && result.driverFlow) return { title: 'ЭТрН созданы · отправка клиентам', text: 'CRM проверяет подписи и отправку каждой ЭТрН клиенту. Рейс остаётся активным до подтверждения всех доставок.', step: 6 }
+   if (result.phase === 'completed') return { title: 'ЭТрН созданы · ожидают обработки', text: 'В АРТЭЛЬ откройте каждую ЭТрН, проверьте заполнение и подпишите отправку клиенту. Состояния документов и подписей обновляются ниже.', step: 6 }
++  if (result.phase === 'creating_etrn' && result.deliveries.some(delivery => delivery.waitingForNativeDraft)) return { title: 'Ожидаем ЭТрН от Saby', text: 'Заявка подтверждена. CRM автоматически проверяет появление связанной ЭТрН и продолжит обработку, когда Saby её вернёт.', step: 5 }
+   if (result.phase === 'creating_etrn') return { title: 'АРТЭЛЬ · создание ЭТрН', text: 'По подтверждённой заявке создаётся отдельная ЭТрН для каждой доставки.', step: 5 }
+   if (result.phase === 'awaiting_loading') return result.driverFlow
+     ? { title: 'Заявка подтверждена · проверяем погрузку', text: 'CRM проверяет ранее сохранённые водителем массы и события перед созданием ЭТрН для клиентов.', step: 5 }
