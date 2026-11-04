@@ -21,6 +21,9 @@ export const SABY_WORKFLOW_TICK_MS = 60_000;
 export const SABY_CARRIER_WAIT_TICK_MS = 15_000;
 // A created ETRN and even one signature do not prove that all participants finished.
 export const SABY_COMPLETED_REFRESH_MS = 60_000;
+// Each workflow can retain several decoded store snapshots while awaiting Saby.
+// A network-only limit does not bound that memory, so admit whole passes too.
+export const SABY_WORKFLOW_CONCURRENCY = 2;
 export interface TripSabySchedulerOptions {
   base: Snapshot; store: OperationsStorage; config: SabyConfig; enabled: boolean;
   prepare?: PrepareTripSaby; send?: typeof fetch; now?: number;
@@ -143,13 +146,16 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
 }
 
 /**
- * Each trip owns its task. Long provider workflows cannot hold the next scan or
- * another trip; only their individual network calls share the bounded FIFO queue.
+ * Each admitted trip owns its task. Pending passes retain only trip IDs, not
+ * decoded stores or leases. FIFO admission bounds memory while allowing another
+ * trip to progress alongside a slow provider workflow.
  * OperationsStore leases still arbitrate with manual actions and other processes.
  */
-export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 'tripId' | 'carrierWaitingOnly' | 'runNetwork'>, networkConcurrency = 4) {
+export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 'tripId' | 'carrierWaitingOnly' | 'runNetwork'>, networkConcurrency = 4, workflowConcurrency = SABY_WORKFLOW_CONCURRENCY) {
   if (!Number.isSafeInteger(networkConcurrency) || networkConcurrency < 1) throw new Error('Invalid Saby network concurrency');
+  if (!Number.isSafeInteger(workflowConcurrency) || workflowConcurrency < 1) throw new Error('Invalid Saby workflow concurrency');
   const active = new Map<string, { operation: Promise<void>; rerun: boolean }>();
+  const pending = new Map<string, { carrierWaitingOnly: boolean }>();
   const scans = new Set<Promise<void>>();
   const waiting: (() => void)[] = [];
   let requests = 0, stopped = false;
@@ -163,6 +169,24 @@ export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 
     }
   };
   const client = (options.client ?? new SabyClient(options.config, options.send ?? fetch)).withRequestBudget(runNetwork);
+  const admit = () => {
+    while (!stopped && active.size < workflowConcurrency && pending.size) {
+      const [tripId, { carrierWaitingOnly }] = pending.entries().next().value!;
+      pending.delete(tripId);
+      const task = { operation: Promise.resolve(), rerun: false };
+      task.operation = Promise.resolve().then(async () => {
+        try { await dispatchTripSaby({ ...options, client, tripId, carrierWaitingOnly }); }
+        catch { /* Durable attempts preserve recovery; private provider data never enters logs. */ }
+      }).finally(() => {
+        active.delete(tripId);
+        // A fresh pass joins the tail so repeated immediate signals cannot
+        // starve trips that have not acquired a lease or read their store yet.
+        if (!stopped && task.rerun) pending.set(tripId, { carrierWaitingOnly: false });
+        admit();
+      });
+      active.set(tripId, task);
+    }
+  };
   const launch = (tripId: string, carrierWaitingOnly = false, immediate = false) => {
     if (stopped || !options.enabled) return;
     const current = active.get(tripId);
@@ -172,16 +196,10 @@ export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 
       if (immediate) current.rerun = true;
       return;
     }
-    const task = { operation: Promise.resolve(), rerun: false };
-    task.operation = Promise.resolve().then(async () => {
-      do {
-        task.rerun = false;
-        try { await dispatchTripSaby({ ...options, client, tripId, carrierWaitingOnly }); }
-        catch { /* Durable attempts preserve recovery; private provider data never enters logs. */ }
-        carrierWaitingOnly = false;
-      } while (!stopped && task.rerun);
-    }).finally(() => { active.delete(tripId); if (task.rerun) launch(tripId, false, true); });
-    active.set(tripId, task);
+    const queued = pending.get(tripId);
+    if (queued) queued.carrierWaitingOnly &&= carrierWaitingOnly;
+    else pending.set(tripId, { carrierWaitingOnly });
+    admit();
   };
   return {
     /** Manual runtime reads use the same session pool and network budget. */
@@ -201,9 +219,12 @@ export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 
       return scan;
     },
     request(tripId: string) { launch(tripId, false, true); },
-    async drain() { while (scans.size || active.size) { await Promise.all([...scans]); await Promise.all([...active.values()].map(task => task.operation)); } },
+    async drain() { while (scans.size || active.size || pending.size) { await Promise.all([...scans]); await Promise.all([...active.values()].map(task => task.operation)); } },
     async stop() {
       stopped = true;
+      // These IDs have not acquired leases or persisted intents; the next
+      // runtime scan can pick them up from durable state without cancellation.
+      pending.clear();
       // Existing workflows may have persisted a write intent before requesting
       // capacity. Drain them; cancelling queued calls would fabricate unknown writes.
       await Promise.allSettled([...scans]);
