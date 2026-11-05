@@ -1,0 +1,1783 @@
+--- /dev/null
++++ b/scripts/verify_transport_pricing_ui.mjs
+@@ -0,0 +1,273 @@
++// Genuine local CRM/API with a new persistent synthetic store per browser/viewport.
++// Never changes the user-facing demo, source business data, or external providers.
++import assert from 'node:assert/strict';
++import { spawn } from 'node:child_process';
++import { mkdir, readFile, writeFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { once } from 'node:events';
++import { chromium, webkit, expect as baseExpect } from '@playwright/test';
++import AxeBuilder from '@axe-core/playwright';
++
++const root = resolve(import.meta.dirname, '..');
++const qaRoot = resolve(root, '../qa-runtime');
++const runId = new Date().toISOString().replace(/[:.]/g, '-');
++const output = resolve(root, '../ui-transport-pricing', runId);
++const requestedEngine = process.argv.find(arg => arg.startsWith('--engine='))?.slice('--engine='.length);
++const requestedWidth = Number(process.argv.find(arg => arg.startsWith('--width='))?.slice('--width='.length) || 0);
++const engines = Object.entries({ chromium, webkit }).filter(([name]) => !requestedEngine || name === requestedEngine);
++const widths = [1440, 375].filter(width => !requestedWidth || width === requestedWidth);
++const report = { passed: false, syntheticOnly: true, checks: [], scenarios: [], externalRequests: [], pageErrors: [], failedRequests: [], axe: [] };
++await mkdir(output, { recursive: true });
++const expect = baseExpect.configure({ timeout: 15000 });
++const check = (name, details = {}) => { report.checks.push({ name, ...details }); console.log('PASS', name); };
++
++async function startRuntime(name) {
++  const state = resolve(output, name, 'state');
++  await mkdir(state, { recursive: true });
++  const child = spawn(process.execPath, ['--import', 'tsx', resolve(qaRoot, 'serve.mjs'), '--port=5212', `--state=${state}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
++  let log = '';
++  const ready = new Promise((done, fail) => {
++    const timer = setTimeout(() => fail(new Error(`Runtime start timeout: ${log}`)), 30000);
++    child.stdout.on('data', chunk => { log += chunk.toString(); if (log.includes('SYNTHETIC_PRICING_PREVIEW')) { clearTimeout(timer); done(); } });
++    child.stderr.on('data', chunk => { log += chunk.toString(); });
++    child.once('exit', code => { clearTimeout(timer); fail(new Error(`Runtime exited ${code}: ${log}`)); });
++  });
++  await ready;
++  return { state, base: 'http://127.0.0.1:5212', async close() {
++    const exit = once(child, 'exit'); child.kill('SIGTERM'); await exit;
++    await writeFile(resolve(output, name, 'runtime.log'), log);
++  } };
++}
++
++for (const [engine, launcher] of engines) for (const width of widths) {
++  const name = `${engine}-${width}`, directory = resolve(output, name), runtime = await startRuntime(name);
++  let browser, page;
++  const scenario = { engine, width, reducedMotion: width === 375, passed: false };
++  report.scenarios.push(scenario);
++  try {
++    browser = await launcher.launch();
++    const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: width === 375 ? 'reduce' : 'no-preference', serviceWorkers: 'block' });
++    await context.route('**/*', route => {
++      const url = new URL(route.request().url());
++      if (url.origin !== runtime.base) { report.externalRequests.push({ engine, width, url: url.origin + url.pathname }); return route.abort(); }
++      return route.continue();
++    });
++    page = await context.newPage();
++    page.setDefaultTimeout(15000);
++    page.on('pageerror', error => report.pageErrors.push({ engine, width, message: error.message, stack: error.stack, url: page.url() }));
++    page.on('requestfailed', request => report.failedRequests.push({ engine, width, url: request.url(), failure: request.failure() }));
++    await page.goto(runtime.base + '/__preview');
++    await expect(page.locator('.trips-section-tabs')).toBeVisible();
++    const api = async (path, method = 'GET', body) => {
++      const response = await context.request.fetch(runtime.base + path, { method, ...(body === undefined ? {} : { data: body }), headers: { Origin: runtime.base } });
++      const value = await response.json();
++      assert.ok(response.ok(), `${method} ${path}: ${response.status()} ${JSON.stringify(value)}`);
++      return value;
++    };
++    const catalog = async () => (await api('/api/directories')).directories;
++    const settings = async values => { const current = (await catalog()).transportPricing; return api('/api/transport-pricing', 'PATCH', { ...current, ...values }); };
++    const vehiclePatch = async values => {
++      const row = (await catalog()).vehicles.find(row => row.id === 'vehicle'); const { id, version, ...fields } = row;
++      return api(`/api/directories/vehicles/${id}`, 'PATCH', { ...fields, ...values, version: version ?? 0 });
++    };
++    let navigation = 0;
++    const navigate = async hash => { await page.waitForLoadState('networkidle'); await page.goto(runtime.base + '/?qaNavigation=' + (++navigation) + '#' + hash); };
++    const dialog = () => page.getByRole('dialog');
++    const choose = async (scope, label, text) => {
++      const box = scope.getByRole('combobox', { name: new RegExp('^' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?: \\*)?$') });
++      await box.fill(text);
++      await scope.getByRole('option').filter({ hasText: text }).first().click();
++    };
++    const cancel = async () => {
++      await dialog().getByRole('button', { name: 'Отмена', exact: true }).click();
++      const discard = dialog().getByRole('button', { name: 'Закрыть без сохранения', exact: true });
++      if (await discard.count()) await discard.click();
++      await expect(dialog()).toHaveCount(0);
++    };
++    const fit = async (locator, label) => {
++      assert.ok(await locator.evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${name}: horizontal overflow ${label}`);
++      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${name}: viewport overflow ${label}`);
++    };
++    const axe = async (selector, phase) => {
++      const result = await new AxeBuilder({ page }).include(selector).analyze();
++      report.axe.push({ engine, width, phase, violations: result.violations.map(row => ({ id: row.id, impact: row.impact, nodes: row.nodes.map(node => ({ target: node.target, failureSummary: node.failureSummary })) })) });
++      assert.deepEqual(result.violations.map(row => row.id), [], `${name}: axe ${phase}`);
++    };
++
++    // Vehicle tariff UI: positional input, invalid count/value, persistence.
++    await navigate('directories');
++    const tabs = page.getByRole('group', { name: 'Справочники', exact: true });
++    await tabs.getByRole('button', { name: 'Автомобили', exact: true }).click();
++    await page.getByRole('button', { name: 'Редактировать: Учебный бензовоз 3 секции', exact: true }).click();
++    const prices = dialog().getByLabel('Стоимость выезда секций, ₽ (через +)', { exact: true });
++    await expect(prices).toHaveValue('3000 + 4000 + 4000');
++    await prices.fill('3000 + 4000');
++    await dialog().getByRole('button', { name: 'Сохранить', exact: true }).click();
++    await expect(dialog().getByRole('alert')).toContainText('секций');
++    await prices.fill('3000 + -4000 + 4000');
++    await dialog().getByRole('button', { name: 'Сохранить', exact: true }).click();
++    await expect(dialog().getByRole('alert')).toContainText('Стоимость');
++    await prices.fill('3000 + 4100 + 4700');
++    await fit(dialog(), 'vehicle'); await axe('dialog', 'vehicle');
++    await page.screenshot({ path: resolve(directory, 'vehicle-tariffs.png'), fullPage: true });
++    await dialog().getByRole('button', { name: 'Сохранить', exact: true }).click(); await expect(dialog()).toHaveCount(0);
++    assert.deepEqual((await catalog()).vehicles.find(row => row.id === 'vehicle').compartmentDeparturePricesRub, ['3000', '4100', '4700']);
++    await page.getByRole('button', { name: 'Редактировать: Учебный бензовоз 3 секции', exact: true }).click();
++    await expect(prices).toHaveValue('3000 + 4100 + 4700');
++    await dialog().getByRole('button', { name: 'Отмена', exact: true }).click();
++    check(`${name}: vehicle positional tariffs validate and persist`);
++
++    // General settings: explicit rounding choice, validation and reload.
++    const general = page.locator('.transport-settings');
++    await general.getByRole('button', { name: 'Изменить тарифы', exact: true }).click();
++    await general.getByLabel('Ставка за километр, ₽/км', { exact: true }).fill('-1');
++    await general.getByRole('button', { name: 'Сохранить тарифы', exact: true }).click();
++    await expect(general.getByRole('alert')).toBeVisible();
++    await general.getByLabel('Ставка за километр, ₽/км', { exact: true }).fill('46');
++    await general.getByLabel('Доплата за клиента, ₽', { exact: true }).fill('1800');
++    await general.getByLabel(/^Округление итога/).selectOption('ceil100');
++    await general.getByRole('button', { name: 'Сохранить тарифы', exact: true }).click();
++    await expect(general.getByRole('status')).toContainText('Тарифы сохранены');
++    await page.waitForLoadState('networkidle'); await page.reload(); await tabs.getByRole('button', { name: 'Автомобили', exact: true }).click();
++    await expect(general).toContainText('46 ₽/км'); await expect(general).toContainText('вверх до 100 ₽');
++    await fit(general, 'settings'); await axe('.transport-settings', 'settings');
++    await page.screenshot({ path: resolve(directory, 'general-tariffs.png'), fullPage: true });
++    await settings({ ratePerKmRub: '45', customerSurchargeRub: '1750', rounding: 'nearest100' });
++    check(`${name}: common settings validation, rounding and reload`);
++
++    const tripsView = async () => { await navigate('trips'); await page.locator('.trips-section-tabs').getByRole('button', { name: 'Рейсы', exact: true }).click(); };
++    const newTrip = async (customerText = 'Площадка 50 км') => {
++      await tripsView(); await page.getByRole('button', { name: 'Новый рейс', exact: true }).click();
++      await expect(dialog()).toBeVisible();
++      await choose(dialog(), 'Поставщик', 'Поставщик — учебный');
++      await choose(dialog(), 'Нефтебаза', 'Нефтебаза А — учебная');
++      await choose(dialog(), 'Товар', 'ДТ — учебный');
++      await dialog().getByLabel('Цена поставщика за тонну, ₽', { exact: false }).fill('50000');
++      await dialog().getByLabel('Плановая дата рейса · Москва — время', { exact: true }).fill('09:00');
++      await choose(dialog(), 'Водитель', 'Учебный водитель');
++      await choose(customer(0), 'Заявка на доставку', customerText);
++      return customer(0);
++    };
++    const customer = index => dialog().getByTestId('trip-customer').nth(index);
++    const amount = index => customer(index).getByLabel('Сумма перевозки, ₽', { exact: true });
++    const sections = async (index, indexes) => {
++      const inputs = customer(index).locator('.trip-transport-sections input[type=checkbox]');
++      for (let section = 0; section < await inputs.count(); section++) await inputs.nth(section).setChecked(indexes.includes(section));
++    };
++    const automatic = async index => {
++      const button = customer(index).getByRole('button', { name: /^(Рассчитать автоматически|Пересчитать по текущим тарифам)$/ });
++      if (await button.count()) await button.click();
++    };
++    const saveTrip = async () => {
++      const response = page.waitForResponse(response => new URL(response.url()).pathname.startsWith('/api/shipment-trips') && ['POST', 'PATCH'].includes(response.request().method()));
++      await dialog().getByRole('button', { name: 'Сохранить рейс', exact: true }).click();
++      const result = await response, body = await result.json(); assert.ok(result.ok(), JSON.stringify(body));
++      await expect(dialog()).toHaveCount(0); return body.trip;
++    };
++    const editTrip = async trip => {
++      await tripsView();
++      const card = page.locator('.trip-card').filter({ has: page.getByRole('heading', { name: `Рейс №${trip.number}`, exact: true }) });
++      await card.getByRole('button', { name: 'Изменить рейс', exact: true }).click();
++      await expect(dialog().getByLabel('Сумма перевозки, ₽', { exact: true }).first()).toBeVisible();
++    };
++
++    // Equal capacities must keep distinct physical section identity and tariffs.
++    await newTrip('Клиент 70 км — секция 3');
++    await sections(0, [1]); await expect(amount(0)).toHaveValue('9000');
++    await sections(0, [2]); await expect(amount(0)).toHaveValue('9600');
++    await cancel(); await vehiclePatch({ compartmentDeparturePricesRub: ['3000', '4000', '4000'] });
++    check(`${name}: equal-volume sections retain their own tariffs`);
++
++    // A request-specific address cannot reuse kilometres from its original directory place.
++    await api('/api/trip-requests', 'POST', { companyId: 'customer-70', addressId: 'delivery-70', address: 'Учебный другой адрес — собственное расстояние', quantityLitres: '4000', salePricePerLitre: '60', comment: 'Проверка другого адреса', executionDate: '2026-11-05' });
++    await newTrip('Учебный другой адрес — собственное расстояние'); await sections(0, [2]); await expect(amount(0)).toHaveValue('');
++    await customer(0).getByRole('button', { name: 'Показать расчёт', exact: true }).click();
++    await expect(customer(0).locator('.trip-transport-breakdown')).toContainText(/[Аа]дрес/);
++    await amount(0).fill('9999'); const customManualTrip = await saveTrip();
++    assert.equal((await api('/api/shipment-trips/' + customManualTrip.id)).trip.customers[0].fields.transport_amount, '9999');
++    check(`${name}: request address override blocks unrelated kilometres and manual9999 saves`);
++
++    // Full truck example, live dependency changes, incomplete and manual cases.
++    await newTrip();
++    await expect(amount(0)).toHaveValue('');
++    await sections(0, [0, 1, 2]); await expect(amount(0)).toHaveValue('15000');
++    let toggle = customer(0).getByRole('button', { name: 'Показать расчёт', exact: true });
++    await expect(toggle).toHaveAttribute('aria-expanded', 'false'); await toggle.focus(); await page.keyboard.press('Enter');
++    toggle = customer(0).getByRole('button', { name: 'Скрыть расчёт', exact: true }); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
++    await expect(customer(0).locator('.trip-transport-breakdown')).toContainText('50 км × 45');
++    await expect(customer(0).locator('.trip-transport-breakdown')).toContainText('До округления');
++    await expect(customer(0).locator('.trip-transport-breakdown')).toContainText('временное правило');
++    await expect(customer(0).locator('.trip-transport-breakdown')).toHaveCSS('opacity', '1');
++    await fit(dialog(), 'calculation'); await axe('dialog', 'new-trip');
++    if (width === 375) assert.equal(await customer(0).locator('.trip-transport-breakdown').evaluate(element => getComputedStyle(element).transitionDuration), '0s');
++    await page.screenshot({ path: resolve(directory, 'full-calculation.png'), fullPage: true });
++    await customer(0).locator('.trip-transport-breakdown-body').scrollIntoViewIfNeeded();
++    await page.screenshot({ path: resolve(directory, 'calculation-details.png'), fullPage: true });
++    await toggle.focus(); await page.keyboard.press('Space');
++    await expect(customer(0).getByRole('button', { name: 'Показать расчёт', exact: true })).toHaveAttribute('aria-expanded', 'false');
++    await choose(dialog(), 'Нефтебаза', 'Нефтебаза Б — учебная'); await expect(amount(0)).toHaveValue('16400');
++    await choose(dialog(), 'Нефтебаза', 'Нефтебаза А — учебная');
++    await choose(customer(0), 'Заявка на доставку', 'Вторая площадка 20 км'); await sections(0, [0, 1, 2]); await expect(amount(0)).toHaveValue('13700');
++    await choose(customer(0), 'Заявка на доставку', 'Площадка без километров'); await expect(amount(0)).toHaveValue('');
++    await amount(0).fill('12345'); await choose(dialog(), 'Нефтебаза', 'Нефтебаза Б — учебная'); await expect(amount(0)).toHaveValue('12345');
++    await automatic(0); await expect(amount(0)).toHaveValue('');
++    await choose(customer(0), 'Заявка на доставку', 'Площадка 50 км'); await choose(dialog(), 'Нефтебаза', 'Нефтебаза А — учебная');
++    await choose(dialog(), 'Автомобиль', 'Учебный бензовоз 2 секции'); await expect(amount(0)).toHaveValue('');
++    await expect(customer(0).locator('.trip-transport-sections input')).toHaveCount(2); await sections(0, [0, 1]); await expect(amount(0)).toHaveValue('12700');
++    await choose(dialog(), 'Автомобиль', 'Учебная машина без тарифов'); await sections(0, [0, 1, 2]); await expect(amount(0)).toHaveValue('');
++    await choose(dialog(), 'Автомобиль', 'Учебный бензовоз 3 секции'); await sections(0, [0, 1, 2]);
++    await customer(0).getByLabel('Количество литров, л', { exact: false }).fill('10000'); await expect(amount(0)).toHaveValue('');
++    await customer(0).getByLabel('Количество литров, л', { exact: false }).fill('11000'); await expect(amount(0)).toHaveValue('15000');
++    const fullTrip = await saveTrip();
++    let savedFull = (await api('/api/shipment-trips/' + fullTrip.id)).trip;
++    assert.equal(savedFull.customers[0].fields.transport_amount, '15000');
++    const originalSnapshot = savedFull.customers[0].fields.transport_price_snapshot;
++    assert.deepEqual(JSON.parse(originalSnapshot).sections.map(section => section.index), [0, 1, 2]);
++    check(`${name}: full15000, live depot/address/vehicle, missing inputs, partial loading, manual override and save`);
++
++    // Existing auto snapshots and historical manual sums survive tariff changes/reload.
++    await settings({ ratePerKmRub: '60', customerSurchargeRub: '2000' });
++    await editTrip(fullTrip); await expect(amount(0)).toHaveValue('15000');
++    await customer(0).getByRole('button', { name: 'Показать расчёт', exact: true }).click();
++    await expect(customer(0).locator('.trip-transport-breakdown')).toContainText('50 км × 45');
++    await dialog().getByLabel(/^Примечание к рейсу/).fill('Учебное редактирование без пересчёта'); await saveTrip();
++    savedFull = (await api('/api/shipment-trips/' + fullTrip.id)).trip;
++    assert.equal(savedFull.customers[0].fields.transport_price_snapshot, originalSnapshot);
++    const seed = JSON.parse(await readFile(resolve(runtime.state, 'seed.json'), 'utf8'));
++    const legacyTrip = (await api('/api/shipment-trips/' + seed.legacyTripId)).trip;
++    await editTrip(legacyTrip); await expect(amount(0)).toHaveValue('4321'); await sections(0, [0, 1, 2]); await expect(amount(0)).toHaveValue('4321');
++    await dialog().getByLabel(/^Примечание к рейсу/).fill('Учебная ручная сумма сохранена'); await saveTrip();
++    assert.equal((await api('/api/shipment-trips/' + seed.legacyTripId)).trip.customers[0].fields.transport_amount, '4321');
++    await settings({ ratePerKmRub: '45', customerSurchargeRub: '1750' });
++    check(`${name}: frozen snapshot and old manual4321 survive tariff changes and reload/edit`);
++
++    // Two customer example and explicit conflict on shared section assignment.
++    await newTrip('Клиент 30 км — секции 1 и 2'); await sections(0, [0, 1]); await expect(amount(0)).toHaveValue('10100');
++    await dialog().getByRole('button', { name: 'Добавить клиента', exact: true }).click();
++    await choose(customer(1), 'Заявка на доставку', 'Клиент 70 км — секция 3'); await sections(1, [2]); await expect(amount(1)).toHaveValue('8900');
++    await sections(0, [0, 1, 2]); await expect(amount(0)).toHaveValue(''); await expect(amount(1)).toHaveValue('');
++    await sections(0, [0, 1]); await expect(amount(0)).toHaveValue('10100'); await expect(amount(1)).toHaveValue('8900');
++    for (let index = 0; index < 2; index++) { await customer(index).getByRole('button', { name: 'Показать расчёт', exact: true }).click(); await expect(customer(index).locator('.trip-transport-breakdown')).toHaveCSS('opacity', '1'); }
++    await fit(dialog(), 'split'); await axe('dialog', 'split-trip');
++    await page.screenshot({ path: resolve(directory, 'split-calculation.png'), fullPage: true });
++    const splitTrip = await saveTrip();
++    const savedSplit = (await api('/api/shipment-trips/' + splitTrip.id)).trip;
++    assert.deepEqual(savedSplit.customers.map(row => row.fields.transport_amount), ['10100', '8900']);
++    await editTrip(splitTrip); await expect(amount(0)).toHaveValue('10100'); await expect(amount(1)).toHaveValue('8900'); await cancel();
++    check(`${name}: split10100/8900, duplicate section guard, persistence and reopen`);
++
++    const external = await api('/__qa/status'); assert.deepEqual(external.externalAttempts, []);
++    scenario.passed = true;
++  } catch (error) {
++    scenario.error = error.stack || String(error);
++    if (page) { await page.screenshot({ path: resolve(directory, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(resolve(directory, 'failure.html'), await page.content().catch(() => '')); }
++    throw error;
++  } finally {
++    await page?.waitForLoadState('networkidle').catch(() => {}); await browser?.close(); await runtime.close();
++    await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2));
++  }
++}
++assert.deepEqual(report.externalRequests, []); assert.deepEqual(report.pageErrors, []);
++report.passed = true;
++await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2));
++console.log(JSON.stringify({ passed: true, scenarios: report.scenarios.length, checks: report.checks.length, output }));
+--- a/server/auth-scope.ts
++++ b/server/auth-scope.ts
+@@ -63,7 +63,7 @@
+   const catalog = snapshot.directories;
+   const directories = catalog && (directoryAccess || shipmentAccess) ? {
+     ...catalog,
+-    vehicles: directoryAccess && hasDirectoryGrant(actor, 'vehicles') ? catalog.vehicles : shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres }) => ({ id, plate, name, capacityLitres, compartmentsLitres })) : [],
++    vehicles: directoryAccess && hasDirectoryGrant(actor, 'vehicles') ? catalog.vehicles : shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres, compartmentDeparturePricesRub }) => ({ id, plate, name, capacityLitres, compartmentsLitres, compartmentDeparturePricesRub })) : [],
+     drivers: directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.drivers : shipmentAccess ? catalog.drivers.map(({ id, name, vehicleId }) => ({ id, name, vehicleId })) : [],
+     products: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'products') ? catalog.products : [],
+     paymentForms: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'paymentForms') ? catalog.paymentForms : [],
+--- a/server/directory-editing.ts
++++ b/server/directory-editing.ts
+@@ -31,7 +31,7 @@
+   // Reuse creation validation, excluding only the record being edited.
+   const catalog = { ...snapshot.directories!, [key]: snapshot.directories![key].filter(row => row.id !== id) };
+   const draft = structuredClone(data);
+-  const preservedKeys = key === 'addresses' ? locationDetailKeys : key === 'products' ? productTransportFields.map(([key]) => key) : key === 'vehicles' ? [...vehicleTransportFields.map(([key]) => key), 'carrierId'] : key === 'drivers' ? ['carrierId'] : [];
++  const preservedKeys = key === 'addresses' ? locationDetailKeys : key === 'products' ? productTransportFields.map(([key]) => key) : key === 'vehicles' ? [...vehicleTransportFields.map(([key]) => key), 'carrierId', 'compartmentDeparturePricesRub'] : key === 'drivers' ? ['carrierId'] : [];
+   const preserved = Object.fromEntries(preservedKeys.map(key => [key, (previous as unknown as Record<string, unknown>)[key]]));
+   const result = addDirectoryEntry({ ...preserved, ...fields, kind }, { ...snapshot, directories: catalog }, draft, key === 'addresses' ? previous as ShipmentAddress : undefined);
+   if (!result.created) throw new ApiError(409, 'Такая запись уже есть в справочнике.');
+--- a/server/directory-operations.ts
++++ b/server/directory-operations.ts
+@@ -1,3 +1,4 @@
++import { validTransportMoney } from '../web/src/transport-pricing';
+ import { saveOilDepot } from './oil-depots';
+ import { deliveryDistances } from './delivery-distances';
+ import { locationDetailKeys, locationDetails } from './location-details';
+@@ -76,7 +77,7 @@
+   }
+   if (!['managers','products','paymentForms','vehicles','drivers','addresses'].includes(String(kind))) throw new ApiError(400,'Неизвестный справочник.');
+   const key = kind as 'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses';
+-  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name',...productTransportFields.map(([key])=>key)],paymentForms:['name'],vehicles:['carrierId','plate','name','brand','model','trailer','capacityLitres','compartmentsLitres',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)],drivers:['carrierId','name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind','pointAddress','oilDepotDistancesKm',...locationDetailKeys]};
++  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name',...productTransportFields.map(([key])=>key)],paymentForms:['name'],vehicles:['carrierId','plate','name','brand','model','trailer','capacityLitres','compartmentsLitres','compartmentDeparturePricesRub',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)],drivers:['carrierId','name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind','pointAddress','oilDepotDistancesKm',...locationDetailKeys]};
+   if (Object.keys(input).some(k => k !== 'kind' && !permitted[key].includes(k))) throw new ApiError(400,'Неизвестное поле справочника.');
+   const text = (field: string, required = true) => {
+     if (typeof input[field] !== 'string' || !(input[field] as string).trim() || (input[field] as string).length > 500) {
+@@ -102,7 +103,14 @@
+       if (!Array.isArray(input.compartmentsLitres) || input.compartmentsLitres.some(value => typeof value !== 'string')) throw new ApiError(400, 'Укажите объёмы секций списком чисел.');
+       compartmentsLitres = (input.compartmentsLitres as string[]).map(value => value.replace(/\s/g, '').replace(',', '.'));
+     }
+-    entry = { ...Object.fromEntries(allVehicleFields.map(([key])=>[key,text(key,false)])), ...vehicleTransportDetails(input), id, plate, ...(carrierId ? { carrierId } : {}), brand: text('brand', false), model: text('model', false), trailer: text('trailer', false), ...(name ? { name } : {}), ...(capacityLitres ? { capacityLitres } : {}), ...(compartmentsLitres ? { compartmentsLitres } : {}) };
++    let compartmentDeparturePricesRub: string[] | undefined;
++    if (input.compartmentDeparturePricesRub !== undefined && input.compartmentDeparturePricesRub !== null) {
++      if (!Array.isArray(input.compartmentDeparturePricesRub) || input.compartmentDeparturePricesRub.some(value => typeof value !== 'string')) throw new ApiError(400, 'Укажите тарифы секций списком неотрицательных сумм.');
++      compartmentDeparturePricesRub = (input.compartmentDeparturePricesRub as string[]).map(value => value.replace(/\s/g, '').replace(',', '.'));
++      if (!compartmentDeparturePricesRub.length) compartmentDeparturePricesRub = undefined;
++      if (compartmentDeparturePricesRub && (!compartmentsLitres || compartmentDeparturePricesRub.length !== compartmentsLitres.length || !compartmentDeparturePricesRub.every(validTransportMoney))) throw new ApiError(400, 'Укажите отдельный неотрицательный тариф для каждой секции, до двух знаков после запятой.');
++    }
++    entry = { ...Object.fromEntries(allVehicleFields.map(([key])=>[key,text(key,false)])), ...vehicleTransportDetails(input), id, plate, ...(carrierId ? { carrierId } : {}), brand: text('brand', false), model: text('model', false), trailer: text('trailer', false), ...(name ? { name } : {}), ...(capacityLitres ? { capacityLitres } : {}), ...(compartmentsLitres ? { compartmentsLitres } : {}), ...(compartmentDeparturePricesRub ? { compartmentDeparturePricesRub } : {}) };
+     if (!validVehicleMetadata({ ...entry })) throw new ApiError(400, 'Укажите положительные объёмы в литрах. Сумма секций должна совпадать с объёмом автомобиля.');
+   } else {
+     const name = text('name');
+--- a/server/fleet-directory.ts
++++ b/server/fleet-directory.ts
+@@ -1,3 +1,4 @@
++import { validTransportMoney } from '../web/src/transport-pricing';
+ import { allVehicleFields } from '../web/src/directory-fields';
+ import Decimal from 'decimal.js';
+ import type { Directories, Driver, Vehicle } from '../web/src/model';
+@@ -59,5 +60,6 @@
+     if (!Array.isArray(row.compartmentsLitres) || !row.compartmentsLitres.length || row.compartmentsLitres.length > 20 || !row.compartmentsLitres.every(validLitres)) return false;
+     if (row.capacityLitres !== undefined && !row.compartmentsLitres.reduce((total: Decimal, amount: string) => total.plus(amount), new Decimal(0)).eq(row.capacityLitres as string)) return false;
+   }
++  if (row.compartmentDeparturePricesRub !== undefined && (!Array.isArray(row.compartmentDeparturePricesRub) || !Array.isArray(row.compartmentsLitres) || row.compartmentDeparturePricesRub.length !== row.compartmentsLitres.length || !row.compartmentDeparturePricesRub.every(validTransportMoney))) return false;
+   return true;
+ }
+--- a/server/local-api.ts
++++ b/server/local-api.ts
+@@ -1,3 +1,4 @@
++import { readTransportPricing, validTransportPricing } from '../web/src/transport-pricing';
+ import { readTripWorkflowIssues } from './trip-workflow-issues';
+ import type { ShipmentAccessContext } from './shipment-operations';
+ import { directoryMutation } from './directory-access';
+@@ -624,6 +625,20 @@
+         return user;
+       };
+       const actor = authEnabled ? authorized(requestData) : null;
++      if (pathname === '/api/transport-pricing') {
++        if (request.method !== 'PATCH') throw new ApiError(405, 'Метод не поддерживается.');
++        const body = await jsonBody(request);
++        if (!validTransportPricing(body)) throw new ApiError(400, 'Укажите корректные общие тарифы и способ округления.');
++        const transportPricing = await operations.mutate(base.provenance.sourceSha256, data => {
++          if (actor) directoryMutation(requireSection(authorized(data), 'directories'), currentSnapshot(base, data, false), 'vehicles', {});
++          const current = readTransportPricing(data.directories?.transportPricing);
++          if (body.version !== current.version) throw new ApiError(409, 'Тарифы уже изменены. Обновите справочник и повторите сохранение.');
++          const next = { ...body, version: current.version + 1 };
++          data.directories!.transportPricing = next;
++          return { changed: true, result: next };
++        });
++        return write(response, 200, JSON.stringify({ transportPricing }));
++      }
+       if (pathname === '/api/navigation') {
+         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+         const snapshot = currentShipmentAccess(base, requestData);
+--- a/server/logistics-api.ts
++++ b/server/logistics-api.ts
+@@ -83,7 +83,7 @@
+     directories: catalog ? {
+       managers: catalog.managers, products: catalog.products, paymentForms: catalog.paymentForms,
+       vehicles: catalog.vehicles, drivers: catalog.drivers, addresses,
+-      oilDepots: catalog.oilDepots, defaults: catalog.defaults, duplicates: [],
++      transportPricing: catalog.transportPricing, oilDepots: catalog.oilDepots, defaults: catalog.defaults, duplicates: [],
+       customerManagers: catalog.customerManagers?.filter(row => companyIds.has(row.companyId)),
+       ...(catalog.currentEmployeeId !== undefined ? { currentEmployeeId: catalog.currentEmployeeId } : {}),
+       ...(catalog.assignedCustomerIds !== undefined ? { assignedCustomerIds: catalog.assignedCustomerIds } : {}),
+--- a/server/operations-store.ts
++++ b/server/operations-store.ts
+@@ -1,3 +1,4 @@
++import { readTransportPriceSnapshot, readTransportSectionIndexes, validTransportPricing } from '../web/src/transport-pricing';
+ import { validateTripExchangeControls, type TripExchangeControl } from './trip-exchange-control';
+ import { WorkPartition, isWorkPartition } from './work-partition';
+ import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
+@@ -118,6 +119,7 @@
+       for (const [kind, ids] of Object.entries(directories.deletedEntries)) if (!['companies','managers','products','paymentForms','vehicles','drivers','addresses','oilDepots'].includes(kind) || !strings(ids) || ids.some(id=>!id) || new Set(ids).size!==ids.length) throw new StoreError('Invalid directory deletions');
+     }
+     if (!object(directories) || !object(directories.defaults) || ![null,'template-payment-form','simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
++    if (directories.transportPricing !== undefined && !validTransportPricing(directories.transportPricing)) throw new StoreError('Invalid transport pricing');
+     if (directories.customerManagers !== undefined) {
+       if (!Array.isArray(directories.customerManagers)) throw new StoreError('Invalid customer managers');
+       const customers = new Set<string>();
+@@ -186,6 +188,10 @@
+   for (const [id, row] of Object.entries(data.shipments)) {
+     if (!id || !object(row) || !object(row.fields) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.createdAt !== 'string' || typeof row.updatedAt !== 'string' || (row.deleted !== undefined && typeof row.deleted !== 'boolean')) throw new StoreError('Invalid shipment override');
+     if (Object.values(row.fields).some(value => value !== null && typeof value !== 'string')) throw new StoreError('Invalid shipment fields');
++    if (row.fields.transport_pricing_mode != null && !['auto', 'manual'].includes(String(row.fields.transport_pricing_mode))) throw new StoreError('Invalid transport pricing mode');
++    if (row.fields.transport_section_indexes != null) { try { readTransportSectionIndexes(String(row.fields.transport_section_indexes)); } catch { throw new StoreError('Invalid transport section indexes'); } }
++    if (row.fields.transport_price_snapshot != null && !readTransportPriceSnapshot(String(row.fields.transport_price_snapshot))) throw new StoreError('Invalid transport quote');
++    if (row.fields.transport_pricing_mode === 'auto' && !readTransportPriceSnapshot(String(row.fields.transport_price_snapshot ?? ''))) throw new StoreError('Missing transport quote');
+     if (row.fields.trip_document_policy != null && (!validTripDocumentPolicy(row.fields.trip_document_policy) || row.fields.trip_flow_version !== 'driver-v1' || !row.fields.trip_id)) throw new StoreError('Invalid trip document policy');
+     if (row.fields.source_request_id) {
+       const request = (data.tripRequests as Record<string, TripRequest> | undefined)?.[String(row.fields.source_request_id)];
+--- a/server/permissions.ts
++++ b/server/permissions.ts
+@@ -15,7 +15,7 @@
+   if (/^\/api\/settlements(\/|$)/.test(path)) return 'overview';
+   if (/^\/api\/shipment-trips(\/|$)/.test(path)) return null;
+   if (/^\/api\/shipments(\/|$)/.test(path)) return 'shipments';
+-  if (/^\/api\/(directories|companies)(\/|$)/.test(path)) return 'directories';
++  if (/^\/api\/(directories|companies|transport-pricing)(\/|$)/.test(path)) return 'directories';
+   if (/^\/api\/work(\/|$)/.test(path)) return 'work';
+   if (/^\/api\/invoices(\/|$)/.test(path)) return 'invoices';
+   if (/^\/api\/china(\/|$)/.test(path)) return 'china';
+--- a/server/shipment-operations.ts
++++ b/server/shipment-operations.ts
+@@ -1,3 +1,4 @@
++import { transportPricingFields } from './transport-pricing';
+ import { validLoadingDate } from '../web/src/trip-input-rules';
+ import { createHash } from 'node:crypto';
+ import Decimal from 'decimal.js';
+@@ -18,6 +19,7 @@
+ 
+ const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
+ export const SHIPMENT_FIELDS = [
++  ...transportPricingFields,
+   'shipment_type', 'organization_id', 'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
+   'quantity_tonnes', 'quantity_litres', 'sale_price_per_tonne', 'sale_price_per_litre', 'customer_amount',
+   'supplier_name', 'purchase_price_unspecified_unit', 'purchase_amount', 'carrier_name', 'transport_amount',
+@@ -467,7 +469,7 @@
+   }
+   data.shipment_type = type;
+   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
+-  automatic.push('trip_flow_version', 'trip_document_policy', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
++  automatic.push(...transportPricingFields, 'trip_flow_version', 'trip_document_policy', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
+   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
+   if (typeof data.customer_id === 'string' && !data.manager_id) {
+     const managerId = customerManagerId(catalog, data.customer_id);
+@@ -549,6 +551,12 @@
+     }
+   }
+   const fields = validateShipmentFields(data, previous, snapshot.companies);
++  // Standalone shipment edits cannot retain a stale automatic quote. Trip edits
++  // attach their separately validated quote after this common preparation.
++  if (previous?.fields.transport_pricing_mode === 'auto' && ['transport_amount', 'quantity_litres', 'vehicle_id', 'oil_depot_id', 'customer_id', 'unloading_address_id'].some(key => Object.hasOwn(data, key) && fields[key] !== previous.fields[key])) {
++    fields.transport_pricing_mode = 'manual'; fields.transport_price_snapshot = null;
++    if (fields.vehicle_id !== previous.fields.vehicle_id) fields.transport_section_indexes = null;
++  }
+   if (azs) {
+     for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','customer_amount','purchase_amount']) if (fields[key] == null || fields[key] === '') throw new ApiError(400, `Заполните обязательное поле АЗС: ${key}.`);
+     if (!['cash','cashless'].includes(settlementKind(fields.payment_form))) throw new ApiError(400, 'Для АЗС доступны только наличные и безнал. Ф2 недоступна.');
+--- a/server/shipment-trips.ts
++++ b/server/shipment-trips.ts
+@@ -1,3 +1,4 @@
++import { prepareTripTransportPricing, transportPricingFields } from './transport-pricing';
+ import { driverTripConfirmation } from './driver-trips';
+ import type { TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
+ import { createHash, randomUUID } from 'node:crypto';
+@@ -20,7 +21,7 @@
+ import { hasTripTransportHistory, TRIP_DOCUMENT_POLICY_VERSION } from './trip-document-mode';
+ 
+ const sharedFields = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'quantity_gross_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs', 'trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order'] as const;
+-const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
++const customerFields = [...transportPricingFields, 'customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
+ const sharedSnapshots = ['loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude'] as const;
+ const customerSnapshots = ['unloading_address', 'unloading_map_url', 'unloading_latitude', 'unloading_longitude'] as const;
+ const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+@@ -44,7 +45,7 @@
+   for (const [key, raw] of Object.entries(value)) {
+     if (!keys.includes(key)) throw new ApiError(400, `Неизвестное поле отгрузки: ${key}.`);
+     if (raw !== null && typeof raw !== 'string') throw new ApiError(400, `Поле ${key} должно быть строкой или null.`);
+-    if (typeof raw === 'string' && raw.length > 4000) throw new ApiError(400, `Поле ${key} слишком длинное.`);
++    if (typeof raw === 'string' && raw.length > (key === 'transport_price_snapshot' ? 8000 : 4000)) throw new ApiError(400, `Поле ${key} слишком длинное.`);
+     fields[key] = typeof raw === 'string' ? raw.trim() || null : null;
+   }
+   return fields;
+@@ -194,7 +195,7 @@
+       // Default only a new delivery. Null in an existing record may be an intentional manual clearing.
+       if (!driverFlow && !previous && !Object.hasOwn(customer, key)) customer[key] = loadingAt ?? fields.loading_planned_at ?? fields.date ?? null;
+     }
+-    return { previous, fields: customer, sourceRequest };
++    return { previous, fields: customer, sourceRequest, pricingRequest: sourceRequest ?? (previous?.fields.source_request_id ? data.tripRequests?.[previous.fields.source_request_id] : undefined) };
+   });
+   const sources = customers.flatMap(customer => customer.sourceRequest ? [customer.sourceRequest.id] : []);
+   if (new Set(sources).size !== sources.length) throw new ApiError(400, 'Одна заявка выбрана несколько раз.');
+@@ -205,6 +206,7 @@
+   for (const customer of customers) {
+     if (customer.previous && Object.hasOwn(customer.fields, 'customer_id') && customer.fields.customer_id !== customer.previous.customerId && data.paymentAllocations?.some(allocation => allocation.shipmentId === customer.previous!.id)) throw new ApiError(409, 'Нельзя заменить клиента с привязанными банковскими платежами. Сначала отмените привязку платежей.');
+   }
++  prepareTripTransportPricing(snapshot, fields, customers);
+   let allocation: { tonnes: (string | null)[]; additionalCosts: string[] };
+   try { allocation = driverFlow
+     ? allocateMeasuredTrip(customers.map(customer => customer.previous?.fields.quantity_tonnes ?? null), customers.map(customer => customer.fields.quantity_litres ?? ''), fields.additional_costs ?? '0')
+@@ -216,7 +218,9 @@
+   const prepared = customers.map((customer, index) => {
+     const input: Record<string, string | null> = { ...fields, ...customer.fields, purchase_unit: 'tonnes', quantity_tonnes: allocation.tonnes[index], ...(driverFlow ? { quantity_gross_tonnes: allocation.tonnes[index] } : {}), additional_costs: allocation.additionalCosts[index] };
+     delete input.trip_flow_version;
++    for (const key of transportPricingFields) delete input[key];
+     const result = prepareShipmentFields(input, customer.previous, snapshot, { historicalCarrierId: previousRows[0]?.fields.carrier_id, allowMissingMass: driverFlow });
++    for (const key of transportPricingFields) if (Object.hasOwn(customer.fields, key)) result[key] = customer.fields[key];
+     if (driverFlow) result.trip_flow_version = 'driver-v1';
+     if (documentPolicy !== undefined) result.trip_document_policy = documentPolicy;
+     if (customer.sourceRequest) {
+--- /dev/null
++++ b/server/transport-pricing.ts
+@@ -0,0 +1,98 @@
++import Decimal from 'decimal.js';
++import type { TripRequest } from '../web/src/trip-request-model';
++import type { Shipment, Snapshot } from '../web/src/model';
++import { calculateTransportPrice, transportAddressMatches, readTransportPriceSnapshot, readTransportPricing, readTransportSectionIndexes } from '../web/src/transport-pricing';
++import { ApiError } from './api-error';
++
++export const transportPricingFields = ['transport_pricing_mode', 'transport_section_indexes', 'transport_price_snapshot'] as const;
++type Fields = Record<string, string | null>;
++type Customer = { fields: Fields; previous?: Shipment; pricingRequest?: TripRequest };
++const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
++const identical = (a: unknown, b: unknown) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
++const numericSame = (a: string | null | undefined, b: string | null | undefined) => {
++  try { return !!a && !!b && new Decimal(a.replace(/\s/g, '').replace(',', '.')).eq(b); } catch { return a === b; }
++};
++const indexes = (value: string | null | undefined) => {
++  try { return readTransportSectionIndexes(value); } catch { throw new ApiError(400, 'Проверьте назначение секций автомобиля.'); }
++};
++
++/** Validate the whole allocation before storing anything. Historical quotes use
++ * their saved prices; only an explicitly supplied new quote reads current rates. */
++export function prepareTripTransportPricing(snapshot: Snapshot, shared: Fields, customers: Customer[]) {
++  const selected = customers.map(({ fields, previous }) => indexes(Object.hasOwn(fields, 'transport_section_indexes') ? fields.transport_section_indexes : previous?.fields.transport_section_indexes));
++  const modes = customers.map(({ fields, previous }) => fields.transport_pricing_mode ?? previous?.fields.transport_pricing_mode);
++  for (const [position, customer] of customers.entries()) {
++    const input = customer.fields, previous = customer.previous?.fields;
++    const effective = { ...previous, ...shared, ...input };
++    const explicitMode = input.transport_pricing_mode;
++    if (explicitMode != null && !['auto', 'manual'].includes(explicitMode)) throw new ApiError(400, 'Выберите автоматическую или ручную сумму перевозки.');
++    const oldQuote = readTransportPriceSnapshot(previous?.transport_price_snapshot);
++    const contextSame = !!previous && ['vehicle_id', 'oil_depot_id', 'customer_id', 'unloading_address_id'].every(key => effective[key] === previous[key]) && numericSame(effective.quantity_litres, previous.quantity_litres) && identical(selected[position], indexes(previous.transport_section_indexes));
++    const amountSame = !!previous && numericSame(effective.transport_amount, previous.transport_amount);
++    // Older clients do not know these optional fields. Preserve historical
++    // metadata only while the actual price inputs and amount are untouched.
++    if (explicitMode == null) {
++      if (previous?.transport_pricing_mode && contextSame && amountSame) {
++        for (const key of transportPricingFields) input[key] = previous[key] ?? null;
++      } else if (previous?.transport_pricing_mode) {
++        input.transport_pricing_mode = 'manual'; input.transport_price_snapshot = null;
++        input.transport_section_indexes = shared.vehicle_id !== previous.vehicle_id ? null : previous.transport_section_indexes ?? null;
++      } else if (input.transport_price_snapshot || input.transport_section_indexes) throw new ApiError(400, 'Для назначения секций укажите способ расчёта перевозки.');
++      continue;
++    }
++    if (explicitMode === 'manual') {
++      if (!input.transport_amount?.trim()) throw new ApiError(400, 'Укажите сумму перевозки вручную. Пустая сумма не заменяется нулём.');
++      if (input.transport_price_snapshot) throw new ApiError(400, 'Ручная сумма не может содержать автоматический расчёт.');
++      const vehicle = snapshot.directories!.vehicles.find(row => row.id === effective.vehicle_id);
++      // Optional assignments describe the saved truck configuration. Changing a
++      // catalog must not block an unchanged manual row or an explicit override
++      // of its old automatic amount; new assignments still use today's vehicle.
++      const sameAssignment = !!previous && effective.vehicle_id === previous.vehicle_id && identical(selected[position], indexes(previous.transport_section_indexes));
++      if (!sameAssignment && selected[position].some(index => index >= (vehicle?.compartmentsLitres?.length ?? 0))) throw new ApiError(400, 'Проверьте назначение секций выбранного автомобиля.');
++      input.transport_price_snapshot = null;
++      input.transport_section_indexes = selected[position].length ? JSON.stringify(selected[position]) : null;
++      continue;
++    }
++    if (customers.some((other, otherPosition) => otherPosition !== position && (other.fields.customer_id ?? other.previous?.fields.customer_id) === effective.customer_id)) throw new ApiError(400, 'Один клиент указан в нескольких доставках. Доплата и расстояние для такого случая не согласованы: введите суммы вручную.');
++    const overlaps = selected[position].filter(index => selected.some((other, otherPosition) => otherPosition !== position && other.includes(index)));
++    if (overlaps.length) throw new ApiError(400, 'Секция назначена нескольким доставкам. Распределение стоимости не задано: укажите отдельные секции или ручные суммы.');
++    const supplied = readTransportPriceSnapshot(input.transport_price_snapshot);
++    if (input.transport_price_snapshot && !supplied) throw new ApiError(400, 'Некорректный сохранённый расчёт перевозки.');
++    if (previous?.transport_pricing_mode === 'auto' && oldQuote && contextSame && amountSame && (!input.transport_price_snapshot || identical(supplied, oldQuote))) {
++      input.transport_price_snapshot = previous.transport_price_snapshot;
++      input.transport_section_indexes = previous.transport_section_indexes;
++      continue;
++    }
++    if (oldQuote && previous?.transport_pricing_mode === 'auto' && !supplied) throw new ApiError(409, 'Для изменения сохранённой суммы явно обновите расчёт или выберите ручной ввод.');
++    const address = snapshot.directories!.addresses.find(row => row.id === effective.unloading_address_id);
++    // Existing trip locations are frozen by prepareShipmentFields. Repricing
++    // the same directory ID must use that actual route, even for non-request
++    // trips, instead of charging for a subsequently edited catalog location.
++    const sameAddress = !!previous && effective.unloading_address_id === previous.unloading_address_id;
++    const actual = sameAddress ? { address: previous.unloading_address, latitude: previous.unloading_latitude, longitude: previous.unloading_longitude, locationSnapshot: customer.pricingRequest?.locationSnapshot } : customer.pricingRequest;
++    if (!transportAddressMatches(address, actual)) throw new ApiError(400, 'Адрес или точка доставки в заявке отличаются от справочника. Подтверждённого расстояния для этой доставки нет: введите сумму перевозки вручную.');
++    const oilDepot = snapshot.directories!.oilDepots?.find(row => row.id === effective.oil_depot_id);
++    if (previous && effective.oil_depot_id === previous.oil_depot_id && !transportAddressMatches(oilDepot, { address: previous.loading_address, latitude: previous.loading_latitude, longitude: previous.loading_longitude })) throw new ApiError(400, 'Сохранённое место погрузки отличается от текущей нефтебазы в справочнике. Подтверждённого расстояния для этого маршрута нет: введите сумму перевозки вручную.');
++    const calculated = calculateTransportPrice({
++      vehicle: snapshot.directories!.vehicles.find(row => row.id === effective.vehicle_id),
++      oilDepot,
++      address,
++      customerId: effective.customer_id, quantityLitres: effective.quantity_litres ?? undefined,
++      compartmentIndexes: selected[position], settings: readTransportPricing(snapshot.directories!.transportPricing),
++    });
++    if (!calculated.ok) throw new ApiError(400, `Клиент ${position + 1}: ${calculated.errors.join(' ')}`);
++    if (supplied && !identical(supplied, calculated.snapshot) || !numericSame(effective.transport_amount, calculated.snapshot.totalRub)) throw new ApiError(409, 'Исходные данные или тарифы перевозки изменились. Обновите расчёт и проверьте сумму перед сохранением.');
++    input.transport_amount = calculated.snapshot.totalRub;
++    input.transport_section_indexes = JSON.stringify(selected[position]);
++    input.transport_price_snapshot = JSON.stringify(calculated.snapshot);
++  }
++  // An omitted mode can preserve an old auto quote; conflicts still must not be
++  // introduced by another row switching its manual section allocation. Inspect
++  // the resolved values: legacy normalization may restore prior assignments.
++  const resolvedSections = customers.map(({ fields, previous }) => indexes(Object.hasOwn(fields, 'transport_section_indexes') ? fields.transport_section_indexes : previous?.fields.transport_section_indexes));
++  for (const [position, customer] of customers.entries()) if ((customer.fields.transport_pricing_mode ?? modes[position]) === 'auto') {
++    if (resolvedSections[position].some(index => resolvedSections.some((other, otherPosition) => otherPosition !== position && other.includes(index)))) throw new ApiError(400, 'Секция назначена нескольким доставкам. Автоматический расчёт неполон.');
++    const customerId = customer.fields.customer_id ?? customer.previous?.fields.customer_id;
++    if (customers.some((other, otherPosition) => otherPosition !== position && (other.fields.customer_id ?? other.previous?.fields.customer_id) === customerId)) throw new ApiError(400, 'Один клиент указан в нескольких доставках. Введите суммы перевозки вручную.');
++  }
++}
+--- a/server/trip-requests.ts
++++ b/server/trip-requests.ts
+@@ -43,7 +43,7 @@
+ export function tripRequestCatalog(snapshot: Snapshot) {
+   const companies = snapshot.companies.filter(row => row.roles.includes('customer') && !row.directoryArchived).map(row => ({ id: row.id, name: row.name, roles: ['customer'], shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] }));
+   const ids = new Set(companies.map(row => row.id));
+-  const addresses = (snapshot.directories?.addresses ?? []).filter(row => row.kind === 'delivery' && ids.has(row.companyId)).map(({ id, version, companyId, kind, name, address, mapUrl, latitude, longitude }) => ({ id, version: version ?? 0, companyId, kind, name, address: address || name, mapUrl, latitude, longitude }));
++  const addresses = (snapshot.directories?.addresses ?? []).filter(row => row.kind === 'delivery' && ids.has(row.companyId)).map(({ id, version, companyId, kind, name, address, mapUrl, latitude, longitude, oilDepotDistancesKm }) => ({ id, version: version ?? 0, companyId, kind, name, address: address || name, mapUrl, latitude, longitude, oilDepotDistancesKm }));
+   return { companies, addresses };
+ }
+ 
+--- /dev/null
++++ b/tests/api-transport-pricing.test.ts
+@@ -0,0 +1,208 @@
++import assert from 'node:assert/strict';
++import { createHash, randomBytes, randomUUID } from 'node:crypto';
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import test from 'node:test';
++import { integrationRuntime } from './helpers/trip-saby-integration';
++import { createSnapshotMiddleware } from '../server/local-api';
++import { currentSnapshot } from '../server/shipment-operations';
++import { OperationsStore } from '../server/operations-store';
++import { saveUser } from '../server/auth';
++import { calculateTransportPrice, readTransportPricing } from '../web/src/transport-pricing';
++import type { ShipmentTrip } from '../web/src/model';
++async function fixture(auth = false) {
++  const rt = await integrationRuntime(); const token = randomBytes(32).toString('hex'); let userId = '';
++  await rt.store.mutate(rt.source, async data => {
++    data.directories!.vehicles[0].compartmentsLitres = ['3000', '4000', '4000']; data.directories!.vehicles[0].capacityLitres = '11000'; data.directories!.vehicles[0].compartmentDeparturePricesRub = ['3000', '4000', '4000'];
++    data.directories!.addresses.find(row => row.id === 'delivery')!.oilDepotDistancesKm = { depot: '50' };
++    data.companies.push({ ...data.companies.find(row => row.id === 'customer')!, id: 'second', inn: '7736050003', name: 'Второй клиент' });
++    data.directories!.addresses.push({ id: 'second-address', companyId: 'second', kind: 'delivery', name: 'Вторая площадка', oilDepotDistancesKm: { depot: '70' } });
++    if (auth) { const user = await saveUser(data, currentSnapshot(rt.base, data), { name: 'Тест', login: 'pricing-admin', password: randomUUID() }, undefined, true); userId = user.id; data.accounts!.sessions.push({ userId: user.id, hash: createHash('sha256').update(token).digest('hex'), expiresAt: Date.now() + 600000 }); }
++    return { changed: true, result: null };
++  });
++  const middleware = createSnapshotMiddleware(rt.snapshotDirectory, { operationsStore: rt.store, requireAuthentication: auth, fetcher: async () => { throw new Error('External request forbidden'); } });
++  const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); })); await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
++  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++  const request = async (path: string, method = 'GET', body?: unknown, cookie = token) => { const response = await fetch(origin + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: `artel_session=${cookie}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); return { status: response.status, body: await response.json() }; };
++  const quote = async (indexes = [0, 1, 2], litres = '11000', customerId = 'customer', addressId = 'delivery') => { const snapshot = currentSnapshot(rt.base, await rt.store.read(rt.source)); const result = calculateTransportPrice({ vehicle: snapshot.directories!.vehicles[0], oilDepot: snapshot.directories!.oilDepots![0], address: snapshot.directories!.addresses.find(row => row.id === addressId), customerId, compartmentIndexes: indexes, quantityLitres: litres, settings: readTransportPricing(snapshot.directories!.transportPricing) }); assert.ok(result.ok); return result.snapshot; };
++  const input = async (indexes = [0, 1, 2], litres = '11000', customerId = 'customer', addressId = 'delivery') => { const calculated = await quote(indexes, litres, customerId, addressId); return { idempotencyKey: randomUUID(), fields: { organization_id: 'artel', trip_flow_version: 'driver-v1', loading_at: '2026-11-05T12:00', supplier_id: 'supplier', oil_depot_id: 'depot', product_id: 'product', purchase_price_unspecified_unit: '50000', driver_id: 'driver', vehicle_id: 'vehicle', additional_costs: '0' }, customers: [{ fields: { customer_id: customerId, manager_id: 'manager', payment_form_id: 'payment', quantity_litres: litres, sale_price_per_litre: '60', transport_amount: calculated.totalRub, unloading_address_id: addressId, transport_pricing_mode: 'auto', transport_section_indexes: JSON.stringify(indexes), transport_price_snapshot: JSON.stringify(calculated) } }] }; };
++  const patch = (trip: ShipmentTrip) => ({ fields: Object.fromEntries(Object.entries(trip.fields).filter(([key]) => !['quantity_tonnes', 'quantity_gross_tonnes', 'loading_actual_at', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude'].includes(key))), customers: trip.customers.map(row => ({ id: row.id, fields: Object.fromEntries(Object.entries(row.fields).filter(([key]) => !['quantity_tonnes', 'quantity_gross_tonnes', 'unloading_actual_at', 'unloading_address', 'unloading_map_url', 'unloading_latitude', 'unloading_longitude', 'source_request_id'].includes(key))) })), versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) });
++  return { ...rt, request, input, quote, patch, userId, close: async () => { await new Promise<void>(done => server.close(() => done())); await rt.close(); } };
++}
++test('automatic snapshot survives save/reload, changed directory tariffs, idempotent replay and unrelated edit', async () => {
++  const f = await fixture(); try {
++    const body = await f.input(); const created = await f.request('/api/shipment-trips', 'POST', body); assert.equal(created.status, 201, JSON.stringify(created.body));
++    const original = created.body.trip as ShipmentTrip; assert.equal(original.customers[0].fields.transport_amount, '15000');
++    assert.equal((await f.request('/api/transport-pricing', 'PATCH', { version: 0, ratePerKmRub: '90', customerSurchargeRub: '2000', rounding: 'ceil100' })).status, 200);
++    const repeated = await f.request('/api/shipment-trips', 'POST', body); assert.equal(repeated.status, 201); assert.deepEqual(repeated.body.trip, original);
++    const edit = f.patch(original); edit.fields.trip_notes = 'Комментарий'; const saved = await f.request('/api/shipment-trips/' + original.id, 'PATCH', edit); assert.equal(saved.status, 200, JSON.stringify(saved.body)); assert.equal(saved.body.trip.customers[0].fields.transport_price_snapshot, original.customers[0].fields.transport_price_snapshot);
++    const reload = currentSnapshot(f.base, await new OperationsStore(f.directory + '/store').read(f.source)); assert.equal(reload.shipments.find(row => row.id === original.customers[0].id)!.fields.transport_amount, '15000');
++    const recalc = f.patch(saved.body.trip); const quote = await f.quote(); recalc.customers[0].fields.transport_price_snapshot = JSON.stringify(quote); recalc.customers[0].fields.transport_amount = quote.totalRub;
++    const changed = await f.request('/api/shipment-trips/' + original.id, 'PATCH', recalc); assert.equal(changed.status, 200, JSON.stringify(changed.body)); assert.equal(changed.body.trip.customers[0].fields.transport_amount, '17500');
++  } finally { await f.close(); }
++});
++test('server rejects forged/stale quotes, missing or shared sections and duplicate clients without writes; manual remains available', async () => {
++  const f = await fixture(); try {
++    const before = await f.store.read(f.source);
++    for (const kind of ['amount', 'snapshot', 'partial', 'missing', 'shared', 'same-client']) {
++      const body = await f.input();
++      if (kind === 'amount') body.customers[0].fields.transport_amount = '1';
++      if (kind === 'snapshot') body.customers[0].fields.transport_price_snapshot = JSON.stringify({ ...await f.quote(), totalRub: '1' });
++      if (kind === 'partial') body.customers[0].fields.quantity_litres = '10000';
++      if (kind === 'missing') body.customers[0].fields.transport_section_indexes = '[]';
++      if (kind === 'shared') { const other = await f.input([2], '4000', 'second', 'second-address'); body.customers.push(other.customers[0]); }
++      if (kind === 'same-client') { const other = await f.input([2], '4000'); body.customers[0] = (await f.input([0, 1], '7000')).customers[0]; body.customers.push(other.customers[0]); }
++      const response = await f.request('/api/shipment-trips', 'POST', body); assert.ok([400, 409].includes(response.status), kind + JSON.stringify(response));
++    }
++    assert.deepEqual(await f.store.read(f.source), before);
++    const stale = await f.input(); await f.request('/api/transport-pricing', 'PATCH', { ...readTransportPricing(), ratePerKmRub: '46' }); assert.equal((await f.request('/api/shipment-trips', 'POST', stale)).status, 409);
++    const manual = await f.input(); manual.customers[0].fields.transport_pricing_mode = 'manual'; manual.customers[0].fields.transport_price_snapshot = ''; manual.customers[0].fields.transport_section_indexes = ''; manual.customers[0].fields.transport_amount = '12345'; manual.customers[0].fields.quantity_litres = '10000'; assert.equal((await f.request('/api/shipment-trips', 'POST', manual)).status, 201);
++  } finally { await f.close(); }
++});
++test('two clients charge assigned sections once and persist separate distances', async () => {
++  const f = await fixture(); try {
++    await f.store.mutate(f.source, data => { data.directories!.addresses.find(row => row.id === 'delivery')!.oilDepotDistancesKm = { depot: '30' }; return { changed: true, result: null }; });
++    const body = await f.input([0, 1], '7000'); body.customers.push((await f.input([2], '4000', 'second', 'second-address')).customers[0]);
++    const saved = await f.request('/api/shipment-trips', 'POST', body); assert.equal(saved.status, 201, JSON.stringify(saved.body)); assert.deepEqual(saved.body.trip.customers.map((row: { fields: Record<string, string> }) => row.fields.transport_amount), ['10100', '8900']);
++  } finally { await f.close(); }
++});
++test('vehicle tariff CRUD validates count/money and legacy edits preserve prices; clear is explicit', async () => {
++  const f = await fixture(); try {
++    const initial = await f.store.read(f.source); const original = initial.directories!.vehicles[0];
++    const edit = { version: 0, plate: original.plate, capacityLitres: original.capacityLitres, compartmentsLitres: original.compartmentsLitres };
++    for (const values of [['1'], ['1', '', '3'], ['1', '-2', '3'], ['1', '1e2', '3'], ['1', '2.001', '3']]) assert.equal((await f.request('/api/directories/vehicles/vehicle', 'PATCH', { ...edit, compartmentDeparturePricesRub: values })).status, 400);
++    assert.deepEqual(await f.store.read(f.source), initial);
++    const legacy = await f.request('/api/directories/vehicles/vehicle', 'PATCH', edit); assert.equal(legacy.status, 200); assert.deepEqual(legacy.body.entry.compartmentDeparturePricesRub, ['3000', '4000', '4000']);
++    const clear = await f.request('/api/directories/vehicles/vehicle', 'PATCH', { ...edit, version: 1, compartmentDeparturePricesRub: [] }); assert.equal(clear.status, 200, JSON.stringify(clear.body)); assert.equal(clear.body.entry.compartmentDeparturePricesRub, undefined);
++    assert.equal((await f.request('/api/directories', 'POST', { kind: 'vehicles', plate: 'TEST1234', compartmentsLitres: ['10', '20'], compartmentDeparturePricesRub: ['3700', '5000'] })).status, 201);
++  } finally { await f.close(); }
++});
++test('settings enforce vehicles grant, section, optimistic version and preserve unrelated store', async () => {
++  const f = await fixture(true); try {
++    const body = readTransportPricing(); assert.equal((await f.request('/api/transport-pricing', 'PATCH', body, '')).status, 401);
++    const before = await f.store.read(f.source); const saved = await f.request('/api/transport-pricing', 'PATCH', body); assert.equal(saved.status, 200, JSON.stringify(saved.body)); assert.equal(saved.body.transportPricing.version, 1);
++    const after = await f.store.read(f.source); delete after.directories!.transportPricing; after.revision = before.revision; assert.deepEqual(after, before);
++    assert.equal((await f.request('/api/transport-pricing', 'PATCH', body)).status, 409);
++    for (const invalid of [{ ...body, version: 1, ratePerKmRub: '-1' }, { ...body, version: 1, rounding: 'floor100' }, { ...body, version: 1, extra: true }]) assert.equal((await f.request('/api/transport-pricing', 'PATCH', invalid)).status, 400);
++    await f.store.mutate(f.source, data => { const original = data.accounts!.users.find(row => row.id === f.userId)!; data.accounts!.users.push({ ...original, id: 'other-admin', login: 'other-admin' }); Object.assign(original, { role: 'employee', managerId: 'manager', sections: ['directories', 'trips'], directoryGrants: [] }); return { changed: true, result: null }; });
++    assert.equal((await f.request('/api/transport-pricing', 'PATCH', { ...body, version: 1 })).status, 403);
++    await f.store.mutate(f.source, data => { data.accounts!.users.find(row => row.id === f.userId)!.directoryGrants = ['vehicles']; return { changed: true, result: null }; });
++    assert.equal((await f.request('/api/transport-pricing', 'PATCH', { ...body, version: 1 })).status, 200);
++    await f.store.mutate(f.source, data => { data.accounts!.users.find(row => row.id === f.userId)!.sections = ['trips']; return { changed: true, result: null }; });
++    assert.equal((await f.request('/api/transport-pricing', 'PATCH', { ...body, version: 2 })).status, 403);
++    const scoped = await f.request('/api/snapshot'); assert.equal(scoped.status, 200); assert.deepEqual(scoped.body.directories.vehicles[0].compartmentDeparturePricesRub, ['3000', '4000', '4000']);
++  } finally { await f.close(); }
++});
++test('old clients preserve snapshots only for unchanged inputs; manual and legacy amounts never reprice', async () => {
++  const f = await fixture(); try {
++    const created = await f.request('/api/shipment-trips', 'POST', await f.input()); assert.equal(created.status, 201);
++    const original = created.body.trip as ShipmentTrip;
++    await f.request('/api/transport-pricing', 'PATCH', { ...readTransportPricing(), ratePerKmRub: '90' });
++    const edit = f.patch(original); for (const key of ['transport_pricing_mode', 'transport_section_indexes', 'transport_price_snapshot']) delete edit.customers[0].fields[key]; edit.fields.trip_notes = 'Старый клиент';
++    const retained = await f.request('/api/shipment-trips/' + original.id, 'PATCH', edit); assert.equal(retained.status, 200); assert.equal(retained.body.trip.customers[0].fields.transport_price_snapshot, original.customers[0].fields.transport_price_snapshot);
++    const manual = f.patch(retained.body.trip); for (const key of ['transport_pricing_mode', 'transport_section_indexes', 'transport_price_snapshot']) delete manual.customers[0].fields[key]; manual.customers[0].fields.transport_amount = '12345';
++    const changed = await f.request('/api/shipment-trips/' + original.id, 'PATCH', manual); assert.equal(changed.status, 200, JSON.stringify(changed.body)); assert.equal(changed.body.trip.customers[0].fields.transport_pricing_mode, 'manual'); assert.equal(changed.body.trip.customers[0].fields.transport_price_snapshot, null); assert.equal(changed.body.trip.customers[0].fields.transport_amount, '12345');
++    const legacy = f.patch(f.trip); legacy.fields.quantity_tonnes = f.trip.fields.quantity_tonnes; const originalValues = f.trip.customers.map(row => row.fields.transport_amount);
++    const savedLegacy = await f.request('/api/shipment-trips/' + f.trip.id, 'PATCH', legacy); assert.equal(savedLegacy.status, 200, JSON.stringify(savedLegacy.body)); assert.deepEqual(savedLegacy.body.trip.customers.map((row: { fields: Record<string, string> }) => row.fields.transport_amount), originalValues);
++    const before = await f.store.read(f.source); const spoof = await f.request('/api/shipments/' + original.customers[0].id, 'PATCH', { version: changed.body.trip.customers[0].version, fields: { transport_pricing_mode: 'auto', transport_price_snapshot: original.customers[0].fields.transport_price_snapshot } }); assert.ok([400, 409].includes(spoof.status)); assert.deepEqual(await f.store.read(f.source), before);
++  } finally { await f.close(); }
++});
++test('preserved auto row also rejects a duplicate customer added by a legacy client', async () => {
++  const f = await fixture(); try {
++    const created = await f.request('/api/shipment-trips', 'POST', await f.input([0, 1], '7000')); assert.equal(created.status, 201);
++    const edit = f.patch(created.body.trip); for (const key of ['transport_pricing_mode', 'transport_section_indexes', 'transport_price_snapshot']) delete edit.customers[0].fields[key];
++    const other = (await f.input([2], '4000')).customers[0]; other.fields.transport_pricing_mode = 'manual'; other.fields.transport_price_snapshot = '';
++    const response = await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', { ...edit, customers: [...edit.customers, other] }); assert.equal(response.status, 400); assert.match(response.body.error, /клиент/);
++  } finally { await f.close(); }
++});
++test('changed vehicle/depot/address and missing distance require a new valid quote, never catalog guesses', async () => {
++  const f = await fixture(); try {
++    const stale = await f.input(); await f.store.mutate(f.source, data => { delete data.directories!.addresses.find(row => row.id === 'delivery')!.oilDepotDistancesKm; return { changed: true, result: null }; });
++    assert.equal((await f.request('/api/shipment-trips', 'POST', stale)).status, 400);
++    await f.store.mutate(f.source, data => { data.directories!.addresses.find(row => row.id === 'delivery')!.oilDepotDistancesKm = { depot: '40' }; return { changed: true, result: null }; });
++    assert.equal((await f.request('/api/shipment-trips', 'POST', stale)).status, 409);
++    const correct = await f.input(); assert.equal(correct.customers[0].fields.transport_amount, '14600');
++    for (const [key, value] of [['vehicle_id', 'unknown'], ['oil_depot_id', 'unknown']] as const) { const body = structuredClone(correct); body.fields[key] = value; assert.equal((await f.request('/api/shipment-trips', 'POST', body)).status, 400); }
++    const wrongAddress = structuredClone(correct); wrongAddress.customers[0].fields.unloading_address_id = 'second-address'; assert.equal((await f.request('/api/shipment-trips', 'POST', wrongAddress)).status, 400);
++  } finally { await f.close(); }
++});
++test('request-specific changed address or explicit point cannot reuse directory kilometres; shared lookup includes only distance inputs', async () => {
++  const f = await fixture(); try {
++    const catalog = await f.request('/api/trip-requests'); assert.equal(catalog.status, 200); assert.deepEqual(catalog.body.addresses.find((row: { id: string }) => row.id === 'delivery').oilDepotDistancesKm, { depot: '50' });
++    for (const overrides of [{ address: 'Другой фактический адрес' }, { latitude: '55.5', longitude: '37.5' }]) {
++      const request = await f.request('/api/trip-requests', 'POST', { companyId: 'customer', addressId: 'delivery', quantityLitres: '11000', salePricePerLitre: '60', idempotencyKey: randomUUID(), ...overrides }); assert.equal(request.status, 201, JSON.stringify(request.body));
++      const body = await f.input(); const customer = { ...body.customers[0], sourceRequestId: request.body.request.id, sourceRequestVersion: request.body.request.version };
++      const rejected = await f.request('/api/shipment-trips', 'POST', { ...body, customers: [customer] }); assert.equal(rejected.status, 400); assert.match(rejected.body.error, /расстояни/);
++      customer.fields.transport_pricing_mode = 'manual'; customer.fields.transport_price_snapshot = ''; customer.fields.transport_amount = '16000'; assert.equal((await f.request('/api/shipment-trips', 'POST', { ...body, customers: [customer] })).status, 201);
++    }
++  } finally { await f.close(); }
++});
++test('saved auto quotes survive changed section directory and manual blanks cannot create zero charges', async () => {
++  const f = await fixture(); try {
++    const created = await f.request('/api/shipment-trips', 'POST', await f.input()); assert.equal(created.status, 201);
++    await f.store.mutate(f.source, data => { Object.assign(data.directories!.vehicles[0], { compartmentsLitres: ['11000'], compartmentDeparturePricesRub: ['20000'] }); return { changed: true, result: null }; });
++    const unchanged = await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', f.patch(created.body.trip)); assert.equal(unchanged.status, 200, JSON.stringify(unchanged.body)); assert.equal(unchanged.body.trip.customers[0].fields.transport_price_snapshot, created.body.trip.customers[0].fields.transport_price_snapshot);
++    const blank = f.patch(unchanged.body.trip); Object.assign(blank.customers[0].fields, { transport_pricing_mode: 'manual', transport_price_snapshot: null, transport_section_indexes: null, transport_amount: null });
++    const rejected = await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', blank); assert.equal(rejected.status, 400); assert.match(rejected.body.error, /Пустая/);
++    const direct = await f.request('/api/shipments', 'POST', { fields: { transport_pricing_mode: 'auto', transport_price_snapshot: created.body.trip.customers[0].fields.transport_price_snapshot } }); assert.equal(direct.status, 400);
++  } finally { await f.close(); }
++});
++test('historical manual assignments survive changed vehicle section structure while new assignments validate', async () => {
++  const f = await fixture(); try {
++    const created = await f.request('/api/shipment-trips', 'POST', await f.input()); assert.equal(created.status, 201);
++    await f.store.mutate(f.source, data => { Object.assign(data.directories!.vehicles[0], { compartmentsLitres: ['11000'], compartmentDeparturePricesRub: ['20000'] }); return { changed: true, result: null }; });
++    const manual = f.patch(created.body.trip); Object.assign(manual.customers[0].fields, { transport_pricing_mode: 'manual', transport_price_snapshot: null, transport_amount: '12345' });
++    const overridden = await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', manual); assert.equal(overridden.status, 200, JSON.stringify(overridden.body));
++    assert.equal(overridden.body.trip.customers[0].fields.transport_section_indexes, '[0,1,2]'); assert.equal(overridden.body.trip.customers[0].fields.transport_amount, '12345');
++    const note = f.patch(overridden.body.trip); note.fields.trip_notes = 'Только комментарий';
++    const saved = await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', note); assert.equal(saved.status, 200, JSON.stringify(saved.body));
++    assert.equal(saved.body.trip.customers[0].fields.transport_section_indexes, '[0,1,2]'); assert.equal(saved.body.trip.customers[0].fields.transport_amount, '12345');
++    const reassigned = f.patch(saved.body.trip); reassigned.customers[0].fields.transport_section_indexes = '[0,1]';
++    const before = await f.store.read(f.source); assert.equal((await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', reassigned)).status, 400); assert.deepEqual(await f.store.read(f.source), before);
++  } finally { await f.close(); }
++});
++test('fresh calculations cannot replace a frozen direct-trip destination or depot with a changed same-ID catalog location', async () => {
++  for (const changedLocation of ['delivery-address', 'delivery-point', 'depot-address', 'depot-point']) {
++    const f = await fixture(); try {
++      await f.store.mutate(f.source, data => {
++        Object.assign(data.directories!.addresses.find(row => row.id === 'delivery')!, { latitude: '55.1', longitude: '37.1' });
++        Object.assign(data.directories!.oilDepots![0], { latitude: '55.2', longitude: '37.2' });
++        return { changed: true, result: null };
++      });
++      const created = await f.request('/api/shipment-trips', 'POST', await f.input()); assert.equal(created.status, 201); const original = created.body.trip as ShipmentTrip;
++      assert.equal(original.customers[0].fields.source_request_id, null);
++      await f.store.mutate(f.source, data => {
++        const address = data.directories!.addresses.find(row => row.id === 'delivery')!;
++        address.oilDepotDistancesKm = { depot: '70' };
++        if (changedLocation === 'delivery-address') address.address = 'Новый адрес той же записи';
++        if (changedLocation === 'delivery-point') Object.assign(address, { latitude: '55.3', longitude: '37.3' });
++        if (changedLocation === 'depot-address') data.directories!.oilDepots![0].address = 'Новый адрес нефтебазы';
++        if (changedLocation === 'depot-point') Object.assign(data.directories!.oilDepots![0], { latitude: '55.4', longitude: '37.4' });
++        return { changed: true, result: null };
++      });
++      const unchanged = f.patch(original); unchanged.fields.trip_notes = 'Сохранить прежний расчёт';
++      const retained = await f.request('/api/shipment-trips/' + original.id, 'PATCH', unchanged); assert.equal(retained.status, 200, JSON.stringify(retained.body));
++      assert.equal(retained.body.trip.customers[0].fields.transport_price_snapshot, original.customers[0].fields.transport_price_snapshot);
++      const quote = await f.quote(); const recalc = f.patch(retained.body.trip);
++      Object.assign(recalc.customers[0].fields, { transport_amount: quote.totalRub, transport_price_snapshot: JSON.stringify(quote) });
++      const before = await f.store.read(f.source); const rejected = await f.request('/api/shipment-trips/' + original.id, 'PATCH', recalc);
++      assert.equal(rejected.status, 400, changedLocation + JSON.stringify(rejected.body)); assert.match(rejected.body.error, /расстояни/); assert.deepEqual(await f.store.read(f.source), before);
++      Object.assign(recalc.customers[0].fields, { transport_pricing_mode: 'manual', transport_price_snapshot: null, transport_amount: '12345' });
++      const manual = await f.request('/api/shipment-trips/' + original.id, 'PATCH', recalc); assert.equal(manual.status, 200, JSON.stringify(manual.body));
++      assert.equal(manual.body.trip.customers[0].fields.unloading_address, original.customers[0].fields.unloading_address); assert.equal(manual.body.trip.fields.loading_address, original.fields.loading_address);
++    } finally { await f.close(); }
++  }
++});
++test('legacy metadata normalization cannot hide overlap with the final stored manual assignment', async () => {
++  const f = await fixture(); try {
++    const body = await f.input([1], '4000'); const other = (await f.input([0], '3000', 'second', 'second-address')).customers[0];
++    Object.assign(other.fields, { transport_pricing_mode: 'manual', transport_price_snapshot: '', transport_amount: '1234' }); body.customers.push(other);
++    const created = await f.request('/api/shipment-trips', 'POST', body); assert.equal(created.status, 201, JSON.stringify(created.body));
++    const edit = f.patch(created.body.trip); const quote = await f.quote([0], '3000');
++    Object.assign(edit.customers[0].fields, { transport_section_indexes: '[0]', quantity_litres: '3000', transport_price_snapshot: JSON.stringify(quote), transport_amount: quote.totalRub });
++    delete edit.customers[1].fields.transport_pricing_mode; delete edit.customers[1].fields.transport_price_snapshot;
++    edit.customers[1].fields.transport_section_indexes = '[2]'; // Resolved by the legacy branch back to its saved [0].
++    const before = await f.store.read(f.source); const rejected = await f.request('/api/shipment-trips/' + created.body.trip.id, 'PATCH', edit);
++    assert.equal(rejected.status, 400, JSON.stringify(rejected.body)); assert.match(rejected.body.error, /Секция назначена/); assert.deepEqual(await f.store.read(f.source), before);
++  } finally { await f.close(); }
++});
+--- a/tests/directory-editor-data.test.ts
++++ b/tests/directory-editor-data.test.ts
+@@ -1,6 +1,6 @@
+ import assert from 'node:assert/strict';
+ import test from 'node:test';
+-import { directoryDraft, directoryPayload, mergeDirectoryPayload, withCurrentAddressVersions } from '../web/src/directory-editor-data';
++import { directoryDraft, directoryPayload, mergeDirectoryPayload, withCurrentAddressVersions, parseVehicleDeparturePrices } from '../web/src/directory-editor-data';
+ import type { DirectoryData } from '../web/src/model';
+ 
+ test('merges unrelated edits and preserves hidden fields from the server',()=>{
+@@ -49,3 +49,21 @@
+   const overlap=mergeDirectoryPayload(base,{...base,addresses:[{...base.addresses[0],oilDepotDistancesKm:{depot:''}}]},latest);
+   assert.deepEqual(overlap.conflicts,['addresses']);
+ });
++test('vehicle section tariffs retain ordered identity even for equal volumes and normalize entered rubles',()=>{
++  assert.deepEqual(parseVehicleDeparturePrices('4000 + 4000 + 3000','3 700 + 5 000,50 + 0'),['3700','5000.50','0']);
++  for(const value of ['3000 + 4000','3000 + + 4000','3000 + -1 + 4000','3000 + 1.005 + 4000','3000 + 1000000000 + 4000','3000 + NaN + 4000'])assert.throws(()=>parseVehicleDeparturePrices('4000 + 4000 + 3000',value));
++  assert.throws(()=>parseVehicleDeparturePrices('','3000'));
++  assert.deepEqual(parseVehicleDeparturePrices('4000 + 4000',''),[]);
++});
++test('vehicle tariff edits survive drafts and detect conflicts without overwriting concurrent vehicle changes',()=>{
++  const vehicle={id:'v',plate:'QA',compartmentsLitres:['4000','4000'],compartmentDeparturePricesRub:['3000','5000']};
++  const data={companies:[],directories:{addresses:[],vehicles:[vehicle]}} as unknown as DirectoryData;
++  const draft=directoryDraft(data,'vehicles','v');
++  assert.equal(draft.departurePrices,'3000 + 5000');
++  assert.deepEqual(directoryPayload('vehicles',draft).compartmentDeparturePricesRub,['3000','5000']);
++  const base={plate:'QA',compartmentDeparturePricesRub:['3000','5000']};
++  const local={...base,compartmentDeparturePricesRub:['3500','5000']};
++  const latest={...base,plate:'QA2'};
++  assert.deepEqual(mergeDirectoryPayload(base,local,latest),{merged:{...local,plate:'QA2'},conflicts:[]});
++  assert.deepEqual(mergeDirectoryPayload(base,local,{...base,compartmentDeparturePricesRub:['3000','5500']}).conflicts,['compartmentDeparturePricesRub']);
++});
+--- /dev/null
++++ b/tests/transport-pricing.test.ts
+@@ -0,0 +1,34 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { calculateTransportPrice, readTransportPriceSnapshot, readTransportPricing, readTransportSectionIndexes, validateTransportSectionAssignments } from '../web/src/transport-pricing';
++import type { OilDepot, ShipmentAddress, Vehicle } from '../web/src/model';
++const vehicle: Vehicle = { id: 'v', plate: 'Тест', compartmentsLitres: ['3000', '4000', '4000'], compartmentDeparturePricesRub: ['3000', '4000', '4000'] };
++const oilDepot: OilDepot = { id: 'd', name: 'Нефтебаза', ownerCompanyId: 'supplier' };
++const address: ShipmentAddress = { id: 'a', companyId: 'c', name: 'Площадка', kind: 'delivery', oilDepotDistancesKm: { d: '50' } };
++const calc = (compartmentIndexes: number[], quantityLitres: string, km = '50', selectedVehicle = vehicle) => calculateTransportPrice({ vehicle: selectedVehicle, oilDepot, address: { ...address, oilDepotDistancesKm: { d: km } }, customerId: 'c', compartmentIndexes, quantityLitres });
++test('agreed full truck and distinct client examples use exact prices and single-leg distances', () => {
++  for (const [indexes, litres, km, subtotal, total] of [[[0, 1, 2], '11000', '50', '15000', '15000'], [[0, 1], '7000', '30', '10100', '10100'], [[2], '4000', '70', '8900', '8900']] as const) {
++    const result = calc([...indexes], litres, km); assert.ok(result.ok); assert.equal(result.snapshot.subtotalRub, subtotal); assert.equal(result.snapshot.totalRub, total); assert.deepEqual(readTransportPriceSnapshot(JSON.stringify(result.snapshot)), result.snapshot);
++  }
++});
++test('round only final client total; half up provisional and ceil are explicit', () => {
++  const result = calc([0], '3000', '1'); assert.ok(result.ok); assert.equal(result.snapshot.subtotalRub, '4795'); assert.equal(result.snapshot.totalRub, '4800');
++  const half = calc([0], '3000', '0'); assert.ok(half.ok); assert.equal(half.snapshot.totalRub, '4800');
++  const nearest = calc([0], '3000', '2.4'); assert.ok(nearest.ok); assert.equal(nearest.snapshot.subtotalRub, '4858'); assert.equal(nearest.snapshot.totalRub, '4900');
++  const ceil = calculateTransportPrice({ vehicle, oilDepot, address: { ...address, oilDepotDistancesKm: { d: '1.2' } }, customerId: 'c', compartmentIndexes: [0], quantityLitres: '3000', settings: { ...readTransportPricing(), rounding: 'ceil100' } });
++  assert.ok(ceil.ok); assert.equal(ceil.snapshot.subtotalRub, '4804'); assert.equal(ceil.snapshot.totalRub, '4900');
++});
++test('missing, invalid, partial and unidentified sections never become zero estimates', () => {
++  for (const value of [calc([], '3000'), calc([0], '2999'), calc([0, 0], '6000'), calc([8], '3000'), calc([0], '3000', ''), calc([0], '3000', '-1'), calc([0], '3000', '100001'), calc([0], '3000', '30', { ...vehicle, compartmentDeparturePricesRub: undefined }), calc([0], '3000', '30', { ...vehicle, compartmentDeparturePricesRub: ['3000', '4000', '-1'] })]) assert.equal(value.ok, false);
++  assert.deepEqual(readTransportSectionIndexes('[2,0]'), [0, 2]); assert.throws(() => readTransportSectionIndexes('[0,0]')); assert.throws(() => readTransportSectionIndexes('[-1]'));
++  assert.equal(validateTransportSectionAssignments([{ compartmentIndexes: [0] }, { compartmentIndexes: [0] }]).length, 1);
++});
++test('saved breakdown checks arithmetic and bounded worst-case 20 sections', () => {
++  const result = calculateTransportPrice({ vehicle: { id: 'v', plate: 'X'.repeat(120), compartmentsLitres: Array(20).fill('999999999.999999'), compartmentDeparturePricesRub: Array(20).fill('999999999.99') }, oilDepot, address, customerId: 'c', compartmentIndexes: Array.from({ length: 20 }, (_, index) => index), quantityLitres: '19999999999.99998' });
++  assert.ok(result.ok); assert.ok(readTransportPriceSnapshot(JSON.stringify(result.snapshot))); // sum of all twenty supported sections.
++  const full = calc(Array.from({ length: 20 }, (_, index) => index), '20', '50', { id: 'v', plate: 'X'.repeat(120), compartmentsLitres: Array(20).fill('1'), compartmentDeparturePricesRub: Array(20).fill('999999999.99') });
++  assert.ok(full.ok); const raw = JSON.stringify(full.snapshot); assert.ok(raw.length < 8000); assert.ok(readTransportPriceSnapshot(raw));
++  assert.equal(readTransportPriceSnapshot(JSON.stringify({ ...full.snapshot, totalRub: '1' })), null);
++  assert.equal(readTransportPriceSnapshot(JSON.stringify({ ...full.snapshot, ratePerKmRub: null })), null);
++  assert.equal(readTransportPriceSnapshot('null'), null);
++});
+--- /dev/null
++++ b/tests/trip-transport-draft.test.ts
+@@ -0,0 +1,144 @@
++import test from 'node:test'
++import assert from 'node:assert/strict'
++import type { Directories, ShipmentAddress } from '../web/src/model'
++import { changedTransportContext, tripTransportStates, type TransportCustomerDraft } from '../web/src/trip-transport-draft'
++
++const addresses: ShipmentAddress[] = [
++  { id: 'full', name: 'Полная машина', companyId: 'a', kind: 'delivery', oilDepotDistancesKm: { depot: '50', second: '100' } },
++  { id: 'first', name: 'Первый клиент', companyId: 'a', kind: 'delivery', oilDepotDistancesKm: { depot: '30' } },
++  { id: 'last', name: 'Второй клиент', companyId: 'b', kind: 'delivery', oilDepotDistancesKm: { depot: '70' } },
++]
++const directories: Directories = {
++  vehicles: [{ id: 'truck', plate: 'А001АА', compartmentsLitres: ['3000', '4000', '4000'], compartmentDeparturePricesRub: ['3000', '4000', '4000'] }],
++  managers: [], products: [], paymentForms: [], drivers: [], addresses, duplicates: [], defaults: { profit: null },
++  oilDepots: [{ id: 'depot', name: 'База 1', ownerCompanyId: 'owner' }, { id: 'second', name: 'База 2', ownerCompanyId: 'owner' }],
++}
++const shared = { vehicle_id: 'truck', oil_depot_id: 'depot' }
++const customer = (key = 'a', indexes = [0, 1, 2], litres = '11000', address = 'full'): TransportCustomerDraft => ({ key, pricingLive: true, fields: { customer_id: key, unloading_address_id: address, quantity_litres: litres, transport_pricing_mode: 'auto', transport_section_indexes: JSON.stringify(indexes), transport_amount: '' } })
++const state = (row: TransportCustomerDraft, catalog = directories, fields: Record<string, string> = shared) => tripTransportStates(fields, [row], catalog, addresses).get(row.key)!
++
++test('new complete trip derives 15000 without writing the editable draft or inventing sections', () => {
++  const row = customer(), before = structuredClone(row)
++  assert.equal(state(row).fields.transport_amount, '15000')
++  assert.deepEqual(row, before)
++  assert.equal(state(customer('a', [])).fields.transport_amount, '')
++})
++
++test('each client derives its independently assigned section price and distance', () => {
++  const rows = [customer('a', [0, 1], '7000', 'first'), customer('b', [2], '4000', 'last')]
++  const states = tripTransportStates(shared, rows, directories, addresses)
++  assert.equal(states.get('a')!.fields.transport_amount, '10100')
++  assert.equal(states.get('b')!.fields.transport_amount, '8900')
++})
++
++test('new auto recalculates selected depot and missing kilometres remain empty', () => {
++  assert.equal(state(customer(), directories, { ...shared, oil_depot_id: 'second' }).fields.transport_amount, '17300')
++  const missing = state(customer('a', [0, 1], '7000', 'first'), directories, { ...shared, oil_depot_id: 'second' })
++  assert.equal(missing.fields.transport_amount, '')
++  assert.match(missing.errors.join(' '), /расстояние/)
++})
++
++test('manual and historical amounts survive tariff and route changes', () => {
++  for (const mode of [undefined, 'manual']) {
++    const row: TransportCustomerDraft = { key: 'a', fields: { customer_id: 'a', transport_amount: '4321', ...(mode ? { transport_pricing_mode: mode } : {}) } }
++    assert.equal(state(row).fields.transport_amount, '4321')
++    assert.equal(state(changedTransportContext(row, true)).fields.transport_amount, '4321')
++    assert.equal(state(row).snapshot, null)
++  }
++})
++
++test('saved auto snapshot preserves exact historic amount when tariffs and distances change', () => {
++  const calculated = state(customer())
++  const saved: TransportCustomerDraft = { key: 'a', fields: calculated.fields }
++  const changed = structuredClone(directories)
++  changed.transportPricing = { version: 5, ratePerKmRub: '100', customerSurchargeRub: '9000', rounding: 'ceil100' }
++  changed.vehicles[0].compartmentDeparturePricesRub = ['1', '1', '1']
++  const frozen = state(saved, changed)
++  assert.equal(frozen.frozen, true)
++  assert.equal(frozen.fields.transport_amount, '15000')
++  assert.equal(frozen.snapshot?.ratePerKmRub, '45')
++  const live = state({ ...saved, pricingLive: true }, changed)
++  assert.equal(live.fields.transport_amount, '14100')
++})
++
++test('changing context of saved auto converts to manual and preserves old amount for review', () => {
++  const saved: TransportCustomerDraft = { key: 'a', fields: state(customer()).fields }
++  const changed = changedTransportContext(saved, true)
++  assert.equal(changed.fields.transport_pricing_mode, 'manual')
++  assert.equal(changed.fields.transport_amount, '15000')
++  assert.equal(changed.fields.transport_price_snapshot, '')
++  assert.equal(changed.fields.transport_section_indexes, '')
++  assert.match(changed.pricingNotice!, /Исходные данные изменены/)
++})
++
++test('partial sections and shared sections leave automatic amount empty', () => {
++  const partial = state(customer('a', [0], '2500'))
++  assert.equal(partial.fields.transport_amount, '')
++  assert.match(partial.errors.join(' '), /Частичная/)
++  const states = tripTransportStates(shared, [customer('a', [2], '4000', 'first'), customer('b', [2], '4000', 'last')], directories, addresses)
++  assert.equal(states.get('a')!.fields.transport_amount, '')
++  assert.equal(states.get('b')!.fields.transport_amount, '')
++  assert.match(states.get('a')!.errors.join(' '), /нескольким доставкам/)
++})
++
++test('two stops for same client do not silently charge the per-client surcharge twice', () => {
++  const a = customer('a', [0, 1], '7000', 'first'), b = customer('a', [2], '4000', 'full')
++  b.key = 'second-row'
++  const states = tripTransportStates(shared, [a, b], directories, addresses)
++  assert.equal(states.get('a')!.fields.transport_amount, '')
++  assert.match(states.get('a')!.errors.join(' '), /Один клиент/)
++})
++
++test('same-volume sections retain different manually assigned tariffs by index', () => {
++  const changed = structuredClone(directories)
++  changed.vehicles[0].compartmentDeparturePricesRub = ['3000', '9000', '4000']
++  assert.equal(state(customer('a', [1], '4000', 'first'), changed).fields.transport_amount, '12100')
++  assert.equal(state(customer('a', [2], '4000', 'first'), changed).fields.transport_amount, '7100')
++})
++
++test('invalid section metadata cannot supply an automatic amount', () => {
++  const row = customer()
++  row.fields.transport_section_indexes = '[0, 0]'
++  assert.equal(state(row).fields.transport_amount, '')
++  assert.match(state(row).errors.join(' '), /назначение секций/)
++})
++
++test('request address overrides and unknown historical coordinate origins remain manual', () => {
++  const row = customer()
++  row.pricingLocation = { address: 'Другой адрес' }
++  assert.equal(state(row).fields.transport_amount, '')
++  assert.match(state(row).errors.join(' '), /Расстояние для этого места/)
++  row.pricingLocation = { address: 'Полная машина', latitude: '55', longitude: '37' }
++  assert.equal(state(row).fields.transport_amount, '')
++  row.pricingLocation.locationSnapshot = { source: 'geocoder' }
++  assert.equal(state(row).fields.transport_amount, '15000')
++  const historic: TransportCustomerDraft = { key: 'a', pricingLive: true, fields: { ...customer().fields, unloading_address: 'Полная машина', unloading_latitude: '55', unloading_longitude: '37' } }
++  assert.equal(state(historic).fields.transport_amount, '')
++})
++
++test('frozen saved calculation ignores current address drift until explicitly recalculated', () => {
++  const saved: TransportCustomerDraft = { key: 'a', fields: { ...state(customer()).fields, unloading_address: 'Сохранённый старый адрес', unloading_latitude: '55', unloading_longitude: '37' } }
++  assert.equal(state(saved).fields.transport_amount, '15000')
++  assert.equal(state(saved).errors.length, 0)
++  assert.equal(state({ ...saved, pricingLive: true }).fields.transport_amount, '')
++})
++
++test('same-ID changed depot location cannot price a route that retains the old loading snapshot', () => {
++  const saved: TransportCustomerDraft = { key: 'a', fields: state(customer()).fields }
++  const oldRoute = { ...shared, loading_address: 'Старое место погрузки', loading_latitude: '55', loading_longitude: '37' }
++  assert.equal(state(saved, directories, oldRoute).fields.transport_amount, '15000')
++  const recalculated = state({ ...saved, pricingLive: true }, directories, oldRoute)
++  assert.equal(recalculated.fields.transport_amount, '')
++  assert.match(recalculated.errors.join(' '), /Сохранённое место погрузки/)
++  const newRoute = { ...oldRoute, oil_depot_id: 'second', loading_address: '', loading_latitude: '', loading_longitude: '' }
++  assert.equal(state({ ...saved, pricingLive: true }, directories, newRoute).fields.transport_amount, '17300')
++})
++
++test('switching saved location away and back still checks immutable route snapshots', () => {
++  const row = customer()
++  const original = { fields: { ...shared, loading_address: 'Старый адрес нефтебазы' }, customers: [{ ...row, fields: { ...row.fields, unloading_address: 'Старый адрес клиента' } }] }
++  const afterToggle = tripTransportStates(shared, [row], directories, addresses, original).get(row.key)!
++  assert.equal(afterToggle.fields.transport_amount, '')
++  assert.match(afterToggle.errors.join(' '), /Адрес или точка доставки/)
++  assert.match(afterToggle.errors.join(' '), /Сохранённое место погрузки/)
++})
+--- a/web/src/DirectoriesPage.tsx
++++ b/web/src/DirectoriesPage.tsx
+@@ -1,3 +1,5 @@
++import TransportPricingSettings from './TransportPricingSettings'
++import { readTransportPricing } from './transport-pricing'
+ import AddressReceiversEditor from './AddressReceiversEditor'
+ import OperatorServiceColorPicker from './OperatorServiceColorPicker'
+ import OperatorServiceBadge from './OperatorServiceBadge'
+@@ -78,6 +80,7 @@
+   return <div className="directories-page">
+     {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setRoleFilter('all');setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
+     {notice && <p className="directory-notice" role="status">{notice}</p>}
++    {tab==='vehicles'&&<TransportPricingSettings value={catalog.transportPricing} canManage={canManage && !isLogisticsWorkspace()} onChanged={onChanged}/>}
+     <section className="panel directory-list">
+       <div className="directory-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск в справочнике" onClick={()=>{setQuery('');setPage(0)}}><X size={16}/></button>}</label>
+         {canManage&&<button className="button primary mobile-icon-action" aria-label="Добавить" title="Добавить" onClick={()=>setEditor(personnel&&roleFilter==='driver'?{kind:'drivers'}:{})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Добавить</span></button>}
+@@ -137,6 +140,8 @@
+   const company = companyTab(tab) ? entry as Company | undefined : undefined
+   const [fields,setFields] = useState<Record<string,string>>(()=>Object.fromEntries(Object.entries(entry ?? {}).filter(([,value])=>typeof value==='string').map(([key,value])=>[key,String(value)])))
+   const [sections,setSections] = useState(()=>tab==='vehicles' ? (entry as Vehicle | undefined)?.compartmentsLitres?.join(' + ') ?? '' : '')
++  const [departurePrices,setDeparturePrices] = useState(()=>tab==='vehicles' ? (entry as Vehicle | undefined)?.compartmentDeparturePricesRub?.join(' + ') ?? '' : '')
++  const transportPricing = readTransportPricing(catalog.transportPricing)
+   const [roles,setRoles] = useState<string[]>(()=>{
+     const existing = company?.roles.filter(role=>['customer','supplier','carrier','other'].includes(role)) ?? []
+     return existing.length ? existing : [tabRole(tab)]
+@@ -173,7 +178,7 @@
+   const save = async(event:React.FormEvent)=>{
+     event.preventDefault();if(busy.current||lookupBusy||conflict)return;busy.current=true;setSaving(true);setError('');setConfirmClose(false)
+     try {
+-      const payload=editablePayload(directoryPayload(tab,{fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}))
++      const payload=editablePayload(directoryPayload(tab,{fields,sections,departurePrices,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}))
+       const updating=!!id&&tab!=='customerManagers',kind=companyTab(tab)?'companies':tab
+       let result: {entry?:Company;created?:boolean;error?:string} = {}
+       for(let attempt=0;attempt<2;attempt++) {
+@@ -208,6 +213,7 @@
+     for(const key of conflict.keys)if(conflict.choices[key]==='saved')resolved[key]=conflict.latest[key]
+     setFields(Object.fromEntries(Object.entries(resolved).filter(([,value])=>typeof value==='string')) as Record<string,string>)
+     setSections((resolved.compartmentsLitres as string[]|undefined)?.join(' + ')??'')
++    setDeparturePrices((resolved.compartmentDeparturePricesRub as string[]|undefined)?.join(' + ')??'')
+     if(tab==='addresses')setAdditionalReceivers(resolved.additionalReceivers as ShipmentAddress['additionalReceivers'])
+     if(tab==='addresses')setOilDepotDistancesKm(resolved.oilDepotDistancesKm as ShipmentAddress['oilDepotDistancesKm'])
+     if(companyTab(tab)){setRoles(resolved.roles as string[]);setAddresses(withCurrentAddressVersions(resolved,conflict.latest).addresses as Omit<ShipmentAddress,'companyId'>[]);setManagerId(resolved.managerId as string||'')}
+@@ -224,7 +230,7 @@
+     }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{setLookupBusy(false)}
+   }
+   const extraGroup = (title:string,fields:readonly (readonly [string,string])[],open=false)=><details className="directory-extra-fields" open={open||undefined}><summary>{title}</summary><div className="shipment-field-grid">{fields.map(([key,label])=><div key={key} className={longFields.has(key)?'form-field-wide':undefined}>{input(label,key)}</div>)}</div></details>
+-  const distanceFields = (values:ShipmentAddress['oilDepotDistancesKm'],onChange:(depotId:string,value:string)=>void,addressLabel:string)=><fieldset className="directory-depot-distances form-field-wide"><legend>Расстояния до нефтебаз, км</legend>{(catalog.oilDepots??[]).length?<div className="directory-depot-distance-list">{catalog.oilDepots!.map(depot=><label className="shipment-field directory-depot-distance" key={depot.id}><span>{depot.name}</span><input aria-label={`${depot.name}: расстояние, км (${addressLabel})`} inputMode="decimal" value={values?.[depot.id]??''} placeholder="Не указано" maxLength={32} disabled={saving||lookupBusy} onChange={event=>{onChange(depot.id,event.target.value);setDirty(true)}}/></label>)}</div>:<p className="muted">Добавьте нефтебазы в справочник, чтобы указать расстояния для этого адреса.</p>}</fieldset>
++  const distanceFields = (values:ShipmentAddress['oilDepotDistancesKm'],onChange:(depotId:string,value:string)=>void,addressLabel:string)=><fieldset className="directory-depot-distances form-field-wide"><legend>Расстояния до нефтебаз, км</legend>{(catalog.oilDepots??[]).length?<div className="directory-depot-distance-list">{catalog.oilDepots!.map(depot=><label className="shipment-field directory-depot-distance" key={depot.id}><span>{depot.name}</span><input aria-label={`${depot.name}: расстояние, км (${addressLabel})`} inputMode="decimal" value={values?.[depot.id]??''} placeholder="Не указано" maxLength={32} disabled={saving||lookupBusy} onChange={event=>{onChange(depot.id,event.target.value);setDirty(true)}}/></label>)}</div>:<p className="muted">Добавьте нефтебазы в справочник, чтобы указать расстояния для этого адреса.</p>}<p className="directory-pricing-hint">Перевозка: {Number(transportPricing.ratePerKmRub).toLocaleString('ru-RU')} ₽/км + {Number(transportPricing.customerSurchargeRub).toLocaleString('ru-RU')} ₽ за клиента + стоимость назначенных секций. Общие ставки — в разделе «Автомобили» → «Тарифы перевозки».</p></fieldset>
+   const addressGroup = (kind:'loading'|'delivery',label:string)=><section className="company-address-group">
+     <div><h3>{label}</h3><button type="button" className="button" disabled={saving||lookupBusy} onClick={()=>{setAddresses(old=>[...old,{id:'',name:'',kind}]);setDirty(true)}}><Plus size={15}/>Добавить адрес</button></div>
+     {addresses.map((address,index)=>{
+@@ -259,7 +265,7 @@
+         <details className="directory-extra-fields form-field-wide directory-map-fields"><summary>Карта и координаты</summary><div className="shipment-field-grid"><div className="form-field-wide">{input('Ссылка на Яндекс.Карты','mapUrl')}</div>{input('Широта','latitude')}{input('Долгота','longitude')}</div></details>
+       </>
+       :tab==='operatorServices'?<>{input('Название сервиса','name',true)}<label className="shipment-field"><span>Скидка, % *</span><input aria-label="Скидка, %" inputMode="decimal" value={fields.discountPercent??''} required maxLength={32} disabled={saving||lookupBusy} onChange={event=>update('discountPercent',event.target.value)}/></label><OperatorServiceColorPicker name={fields.name??''} id={id} color={fields.backgroundColor} disabled={saving||lookupBusy} onChange={color=>update('backgroundColor',color)}/><p className="operator-service-terms-note">Название и цвет обновляются во всех операциях. Новая скидка действует для новых операций с сегодняшней датой и позже; сохранённые суммы и скидки не меняются.</p></>
+-      :tab==='vehicles'?<>{input('Автомобиль / номер','plate',true)}{input('Название для выбора','name')}{input('Марка','brand')}{input('Модель','model')}{input('Прицеп','trailer')}{input('Объём автомобиля, л','capacityLitres')}<label className="shipment-field"><span>Секции, л (через +)</span><input aria-label="Секции, л (через +)" value={sections} disabled={saving||lookupBusy} onChange={event=>{setSections(event.target.value);setDirty(true)}}/></label></>
++      :tab==='vehicles'?<>{input('Автомобиль / номер','plate',true)}{input('Название для выбора','name')}{input('Марка','brand')}{input('Модель','model')}{input('Прицеп','trailer')}{input('Объём автомобиля, л','capacityLitres')}<label className="shipment-field"><span>Секции, л (через +)</span><input aria-label="Секции, л (через +)" value={sections} disabled={saving||lookupBusy} onChange={event=>{setSections(event.target.value);setDirty(true)}}/></label><label className="shipment-field"><span>Стоимость выезда секций, ₽ (через +)</span><input aria-label="Стоимость выезда секций, ₽ (через +)" aria-describedby="vehicle-departure-prices-help" value={departurePrices} placeholder="3700 + 5000 + 3000" maxLength={500} disabled={saving||lookupBusy} onChange={event=>{setDeparturePrices(event.target.value);setDirty(true)}}/></label><p id="vehicle-departure-prices-help" className="directory-pricing-hint form-field-wide">Тарифы соответствуют секциям слева направо. Стоимость каждой секции задаётся вручную; сумма всех тарифов — стоимость выезда машины. Если тарифы не заполнены, автоматический расчёт недоступен.</p></>
+       :tab==='customerManagers'?<><DirectorySelect label="Клиент" entries={data.companies.filter(company=>company.roles.includes('customer'))} value={companyId} onChange={id=>{setCompanyId(id);setManagerId(customerManagerId(catalog,id));setDirty(true)}} required disabled={saving||!!id}/><DirectorySelect label="Менеджер" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} required disabled={saving}/></>
+       :<>{input(tab==='drivers'?'ФИО водителя':tab==='managers'?'Имя сотрудника':tab==='paymentForms'?'Название формы оплаты':tab==='addresses'?'Название места':'Название товара','name',true)}{tab==='addresses'&&<><DirectorySelect label="Компания адреса" entries={data.companies.filter(company=>!company.directoryArchived||company.id===fields.companyId).map(company=>({id:company.id,name:company.name,detail:company.inn?`ИНН ${company.inn}`:undefined}))} value={fields.companyId??''} onChange={id=>update('companyId',id)} required disabled={saving} searchFirst/><label className="shipment-field"><span>Тип адреса</span><select aria-label="Тип адреса" value={fields.addressKind??fields.kind??'delivery'} onChange={event=>update('addressKind',event.target.value)} disabled={saving}><option value="delivery">Выгрузка</option><option value="loading">Загрузка</option></select></label>{input('Фактический адрес площадки','address')}{input('Ссылка на Яндекс.Карты','mapUrl')}{input('Широта','latitude')}{input('Долгота','longitude')}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<div className="form-field-wide"><DeliveryPointPicker latitude={fields.latitude} longitude={fields.longitude} mapUrl={fields.mapUrl} disabled={saving||lookupBusy} onChange={(latitude,longitude)=>{setFields(old=>({...old,latitude,longitude,mapUrl:pointNavigationUrl(latitude,longitude),pointAddress:old.address||old.name||''}));setDirty(true)}}/></div>}{(fields.addressKind??fields.kind??'delivery')==='delivery'&&<AddressReceiversEditor value={{receiverName:fields.receiverName,receiverPhone:fields.receiverPhone,additionalReceivers}} label="адрес" disabled={saving||lookupBusy} onChange={contacts=>{setFields(old=>({...old,receiverName:contacts.receiverName,receiverPhone:contacts.receiverPhone}));setAdditionalReceivers(contacts.additionalReceivers);setDirty(true)}}/>}</>}{tab==='drivers'&&<>{input('Телефон водителя','phone')}<DirectorySelect label="Автомобиль по умолчанию" entries={catalog.vehicles.map(vehicle=>({id:vehicle.id,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))} value={fields.vehicleId??''} onChange={id=>update('vehicleId',id)} required disabled={saving||lookupBusy}/></>}</>}
+     </div>
+--- a/web/src/ShipmentEditor.tsx
++++ b/web/src/ShipmentEditor.tsx
+@@ -11,7 +11,7 @@
+ import { ourOrganizations } from './our-organizations'
+ 
+ export interface ShipmentEditorProps {
+-  shipmentType?: ShipmentType; shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void
++  shipmentType?: ShipmentType; shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void; onDirectoriesChanged?: () => void
+ }
+ export default function ShipmentEditor(props: ShipmentEditorProps) {
+   if ((props.shipment?.fields.shipment_type ?? props.shipmentType) === 'azs') return <ShipmentAzsEditor {...props}/>
+--- a/web/src/ShipmentTripEditor.tsx
++++ b/web/src/ShipmentTripEditor.tsx
+@@ -23,16 +23,16 @@
+ import TripRequestEditor from './TripRequestEditor'
+ import type { Company } from './model'
+ import './trip-requests.css'
+-
+-interface CustomerDraft {
+-  key: string
++import { changedTransportContext, tripTransportStates, type TransportCustomerDraft } from './trip-transport-draft'
++import { TransportAmountField, TransportPriceBreakdown, TransportSectionAssignment } from './TripTransportPrice'
++
++interface CustomerDraft extends TransportCustomerDraft {
+   id?: string
+   paidAmount?: string | null
+   sourceRequestId?: string
+   sourceRequestVersion?: number
+   requestCompanyName?: string
+   requestAddressName?: string
+-  fields: Record<string, string>
+ }
+ interface TripDraft {
+   fields: Record<string, string>
+@@ -70,6 +70,7 @@
+   const [requestsForbidden, setRequestsForbidden] = useState(false)
+   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
+   const [requestRefresh, setRequestRefresh] = useState(0), [creatingRequest, setCreatingRequest] = useState(false)
++  const [expandedTransport, setExpandedTransport] = useState<Set<string>>(() => new Set())
+   const [uncertain, setUncertain] = useState(false)
+   const [conflict, setConflict] = useState(false)
+   const [addedAddresses, setAddedAddresses] = useState<ShipmentAddress[]>([])
+@@ -80,13 +81,15 @@
+   const defaultPaymentId = directories.paymentForms.find(p => p.name === defaultPaymentForm)?.id ?? ''
+   const newCustomer = (): CustomerDraft => ({
+     key: crypto.randomUUID(),
+-    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', etrn_not_required: 'false', delivery_notes: '' },
++    pricingLive: true,
++    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '', transport_pricing_mode: 'auto', transport_section_indexes: '', transport_price_snapshot: '', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', etrn_not_required: 'false', delivery_notes: '' },
+   })
+   const [draft, setDraft] = useState<TripDraft>(() => ({
+     fields: { trip_flow_version: 'driver-v1', organization_id: tripMode ? 'artel' : '', ...loadingDateFields(today()), supplier_id: '', oil_depot_id: '', carrier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', intermediate_stops_in_order: '' },
+     customers: [newCustomer()],
+   }))
+   const [initial, setInitial] = useState(() => serialize(draft))
++  const originalPricingDraft = useMemo<TripDraft | undefined>(() => tripId ? JSON.parse(initial) as TripDraft : undefined, [tripId, initial])
+   const [versions, setVersions] = useState<Record<string, number>>({})
+   const [tripNumber, setTripNumber] = useState<number | undefined>()
+   const [loading, setLoading] = useState(!!tripId)
+@@ -198,23 +201,36 @@
+   const unifiedCargoMass = isUnpackagedDiesel(product)
+   const depot = directories.oilDepots?.find(entry => entry.id === fields.oil_depot_id)
+   const vehicleEntries = directories.vehicles.map(entry => ({ id: entry.id, name: entry.name || entry.plate, detail: [entry.name && entry.name !== entry.plate ? entry.plate : '', entry.capacityLitres ? `${number(entry.capacityLitres)} л` : ''].filter(Boolean).join(' · ') }))
++  const transportStates = tripTransportStates(fields, draft.customers, directories, [...addresses, ...requestAddresses.filter(address => !addresses.some(existing => existing.id === address.id))], originalPricingDraft)
+ 
+   const changed = () => { setConfirmClose(false); setError('') }
+   const update = (key: string, value: string) => {
+     setDraft(previous => {
+       const next = { ...previous.fields, [key]: value }
+       if (key === 'loading_at') Object.assign(next, loadingDateFields(value))
+-      if (key === 'oil_depot_id') Object.assign(next, { loading_address_id: '', loading_address: '', loading_map_url: '' })
++      if (key === 'oil_depot_id' && previous.fields.oil_depot_id !== value) Object.assign(next, { loading_address_id: '', loading_address: '', loading_map_url: '', loading_latitude: '', loading_longitude: '' })
+       if (key === 'driver_id' && previous.fields.driver_id !== value) {
+         next.vehicle_id = driverVehicleId(directories, value)
+       }
+       if ((key === 'quantity_tonnes' || key === 'product_id') && isUnpackagedDiesel(directories.products.find(entry => entry.id === next.product_id))) next.quantity_gross_tonnes = next.quantity_tonnes
+-      return { ...previous, fields: next }
++      const vehicleChanged = next.vehicle_id !== previous.fields.vehicle_id
++      const pricingContextChanged = vehicleChanged || next.oil_depot_id !== previous.fields.oil_depot_id
++      return { ...previous, fields: next, customers: pricingContextChanged ? previous.customers.map(customer => changedTransportContext(customer, vehicleChanged)) : previous.customers }
+     })
+     changed()
+   }
+   const updateCustomer = (customerKey: string, key: string, value: string) => {
+-    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'unloading_address_id' ? { unloading_address: '', unloading_map_url: '' } : {}), ...(key === 'customer_id' ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
++    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => {
++      if (customer.key !== customerKey) return customer
++      const contextChanged = ['customer_id', 'unloading_address_id', 'quantity_litres', 'transport_section_indexes'].includes(key) && customer.fields[key] !== value
++      const current = contextChanged ? changedTransportContext(customer) : customer
++      return { ...current, ...(contextChanged && ['customer_id', 'unloading_address_id'].includes(key) ? { pricingLocation: undefined } : {}), ...(key === 'transport_amount' ? { pricingLive: false, pricingNotice: '' } : {}), fields: { ...current.fields, [key]: value, ...(key === 'transport_section_indexes' ? { transport_pricing_mode: current.fields.transport_pricing_mode || 'manual' } : {}), ...(key === 'transport_amount' ? { transport_pricing_mode: 'manual', transport_price_snapshot: '' } : {}), ...(key === 'unloading_address_id' && contextChanged ? { unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '' } : {}), ...(key === 'customer_id' && contextChanged ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '', manager_id: customerManagerId(directories, value) } : {}) } }
++    }) }))
++    changed()
++  }
++  const setTransportMode = (customerKey: string, automatic: boolean) => {
++    const amount = transportStates.get(customerKey)?.fields.transport_amount ?? ''
++    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, pricingLive: automatic, pricingNotice: '', fields: { ...customer.fields, transport_pricing_mode: automatic ? 'auto' : 'manual', transport_price_snapshot: '', transport_amount: amount } }) }))
+     changed()
+   }
+   const selectRequest = (customerKey: string, requestId: string) => {
+@@ -224,8 +240,9 @@
+       changed(); return
+     }
+     setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : {
+-      ...customer, sourceRequestId: request.id, sourceRequestVersion: request.version, requestCompanyName: request.companyName, requestAddressName: request.addressName,
+-      fields: { ...customer.fields, customer_id: request.companyId, unloading_address_id: request.addressId, unloading_address: request.address, unloading_map_url: request.mapUrl ?? '', quantity_litres: request.quantityLitres, sale_price_per_litre: request.salePricePerLitre ?? '', delivery_notes: request.comment, manager_id: customerManagerId(directories, request.companyId) },
++      ...changedTransportContext(customer), sourceRequestId: request.id, sourceRequestVersion: request.version, requestCompanyName: request.companyName, requestAddressName: request.addressName,
++      pricingLocation: { address: request.address, latitude: request.latitude, longitude: request.longitude, locationSnapshot: request.locationSnapshot },
++      fields: { ...changedTransportContext(customer).fields, customer_id: request.companyId, unloading_address_id: request.addressId, unloading_address: request.address, unloading_map_url: request.mapUrl ?? '', quantity_litres: request.quantityLitres, sale_price_per_litre: request.salePricePerLitre ?? '', delivery_notes: request.comment, manager_id: customerManagerId(directories, request.companyId) },
+     }) }))
+     changed()
+   }
+@@ -256,7 +273,8 @@
+     if (!driverFlow && !numericValue(fields.quantity_tonnes)?.gt(0)) return 'Укажите плановую массу груза больше нуля.'
+     if (!directories.products.some(product => product.id === fields.product_id)) return 'Выберите товар из списка.'
+     for (const [index, customer] of draft.customers.entries()) {
+-      const values = customer.fields
++      const transport = transportStates.get(customer.key)!
++      const values = transport.fields
+       const prefix = `Клиент ${index + 1}: `
+       if (!customer.id && customer.sourceRequestId) {
+         if (requestsLoading || requestsError) return 'Дождитесь загрузки доступных заявок или повторите загрузку.'
+@@ -268,6 +286,8 @@
+       if (!directories.paymentForms.some(payment => payment.id === values.payment_form_id)) return `${prefix}выберите форму оплаты.`
+       if (!numericValue(values.quantity_litres)?.gt(0)) return `${prefix}укажите количество литров больше нуля.`
+       if (!numericValue(values.sale_price_per_litre)?.gt(0)) return `${prefix}укажите цену за литр больше нуля.`
++      if (transport.automatic && transport.errors.length) return `${prefix}автоматический расчёт перевозки неполон. ${transport.errors.join(' ')}`
++      if (values.transport_pricing_mode && !values.transport_amount) return `${prefix}завершите расчёт перевозки или введите сумму вручную.`
+       if (!numericValue(values.transport_amount || '0')?.gte(0)) return `${prefix}сумма перевозки должна быть неотрицательным числом.`
+       if (!directories.managers.some(manager => manager.id === values.manager_id)) return `${prefix}выберите менеджера.`
+     }
+@@ -291,7 +311,10 @@
+     const clean = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).filter(([key]) => !snapshotFields.has(key) && !(driverFlow && driverOwnedFields.has(key))).map(([key, value]) => [key, value.trim() || null]))
+     const payload = {
+       fields: clean({ ...fields, additional_costs: fields.additional_costs || '0' }),
+-      customers: draft.customers.map(customer => ({ ...(customer.id ? { id: customer.id } : { sourceRequestId: customer.sourceRequestId, sourceRequestVersion: customer.sourceRequestVersion }), fields: clean({ ...customer.fields, transport_amount: customer.fields.transport_amount || '0' }) })),
++      customers: draft.customers.map(customer => {
++        const priced = transportStates.get(customer.key)!.fields
++        return { ...(customer.id ? { id: customer.id } : { sourceRequestId: customer.sourceRequestId, sourceRequestVersion: customer.sourceRequestVersion }), fields: clean({ ...priced, transport_amount: priced.transport_amount || '0' }) }
++      }),
+       ...(tripId ? { versions } : { idempotencyKey: idempotencyKey.current }),
+     }
+     const body = retryPayload.current ?? JSON.stringify(payload)
+@@ -320,7 +343,7 @@
+       const response = await fetch(tripId ? `/api/shipment-trips/${encodeURIComponent(tripId)}` : '/api/shipment-trips', { method: tripId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(20000) })
+       const result = await response.json()
+       if (!response.ok) {
+-        if (response.status === 409) { setRequestRefresh(value => value + 1); onRequestsChanged?.() }
++        if (response.status === 409) { setRequestRefresh(value => value + 1); onRequestsChanged?.(); onDirectoriesChanged?.() }
+         if (response.status === 409 && tripId && await recoverPatch()) return
+         if (response.status < 500) { retryPayload.current = null; setUncertain(false) }
+         else setUncertain(true)
+@@ -395,6 +418,9 @@
+             {requestsError && <div className="shipment-error" role="alert">{requestsError} {!requestsForbidden && <button type="button" className="button" disabled={saving} onClick={() => setRequestRefresh(value => value + 1)}>Повторить загрузку заявок</button>}</div>}
+             {!requestsForbidden && <button type="button" className="button" disabled={disabled} onClick={() => setCreatingRequest(true)}>Новая заявка</button>}
+             {draft.customers.map((customer, index) => {
++              const transport = transportStates.get(customer.key)!
++              const transportPanelId = `trip-transport-${customer.key}`
++              const transportExpanded = expandedTransport.has(customer.key)
+               const requestBound = !!customer.sourceRequestId || !!customer.fields.source_request_id
+               const source = requests.find(item => item.id === customer.sourceRequestId)
+               const requestEntries = requests.filter(request => request.id === customer.sourceRequestId || !draft.customers.some(row => row.sourceRequestId === request.id)).map(request => {
+@@ -403,7 +429,7 @@
+               })
+               const litres = numericValue(customer.fields.quantity_litres)
+               const price = numericValue(customer.fields.sale_price_per_litre)
+-              const calculation = allocation ? calculateShipment({ ...fields, ...customer.fields, payment_form: directories.paymentForms.find(p => p.id === customer.fields.payment_form_id)?.name ?? null, quantity_tonnes: allocation.tonnes[index], additional_costs: allocation.additionalCosts[index] }, { sale: 'litres', purchase: 'tonnes', profit: directories.defaults.profit, debtSign: 'paid-minus-sale' }) : null
++              const calculation = allocation ? calculateShipment({ ...fields, ...transport.fields, payment_form: directories.paymentForms.find(p => p.id === customer.fields.payment_form_id)?.name ?? null, quantity_tonnes: allocation.tonnes[index], additional_costs: allocation.additionalCosts[index] }, { sale: 'litres', purchase: 'tonnes', profit: directories.defaults.profit, debtSign: 'paid-minus-sale' }) : null
+               return <fieldset key={customer.key} className="shipment-fieldset group-sale shipment-trip-customer" data-testid="trip-customer" data-customer-key={customer.key}>
+                 <legend>Клиент {index + 1}</legend>
+                 {draft.customers.length > 1 && <div className="shipment-trip-customer-actions"><button type="button" className="button shipment-trip-remove" aria-label={`Удалить клиента ${index + 1}`} disabled={disabled} onClick={() => removeCustomer(customer.key)}><Trash2 size={15}/>Удалить клиента {index + 1}</button></div>}
+@@ -413,9 +439,11 @@
+                   {select('Форма оплаты', 'payment_form_id', directories.paymentForms, { required: true, customer })}
+                   {input('Количество литров, л', 'quantity_litres', { required: true, customer })}
+                   {input('Цена за литр, ₽', 'sale_price_per_litre', { required: true, customer })}
+-                  {input('Сумма перевозки, ₽', 'transport_amount', { customer })}
++                  <TransportSectionAssignment vehicle={vehicle} state={transport} disabled={disabled} customerNumber={index + 1} onChange={indexes => updateCustomer(customer.key, 'transport_section_indexes', JSON.stringify(indexes))}/>
++                  <TransportAmountField state={transport} disabled={disabled} panelId={transportPanelId} expanded={transportExpanded} notice={customer.pricingNotice} onToggle={() => setExpandedTransport(previous => { const next = new Set(previous); if (next.has(customer.key)) next.delete(customer.key); else next.add(customer.key); return next })} onAmount={amount => updateCustomer(customer.key, 'transport_amount', amount)} onAutomatic={() => setTransportMode(customer.key, true)} onManual={() => setTransportMode(customer.key, false)}/>
+                   {select('Менеджер', 'manager_id', directories.managers, { required: true, customer })}
+                 </div>
++                <TransportPriceBreakdown state={transport} expanded={transportExpanded} panelId={transportPanelId}/>
+                 <div className="shipment-trip-delivery-fields"><h4>Доставка</h4><div className="shipment-field-grid">
+                   <div className="form-field-wide">{requestBound ? <div className="shipment-field"><span>Место выгрузки</span><div className="trip-request-readonly">{customer.requestAddressName && <strong>{customer.requestAddressName}<br/></strong>}{customer.fields.unloading_address || 'Выберите заявку'}</div></div> : location(customer)}</div>
+                   {!driverFlow && dateTimeInput('Плановая выгрузка', customer.fields.unloading_planned_at || '', value => updateCustomer(customer.key, 'unloading_planned_at', value))}
+--- a/web/src/ShipmentsPage.tsx
++++ b/web/src/ShipmentsPage.tsx
+@@ -152,7 +152,7 @@
+       <div className="shipment-load-footer"><span data-testid="shipments-loaded-count" data-loaded={items.length} data-total={total}>Загружено {number(items.length)} из {number(total)}</span>{summary&&<span className="shipment-footer-totals">{number(summary.liters.total,2)} л · {number(summary.revenue.total,2)} ₽</span>}{loading && items.length > 0 ? <span role="status"><LoaderCircle size={17} className="spin"/>Загружаем следующие 50…</span> : error && items.length > 0 ? <><span className="shipment-error-text" role="alert">{error}</span><button className="button" onClick={loadMore}>Повторить</button></> : hasMore ? <button className="button" onClick={loadMore}>Загрузить ещё 50 <ChevronDown size={16}/></button> : items.length > 0 ? <span><Check size={16}/>Все операции загружены</span> : null}</div>
+     </section>
+     {filterColumn&&<ShipmentColumnFilter column={filterColumn} params={params} filter={filters[filterColumn.key]} onClose={()=>setFilterColumn(null)} onApply={filter=>{setFilters(previous=>{const next={...previous};if(filter)next[filterColumn.key]=filter;else delete next[filterColumn.key];return next});setFilterColumn(null)}}/>}
+-    {editor&&data.directories&&<ShipmentEditor shipmentType={shipmentType} shipment={editor.shipment} companies={data.companies} directories={data.directories} defaultPaymentForm={settlement==='cash'?'нал':settlement==='f2'?'ф2':'б/нал'} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice('Отгрузка сохранена');refresh()}}/>}
++    {editor&&data.directories&&<ShipmentEditor shipmentType={shipmentType} shipment={editor.shipment} companies={data.companies} directories={data.directories} defaultPaymentForm={settlement==='cash'?'нал':settlement==='f2'?'ф2':'б/нал'} onDirectoriesChanged={onChanged} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice('Отгрузка сохранена');refresh()}}/>}
+     {deleting && <DeleteShipmentDialog shipment={deleting} companies={data.companies} onClose={() => setDeleting(null)} onDeleted={() => {setDeleting(null);setNotice('Отгрузка удалена');refresh()}}/>}
+     {notice && <div className="toast" role="status"><Check size={18}/>{notice}</div>}
+   </div>
+--- /dev/null
++++ b/web/src/TransportPricingSettings.tsx
+@@ -0,0 +1,58 @@
++import { useRef, useState } from 'react'
++import { LoaderCircle, Pencil, Save } from 'lucide-react'
++import { apiFetch } from './workspace-api'
++import { readTransportPricing, validTransportPricing, type TransportPricingSettings as Pricing, type TransportRounding } from './transport-pricing'
++import './transport-settings.css'
++
++const rubles = (value: string) => Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 })
++const normalize = (value: string) => value.replace(/\s/g, '').replace(',', '.')
++
++export default function TransportPricingSettings({ value, canManage, onChanged }: { value?: Pricing; canManage: boolean; onChanged: () => void | Promise<void> }) {
++  const [saved, setSaved] = useState<Pricing | null>(null)
++  const current = saved && saved.version > (value?.version ?? 0) ? saved : readTransportPricing(value)
++  const [draft, setDraft] = useState<Pricing | null>(null)
++  const [saving, setSaving] = useState(false)
++  const [error, setError] = useState('')
++  const [notice, setNotice] = useState('')
++  const [conflict, setConflict] = useState(false)
++  const lock = useRef(false)
++  const begin = () => { setDraft({ ...current }); setError(''); setNotice(''); setConflict(false) }
++  const save = async (event: React.FormEvent) => {
++    event.preventDefault()
++    if (!draft || lock.current || !canManage || conflict) return
++    const next = { ...draft, ratePerKmRub: normalize(draft.ratePerKmRub), customerSurchargeRub: normalize(draft.customerSurchargeRub) }
++    if (!validTransportPricing(next)) { setError('Укажите обе ставки: от 0 до 999 999 999,99 ₽, не более двух знаков после запятой.'); return }
++    lock.current = true; setSaving(true); setError(''); setNotice('')
++    try {
++      const response = await apiFetch('/api/transport-pricing', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), signal: AbortSignal.timeout(15000) })
++      const result = await response.json()
++      if (!response.ok) { if (response.status === 409) setConflict(true); throw new Error(result.error || 'Не удалось сохранить тарифы.') }
++      if (!validTransportPricing(result.transportPricing)) throw new Error('Ответ сервера не содержит сохранённые тарифы. Обновите справочник и проверьте значения.')
++      setSaved(result.transportPricing); setDraft(null); setNotice('Тарифы сохранены. Суммы в сохранённых рейсах не изменились.')
++      try { await onChanged() } catch { setNotice('Тарифы сохранены. Обновите справочник, чтобы увидеть их во всех формах.') }
++    } catch (reason) { setError(reason instanceof Error && !['TimeoutError', 'AbortError', 'TypeError'].includes(reason.name) ? reason.message : 'Ответ сервера не получен. Обновите справочник и проверьте, сохранились ли тарифы, прежде чем повторять изменение.') }
++    finally { lock.current = false; setSaving(false) }
++  }
++  const reload = async () => {
++    if (lock.current) return
++    lock.current = true; setSaving(true); setError('')
++    try { await onChanged(); setDraft(null); setConflict(false); setNotice('Справочник обновлён. Откройте изменение тарифов ещё раз.') }
++    catch { setError('Не удалось обновить справочник. Повторите загрузку.') }
++    finally { lock.current = false; setSaving(false) }
++  }
++  return <section className="panel transport-settings" aria-labelledby="transport-settings-title">
++    <div className="transport-settings-heading"><div><h2 id="transport-settings-title">Тарифы перевозки</h2><p>Общие ставки для всех клиентов</p></div>{canManage && !draft && <button type="button" className="button" onClick={begin}><Pencil size={16} aria-hidden="true"/>Изменить тарифы</button>}</div>
++    {draft && canManage ? <form onSubmit={save}>
++      <div className="transport-settings-fields">
++        <label className="shipment-field"><span>Ставка за километр, ₽/км</span><input inputMode="decimal" maxLength={32} required value={draft.ratePerKmRub} disabled={saving || conflict} onChange={event => setDraft({ ...draft, ratePerKmRub: event.target.value })}/></label>
++        <label className="shipment-field"><span>Доплата за клиента, ₽</span><input inputMode="decimal" maxLength={32} required value={draft.customerSurchargeRub} disabled={saving || conflict} onChange={event => setDraft({ ...draft, customerSurchargeRub: event.target.value })}/></label>
++        <label className="shipment-field"><span>Округление итога</span><select value={draft.rounding} disabled={saving || conflict} onChange={event => setDraft({ ...draft, rounding: event.target.value as TransportRounding })}><option value="nearest100">До ближайших 100 ₽</option><option value="ceil100">Вверх до 100 ₽</option></select></label>
++      </div>
++      <p className="directory-pricing-hint">Направление округления пока не согласовано. Для локальной проверки сейчас выбрано: {draft.rounding === 'ceil100' ? 'вверх до 100 ₽' : 'до ближайших 100 ₽'}. Округление применяется один раз к итогу каждого клиента.</p>
++      <div className="transport-settings-actions"><button className="button primary" type="submit" disabled={saving || conflict}>{saving ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}Сохранить тарифы</button><button type="button" className="button" disabled={saving} onClick={() => { setDraft(null); setError(''); setConflict(false) }}>Отмена</button>{conflict && <button type="button" className="button" disabled={saving} onClick={() => void reload()}>Загрузить актуальные тарифы</button>}</div>
++    </form> : <div className="transport-settings-summary"><strong>{rubles(current.ratePerKmRub)} ₽/км</strong><span>+</span><strong>{rubles(current.customerSurchargeRub)} ₽ за клиента</strong><span>+ стоимость назначенных секций</span></div>}
++    {!draft && <p className="directory-pricing-hint">Итог каждого клиента: {current.rounding === 'ceil100' ? 'вверх до 100 ₽' : 'до ближайших 100 ₽'}. Направление округления временное, для локальной проверки.</p>}
++    <p className="directory-pricing-hint">Новые тарифы используются в новых расчётах. Сохранённые рейсы и ручные суммы автоматически не пересчитываются.</p>
++    {error && <p className="shipment-error" role="alert">{error}</p>}{notice && <p className="directory-notice" role="status">{notice}</p>}
++  </section>
++}
+--- /dev/null
++++ b/web/src/TripTransportPrice.tsx
+@@ -0,0 +1,65 @@
++import { ChevronDown } from 'lucide-react'
++import type { Vehicle } from './model'
++import type { TripTransportState } from './trip-transport-draft'
++import { number } from './utils'
++import './trip-transport-price.css'
++
++export function TransportSectionAssignment({ vehicle, state, disabled, customerNumber, onChange }: {
++  vehicle?: Vehicle
++  state: TripTransportState
++  disabled: boolean
++  customerNumber: number
++  onChange: (indexes: number[]) => void
++}) {
++  return <fieldset className="trip-transport-sections form-field-wide">
++    <legend>Секции для клиента {customerNumber}</legend>
++    {vehicle?.compartmentsLitres?.length ? <div className="trip-transport-section-options">{vehicle.compartmentsLitres.map((litres, index) => <label key={index}>
++      <input type="checkbox" aria-label={`Секция ${index + 1} для клиента ${customerNumber}`} checked={state.indexes.includes(index)} disabled={disabled} onChange={event => onChange((event.target.checked ? [...state.indexes, index] : state.indexes.filter(value => value !== index)).sort((a, b) => a - b))}/>
++      <span><strong>Секция {index + 1}</strong><span>{number(litres, 3)} л · {vehicle.compartmentDeparturePricesRub?.[index] === undefined ? 'тариф не указан' : `${number(vehicle.compartmentDeparturePricesRub[index], 2)} ₽`}</span></span>
++    </label>)}</div> : <p>Выберите автомобиль с секциями, чтобы назначить их этой доставке.</p>}
++    {state.frozen && <p>Здесь показаны текущие тарифы секций. Сохранённые ставки рейса — в расчёте под суммой.</p>}
++  </fieldset>
++}
++
++export function TransportAmountField({ state, disabled, expanded, panelId, notice, onToggle, onAmount, onAutomatic, onManual }: {
++  state: TripTransportState
++  disabled: boolean
++  expanded: boolean
++  panelId: string
++  notice?: string
++  onToggle: () => void
++  onAmount: (amount: string) => void
++  onAutomatic: () => void
++  onManual: () => void
++}) {
++  return <div className="trip-transport-amount">
++    <label className="shipment-field"><span>Сумма перевозки, ₽</span><input aria-describedby={`${panelId}-status`} inputMode="decimal" value={state.fields.transport_amount ?? ''} placeholder={state.automatic ? 'Расчёт не завершён' : 'Введите сумму'} disabled={disabled} onChange={event => onAmount(event.target.value)}/></label>
++    <div className="trip-transport-actions">
++      <button type="button" className="trip-text-button trip-transport-toggle" aria-expanded={expanded} aria-controls={panelId} onClick={onToggle}><ChevronDown size={14} aria-hidden="true"/>{expanded ? 'Скрыть расчёт' : 'Показать расчёт'}</button>
++      <button type="button" className="trip-text-button" disabled={disabled} onClick={state.automatic && !state.frozen ? onManual : onAutomatic}>{state.automatic ? state.frozen ? 'Пересчитать по текущим тарифам' : 'Ввести вручную' : 'Рассчитать автоматически'}</button>
++    </div>
++    <p id={`${panelId}-status`} className={`trip-transport-status${state.automatic && state.errors.length ? ' incomplete' : ''}`} role="status">{notice || (state.automatic ? state.errors.length ? 'Автоматический расчёт неполон. Откройте расчёт, чтобы проверить исходные данные, или введите сумму вручную.' : state.frozen ? 'Сохранённая сумма и тарифы рейса.' : 'Сумма рассчитана автоматически. Её можно изменить вручную.' : 'Сумма введена вручную и не пересчитывается автоматически.')}</p>
++  </div>
++}
++
++export function TransportPriceBreakdown({ state, expanded, panelId }: { state: TripTransportState; expanded: boolean; panelId: string }) {
++  const snapshot = state.snapshot
++  return <div id={panelId} className={`trip-transport-breakdown${expanded ? ' is-open' : ''}`} aria-hidden={!expanded}>
++    <div className="trip-transport-breakdown-clip"><div className="trip-transport-breakdown-body">
++      {state.automatic && state.errors.length > 0 && <ul className="trip-transport-missing">{state.errors.map(error => <li key={error}>{error}</li>)}</ul>}
++      {snapshot ? <>
++        <p className="trip-transport-route">{snapshot.vehicleLabel} · {snapshot.oilDepotLabel} → {snapshot.addressLabel}</p>
++        <dl className="trip-transport-calculation">
++          {snapshot.sections.map(section => <div key={section.index}><dt>Секция {section.index + 1} · {number(section.litres, 3)} л</dt><dd>{number(section.priceRub, 2)} ₽</dd></div>)}
++          <div><dt>Выезд выбранных секций</dt><dd>{number(snapshot.sectionsTotalRub, 2)} ₽</dd></div>
++          <div><dt>{number(snapshot.distanceKm, 3)} км × {number(snapshot.ratePerKmRub, 2)} ₽/км</dt><dd>{number(snapshot.distanceTotalRub, 2)} ₽</dd></div>
++          <div><dt>Доплата за клиента</dt><dd>{number(snapshot.customerSurchargeRub, 2)} ₽</dd></div>
++          <div className="trip-transport-subtotal"><dt>До округления</dt><dd>{number(snapshot.subtotalRub, 2)} ₽</dd></div>
++          <div><dt>{snapshot.rounding === 'ceil100' ? 'Округление вверх до 100 ₽' : 'Округление до ближайших 100 ₽'}</dt><dd>{Number(snapshot.roundingAdjustmentRub) > 0 ? '+' : ''}{number(snapshot.roundingAdjustmentRub, 2)} ₽</dd></div>
++          <div className="trip-transport-total"><dt>Итого</dt><dd>{number(snapshot.totalRub, 2)} ₽</dd></div>
++        </dl>
++        <p className="trip-transport-rounding-note">{snapshot.rounding === 'nearest100' ? 'До ближайших 100 ₽ — временное правило локальной версии; направление округления ещё не согласовано.' : 'Для этого расчёта выбрано округление вверх до 100 ₽.'} Округляется только итог этой доставки.</p>
++      </> : !state.automatic ? <p>Для ручной суммы расшифровка не сохранена. Чтобы рассчитать её по секциям, расстоянию и общей ставке, нажмите «Рассчитать автоматически».</p> : <p>Стоимость выбранных секций + расстояние от нефтебазы × ставка за километр + доплата за клиента. Пропущенные значения не заменяются нулями.</p>}
++    </div></div>
++  </div>
++}
+--- a/web/src/directory-editor-data.ts
++++ b/web/src/directory-editor-data.ts
+@@ -2,6 +2,7 @@
+ import { companyFields, driverFields, allVehicleFields, productTransportFields, vehicleTransportFields } from './directory-fields'
+ import { customerManagerId } from './customer-manager'
+ import { readOperatorCatalog } from './operator-catalog'
++import { validTransportMoney } from './transport-pricing'
+ 
+ export type EditorTab = 'customers'|'suppliers'|'loadingParty'|'oilDepots'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses'|'customerManagers'|'operatorServices'
+ const companyTab = (tab: EditorTab) => ['customers','suppliers','loadingParty'].includes(tab)
+@@ -14,6 +15,7 @@
+   return {
+     fields:Object.fromEntries(Object.entries(entry??{}).filter(([,value])=>typeof value==='string')) as Record<string,string>,
+     sections:tab==='vehicles'?(entry as Vehicle|undefined)?.compartmentsLitres?.join(' + ')??'':'',
++    departurePrices:tab==='vehicles'?(entry as Vehicle|undefined)?.compartmentDeparturePricesRub?.join(' + ')??'':'',
+     roles:company?.roles.filter(role=>['customer','supplier','carrier','other'].includes(role))??[tab==='customers'?'customer':tab==='suppliers'?'supplier':'other'],
+     companyId:id??'', managerId:customerManagerId(data.directories!,id??''),
+     additionalReceivers:tab==='addresses'?(entry as ShipmentAddress|undefined)?.additionalReceivers:undefined,
+@@ -21,15 +23,18 @@
+     addresses:data.directories!.addresses.filter(address=>address.companyId===id).map(({companyId:_companyId,location:_location,...address})=>address),
+   }
+ }
+-type Draft = { fields:Record<string,string>; sections:string; roles:string[]; companyId:string; managerId:string; addresses:Omit<ShipmentAddress,'companyId'>[]; additionalReceivers?: ShipmentAddress['additionalReceivers']; oilDepotDistancesKm?: ShipmentAddress['oilDepotDistancesKm'] }
+-export function directoryPayload(tab: EditorTab, {fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}: Draft) {
++type Draft = { fields:Record<string,string>; sections:string; departurePrices?:string; roles:string[]; companyId:string; managerId:string; addresses:Omit<ShipmentAddress,'companyId'>[]; additionalReceivers?: ShipmentAddress['additionalReceivers']; oilDepotDistancesKm?: ShipmentAddress['oilDepotDistancesKm'] }
++export function directoryPayload(tab: EditorTab, {fields,sections,departurePrices,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}: Draft) {
+   const payload:Record<string,unknown> = companyTab(tab) ? {...Object.fromEntries(companyFields.map(([key])=>[key,fields[key]??''])),name:fields.name,inn:fields.inn??'',roles,defaultDriverId:fields.defaultDriverId??'',defaultVehicleId:fields.defaultVehicleId??'',managerId:managerId||null,addresses:addresses.map(({id,...address})=>({...(id?{id}:{}),...address}))}
+         : tab === 'vehicles' ? Object.fromEntries(['plate','name','brand','model','trailer','capacityLitres','carrierId',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)].map(key=>[key,fields[key]??'']))
+         : tab === 'products' ? {name:fields.name,...Object.fromEntries(productTransportFields.map(([key])=>[key,fields[key]??'']))}
+         : tab === 'operatorServices' ? {name:fields.name,discountPercent:fields.discountPercent??'',...(fields.backgroundColor?{backgroundColor:fields.backgroundColor}:{})}
+         : tab === 'drivers' ? {...Object.fromEntries(driverFields.map(([key])=>[key,fields[key]??''])),name:fields.name,phone:fields.phone??'',vehicleId:fields.vehicleId??'',carrierId:fields.carrierId??''} : tab === 'oilDepots' ? Object.fromEntries(['name','address','mapUrl','latitude','longitude','ownerCompanyId','loadingActorCompanyId','infrastructureOwnerCompanyId'].map(key=>[key,fields[key]??''])) : tab === 'addresses' ? {name:fields.name,companyId:fields.companyId,addressKind:fields.addressKind??fields.kind??'delivery',...(fields.pointAddress?{pointAddress:fields.pointAddress}:{}),address:fields.address??'',mapUrl:fields.mapUrl??'',latitude:fields.latitude??'',longitude:fields.longitude??'',receiverName:fields.receiverName??'',receiverPhone:fields.receiverPhone??'',loadingActorCompanyId:fields.loadingActorCompanyId??'',infrastructureOwnerCompanyId:fields.infrastructureOwnerCompanyId??''} : tab === 'customerManagers' ? {companyId,managerId:managerId||null} : {name:fields.name}
+   if(tab==='addresses'&&additionalReceivers!==undefined)payload.additionalReceivers=additionalReceivers
+-  if(tab==='vehicles')payload.compartmentsLitres=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):undefined
++  if(tab==='vehicles'){
++    payload.compartmentsLitres=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):undefined
++    if(departurePrices!==undefined)payload.compartmentDeparturePricesRub=parseVehicleDeparturePrices(sections,departurePrices)
++  }
+   if(tab==='addresses'&&oilDepotDistancesKm!==undefined)payload.oilDepotDistancesKm=oilDepotDistancesKm
+   return payload
+ }
+@@ -53,7 +58,7 @@
+ export const directoryFieldLabel = (key:string) => Object.fromEntries([
+   ...companyFields,...driverFields,...allVehicleFields,...productTransportFields,...vehicleTransportFields,
+   ['discountPercent','Скидка, %'],['backgroundColor','Цвет фона'],
+-  ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['additionalReceivers','Дополнительные приёмщики'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
++  ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['compartmentDeparturePricesRub','Стоимость выезда секций, ₽'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['additionalReceivers','Дополнительные приёмщики'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
+ ])[key]??key
+ 
+ export function withCurrentAddressVersions(payload:Record<string,unknown>,latest:Record<string,unknown>) {
+@@ -64,3 +69,14 @@
+     return current?{...row,version:current.version??0}:row
+   })}
+ }
++
++/** Order is meaningful: each price belongs to the compartment at the same index. */
++export function parseVehicleDeparturePrices(sections:string,prices:string):string[] {
++  if(!prices.trim())return []
++  const capacities=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):[]
++  const amounts=prices.split(/[+;]/).map(value=>value.trim().replace(/\s+/g,'').replace(',','.'))
++  if(!capacities.length||capacities.some(value=>!value))throw new Error('Сначала укажите секции автомобиля по порядку.')
++  if(amounts.length!==capacities.length)throw new Error(`Укажите стоимость для каждой секции: секций — ${capacities.length}, тарифов — ${amounts.length}.`)
++  if(amounts.some(value=>!validTransportMoney(value)))throw new Error('Стоимость каждой секции должна быть числом от 0 до 999 999 999,99 ₽, не более двух знаков после запятой. Разделяйте тарифы знаком +.')
++  return amounts
++}
+--- a/web/src/model.ts
++++ b/web/src/model.ts
+@@ -200,7 +200,7 @@
+   discountHistory?: { effectiveFrom: string; discountPercent: string }[];
+ }
+ export interface Product extends NamedEntry, ProductTransportDetails {}
+-export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
++export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[]; compartmentDeparturePricesRub?: string[] }
+ export interface Driver extends NamedEntry, DriverDetails { carrierId?: string; vehicleId: string; phone?: string }
+ export interface AddressReceiver { name: string; phone: string }
+ export interface ShipmentAddress extends NamedEntry { location?: TripRequestLocationResult; companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; additionalReceivers?: AddressReceiver[]; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string; oilDepotDistancesKm?: Record<string, string> }
+@@ -217,6 +217,7 @@
+ }
+ export interface DuplicateCandidate { kind: string; names: string[]; ids: string[]; reason: string }
+ export interface Directories {
++  transportPricing?: import('./transport-pricing').TransportPricingSettings;
+   currentEmployeeId?: string | null;
+   /** Derived per authenticated manager; never stored as role assignments. */
+   assignedCustomerIds?: string[];
+--- /dev/null
++++ b/web/src/transport-pricing.ts
+@@ -0,0 +1,123 @@
++import Decimal from 'decimal.js'
++import type { OilDepot, ShipmentAddress, Vehicle } from './model'
++
++export type TransportRounding = 'nearest100' | 'ceil100'
++export interface TransportPricingSettings {
++  version: number
++  ratePerKmRub: string
++  customerSurchargeRub: string
++  rounding: TransportRounding
++}
++export interface TransportPriceSnapshot {
++  schemaVersion: 1
++  vehicleId: string
++  oilDepotId: string
++  customerId: string
++  addressId: string
++  vehicleLabel: string
++  oilDepotLabel: string
++  addressLabel: string
++  settingsVersion: number
++  sections: { index: number; litres: string; priceRub: string }[]
++  sectionsTotalRub: string
++  distanceKm: string
++  ratePerKmRub: string
++  distanceTotalRub: string
++  customerSurchargeRub: string
++  subtotalRub: string
++  rounding: TransportRounding
++  roundingAdjustmentRub: string
++  totalRub: string
++}
++const Exact = Decimal.clone({ precision: 64 })
++export const validTransportMoney = (value: unknown): value is string => typeof value === 'string' && /^\d{1,9}(?:\.\d{1,2})?$/.test(value)
++export function validTransportPricing(value: unknown): value is TransportPricingSettings {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
++  const row = value as Record<string, unknown>
++  return Object.keys(row).every(key => ['version', 'ratePerKmRub', 'customerSurchargeRub', 'rounding'].includes(key)) && Number.isSafeInteger(row.version) && Number(row.version) >= 0 && validTransportMoney(row.ratePerKmRub) && validTransportMoney(row.customerSurchargeRub) && ['nearest100', 'ceil100'].includes(String(row.rounding))
++}
++export function readTransportPricing(value?: TransportPricingSettings): TransportPricingSettings {
++  return value ?? { version: 0, ratePerKmRub: '45', customerSurchargeRub: '1750', rounding: 'nearest100' }
++}
++export function readTransportSectionIndexes(value: string | null | undefined): number[] {
++  if (!value) return []
++  const parsed: unknown = JSON.parse(value)
++  if (!Array.isArray(parsed) || parsed.length > 20 || parsed.some(index => !Number.isSafeInteger(index) || index < 0 || index >= 20) || new Set(parsed).size !== parsed.length) throw new Error('Выберите секции автомобиля без повторений.')
++  return parsed.sort((left, right) => left - right)
++}
++export function validateTransportSectionAssignments(customers: { compartmentIndexes: number[] }[]): string[] {
++  const selected = new Set<number>(), repeated = new Set<number>()
++  for (const customer of customers) for (const index of customer.compartmentIndexes) {
++    if (selected.has(index)) repeated.add(index)
++    selected.add(index)
++  }
++  return repeated.size ? [`Секции ${[...repeated].sort((a, b) => a - b).map(index => index + 1).join(', ')} назначены нескольким доставкам. Укажите отдельные секции или введите сумму вручную: распределение одной секции не задано.`] : []
++}
++/** Kilometres belong to the selected directory location, not a request override. */
++export function transportAddressMatches(address: Pick<ShipmentAddress, 'address' | 'name' | 'latitude' | 'longitude'> | undefined, actual: { address?: string | null; latitude?: string | null; longitude?: string | null; locationSnapshot?: { source: string } } | undefined): boolean {
++  if (!address || !actual) return true
++  const normalized = (value: string) => value.trim().replace(/\s+/g, ' ')
++  if (actual.address && normalized(actual.address) !== normalized(address.address || address.name)) return false
++  if (actual.latitude || actual.longitude) {
++    if (address.latitude || address.longitude) return Number(actual.latitude) === Number(address.latitude) && Number(actual.longitude) === Number(address.longitude)
++    if (actual.locationSnapshot?.source !== 'geocoder') return false
++  }
++  return true
++}
++export function calculateTransportPrice({ vehicle, address, oilDepot, customerId, compartmentIndexes, quantityLitres, settings = readTransportPricing() }: {
++  vehicle?: Vehicle
++  address?: ShipmentAddress
++  oilDepot?: OilDepot
++  customerId?: string | null
++  compartmentIndexes: number[]
++  quantityLitres?: string
++  settings?: TransportPricingSettings
++}): { ok: true; snapshot: TransportPriceSnapshot } | { ok: false; errors: string[] } {
++  const errors: string[] = []
++  if (!vehicle) errors.push('Выберите автомобиль.')
++  else if (!vehicle.compartmentsLitres?.length) errors.push('Укажите секции в карточке автомобиля.')
++  else if (!vehicle.compartmentDeparturePricesRub || vehicle.compartmentDeparturePricesRub.length !== vehicle.compartmentsLitres.length || !vehicle.compartmentDeparturePricesRub.every(validTransportMoney)) errors.push('Укажите стоимость выезда каждой секции в карточке автомобиля.')
++  if (!customerId) errors.push('Выберите клиента.')
++  if (!address || address.kind !== 'delivery' || address.companyId !== customerId) errors.push('Выберите адрес доставки этого клиента.')
++  if (!oilDepot) errors.push('Выберите нефтебазу.')
++  const distanceKm = address?.oilDepotDistancesKm?.[oilDepot?.id ?? '']
++  if (address && oilDepot && (distanceKm === undefined || !/^\d+(?:\.\d+)?$/.test(distanceKm) || new Exact(distanceKm).gt(100000))) errors.push('Укажите расстояние от выбранной нефтебазы до этого адреса клиента.')
++  if (!compartmentIndexes.length) errors.push('Назначьте секции автомобиля этой доставке.')
++  else if (new Set(compartmentIndexes).size !== compartmentIndexes.length || compartmentIndexes.some(index => !Number.isSafeInteger(index) || index < 0 || index >= (vehicle?.compartmentsLitres?.length ?? 0))) errors.push('Проверьте выбранные секции автомобиля.')
++  if (vehicle?.compartmentsLitres?.length && compartmentIndexes.length && compartmentIndexes.every(index => Number.isSafeInteger(index) && index >= 0 && index < vehicle.compartmentsLitres!.length)) {
++    const assignedLitres = compartmentIndexes.reduce((sum, index) => sum.plus(vehicle.compartmentsLitres![index]), new Exact(0))
++    const litres = quantityLitres?.replace(/\s/g, '').replace(',', '.')
++    if (!litres || !/^\d{1,12}(?:\.\d{1,6})?$/.test(litres) || !assignedLitres.eq(litres)) errors.push('Для автоматического расчёта литры клиента должны совпадать с объёмом назначенных полных секций. Частичная загрузка или разделение секции требуют ручной суммы.')
++  }
++  if (!validTransportPricing(settings)) errors.push('Проверьте общие тарифы перевозки.')
++  if (errors.length) return { ok: false, errors }
++  const sections = [...compartmentIndexes].sort((a, b) => a - b).map(index => ({ index, litres: vehicle!.compartmentsLitres![index], priceRub: vehicle!.compartmentDeparturePricesRub![index] }))
++  const sectionsTotal = sections.reduce((sum, section) => sum.plus(section.priceRub), new Exact(0))
++  const distanceTotal = new Exact(distanceKm!).times(settings.ratePerKmRub)
++  const subtotal = sectionsTotal.plus(distanceTotal).plus(settings.customerSurchargeRub)
++  const total = subtotal.div(100).toDecimalPlaces(0, settings.rounding === 'ceil100' ? Decimal.ROUND_CEIL : Decimal.ROUND_HALF_UP).times(100)
++  return { ok: true, snapshot: {
++    schemaVersion: 1, vehicleId: vehicle!.id, oilDepotId: oilDepot!.id, customerId: customerId!, addressId: address!.id,
++    vehicleLabel: (vehicle!.name || vehicle!.plate).slice(0, 120), oilDepotLabel: oilDepot!.name.slice(0, 120), addressLabel: (address!.address || address!.name).slice(0, 120), settingsVersion: settings.version,
++    sections, sectionsTotalRub: sectionsTotal.toFixed(), distanceKm: distanceKm!, ratePerKmRub: settings.ratePerKmRub, distanceTotalRub: distanceTotal.toFixed(), customerSurchargeRub: settings.customerSurchargeRub,
++    subtotalRub: subtotal.toFixed(), rounding: settings.rounding, roundingAdjustmentRub: total.minus(subtotal).toFixed(), totalRub: total.toFixed(),
++  } }
++}
++export function readTransportPriceSnapshot(value: string | null | undefined): TransportPriceSnapshot | null {
++  if (!value || value.length > 8000) return null
++  try {
++    const result = JSON.parse(value) as TransportPriceSnapshot
++    const unsigned = (v: unknown): v is string => typeof v === 'string' && /^\d{1,18}(?:\.\d{1,12})?$/.test(v)
++    if (!result || result.schemaVersion !== 1 || !Array.isArray(result.sections) || !result.sections.length || result.sections.length > 20 || !result.sections.every(row => row && Number.isSafeInteger(row.index) && row.index >= 0 && row.index < 20 && unsigned(row.litres) && new Exact(row.litres).gt(0) && validTransportMoney(row.priceRub)) || new Set(result.sections.map(row => row.index)).size !== result.sections.length || !['nearest100', 'ceil100'].includes(result.rounding)) return null
++    for (const key of ['vehicleId', 'oilDepotId', 'customerId', 'addressId', 'vehicleLabel', 'oilDepotLabel', 'addressLabel'] as const) if (typeof result[key] !== 'string' || !result[key] || result[key].length > 500) return null
++    if (!Number.isSafeInteger(result.settingsVersion) || result.settingsVersion < 0 || !validTransportMoney(result.ratePerKmRub) || !validTransportMoney(result.customerSurchargeRub)) return null
++    for (const key of ['sectionsTotalRub', 'distanceKm', 'distanceTotalRub', 'subtotalRub', 'totalRub'] as const) if (!unsigned(result[key])) return null
++    if (!/^-?\d{1,18}(?:\.\d{1,12})?$/.test(result.roundingAdjustmentRub) || new Exact(result.distanceKm).gt(100000)) return null
++    const sections = result.sections.reduce((sum, row) => sum.plus(row.priceRub), new Exact(0))
++    const distance = new Exact(result.distanceKm).times(result.ratePerKmRub)
++    const subtotal = sections.plus(distance).plus(result.customerSurchargeRub)
++    const total = subtotal.div(100).toDecimalPlaces(0, result.rounding === 'ceil100' ? Decimal.ROUND_CEIL : Decimal.ROUND_HALF_UP).times(100)
++    if (!sections.eq(result.sectionsTotalRub) || !distance.eq(result.distanceTotalRub) || !subtotal.eq(result.subtotalRub) || !total.eq(result.totalRub) || !total.minus(subtotal).eq(result.roundingAdjustmentRub)) return null
++    return result
++  } catch { return null }
++}
+--- /dev/null
++++ b/web/src/transport-settings.css
+@@ -0,0 +1,13 @@
++.transport-settings { padding: 20px 24px; margin-bottom: 16px; }
++.transport-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
++.transport-settings-heading h2 { margin: 0; font-size: 18px; }
++.transport-settings-heading p { margin: 5px 0 0; color: var(--muted, #65776e); font-size: 13px; }
++.transport-settings-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 12px; font-size: 14px; }
++.transport-settings-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
++.transport-settings-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
++.directory-pricing-hint { margin: 10px 0 0; color: var(--muted, #65776e); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
++@media (max-width: 700px) {
++  .transport-settings { padding: 16px; }
++  .transport-settings-heading { align-items: flex-start; flex-direction: column; }
++  .transport-settings-fields { grid-template-columns: minmax(0, 1fr); }
++}
+--- /dev/null
++++ b/web/src/trip-transport-draft.ts
+@@ -0,0 +1,83 @@
++import type { Directories, ShipmentAddress } from './model'
++import { calculateTransportPrice, readTransportPriceSnapshot, readTransportSectionIndexes, transportAddressMatches, type TransportPriceSnapshot } from './transport-pricing'
++
++export interface TransportCustomerDraft {
++  key: string
++  fields: Record<string, string>
++  /** Only a new row or an explicit recalculation uses today's directory values. */
++  pricingLive?: boolean
++  pricingNotice?: string
++  pricingLocation?: Parameters<typeof transportAddressMatches>[1]
++}
++
++export interface TripTransportState {
++  automatic: boolean
++  frozen: boolean
++  indexes: number[]
++  snapshot: TransportPriceSnapshot | null
++  errors: string[]
++  fields: Record<string, string>
++}
++
++export function tripTransportStates(shared: Record<string, string>, customers: TransportCustomerDraft[], directories: Directories, addresses: ShipmentAddress[], original?: { fields: Record<string, string>; customers: TransportCustomerDraft[] }): Map<string, TripTransportState> {
++  const parsed = customers.map(customer => {
++    try { return { customer, indexes: readTransportSectionIndexes(customer.fields.transport_section_indexes), errors: [] as string[] } }
++    catch { return { customer, indexes: [], errors: ['Проверьте назначение секций автомобиля.'] } }
++  })
++  return new Map(parsed.map(({ customer, indexes, errors: parsingErrors }) => {
++    const automatic = customer.fields.transport_pricing_mode === 'auto'
++    const frozen = automatic && !customer.pricingLive
++    const duplicates = indexes.filter(index => parsed.some(other => other.customer.key !== customer.key && other.indexes.includes(index)))
++    const repeatedCustomer = !!customer.fields.customer_id && customers.some(other => other.key !== customer.key && other.fields.customer_id === customer.fields.customer_id)
++    const errors = [...parsingErrors, ...(duplicates.length ? [`Секции ${duplicates.map(index => index + 1).join(', ')} назначены нескольким доставкам. Распределение общей секции не задано; укажите отдельные секции или сумму вручную.`] : []), ...(repeatedCustomer ? ['Один клиент выбран в нескольких доставках. Правило доплаты и расстояния для такого случая не задано; укажите суммы вручную.'] : [])]
++    let snapshot: TransportPriceSnapshot | null = null
++    if (frozen) {
++      snapshot = readTransportPriceSnapshot(customer.fields.transport_price_snapshot)
++      if (!snapshot) errors.push('Сохранённая расшифровка недоступна. Проверьте сумму вручную или рассчитайте её заново.')
++    } else if (automatic) {
++      const address = addresses.find(address => address.id === customer.fields.unloading_address_id)
++      const oilDepot = directories.oilDepots?.find(depot => depot.id === shared.oil_depot_id)
++      // The API preserves saved route snapshots whenever the final IDs match,
++      // including after the user selects another location and switches back.
++      const savedCustomer = original?.customers.find(row => row.key === customer.key)
++      const actualFields = savedCustomer?.fields.unloading_address_id === customer.fields.unloading_address_id ? savedCustomer.fields : customer.fields
++      const actualLocation = customer.pricingLocation ?? (actualFields.unloading_address || actualFields.unloading_latitude || actualFields.unloading_longitude ? { address: actualFields.unloading_address, latitude: actualFields.unloading_latitude, longitude: actualFields.unloading_longitude } : undefined)
++      if (!transportAddressMatches(address, actualLocation)) errors.push('Адрес или точка доставки отличаются от справочника либо происхождение точки не подтверждено. Расстояние для этого места не подтверждено; укажите сумму вручную.')
++      const loadingFields = original?.fields.oil_depot_id === shared.oil_depot_id ? original.fields : shared
++      const actualLoading = loadingFields.loading_address || loadingFields.loading_latitude || loadingFields.loading_longitude ? { address: loadingFields.loading_address, latitude: loadingFields.loading_latitude, longitude: loadingFields.loading_longitude } : undefined
++      if (!transportAddressMatches(oilDepot, actualLoading)) errors.push('Сохранённое место погрузки отличается от текущей нефтебазы в справочнике. Расстояние для этого маршрута не подтверждено; укажите сумму вручную.')
++      const calculation = calculateTransportPrice({
++        vehicle: directories.vehicles.find(vehicle => vehicle.id === shared.vehicle_id),
++        oilDepot,
++        address,
++        customerId: customer.fields.customer_id,
++        quantityLitres: customer.fields.quantity_litres,
++        compartmentIndexes: indexes,
++        settings: directories.transportPricing,
++      })
++      if (calculation.ok) snapshot = calculation.snapshot
++      else errors.push(...calculation.errors)
++    }
++    if (!frozen && errors.length) snapshot = null
++    const fields = automatic && !frozen ? {
++      ...customer.fields,
++      transport_amount: snapshot?.totalRub ?? '',
++      transport_price_snapshot: snapshot ? JSON.stringify(snapshot) : '',
++    } : customer.fields
++    return [customer.key, { automatic, frozen, indexes, snapshot, errors, fields }]
++  }))
++}
++
++/** Editing the route of a saved calculation preserves its amount for review. */
++export function changedTransportContext<T extends TransportCustomerDraft>(customer: T, resetSections = false): T {
++  const frozen = customer.fields.transport_pricing_mode === 'auto' && !customer.pricingLive
++  return {
++    ...customer,
++    ...(frozen ? { pricingNotice: 'Исходные данные изменены. Сохранённая сумма оставлена вручную; для нового расчёта нажмите «Рассчитать автоматически».' } : {}),
++    fields: {
++      ...customer.fields,
++      ...(resetSections ? { transport_section_indexes: '' } : {}),
++      ...(frozen ? { transport_pricing_mode: 'manual', transport_price_snapshot: '' } : {}),
++    },
++  }
++}
+--- /dev/null
++++ b/web/src/trip-transport-price.css
+@@ -0,0 +1,38 @@
++.trip-transport-sections{margin:0;padding:12px 14px;border:1px solid var(--line,#dce5df);border-radius:12px;min-width:0}
++.trip-transport-sections legend{padding:0 5px;font-size:13px;font-weight:600}
++.trip-transport-sections>p,.trip-transport-breakdown-body>p{margin:0;font-size:12px;line-height:1.6;color:var(--muted,#63766a)}
++.trip-transport-section-options{display:flex;flex-wrap:wrap;gap:8px 20px}
++.trip-transport-section-options>label{display:flex;align-items:center;gap:9px;min-height:44px;font-size:12px;cursor:pointer}
++.trip-transport-section-options input{width:18px!important;height:18px!important;min-height:18px!important;flex:0 0 18px;accent-color:var(--accent,#17674f)}
++.trip-transport-section-options label>span{display:grid;gap:3px}
++.trip-transport-section-options strong{font-size:13px;font-weight:600}
++.trip-transport-section-options label>span>span{color:var(--muted,#63766a)}
++.trip-transport-amount{min-width:0;display:grid;align-content:start;gap:4px}
++.trip-transport-actions{display:flex;align-items:center;gap:4px 16px;flex-wrap:wrap}
++.trip-transport-actions .trip-text-button{min-height:32px;text-align:left;line-height:1.4}
++.trip-transport-actions .trip-text-button:focus-visible{outline:2px solid var(--accent,#17674f);outline-offset:3px;border-radius:4px}
++.trip-transport-toggle svg{transition:transform 180ms ease;flex-shrink:0}
++.trip-transport-toggle[aria-expanded=true] svg{transform:rotate(180deg)}
++.trip-transport-status{margin:0;font-size:11px;line-height:1.5;color:var(--muted,#63766a)}
++.trip-transport-status.incomplete{color:#75550d}
++.trip-transport-breakdown{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows 200ms ease,opacity 160ms ease,visibility 0s linear 200ms}
++.trip-transport-breakdown.is-open{grid-template-rows:1fr;opacity:1;visibility:visible;transition:grid-template-rows 200ms ease,opacity 160ms ease,visibility 0s}
++.trip-transport-breakdown-clip{min-height:0;overflow:hidden}
++.trip-transport-breakdown-body{display:grid;gap:12px;padding:16px 0 0;max-width:720px;font-size:12px;line-height:1.6}
++.trip-transport-breakdown-body .trip-transport-route{overflow-wrap:anywhere;color:#4f6057}
++.trip-transport-calculation{margin:0;display:grid;gap:7px}
++.trip-transport-calculation>div{display:flex;justify-content:space-between;gap:16px;min-width:0}
++.trip-transport-calculation dt{min-width:0;overflow-wrap:anywhere}
++.trip-transport-calculation dd{margin:0;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
++.trip-transport-subtotal{padding-top:9px;border-top:1px solid var(--line,#dce5df)}
++.trip-transport-total{font-weight:650;font-size:14px}
++.trip-transport-missing{margin:0;padding-left:18px;color:#75550d}
++.trip-transport-rounding-note{font-size:11px!important}
++.shipment-trip-editor .shipment-trip-client-totals .shipment-trip-auto{color:#4f6057}
++.shipment-trip-editor .shipment-trip-fleet p>span{color:#4f6057}
++.shipment-trip-editor .trip-request-selection .company-combobox.has-wrapped-selection{position:relative;padding-block:10px;align-items:center}
++.shipment-trip-editor .trip-request-selection .directory-selection-value{flex:1;min-width:0;overflow-wrap:anywhere;line-height:1.45;pointer-events:none}
++.shipment-trip-editor .trip-request-selection .company-combobox.has-wrapped-selection>input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:text}
++.shipment-trip-editor .trip-request-selection .company-combobox.has-wrapped-selection>.icon-button{position:relative;z-index:1}
++@media(max-width:600px){.trip-transport-sections{padding:10px}.trip-transport-section-options{gap:5px 14px}.trip-transport-actions .trip-text-button{min-height:40px}.trip-transport-calculation>div{gap:8px}.trip-transport-breakdown-body{padding-top:12px}}
++@media(prefers-reduced-motion:reduce){.trip-transport-breakdown,.trip-transport-toggle svg{transition:none}}
