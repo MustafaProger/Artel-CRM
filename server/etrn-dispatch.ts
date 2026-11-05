@@ -29,17 +29,21 @@ export interface EtrnDispatch {
   /** Read-only linkage of the NK inbox copy to the exact signed sender title. */
   carrierIdentity?: { documentId: string; senderRevision: string; senderAttachmentId: string; titleSha256: string; signatureSha256: string };
   carrierReconciliation?: { version: 1; previousBinding: SabySigningBinding; preparedHash: string };
+  /** A signed replacement T2 observed after an interrupted Prepare. Original intent is retained; no Execute is inferred. */
+  carrierObservedCompletion?: { version: 1; previousStep: { state: 'preparing' | 'unknown' | 'blocked'; binding: SabySigningBinding }; preparedHash: string; draftHash: string; fillHash: string };
   carrierDraft?: { binding: SabySigningBinding; state: 'preparing' | 'ready' | 'unknown' };
   carrierFill?: { id: string; revision: string; name: string; beforeHash: string; afterHash: string; attempted: true };
   completedAt?: string; recipientAcceptedAt?: string; lastError?: string;
 }
 const rows = (value: unknown): SabyObject[] => Array.isArray(value) ? value.filter(sabyObject) : sabyObject(value) ? [value] : [];
 const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+const intentHash = (value: unknown) => bytesHash(Buffer.from(JSON.stringify(value ?? null)));
+const sameBinding = (left: SabySigningBinding, right: SabySigningBinding) => JSON.stringify(Object.entries(left).sort(([a], [b]) => a.localeCompare(b))) === JSON.stringify(Object.entries(right).sort(([a], [b]) => a.localeCompare(b)));
 const stamp = () => new Date().toISOString();
 const fail = (message: string): never => { throw new SabyError('validation', message); };
 export function validateEtrnDispatch(value: unknown, documentId: string | null): void {
   if (value === undefined) return;
-  if (!sabyObject(value) || value.version !== 1 || !documentId || Object.keys(value).some(key => !['version', 'sender', 'carrier', 'operatorUid', 'carrierDraft', 'carrierFill', 'carrierIdentity', 'carrierReconciliation', 'completedAt', 'recipientAcceptedAt', 'lastError'].includes(key))) throw new Error('Invalid ETRN dispatch');
+  if (!sabyObject(value) || value.version !== 1 || !documentId || Object.keys(value).some(key => !['version', 'sender', 'carrier', 'operatorUid', 'carrierDraft', 'carrierFill', 'carrierIdentity', 'carrierReconciliation', 'carrierObservedCompletion', 'completedAt', 'recipientAcceptedAt', 'lastError'].includes(key))) throw new Error('Invalid ETRN dispatch');
   if (value.operatorUid !== undefined && (!validConsignmentOperatorUid(value.operatorUid) || !sabyObject(value.sender) || !value.sender.prepared)) throw new Error('Invalid ETRN operator UID evidence');
   const identity = value.carrierIdentity;
   if (identity !== undefined) {
@@ -67,10 +71,26 @@ export function validateEtrnDispatch(value: unknown, documentId: string | null):
     if (step.executeAttempted && (!step.prepared || step.verified !== true) || step.state === 'confirmed' && (!step.prepared || !step.executeAttempted && step.observedSignature !== true)) throw new Error('Missing ETRN execution evidence');
     if (step.observedSignature !== undefined && (step.observedSignature !== true || side !== 'carrier' || !identity ||
         !step.prepared || step.verified !== true || step.executeAttempted !== undefined || step.dispatchState !== undefined ||
-        (step.binding as SabySigningBinding | undefined)?.stageId !== 'observed-signed' || value.carrierDraft || value.carrierFill || value.carrierReconciliation)) throw new Error('Invalid observed ETRN signature');
+        (step.binding as SabySigningBinding | undefined)?.stageId !== 'observed-signed' || value.carrierReconciliation ||
+        (value.carrierDraft || value.carrierFill) && !value.carrierObservedCompletion)) throw new Error('Invalid observed ETRN signature');
     if ((step.binding as SabySigningBinding | undefined)?.stageId === 'observed-signed' && step.observedSignature !== true) throw new Error('Missing observed ETRN signature evidence');
     if (step.dispatchState !== undefined && !['not_sent', 'attempted', 'acknowledged'].includes(String(step.dispatchState))) throw new Error('Invalid ETRN dispatch state');
     if (step.verified && !step.prepared || step.dispatchState === 'not_sent' && (step.executeAttempted || step.verified !== true) || ['attempted', 'acknowledged'].includes(String(step.dispatchState)) && step.executeAttempted !== true) throw new Error('Inconsistent ETRN dispatch state');
+  }
+  if (value.carrierObservedCompletion !== undefined) {
+    const evidence = value.carrierObservedCompletion;
+    const step = value.carrier as unknown as EtrnDispatchStep;
+    const draft = value.carrierDraft as EtrnDispatch['carrierDraft'];
+    if (!sabyObject(evidence) || evidence.version !== 1 || Object.keys(evidence).sort().join(',') !== 'draftHash,fillHash,preparedHash,previousStep,version' ||
+        !sabyObject(evidence.previousStep) || Object.keys(evidence.previousStep).sort().join(',') !== 'binding,state' || !['preparing', 'unknown', 'blocked'].includes(String(evidence.previousStep.state)) ||
+        !identity || !draft || draft.state !== 'ready' || !step.observedSignature || !step.prepared || !step.binding || value.carrierReconciliation ||
+        evidence.preparedHash !== step.prepared.preparedHash || evidence.draftHash !== intentHash(draft) || evidence.fillHash !== intentHash(value.carrierFill)) throw new Error('Invalid observed ETRN completion evidence');
+    const previous = evidence.previousStep.binding as SabySigningBinding;
+    assertSigningBinding(previous);
+    if (previous.routePolicy !== undefined || previous.side !== 'carrier' || previous.documentType !== 'ConsignmentNote' || previous.stageId === 'observed-signed' ||
+        previous.attachmentId === 'unprepared-carrier-title' || previous.attachmentId === step.binding.attachmentId ||
+        !sameBinding({ ...previous, attachmentId: 'unprepared-carrier-title' }, draft.binding) ||
+        !sameBinding({ ...previous, stageId: 'observed-signed', attachmentId: step.binding.attachmentId }, step.binding)) throw new Error('Changed observed ETRN preparation intent');
   }
   if (value.carrierReconciliation !== undefined) {
     const recovery = value.carrierReconciliation;
@@ -296,6 +316,41 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
           continue;
         }
         if (step.executeAttempted) { await update(row => { row.dispatch![side].state = 'waiting'; row.dispatch!.lastError = evidence.reason; }); break; }
+      }
+      // Saby may regenerate and sign T2 after Prepare while CRM has only its
+      // durable original binding. Observe that completed result before asking
+      // for an action that no longer exists. Never repeat Prepare or Execute.
+      if (side === 'carrier' && doc.dispatch!.carrierIdentity && doc.dispatch!.sender.state === 'confirmed' &&
+          doc.snapshot.documentMode !== 'nk-direct-v1' && doc.orderDraftVersion === 1 && doc.senderTitleVersion === 2 &&
+          doc.dispatch!.carrierDraft?.state === 'ready' && !doc.dispatch!.carrierReconciliation && !doc.dispatch!.carrierObservedCompletion &&
+          ['preparing', 'unknown', 'blocked'].includes(step.state) && Object.keys(step).sort().join(',') === 'binding,state' && step.binding &&
+          sameBinding({ ...step.binding, attachmentId: 'unprepared-carrier-title' }, doc.dispatch!.carrierDraft.binding)) {
+        const previousStep = structuredClone(step) as NonNullable<EtrnDispatch['carrierObservedCompletion']>['previousStep'];
+        const draftHash = intentHash(doc.dispatch!.carrierDraft), fillHash = intentHash(doc.dispatch!.carrierFill);
+        const observed = await client.readSigningDocument('carrier', sideId('carrier'), 'ConsignmentNote');
+        const signedTitles = rows(observed.Вложение).filter(file => file.Подтип === '1110340' && file.Удален !== 'Да' && file.Актуален !== 'Нет' && rows(file.Подпись).length > 0);
+        if (signedTitles.length) {
+          await business(observed, 'carrier');
+          const latest = await store.read(source); authority(latest);
+          const selection = latest.tripSaby!.trips[tripId].autoAuthorization!.selection.carrier;
+          if (previousStep.binding.certificateThumbprint !== selection) fail('Сохранённое намерение НК относится к другой выбранной подписи.');
+          const certificate = signingCertificateForOrganization(await client.readSigningCertificate('carrier', selection), doc.snapshot.carrierOrganization);
+          if (!certificate || certificate.thumbprint !== selection) fail('Выбранная подпись ЭТрН недоступна для организации.');
+          const manifest = await captureSignedTitle(client, 'carrier', observed, certificate!, 'ConsignmentNote');
+          if (manifest.binding.attachmentId === previousStep.binding.attachmentId ||
+              !sameBinding({ ...previousStep.binding, stageId: 'observed-signed', attachmentId: manifest.binding.attachmentId }, manifest.binding) ||
+              rows(observed.Вложение).some(file => file.Идентификатор === previousStep.binding.attachmentId && file.Удален !== 'Да' && file.Актуален !== 'Нет')) fail('Подписанный титул НК не подтверждает сохранённое намерение подготовки.');
+          await business(await client.readSigningDocument('carrier', sideId('carrier'), 'ConsignmentNote'), 'carrier');
+          const evidence = await readSigningEvidence(client, manifest);
+          if (evidence.state !== 'confirmed') fail(evidence.reason);
+          await update(row => {
+            if (intentHash(row.dispatch!.carrier) !== intentHash(previousStep) || intentHash(row.dispatch!.carrierDraft) !== draftHash || intentHash(row.dispatch!.carrierFill) !== fillHash ||
+                row.dispatch!.carrierReconciliation || row.dispatch!.carrierObservedCompletion) throw new ApiError(409, 'Намерение НК изменилось во время сверки подписи.');
+            row.dispatch!.carrierObservedCompletion = { version: 1, previousStep, preparedHash: manifest.preparedHash, draftHash, fillHash };
+            row.dispatch!.carrier = { state: 'confirmed', binding: manifest.binding, prepared: manifest, verified: true, observedSignature: true };
+          });
+          continue;
+        }
       }
       // Saby may complete the carrier title before CRM observes its signing stage.
       // Adopt only a positive signature with no prior local mutation intent. Never
