@@ -198,11 +198,11 @@ test('ARTEL and historical NK trips keep their existing transport flow instead o
   const artel = await fixture('artel');
   try {
     const state = await artel.store.read(artel.source), record = state.tripSaby?.trips[artel.tripId];
-    assert.ok(record, 'New ARTEL trip keeps its automatic transport intent');
-    assert.equal(record.scenario, 'artel_customer'); assert.deepEqual(artel.kicked, [artel.tripId]);
+    assert.equal(record, undefined, 'New ARTEL trip waits locally for the driver');
+    assert.equal(state.etrn?.trips[artel.tripId]?.sabyAutostart?.state, 'waiting_departure'); assert.deepEqual(artel.kicked, []);
     const response = await artel.http(`/api/shipment-trips/${artel.tripId}/saby-workflow`);
     assert.equal(response.status, 200); assert.notEqual(response.body.documentMode, 'nk_direct_etrn'); assert.notEqual(response.body.notRequired, true);
-    assert.equal(record.snapshot.customerOrganization.inn, artel.config.customer.inn);
+    assert.equal(response.body.automation.mode, 'after_driver_departure');
   } finally { await artel.close(); }
   const historical = await fixture();
   try {

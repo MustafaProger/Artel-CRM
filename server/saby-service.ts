@@ -122,6 +122,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
     assertTripTransportDocumentsAllowed(trip, data);
     if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Для рейса уже запущена общая заявка Saby. Используйте обновление общего обмена.');
     const existing = data.saby?.trips[tripId];
+    if (!existing && trip.fields.trip_flow_version === 'driver-v1') throw new ApiError(409, 'Для этого рейса обмен запускается после убытия водителя через общую цепочку Saby.');
     if (existing?.documents.every(doc => doc.status === 'draft')) return { result: null, changed: false };
     if (existing?.leaseId && existing.leaseUntil && Date.parse(existing.leaseUntil) > Date.now()) throw new ApiError(409, 'Передача рейса в Saby уже выполняется. Обновите состояние немного позже.');
     const errors = existing?.documents.some(doc => doc.status !== 'error' || doc.id) ? sabyCredentialBlockers(client.config) : blockers(snapshot, trip, client.config);

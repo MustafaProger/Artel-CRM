@@ -100,7 +100,7 @@ const nullable = (value: unknown) => value === null || typeof value === 'string'
 const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const rows = (value: unknown): SabyObject[] => Array.isArray(value) ? value.filter(sabyObject) : sabyObject(value) ? [value] : [];
 const phases = ['preparation', 'submitting', 'awaiting_driver', 'unknown', 'awaiting_carrier', 'awaiting_loading', 'creating_etrn', 'sending_etrn', 'completed', 'error'];
-const policyHash = (policy: SabyAutomaticSigningPolicy) => hash([policy.id, policy.enabled, policy.approvedAt, policy.mode, policy.sender.inn, policy.sender.kpp, policy.sender.thumbprint, policy.carrier.inn, policy.carrier.kpp, policy.carrier.thumbprint]);
+export const policyHash = (policy: SabyAutomaticSigningPolicy) => hash([policy.id, policy.enabled, policy.approvedAt, policy.mode, policy.sender.inn, policy.sender.kpp, policy.sender.thumbprint, policy.carrier.inn, policy.carrier.kpp, policy.carrier.thumbprint]);
 
 export function authorizeAutomaticTripSaby(snapshot: ShipmentAccessContext, data: OperationsData, tripId: string, record: TripSabyRecord, config: SabyConfig): void {
   const eligibleIds = snapshot.shipments.filter(row => row.fields.trip_id === tripId && requiresEtrn(row)).map(row => row.id);
@@ -119,17 +119,19 @@ function newTripSabyRecord(prepared: TripSabyPreparation, initiatorId?: string):
   return { senderVerificationPolicy: newSenderVerificationPolicy, ...(initiatorId ? { initiatorId } : {}), ...(prepared.order.fields.trip_flow_version === 'driver-v1' ? { orderConsignmentCreationVersion: 2 as const, driverFlow: { state: 'waiting_driver', processingAllowanceHours: 10 } as const } : {}), scenario: prepared.scenario, snapshot: structuredClone(prepared.order), payloadHash: hash(prepared.order), marker: `ARTEL-CRM:TRIP:${randomUUID()}`, attemptId: randomUUID(), createdAt: stamp, updatedAt: stamp, leaseId: null, leaseUntil: null, reservationAttempted: false, uploadAttempted: false, order: { id: null, number: null, date: prepared.order.fields.date, status: 'pending', url: null, revision: null, remoteStatus: null, signatureStatus: 'unknown' }, carrierEvidence: null, carrierFill: newCarrierFill('По договору'), phase: 'submitting', lastError: null, deliveries: prepared.deliveries.map(row => ({ shipmentId: row.shipmentId, snapshot: structuredClone(row.snapshot), payloadHash: hash(row.snapshot), id: null, status: 'not_sent', lastError: null })) };
 }
 
-/** Called from a successful new trip save or explicit start, inside its storage transaction. No network. */
+/** Called after verified driver departure (or legacy save / explicit start), inside its storage transaction. No network. */
 export function enqueueAutomaticTripSaby({ base, data, tripId, actorId, config, prepare = prepareTripSaby }: { base: Snapshot; data: OperationsData; tripId: string; actorId: string; config: SabyConfig; prepare?: PrepareTripSaby }): { enqueued: boolean; blockers: string[] } {
   if (data.tripSaby?.trips[tripId]) return { enqueued: false, blockers: [] };
   const snapshot = currentSnapshot(base, data); const trip = getShipmentTrip(snapshot, tripId);
   if (isNkDirectEtrn(trip, data) || !trip.customers.some(requiresEtrn)) return { enqueued: false, blockers: [] };
+  if (trip.fields.trip_flow_version === 'driver-v1' && !verifiedDriverDeparture(snapshot, data, tripId)) return { enqueued: false, blockers: ['Ожидаем массы и подтверждение убытия назначенного водителя.'] };
   const policy = config.automaticSigning;
   if (!policy?.enabled || config.automaticSigningError) return { enqueued: false, blockers: config.automaticSigningError ? [config.automaticSigningError] : [] };
   const prepared = prepare(snapshot, data, trip, config); const blockers = preparationBlockers(prepared, trip, data);
   if (policy.sender.inn !== prepared.order.customerOrganization.inn || policy.sender.kpp !== prepared.order.customerOrganization.kpp || policy.carrier.inn !== prepared.order.carrierOrganization.inn || policy.carrier.kpp !== prepared.order.carrierOrganization.kpp) blockers.push('Настройка автоподписи не соответствует организациям рейса.');
   if (blockers.length) return { enqueued: false, blockers: [...new Set(blockers)] };
-  const record = newTripSabyRecord(prepared, actorId);
+  const record = newTripSabyRecord(trip.fields.trip_flow_version === 'driver-v1' ? masslessDriverPreparation(prepared) : prepared, actorId);
+  if (record.driverFlow) record.driverFlow.authorizedDepartureHash = departureHash(data, tripId);
   record.autoAuthorization = { requestId: randomUUID(), requestedBy: actorId, requestedAt: record.createdAt, policyId: policy.id, policyHash: policyHash(policy), mode: 'deferred', selection: { sender: policy.sender.thumbprint, carrier: policy.carrier.thumbprint } };
   try { authorizeAutomaticTripSaby(snapshot, data, tripId, record, config); }
   catch (error) { if (error instanceof ApiError && error.status === 403) return { enqueued: false, blockers: [error.message] }; throw error; }
@@ -199,6 +201,7 @@ export function startAutomaticTripSaby({ base, data, tripId, actorId, config, pr
   if (!trip.customers.some(requiresEtrn)) throw new ApiError(409, ETRN_NOT_REQUIRED);
   const prepared = prepare(snapshot, data, trip, config);
   const afterDeparture = !!data.driverTripProgress?.[tripId]?.departedAt;
+  if (!afterDeparture || !verifiedDriverDeparture(snapshot, data, tripId)) throw new ApiError(409, 'Обмен начнётся после масс и подтверждения убытия назначенного водителя.');
   if (mode !== (afterDeparture ? 'sign_and_send' : 'draft')) throw new ApiError(409, 'Этап рейса изменился. Обновите состояние и проверьте действие перед запуском.');
   if (previewToken !== explicitStartToken(base, data, trip, prepared, actorId, config.automaticSigning)) throw new ApiError(409, 'Данные рейса или настройка обмена изменились. Обновите состояние и проверьте сведения перед запуском.');
   const blockers = [...sabyCredentialBlockers(config), ...preparationBlockers(prepared, trip, data)];
@@ -301,10 +304,19 @@ export function getTripSabyWorkflow({ base, data, tripId, prepare, config = saby
     if (config.automaticSigning.sender.inn !== prepared!.order.customerOrganization.inn || config.automaticSigning.sender.kpp !== prepared!.order.customerOrganization.kpp || config.automaticSigning.carrier.inn !== prepared!.order.carrierOrganization.inn || config.automaticSigning.carrier.kpp !== prepared!.order.carrierOrganization.kpp) blockers.push('Настройка автоподписи не соответствует организациям рейса.');
     try {
       explicitStartActor(snapshot, data, tripId, actorId);
-      if (!blockers.length) start = { previewToken: explicitStartToken(base, data, trip, prepared!, actorId, config.automaticSigning), mode: data.driverTripProgress?.[tripId]?.departedAt ? 'sign_and_send' : 'draft' };
+      if (!blockers.length && verifiedDriverDeparture(snapshot, data, tripId)) start = { previewToken: explicitStartToken(base, data, trip, prepared!, actorId, config.automaticSigning), mode: data.driverTripProgress?.[tripId]?.departedAt ? 'sign_and_send' : 'draft' };
     } catch { /* Read-only viewers never receive an actionable start preview. */ }
   }
-  const automation = { ...capability, enrolled: !!record?.autoAuthorization, ...(capability.message ? {} : capability.enabled && !record ? { message: trip.fields.trip_flow_version === 'driver-v1' ? blockers.length ? 'Исправьте сведения рейса и обновите состояние. После проверки готовности нажмите «Запустить обмен».' : start?.mode === 'sign_and_send' ? 'Массы и убытие водителя уже сохранены и сверены. Кнопка «Запустить подписание и отправку» создаст заявку Saby, передаст её на подпись АРТЭЛЬ и НК АРТЭЛЬ и продолжит отправку ЭТрН клиентам.' : 'Обмен ещё не запущен. Нажмите «Запустить обмен», чтобы создать неподписанный черновик Saby. Подписание начнётся после масс и убытия водителя.' : 'Этот исторический рейс не включён в автоматический обмен. Сохранение изменений не запускает отправку.' } : record?.autoAuthorization ? { message: 'Автоотправка сохранена. CRM продолжит обмен в фоне.' } : {}) };
+  const automation: NonNullable<TripSabyResponse['automation']> = { ...capability, enrolled: !!record?.autoAuthorization, ...(capability.message ? {} : capability.enabled && !record ? { message: trip.fields.trip_flow_version === 'driver-v1' ? blockers.length ? 'Исправьте сведения рейса и обновите состояние. После проверки готовности нажмите «Запустить обмен».' : start?.mode === 'sign_and_send' ? 'Массы и убытие водителя уже сохранены и сверены. Кнопка «Запустить подписание и отправку» создаст заявку Saby, передаст её на подпись АРТЭЛЬ и НК АРТЭЛЬ и продолжит отправку ЭТрН клиентам.' : 'Обмен ещё не запущен. Нажмите «Запустить обмен», чтобы создать неподписанный черновик Saby. Подписание начнётся после масс и убытия водителя.' : 'Этот исторический рейс не включён в автоматический обмен. Сохранение изменений не запускает отправку.' } : record?.autoAuthorization ? { message: 'Автоотправка сохранена. CRM продолжит обмен в фоне.' } : {}) };
+  const enrollment = data.etrn?.trips[tripId]?.sabyAutostart;
+  if (!record && trip.fields.trip_flow_version === 'driver-v1' && !data.driverTripProgress?.[tripId]?.departedAt) {
+    automation.message = 'Ожидаем массы всех доставок и подтверждение «Убыл» от назначенного водителя. До этого документы в Saby не создаются.';
+  }
+  if (!record && enrollment) {
+    automation.mode = 'after_driver_departure';
+    automation.enrolled = true;
+    if (enrollment.lastError && !start) automation.message = enrollment.lastError;
+  }
   if (record?.autoAuthorization) {
     try {
       authorizeAutomaticTripSaby(snapshot, data, tripId, record, config);
@@ -408,9 +420,10 @@ export async function runTripSabyWorkflow(options: RunTripSabyOptions): Promise<
     let record = existing;
     if (options.enableCarrierFill && !existing?.order.id) throw new ApiError(409, 'Сначала создайте заявку рейса в Saby.');
     if (!record) {
+      if (trip.fields.trip_flow_version === 'driver-v1' && !verifiedDriverDeparture(snapshot, data, tripId)) throw new ApiError(409, 'Обмен начнётся после масс и подтверждения убытия назначенного водителя.');
       const prepared = prepare(snapshot, data, trip, client.config); const errors = preparationBlockers(prepared, trip, data);
       if (errors.length) throw new ApiError(422, errors.join(' '));
-      record = newTripSabyRecord(prepared, options.initiatorId);
+      record = newTripSabyRecord(trip.fields.trip_flow_version === 'driver-v1' ? masslessDriverPreparation(prepared) : prepared, options.initiatorId);
       data.tripSaby ??= { trips: {} }; data.tripSaby.trips[tripId] = record;
     }
     if (options.enableCarrierFill && !record.carrierFill) {

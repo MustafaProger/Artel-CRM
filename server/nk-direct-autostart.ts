@@ -39,7 +39,7 @@ interface Context { base: Snapshot; data: OperationsData; tripId: string; config
 export function enrollNkDirectAutostart({ base, data, tripId, config, actorId }: Context & { actorId: string }): boolean {
   const snapshot = currentSnapshot(base, data), trip = getShipmentTrip(snapshot, tripId);
   if (data.etrn?.trips[tripId]?.rebuild?.externalRestartBlocked) return false;
-  if (trip.fields.trip_document_policy !== TRIP_DOCUMENT_POLICY_VERSION || data.driverTripProgress?.[tripId] || hasTripTransportHistory(data, tripId)) return false;
+  if (trip.fields.trip_document_policy !== TRIP_DOCUMENT_POLICY_VERSION || data.driverTripProgress?.[tripId]?.departedAt || hasTripTransportHistory(data, tripId)) return false;
   if (!isNkDirectEtrn(trip, data)) {
     if (data.etrn?.trips[tripId]?.directAutostart) delete data.etrn.trips[tripId].directAutostart;
     return false;

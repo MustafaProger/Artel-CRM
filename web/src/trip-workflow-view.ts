@@ -93,6 +93,7 @@ export function workflowView(result: TripSabyResponse, hasLoadingFacts = false):
   const confirmedAt = driverConfirmedAt(result)
   const beforeSender = result.order?.id ? confirmedAt || hasLoadingFacts || result.driverFlow?.state === 'mass_pending' ? 2 : 1 : 0
   if (result.stage6CompletedAt) return { title: confirmedAt ? 'Все этапы рейса завершены' : 'Обмен с Saby завершён', text: `Подписи и отправка ЭТрН клиентам подтверждены для каждой доставки. ${confirmedAt ? 'Рейс доступен водителю в архиве.' : 'Подтверждение водителя в CRM не зафиксировано.'}`, step: 7 }
+  if (!result.order?.id && !result.locked && result.automation?.mode === 'after_driver_departure' && !confirmedAt && !hasLoadingFacts) return result.ready ? { title: 'Ожидаем данные водителя', text: result.automation.message || 'Документы будут отправлены после заполнения масс и подтверждения убытия водителем.', step: 1 } : { title: 'Рейс сохранён · нужны данные', text: 'Исправьте сведения, перечисленные ниже. Отправка в Saby начнётся только после масс и подтверждения убытия водителем.', step: 0 };
   const afterConfirmation = stage === 'carrier_confirmed' || result.carrierConfirmed
   if (result.phase === 'unknown') {
     if (afterConfirmation && (!result.driverFlow || result.driverFlow.state === 'ready')) return {

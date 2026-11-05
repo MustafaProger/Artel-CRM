@@ -55,39 +55,27 @@ async function fixture(twoClients = false) {
   const input = { fields, customers: customerFields.map(row => ({ fields: { ...row, quantity_litres: '1' } })), idempotencyKey: randomUUID() };
   const created = await http('', 'POST', input); if (created.status !== 201) { await new Promise<void>(resolve => server.close(() => resolve())); await rt.close(); } assert.equal(created.status, 201, JSON.stringify(created.body));
   let trip: ShipmentTrip = created.body.trip;
+  await rt.store.mutate(rt.source, data => { delete data.etrn!.trips[trip.id].sabyAutostart; return { result: null, changed: true }; });
   const tripId = trip.id, path = `/${tripId}/saby-workflow`;
   const patch = async (litres: string | string[] = '10') => {
     const response = await http(`/${tripId}`, 'PATCH', { fields, customers: trip.customers.map((row, index) => ({ id: row.id, fields: { ...customerFields[index], quantity_litres: Array.isArray(litres) ? litres[index] : litres } })), versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) });
-    assert.equal(response.status, 200, JSON.stringify(response.body)); trip = response.body.trip;
+    assert.equal(response.status, 200, JSON.stringify(response.body)); trip = response.body.trip; await rt.store.mutate(rt.source, data => { delete data.etrn!.trips[tripId].sabyAutostart; return { result: null, changed: true }; });
   };
   const preview = async () => { const response = await http(path); assert.equal(response.status, 200, JSON.stringify(response.body)); return response.body; };
   return { ...rt, api, config, actor, kicked, http, patch, preview, path, tripId, input, close: async () => { await new Promise<void>(resolve => server.close(() => resolve())); if (previousSettings === undefined) delete process.env.SABY_AUTOFILL_PROFILE_JSON; else process.env.SABY_AUTOFILL_PROFILE_JSON = previousSettings; await rt.close(); } };
 }
 
-test('1 L blocked save and 10 L edit require explicit atomic start; queue survives restart and produces only one unsigned draft', async () => {
+test('before departure explicit start has no preview and cannot create an unsigned draft', async () => {
   const f = await fixture();
   try {
-    const before = await f.store.read(f.source); const blocked = await f.preview();
-    assert.equal(blocked.ready, false); assert.equal(blocked.start, undefined); assert.equal(before.tripSaby?.trips[f.tripId], undefined); assert.equal(f.api.calls.length, 0);
-    assert.match(blocked.automation.message, /Запустить обмен/); assert.doesNotMatch(blocked.automation.message, /начнётся.*сохранения/);
-    await f.patch(); const ready = await f.preview();
-    assert.equal(ready.ready, true, JSON.stringify(ready.blockers)); assert.ok(ready.start?.previewToken); assert.equal(ready.automation.enrolled, false);
-    assert.match(workflowView(ready).text, /неподписанный черновик/);
-    assert.equal((await f.store.read(f.source)).tripSaby?.trips[f.tripId], undefined); assert.deepEqual(f.kicked, []); assert.equal(f.api.calls.length, 0);
-    const requests = await Promise.all([f.http(f.path + '/start', 'POST', ready.start), f.http(f.path + '/start', 'POST', ready.start)]);
-    assert.deepEqual(requests.map(row => row.status).sort(), [202, 409]); assert.deepEqual(f.kicked, [f.tripId]); assert.equal(f.api.calls.length, 0);
-    const queued = (await f.store.read(f.source)).tripSaby!.trips[f.tripId];
-    assert.equal(queued.autoAuthorization?.requestedBy, f.actor.id); assert.equal(queued.initiatorId, f.actor.id); assert.equal(queued.order.id, null); assert.equal(queued.signing, undefined);
-    const requestId = queued.autoAuthorization!.requestId;
-    const replay = await f.http(f.path + '/start', 'POST', ready.start); assert.equal(replay.status, 409);
-    assert.deepEqual((await f.store.read(f.source)).tripSaby!.trips[f.tripId], queued); assert.deepEqual(f.kicked, [f.tripId]); assert.equal((await f.preview()).start, undefined);
-    const persisted = new OperationsStore(f.directory + '/store');
-    const dispatched = await dispatchTripSaby({ base: f.base, store: persisted, config: f.config, enabled: true, prepare: integrationPrepare, send: f.api.send, tripId: f.tripId });
-    assert.equal(dispatched.continued, 1);
-    const draft = (await f.store.read(f.source)).tripSaby!.trips[f.tripId];
-    assert.equal(draft.phase, 'awaiting_driver', draft.lastError ?? ''); assert.ok(draft.order.id); assert.equal(draft.signing, undefined); assert.equal(draft.autoAuthorization!.requestId, requestId);
-    assert.equal(f.api.reserves('TransportOrder').length, 1); assert.equal(f.api.calls.some(row => /ПодготовитьДействие|ВыполнитьДействие|СписокПодписей/.test(row.method)), false);
-    assert.deepEqual((await f.store.read(f.source)).shipments[f.trip.customers[0].id], before.shipments[f.trip.customers[0].id]);
+    for (const edited of [false, true]) {
+      if (edited) await f.patch();
+      const preview = await f.preview();
+      assert.equal(preview.start, undefined); assert.match(preview.automation.message, /массы/);
+      assert.equal((await f.http(f.path + '/start', 'POST', { mode: 'draft', previewToken: 'a'.repeat(64) })).status, 409);
+      assert.equal((await f.store.read(f.source)).tripSaby?.trips[f.tripId], undefined);
+      assert.equal(f.api.calls.length, 0); assert.deepEqual(f.kicked, []);
+    }
   } finally { await f.close(); }
 });
 
@@ -95,11 +83,11 @@ test('stale trip data, directory snapshot, policy or driver progress cannot star
   for (const change of ['trip', 'directory', 'policy', 'driver'] as const) {
     const f = await fixture();
     try {
-      await f.patch(); const ready = await f.preview();
-      if (change === 'trip') await f.patch('20');
+      await f.patch(); await recordDeparture(f); const ready = await f.preview();
+      if (change === 'trip') await f.store.mutate(f.source, data => { const row = Object.values(data.shipments).find(row => row.fields.trip_id === f.tripId)!; row.fields.trip_notes = 'changed'; row.version++; return { result: null, changed: true }; });
       if (change === 'policy') f.config.automaticSigning!.approvedAt = '2026-10-02T00:00:00.000Z';
       if (change === 'directory') await f.store.mutate(f.source, data => { data.directories!.products[0].documentName = 'Другой документ'; return { result: null, changed: true }; });
-      if (change === 'driver') await f.store.mutate(f.source, data => recordDriverTripAction(f.base, data, { id: 'synthetic-driver', name: 'Тест', login: 'synthetic-driver', role: 'driver', driverId: 'driver', managerId: null, active: true, version: 1 }, f.tripId, 'arrive', { versions: Object.fromEntries(currentSnapshot(f.base, data).shipments.filter(row => row.fields.trip_id === f.tripId).map(row => [row.id, row.version ?? 0])) }));
+      if (change === 'driver') await f.store.mutate(f.source, data => { data.driverTripProgress![f.tripId].masses![Object.keys(data.driverTripProgress![f.tripId].masses!)[0]] = '2'; return { result: null, changed: true }; });
       const response = await f.http(f.path + '/start', 'POST', ready.start); assert.equal(response.status, 409, `${change}: ${JSON.stringify(response.body)}`);
       assert.equal((await f.store.read(f.source)).tripSaby?.trips[f.tripId], undefined); assert.deepEqual(f.kicked, []); assert.equal(f.api.calls.length, 0);
     } finally { await f.close(); }
@@ -109,7 +97,7 @@ test('stale trip data, directory snapshot, policy or driver progress cannot star
 test('start enforces authentication, methods, strict body and current permission/policy without provider requests', async () => {
   const f = await fixture();
   try {
-    await f.patch(); const ready = await f.preview();
+    await f.patch(); await recordDeparture(f); const ready = await f.preview();
     assert.equal((await f.http(f.path + '/start', 'POST', ready.start, false)).status, 401);
     assert.equal((await f.http(f.path + '/start')).status, 405);
     for (const body of [{}, { previewToken: 'bad' }, { ...ready.start, automatic: true }]) assert.equal((await f.http(f.path + '/start', 'POST', body)).status, 400);
@@ -125,8 +113,8 @@ test('start enforces authentication, methods, strict body and current permission
 test('existing unknown or manual workflow cannot be reauthorized; legacy trip never receives a start preview', async () => {
   const f = await fixture();
   try {
-    await f.patch(); const ready = await f.preview(); assert.equal((await f.http(f.path + '/start', 'POST', ready.start)).status, 202);
-    await f.store.mutate(f.source, data => { const record = data.tripSaby!.trips[f.tripId]; record.phase = 'unknown'; record.order.status = 'unknown'; delete record.autoAuthorization; return { result: null, changed: true }; });
+    await f.patch(); await recordDeparture(f); const ready = await f.preview(); assert.equal((await f.http(f.path + '/start', 'POST', ready.start)).status, 202);
+    await f.store.mutate(f.source, data => { const record = data.tripSaby!.trips[f.tripId]; record.phase = 'unknown'; record.order.status = 'unknown'; delete record.autoAuthorization; delete record.driverFlow!.authorizedDepartureHash; return { result: null, changed: true }; });
     const before = (await f.store.read(f.source)).tripSaby!.trips[f.tripId];
     assert.equal((await f.http(f.path + '/start', 'POST', ready.start)).status, 409); assert.equal((await f.preview()).start, undefined);
     assert.deepEqual((await f.store.read(f.source)).tripSaby!.trips[f.tripId], before); assert.deepEqual(f.kicked, [f.tripId]); assert.equal(f.api.calls.length, 0);
@@ -138,7 +126,7 @@ test('existing unknown or manual workflow cannot be reauthorized; legacy trip ne
 test('old failed documents and orphan loading facts require reconciliation, even without an external ID', async () => {
   const f = await fixture();
   try {
-    await f.patch(); const ready = await f.preview();
+    await f.patch(); await recordDeparture(f); const ready = await f.preview();
     for (const scenario of ['document', 'facts'] as const) {
       const data = await f.store.read(f.source);
       // Unpersisted synthetic history exercises the guard before provider or record creation.
@@ -209,7 +197,7 @@ test('consistent saved departure explicitly authorizes signing: massless draft t
     const before = await f.store.read(f.source); const ready = await f.preview();
     assert.equal(ready.ready, true, JSON.stringify(ready.blockers)); assert.equal(ready.start.mode, 'sign_and_send');
     assert.equal(workflowView(ready, true).requiresReconciliation, undefined); assert.match(workflowView(ready, true).text, /подпись АРТЭЛЬ и НК АРТЭЛЬ/);
-    assert.equal((await f.http(f.path + '/start', 'POST', preDeparture.start)).status, 409);
+    assert.equal(preDeparture.start, undefined); assert.equal((await f.http(f.path + '/start', 'POST', { mode: 'draft', previewToken: 'a'.repeat(64) })).status, 409);
     assert.equal((await f.http(f.path + '/start', 'POST', { ...ready.start, mode: 'draft' })).status, 409);
     assert.equal((await f.http(f.path + '/start', 'POST', ready.start)).status, 202);
     const queued = (await f.store.read(f.source)).tripSaby!.trips[f.tripId];

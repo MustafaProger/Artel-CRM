@@ -1,3 +1,5 @@
+// This preview exercises persisted drafts from before the departure gate.
+import { seedLegacyDriverAttempt } from '../tests/helpers/legacy-driver-attempt.ts';
 // Synthetic acceptance for saved loading facts and honest Saby workflow messages.
 // All fixtures live in an isolated OperationsStore; external providers are denied.
 import assert from 'node:assert/strict';
@@ -13,7 +15,6 @@ import { SabyClient } from '../server/saby-client.ts';
 import { saveShipmentTrip } from '../server/shipment-trips.ts';
 import { currentSnapshot } from '../server/shipment-operations.ts';
 import { readDriverTrips, recordDriverTripAction } from '../server/driver-trips.ts';
-import { enqueueAutomaticTripSaby } from '../server/trip-saby-workflow.ts';
 
 const rt = await integrationRuntime(), root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'qa/saby-allowance-20261008');
@@ -54,7 +55,7 @@ try {
       created[scenario] = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, owner.id).trip;
     }
     for (const tripId of [rt.tripId, created.known.id]) {
-      const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId, actorId: owner.id, config, prepare: integrationPrepare });
+      const queued = seedLegacyDriverAttempt({ base: rt.base, data, tripId, actorId: owner.id, config, prepare: integrationPrepare });
       assert.equal(queued.enqueued, true, JSON.stringify(queued.blockers));
     }
     const known = data.tripSaby.trips[created.known.id];

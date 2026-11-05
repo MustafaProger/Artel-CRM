@@ -1,3 +1,4 @@
+import { seedLegacyDriverAttempt } from './helpers/legacy-driver-attempt';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
@@ -11,7 +12,6 @@ import { encodeWindows1251 } from '../server/saby-transport-order';
 import { SabyClient, type SabyObject, type SabyConfig } from '../server/saby-client';
 import { currentSnapshot } from '../server/shipment-operations';
 import { saveShipmentTrip } from '../server/shipment-trips';
-import { enqueueAutomaticTripSaby } from '../server/trip-saby-workflow';
 import { recordDriverTripAction, readDriverTrips } from '../server/driver-trips';
 import type { OperationsData, OperationsStorage } from '../server/operations-store';
 import { nativeSenderAmendmentOptions, verifyPreparedLinkedConsignmentTitle, type EtrnDocument } from '../server/etrn-service';
@@ -34,7 +34,7 @@ async function fixture(native?: 'phone' | 'electronic', alias?: 'valid' | 'title
     Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2026-10-07T09:15' });
     const customers = rt.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])) }));
     const result = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, 'actor');
-    const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId: result.trip.id, actorId: 'actor', config, prepare: integrationPrepare }); assert.equal(queued.enqueued, true);
+    const queued = seedLegacyDriverAttempt({ base: rt.base, data, tripId: result.trip.id, actorId: 'actor', config, prepare: integrationPrepare }); assert.equal(queued.enqueued, true);
     return { result, changed: true };
   });
   const actor: AccountUser = { id: 'driver-user', login: 'driver-user', name: 'Синтетический водитель', role: 'driver', driverId: 'driver', managerId: null, active: true, version: 1 };

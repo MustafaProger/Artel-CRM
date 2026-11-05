@@ -19,6 +19,8 @@ import { validateEtrnDispatch, type EtrnDispatch } from './etrn-dispatch';
 import { reconcileLinkedConsignmentDraft, validateLinkedDraftState, type LinkedDraftState } from './etrn-linked-draft';
 import { NATIVE_APPROVED_REDIRECTION_METHOD, validConsignmentOperatorUid, verifyConsignmentSenderBusiness, type SabyConsignmentEvidenceOptions } from './saby-consignment-evidence';
 import { assertTripTransportDocumentsAllowed, isNkDirectEtrn } from './trip-document-mode';
+import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
+import { validateTripSabyAutostart, type TripSabyAutostart } from './trip-saby-autostart';
 import { validateNkDirectAutostart, type NkDirectAutostart } from './nk-direct-autostart';
 import { authorizeNkDirectFromSnapshot, preparedNkDirectFromSnapshot, validateNkDirectEtrn, type NkDirectEtrnRecord } from './nk-direct-etrn';
 
@@ -107,9 +109,10 @@ export interface EtrnRebuildRecord {
   id: string; at: string; actorId: string; archivedSha256: string; sourceFingerprint: string; externalRestartBlocked: true;
 }
 export interface EtrnTrip {
+  arrivalHistory?: { progress: DriverTripProgress; supersededAt: string; actorId: string | null }[];
   orderRedirectionApproval?: OrderRedirectionApproval;
   deliveries: Record<string, EtrnDelivery>; updatedAt: string; loadingFacts?: TripLoadingFacts;
-  direct?: NkDirectEtrnRecord; directAutostart?: NkDirectAutostart; loadingDetails?: EtrnLoadingDetails;
+  direct?: NkDirectEtrnRecord; directAutostart?: NkDirectAutostart; sabyAutostart?: TripSabyAutostart; loadingDetails?: EtrnLoadingDetails;
   /** Explicitly confirmed for this trip; absence retains the depot's loading party. */
   loadingActorMode?: 'sender';
   exchangeHistory?: EtrnExchangeHistoryEntry[]; rebuild?: EtrnRebuildRecord;
@@ -131,6 +134,13 @@ export function validateEtrnData(value: unknown): asserts value is EtrnData | un
   if (!sabyObject(value) || !sabyObject(value.trips)) throw new Error('Invalid ETRN data');
   for (const [tripId, trip] of Object.entries(value.trips)) {
     if (!tripId || !sabyObject(trip) || !isDate(trip.updatedAt) || !sabyObject(trip.deliveries)) throw new Error('Invalid ETRN trip');
+    if (trip.arrivalHistory !== undefined) {
+      if (!Array.isArray(trip.arrivalHistory)) throw new Error('Invalid arrival history');
+      for (const item of trip.arrivalHistory) {
+        if (!sabyObject(item) || !isDate(item.supersededAt) || !(item.actorId === null || typeof item.actorId === 'string' && item.actorId) || !sabyObject(item.progress) || item.progress.departedAt) throw new Error('Invalid superseded arrival');
+        validateDriverTripProgress({ [tripId]: item.progress });
+      }
+    }
     validateOrderRedirectionApproval(trip.orderRedirectionApproval);
     if (trip.loadingFacts !== undefined) validateLoadingFacts(trip.loadingFacts);
     if (trip.loadingActorMode !== undefined && trip.loadingActorMode !== 'sender') throw new Error('Invalid loading actor mode');
@@ -152,6 +162,7 @@ export function validateEtrnData(value: unknown): asserts value is EtrnData | un
 
     validateNkDirectEtrn(trip.direct, tripId);
     validateNkDirectAutostart(trip.directAutostart);
+    validateTripSabyAutostart(trip.sabyAutostart);
     for (const [shipmentId, delivery] of Object.entries(trip.deliveries)) {
       if (!shipmentId || !sabyObject(delivery) || !sabyObject(delivery.profile) || !sabyObject(delivery.snapshot) || delivery.snapshot.tripId !== tripId || delivery.snapshot.shipmentId !== shipmentId || delivery.preparedHash !== hash(delivery.snapshot) || !isDate(delivery.updatedAt)) throw new Error('Invalid ETRN preparation');
       const doc = delivery.document;
@@ -420,6 +431,7 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
     // Check membership even for old records, and forbid writes against another organization.
     const fresh = makeSnapshot(fullSnapshot, data, tripId, shipmentId, preparation.profile, client.config);
     const previous = preparation.document;
+    if (!previous && getShipmentTrip(fullSnapshot, tripId).fields.trip_flow_version === 'driver-v1') throw new ApiError(409, 'ЭТрН этого рейса создаются общей цепочкой после подтверждения убытия водителя.');
     if (refresh && preparation.sourceOrderId && !previous?.id) throw new ApiError(409, 'Сверьте результат общей цепочкой Saby: отдельное восстановление ЭТрН без идентификатора недоступно.');
     if (previous?.leaseId && previous.leaseUntil && Date.parse(previous.leaseUntil) > Date.now()) throw new ApiError(409, 'Запрос ЭТрН уже выполняется. Обновите состояние позже.');
     if (previous?.status === 'draft' && !refresh) return { result: null, changed: false };

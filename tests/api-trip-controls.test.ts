@@ -123,7 +123,7 @@ test('delete is version guarded and blocks documents, payments and driver facts 
     assert.throws(() => deleteShipmentTrip(rt.base, stale, { versions: {} }, rt.tripId), /изменены/); assert.deepEqual(stale, data);
     for (const protectedData of [
       { ...data, paymentAllocations: [{ shipmentId: rt.trip.customers[0].id } as never] },
-      { ...data, driverTripProgress: { [rt.tripId]: {} as never } },
+      { ...data, driverTripProgress: { [rt.tripId]: { departedAt: '2026-11-01T00:00:00.000Z' } as never } },
       { ...data, tripExecutions: { [rt.tripId]: {} as never } },
     ]) {
       const before = structuredClone(protectedData);

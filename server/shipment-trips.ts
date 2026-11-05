@@ -1,3 +1,4 @@
+import { driverTripConfirmation } from './driver-trips';
 import type { TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
@@ -83,7 +84,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   if (existingId && !previousRows.length) throw new ApiError(404, 'Отгрузка машины не найдена.');
   if (existingId && (hasSabyDocuments(data, existingId) || previousRows[0]?.fields.trip_document_policy && hasTripTransportHistory(data, existingId))) throw new ApiError(409, 'Рейс уже передаётся или сохранён в Saby. Изменение отправленных данных требует отдельной сверки документа.');
   if (existingId) checkTripVersions(body.versions, previousRows);
-  if (existingId && data.driverTripProgress?.[existingId]?.arrivedAt) throw new ApiError(409, 'Водитель уже зафиксировал прибытие. Состав рейса и факты защищены от изменения.');
+  if (existingId && data.driverTripProgress?.[existingId]?.departedAt) throw new ApiError(409, 'Водитель уже подтвердил убытие. Состав рейса и факты защищены от изменения.');
   const cleanSnapshots = (raw: unknown, keys: readonly string[], previous?: Shipment) => {
     if (!object(raw)) return raw;
     const copy = { ...raw };
@@ -259,6 +260,15 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   for (const row of removed) tombstone(data, row, now);
   if (typeof key === 'string') (data.tripCreateRequests ??= {})[key] = { tripId: id, fingerprint, actorId };
   const updated = currentSnapshot(base, data);
+  // An arrival belongs to the exact assignment. Preserve superseded evidence,
+  // but require a new driver arrival when that assignment changes.
+  const arrival = data.driverTripProgress?.[id];
+  if (arrival && !arrival.departedAt && !driverTripConfirmation(updated, data, id)?.arrivedAt) {
+    data.etrn ??= { trips: {} };
+    const saved = data.etrn.trips[id] ??= { deliveries: {}, updatedAt: now };
+    (saved.arrivalHistory ??= []).push({ progress: structuredClone(arrival), supersededAt: now, actorId });
+    delete data.driverTripProgress![id];
+  }
   const rowsById = new Map(updated.shipments.map(row => [row.id, row]));
   const shipments = shipmentIds.map(id => rowsById.get(id) as Shipment);
   queueTripAssignment(data, id, shipments, previousRows);
@@ -266,7 +276,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
 }
 
 export function tripDeletionBlocker(data: OperationsData, id: string, snapshot?: Pick<Snapshot, 'shipments'>): string | null {
-  if (data.tripExecutions?.[id] || data.driverTripProgress?.[id] || data.etrn?.trips[id]?.loadingFacts) return 'Рейс содержит сохранённые факты водителя или подтверждённые доставки. Удаление запрещено.';
+  if (data.tripExecutions?.[id] || data.driverTripProgress?.[id]?.departedAt || data.etrn?.trips[id]?.loadingFacts) return 'Рейс содержит сохранённые факты водителя или подтверждённые доставки. Удаление запрещено.';
   if (hasSabyDocuments(data, id) || data.etrn?.trips[id]?.direct) return 'Рейс связан с документами Saby. Удаление запрещено. Можно остановить обмен.';
   if (data.paymentAllocations?.some(row => (data.shipments[row.shipmentId]?.fields.trip_id ?? snapshot?.shipments.find(item => item.id === row.shipmentId)?.fields.trip_id) === id)) return 'Рейс связан с банковскими платежами. Удаление запрещено.';
   return null;

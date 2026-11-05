@@ -1,3 +1,4 @@
+import { enqueueTripSabyDeparture } from './trip-saby-autostart';
 import { readTripExecution } from './trip-execution';
 import { requiresEtrn } from './trip-etrn-scope';
 import { readTripNumbers } from './trip-numbering';
@@ -129,5 +130,6 @@ export function recordDriverTripAction(base: Snapshot, data: OperationsData, act
   etrn.loadingFacts = { arrivedAt: moscowLocal(progress!.arrivedAt), departedAt: moscowLocal(now), deliveries: Object.fromEntries(rows.map(row => [row.id, { grossMassTonnes: masses[row.id], massMethod: '03' }])), recordedAt: now, actorId: actor.id };
   etrn.updatedAt = now;
   enqueueNkDirectDeparture({ base, data, tripId, actor, config, previousSourceHash });
+  enqueueTripSabyDeparture({ base, data, tripId, actor, config, previousSourceHash });
   return response(true);
 }

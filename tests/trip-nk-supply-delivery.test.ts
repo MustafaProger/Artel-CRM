@@ -1,3 +1,4 @@
+import { seedLegacyDriverAttempt } from './helpers/legacy-driver-attempt';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -154,6 +155,8 @@ test('a historical started NK workflow retains exact old state and is never trea
     const tripId = f.created.trip.id;
     await f.store.mutate(f.source, data => {
       for (const row of f.created.shipments) delete data.shipments[row.id].fields.trip_document_policy;
+      seedLegacyDriverAttempt({ base: f.base, data, tripId, actorId: 'historic-actor', config: f.client.config, prepare: f.prepare });
+      delete data.tripSaby!.trips[tripId].autoAuthorization;
       return { result: null, changed: true };
     });
     const result = await runTripSabyWorkflow({ base: f.base, store: f.store, tripId, authorize: f.authorize, client: f.client, prepare: f.prepare, createDelivery: async () => { throw new Error('No driver facts'); } });

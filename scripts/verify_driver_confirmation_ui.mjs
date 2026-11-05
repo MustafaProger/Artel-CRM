@@ -1,3 +1,5 @@
+// This preview exercises persisted drafts from before the departure gate.
+import { seedLegacyDriverAttempt } from '../tests/helpers/legacy-driver-attempt.ts';
 // Isolated UI acceptance: actual accepted driver actions plus synthetic exchange states.
 // External providers are denied; the browser is read-only throughout.
 import assert from 'node:assert/strict';
@@ -13,7 +15,6 @@ import { SabyClient } from '../server/saby-client.ts';
 import { saveShipmentTrip } from '../server/shipment-trips.ts';
 import { currentSnapshot } from '../server/shipment-operations.ts';
 import { readDriverTrips, recordDriverTripAction } from '../server/driver-trips.ts';
-import { enqueueAutomaticTripSaby } from '../server/trip-saby-workflow.ts';
 
 const rt = await integrationRuntime(), root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'qa/driver-confirmation-20261008');
@@ -48,7 +49,7 @@ try {
     Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2026-10-08T12:00', trip_notes: 'Синтетическая проверка подтверждения водителя' });
     const customers = rt.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])) }));
     const created = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, owner.id).trip;
-    const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId: created.id, actorId: owner.id, config, prepare: integrationPrepare });
+    const queued = seedLegacyDriverAttempt({ base: rt.base, data, tripId: created.id, actorId: owner.id, config, prepare: integrationPrepare });
     assert.equal(queued.enqueued, true, JSON.stringify(queued.blockers));
     const workflow = data.tripSaby.trips[created.id];
     workflow.phase = 'awaiting_driver';

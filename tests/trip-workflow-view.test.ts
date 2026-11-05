@@ -383,3 +383,12 @@ test('a confirmed order waiting for its native note displays automatic waiting a
   assert.equal(view.title, 'Ожидаем ЭТрН от Saby'); assert.equal(view.step, 5);
   assert.match(view.text, /автоматически проверяет/); assert.doesNotMatch(view.title, /ошибк|приостановлено|завершены/);
 });
+
+
+test('local departure enrollment waits without a draft and retains actual preparation blockers', () => {
+  const state = failedWorkflow(); state.phase = 'preparation'; state.order = null; state.locked = false;
+  state.automation = { enabled: true, enrolled: true, mode: 'after_driver_departure' };
+  assert.equal(workflowView(state).step, 1); assert.equal(workflowView(state).title, 'Ожидаем данные водителя');
+  state.ready = false; state.blockers = ['Не указан адрес нефтебазы'];
+  assert.equal(workflowView(state).step, 0); assert.equal(workflowView(state).title, 'Рейс сохранён · нужны данные');
+});

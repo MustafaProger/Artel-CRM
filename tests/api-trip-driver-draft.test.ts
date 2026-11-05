@@ -1,3 +1,4 @@
+import { seedLegacyDriverAttempt } from './helpers/legacy-driver-attempt';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -9,7 +10,7 @@ import { saveShipmentTrip } from '../server/shipment-trips';
 import { recordDriverTripAction, readDriverTrips } from '../server/driver-trips';
 import { OperationsStore } from '../server/operations-store';
 import { SabyClient, type SabyObject } from '../server/saby-client';
-import { enqueueAutomaticTripSaby, runTripSabyWorkflow, validateTripSabyData } from '../server/trip-saby-workflow';
+import { runTripSabyWorkflow, validateTripSabyData } from '../server/trip-saby-workflow';
 import { createTripSabyScheduler, dispatchTripSaby } from '../server/trip-saby-scheduler';
 import { integrationRuntime, integrationApi, integrationConfig, integrationPrepare, type IntegrationRpc } from './helpers/trip-saby-integration';
 
@@ -27,7 +28,7 @@ async function fixture() {
     Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2027-02-03T09:15' });
     const customers = rt.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])) }));
     const result = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, owner.id);
-    const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId: result.trip.id, actorId: owner.id, config, prepare: integrationPrepare });
+    const queued = seedLegacyDriverAttempt({ base: rt.base, data, tripId: result.trip.id, actorId: owner.id, config, prepare: integrationPrepare });
     assert.equal(queued.enqueued, true, JSON.stringify(queued.blockers));
     return { result: { ...result, ownerId: owner.id }, changed: true };
   });
@@ -66,7 +67,7 @@ test('graceful shutdown drains a queued reservation intent and restart never cre
       Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2027-02-03T09:15' });
       const customers = f.created.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])) }));
       const result = saveShipmentTrip(f.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, f.created.ownerId);
-      assert.equal(enqueueAutomaticTripSaby({ base: f.base, data, tripId: result.trip.id, actorId: f.created.ownerId, config: f.config, prepare: integrationPrepare }).enqueued, true);
+      assert.equal(seedLegacyDriverAttempt({ base: f.base, data, tripId: result.trip.id, actorId: f.created.ownerId, config: f.config, prepare: integrationPrepare }).enqueued, true);
       return { result: result.trip.id, changed: true };
     });
     let held = false;

@@ -1,3 +1,5 @@
+// This preview exercises persisted drafts from before the departure gate.
+import { seedLegacyDriverAttempt } from '../tests/helpers/legacy-driver-attempt.ts';
 import { createServer as createVite } from 'vite';
 import react from '@vitejs/plugin-react';
 import { createServer } from 'node:http';
@@ -7,7 +9,7 @@ import { integrationRuntime, integrationApi, integrationConfig, integrationSetti
 import { createSnapshotMiddleware } from '../server/local-api.ts';
 import { currentSnapshot } from '../server/shipment-operations.ts';
 import { saveShipmentTrip } from '../server/shipment-trips.ts';
-import { enqueueAutomaticTripSaby, runTripSabyWorkflow } from '../server/trip-saby-workflow.ts';
+import { runTripSabyWorkflow } from '../server/trip-saby-workflow.ts';
 import { SabyClient } from '../server/saby-client.ts';
 
 const root = resolve(import.meta.dirname, '..'), port = Number(process.env.TRIP_CONTROLS_PORT || 5199);
@@ -27,7 +29,7 @@ const created = await rt.store.mutate(rt.source, data => {
   Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: '2027-02-03T09:15' });
   const customers = rt.trip.customers.map(row => ({ fields: Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])) }));
   const waiting = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, actorId);
-  const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId: waiting.trip.id, actorId, config, prepare: integrationPrepare });
+  const queued = seedLegacyDriverAttempt({ base: rt.base, data, tripId: waiting.trip.id, actorId, config, prepare: integrationPrepare });
   if (!queued.enqueued) throw new Error(JSON.stringify(queued.blockers));
   const invalid = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, actorId);
   for (const row of invalid.trip.customers) data.shipments[row.id].fields.oil_depot_id = null;

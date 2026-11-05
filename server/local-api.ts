@@ -60,6 +60,7 @@ import { getSabyTrip, submitSabyTrip } from './saby-service';
 import { assertTripTransportDocumentsAllowed, isNkSupplyDelivery, isNkDirectEtrn } from './trip-document-mode';
 import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile, saveTripLoadingFacts, exchangePreparedEtrn } from './etrn-service';
 import { getTripSigningPreview, validateSigningStart } from './trip-saby-signing';
+import { enrollTripSabyAfterDriver } from './trip-saby-autostart';
 import { enqueueAutomaticTripSaby, startAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
 import { runNkDirectEtrn, startNkDirectEtrn } from './nk-direct-etrn';
 import { enrollNkDirectAutostart } from './nk-direct-autostart';
@@ -1244,12 +1245,11 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             if (currentActor) requireWholeTrip(currentActor, currentSnapshot(base, data), result.trip.id);
             if(currentActor)for(const row of result.shipments)checkShipmentWrite(currentActor,row.fields,snapshot);
             if (currentActor && !replayed) enrollNkDirectAutostart({ base, data, tripId: result.trip.id, actorId: currentActor.id, config: signingConfig });
-            // The standard route queues only at creation. The direct enrollment above
-            // remains inactive until a fresh authenticated driver departure is committed.
-            const automatic = currentActor && !id && !replayed
+            if (currentActor && !replayed) enrollTripSabyAfterDriver({ base, data, tripId: result.trip.id, actorId: currentActor.id, config: signingConfig });
+            const legacy = currentActor && !id && !replayed && result.trip.fields.trip_flow_version !== 'driver-v1'
               ? enqueueAutomaticTripSaby({ base, data, tripId: result.trip.id, actorId: currentActor.id, config: signingConfig })
               : { enqueued: false };
-            return { result: { value: result, queued: automatic.enqueued }, changed: !replayed };
+            return { result: { value: result, queued: legacy.enqueued }, changed: !replayed };
           });
         const result = saved.value;
         if ('trip' in result && pushReady(config)) {

@@ -1,3 +1,5 @@
+import { enrollTripSabyAfterDriver } from '../server/trip-saby-autostart';
+import { seedLegacyDriverAttempt } from './helpers/legacy-driver-attempt';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -8,18 +10,20 @@ import { serializeXml, xmlChildren } from '../server/saby-carrier-details';
 import { encodeWindows1251 } from '../server/saby-transport-order';
 import { serializeSabyConsignmentNote } from '../server/saby-consignment-note';
 import { NATIVE_APPROVED_REDIRECTION_METHOD, CONSIGNMENT_CARRIER_ACCEPTANCE } from '../server/saby-consignment-evidence';
-import { enqueueAutomaticTripSaby, runTripSabyWorkflow } from '../server/trip-saby-workflow';
+import { runTripSabyWorkflow } from '../server/trip-saby-workflow';
 import { exchangePreparedEtrn } from '../server/etrn-service';
 import { currentSnapshot } from '../server/shipment-operations';
 import { saveShipmentTrip } from '../server/shipment-trips';
 import { recordDriverTripAction, readDriverTrips } from '../server/driver-trips';
 import type { AccountUser } from '../web/src/auth-model';
-import { integrationApi, integrationConfig, integrationRuntime, type IntegrationRpc } from './helpers/trip-saby-integration';
+import { integrationApi, integrationConfig, integrationRuntime, integrationSettings, type IntegrationRpc } from './helpers/trip-saby-integration';
 
 const fingerprints = { sender: 'abcdef'.repeat(6) + 'abcd', carrier: 'fedcba'.repeat(6) + 'fedc' };
 const vehicleIdentity = { vin: 'XTA12345678901234', stsNumber: '9900123456' };
 type Side = keyof typeof fingerprints;
-async function newTripFixture(options: { shipmentDate: string; documentDate: string; deliveryCount: number }) {
+async function newTripFixture(options: { shipmentDate: string; documentDate: string; deliveryCount: number }, afterDriver = false) {
+  const previousSettings = process.env.SABY_AUTOFILL_PROFILE_JSON;
+  if (afterDriver) process.env.SABY_AUTOFILL_PROFILE_JSON = JSON.stringify(integrationSettings);
   const original = await integrationRuntime(); const baseApi = integrationApi();
   const rt = { ...original };
   const config: SabyConfig = { ...integrationConfig(), login: 'synthetic', password: 'synthetic', accountNumber: 'sender-account', carrierAccountNumber: 'carrier-account', carrierResponsible: { surname: 'Тестовый', name: 'Тест', patronymic: 'Тестович', phone: '+79990000000' } };
@@ -169,33 +173,36 @@ async function newTripFixture(options: { shipmentDate: string; documentDate: str
     Object.assign(fields, { trip_flow_version: 'driver-v1', loading_at: options.shipmentDate + 'T09:15' });
     const customers = original.trip.customers.slice(0, options.deliveryCount).map((row, index) => ({ fields: { ...Object.fromEntries(['customer_id', 'manager_id', 'payment_form_id', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id'].map(key => [key, row.fields[key]])), quantity_litres: options.deliveryCount === 1 ? '15048' : index ? '5500' : '12000' } }));
     const result = saveShipmentTrip(rt.base, data, { fields, customers, idempotencyKey: randomUUID() }, undefined, 'actor');
-    const queued = enqueueAutomaticTripSaby({ base: rt.base, data, tripId: result.trip.id, actorId: 'actor', config, prepare: rt.prepare });
-    assert.equal(queued.enqueued, true, queued.blockers.join(' '));
+    if (afterDriver) enrollTripSabyAfterDriver({ base: rt.base, data, tripId: result.trip.id, actorId: 'actor', config });
+    else { const queued = seedLegacyDriverAttempt({ base: rt.base, data, tripId: result.trip.id, actorId: 'actor', config, prepare: rt.prepare });
+    assert.equal(queued.enqueued, true, queued.blockers.join(' ')); }
     return { changed: true, result };
   });
   rt.trip = created.trip; rt.tripId = created.trip.id;
-  const driver: AccountUser = { id: 'driver-user', login: 'driver-user', name: 'Тестовый водитель', role: 'driver', driverId: 'driver', managerId: null, active: true, version: 1 };
+  const driver: AccountUser = { id: 'driver-user', login: 'driver-user', name: 'Тестовый водитель', role: 'driver', driverId: 'driver', managerId: null, active: true, version: 1, sections: [] };
+  await rt.store.mutate(rt.source, data => { data.accounts!.users.push({ ...driver, passwordHash: 'c'.repeat(128), salt: 'c'.repeat(32) }); return { result: null, changed: true }; });
   const driverAction = (action: 'arrive' | 'depart') => rt.store.mutate(rt.source, data => {
     const trip = readDriverTrips(currentSnapshot(rt.base, data), driver, rt.tripId, '', data).trip!;
     return recordDriverTripAction(rt.base, data, driver, rt.tripId, action, { versions: trip.versions, ...(action === 'depart' ? { masses: trip.deliveries.map((row, index) => ({ deliveryId: row.id, netTonnes: index ? '4.4' : '9.6' })) } : {}) }, config);
   });
   const client = () => new SabyClient(config, send);
   const run = (extra: Partial<Parameters<typeof runTripSabyWorkflow>[0]> = {}) => runTripSabyWorkflow({ ...rt, client: client(), initiatorId: 'actor', createDelivery: (input, sharedClient) => exchangePreparedEtrn({ ...rt, client: sharedClient }, input), ...extra });
-  await run();
-  return { notes, frozenNativeSnapshots: () => frozenNativeSnapshots, driverAction, ...rt, run, calls, record: async () => (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId], writes: () => calls.filter(c => ['СБИС.ЗаписатьДокумент', 'СБИС.ЗаписатьВложение', 'СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(c.req.method)) };
+  if (!afterDriver) await run();
+  return { notes, frozenNativeSnapshots: () => frozenNativeSnapshots, driverAction, ...rt, close: async () => { if (previousSettings === undefined) delete process.env.SABY_AUTOFILL_PROFILE_JSON; else process.env.SABY_AUTOFILL_PROFILE_JSON = previousSettings; await rt.close(); }, run, calls, record: async () => (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId], writes: () => calls.filter(c => ['СБИС.ЗаписатьДокумент', 'СБИС.ЗаписатьВложение', 'СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(c.req.method)) };
 }
 
-for (const scenario of [
+for (const afterDriver of [false, true]) for (const scenario of [
   { label: '52 two deliveries: October30 to November1', shipmentDate: '2026-10-30', documentDate: '01.11.2026', deliveryCount: 2 },
   { label: '54 one rounded-volume delivery: October31 to November1', shipmentDate: '2026-10-31', documentDate: '01.11.2026', deliveryCount: 1 },
   { label: 'same day', shipmentDate: '2026-11-01', documentDate: '01.11.2026', deliveryCount: 1 },
   { label: 'new year', shipmentDate: '2026-12-31', documentDate: '01.01.2027', deliveryCount: 2 },
   { label: 'Moscow midnight with unchanged UTC day', shipmentDate: '2026-10-31', documentDate: '01.11.2026', deliveryCount: 1, start: '2026-10-31T20:58:00Z', nativeTime: '2026-10-31T21:01:00Z' },
-]) test(`continuous NEW driver trip to native note, both selected signatures and frozen recipient: ${scenario.label}`, async t => {
+]) test(`continuous NEW driver trip to native note, both selected signatures and frozen recipient: ${afterDriver ? 'after-driver' : 'legacy'} ${scenario.label}`, async t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse(scenario.start ?? scenario.shipmentDate + 'T06:00:00Z') });
-  const f = await newTripFixture(scenario);
+  const f = await newTripFixture(scenario, afterDriver);
   try {
-    assert.equal((await f.record()).phase, 'awaiting_driver');
+    if (afterDriver) { assert.equal((await f.store.read(f.source)).tripSaby?.trips[f.tripId], undefined); assert.equal(f.calls.length, 0); }
+    else assert.equal((await f.record()).phase, 'awaiting_driver');
     assert.equal(f.notes.size, 0);
     await f.driverAction('arrive'); t.mock.timers.tick(60_000); await f.driverAction('depart');
     const before = await f.store.read(f.source), facts = structuredClone(before.etrn!.trips[f.tripId].loadingFacts), grant = structuredClone(before.tripSaby!.trips[f.tripId].autoAuthorization);

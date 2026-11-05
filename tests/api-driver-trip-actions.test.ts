@@ -313,8 +313,7 @@ test('mixed driver draft only contains eligible delivery and sums its measured m
     const tripId = f.created.trip.id;
     const context = { base: f.base, store: f.store, tripId, authorize: () => undefined, client: f.client, prepare: (snapshot: Parameters<typeof prepareTripSaby>[0], data: Parameters<typeof prepareTripSaby>[1], trip: Parameters<typeof prepareTripSaby>[2], config: Parameters<typeof prepareTripSaby>[3]) => prepareTripSaby(snapshot, data, trip, config, integrationSettings) };
     const run = () => runTripSabyWorkflow({ ...context, createDelivery: input => exchangePreparedEtrn(context, input) });
-    const started = await run(); assert.equal(started.phase, 'awaiting_driver', started.lastError ?? started.blockers.join(' '));
-    assert.deepEqual(started.deliveries.map(row => row.shipmentId), [f.created.trip.customers[1].id]);
+    await assert.rejects(run(), /после масс/); assert.equal(f.provider.calls.length, 0);
     const trip = (await f.read()).body.trip;
     assert.equal(trip.deliveries.length, 2);
     assert.equal((await f.action('arrive', { versions: trip.versions })).status, 200);
