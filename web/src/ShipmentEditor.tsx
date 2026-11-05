@@ -11,7 +11,7 @@ import ShipmentAzsEditor from './ShipmentAzsEditor'
 import { ourOrganizations } from './our-organizations'
 
 export interface ShipmentEditorProps {
-  shipmentType?: ShipmentType; shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void
+  shipmentType?: ShipmentType; shipment: Shipment | null; companies: Company[]; directories: Directories; defaultPaymentForm?: string; onClose: () => void; onSaved: (shipment: Shipment) => void; onDirectoriesChanged?: () => void
 }
 export default function ShipmentEditor(props: ShipmentEditorProps) {
   if ((props.shipment?.fields.shipment_type ?? props.shipmentType) === 'azs') return <ShipmentAzsEditor {...props}/>

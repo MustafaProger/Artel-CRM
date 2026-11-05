@@ -63,7 +63,7 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   const catalog = snapshot.directories;
   const directories = catalog && (directoryAccess || shipmentAccess) ? {
     ...catalog,
-    vehicles: directoryAccess && hasDirectoryGrant(actor, 'vehicles') ? catalog.vehicles : shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres }) => ({ id, plate, name, capacityLitres, compartmentsLitres })) : [],
+    vehicles: directoryAccess && hasDirectoryGrant(actor, 'vehicles') ? catalog.vehicles : shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres, compartmentDeparturePricesRub }) => ({ id, plate, name, capacityLitres, compartmentsLitres, compartmentDeparturePricesRub })) : [],
     drivers: directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.drivers : shipmentAccess ? catalog.drivers.map(({ id, name, vehicleId }) => ({ id, name, vehicleId })) : [],
     products: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'products') ? catalog.products : [],
     paymentForms: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'paymentForms') ? catalog.paymentForms : [],

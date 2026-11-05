@@ -31,7 +31,7 @@ export function updateDirectoryEntry(kind: string, id: string, input: Record<str
   // Reuse creation validation, excluding only the record being edited.
   const catalog = { ...snapshot.directories!, [key]: snapshot.directories![key].filter(row => row.id !== id) };
   const draft = structuredClone(data);
-  const preservedKeys = key === 'addresses' ? locationDetailKeys : key === 'products' ? productTransportFields.map(([key]) => key) : key === 'vehicles' ? [...vehicleTransportFields.map(([key]) => key), 'carrierId'] : key === 'drivers' ? ['carrierId'] : [];
+  const preservedKeys = key === 'addresses' ? locationDetailKeys : key === 'products' ? productTransportFields.map(([key]) => key) : key === 'vehicles' ? [...vehicleTransportFields.map(([key]) => key), 'carrierId', 'compartmentDeparturePricesRub'] : key === 'drivers' ? ['carrierId'] : [];
   const preserved = Object.fromEntries(preservedKeys.map(key => [key, (previous as unknown as Record<string, unknown>)[key]]));
   const result = addDirectoryEntry({ ...preserved, ...fields, kind }, { ...snapshot, directories: catalog }, draft, key === 'addresses' ? previous as ShipmentAddress : undefined);
   if (!result.created) throw new ApiError(409, 'Такая запись уже есть в справочнике.');

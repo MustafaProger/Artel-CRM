@@ -1,3 +1,4 @@
+import { prepareTripTransportPricing, transportPricingFields } from './transport-pricing';
 import { driverTripConfirmation } from './driver-trips';
 import type { TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
 import { createHash, randomUUID } from 'node:crypto';
@@ -20,7 +21,7 @@ import { requireTripRequest } from './trip-requests';
 import { hasTripTransportHistory, TRIP_DOCUMENT_POLICY_VERSION } from './trip-document-mode';
 
 const sharedFields = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'quantity_tonnes', 'quantity_gross_tonnes', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'additional_costs', 'trip_notes', 'loading_planned_at', 'loading_actual_at', 'intermediate_stops_in_order'] as const;
-const customerFields = ['customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
+const customerFields = [...transportPricingFields, 'customer_id', 'manager_id', 'payment_form_id', 'quantity_litres', 'sale_price_per_litre', 'transport_amount', 'unloading_address_id', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'unloading_planned_at', 'unloading_actual_at', 'intermediate_stops_after'] as const;
 const sharedSnapshots = ['loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude'] as const;
 const customerSnapshots = ['unloading_address', 'unloading_map_url', 'unloading_latitude', 'unloading_longitude'] as const;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -44,7 +45,7 @@ function inputFields(value: unknown, keys: readonly string[]): Record<string, st
   for (const [key, raw] of Object.entries(value)) {
     if (!keys.includes(key)) throw new ApiError(400, `Неизвестное поле отгрузки: ${key}.`);
     if (raw !== null && typeof raw !== 'string') throw new ApiError(400, `Поле ${key} должно быть строкой или null.`);
-    if (typeof raw === 'string' && raw.length > 4000) throw new ApiError(400, `Поле ${key} слишком длинное.`);
+    if (typeof raw === 'string' && raw.length > (key === 'transport_price_snapshot' ? 8000 : 4000)) throw new ApiError(400, `Поле ${key} слишком длинное.`);
     fields[key] = typeof raw === 'string' ? raw.trim() || null : null;
   }
   return fields;
@@ -194,7 +195,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
       // Default only a new delivery. Null in an existing record may be an intentional manual clearing.
       if (!driverFlow && !previous && !Object.hasOwn(customer, key)) customer[key] = loadingAt ?? fields.loading_planned_at ?? fields.date ?? null;
     }
-    return { previous, fields: customer, sourceRequest };
+    return { previous, fields: customer, sourceRequest, pricingRequest: sourceRequest ?? (previous?.fields.source_request_id ? data.tripRequests?.[previous.fields.source_request_id] : undefined) };
   });
   const sources = customers.flatMap(customer => customer.sourceRequest ? [customer.sourceRequest.id] : []);
   if (new Set(sources).size !== sources.length) throw new ApiError(400, 'Одна заявка выбрана несколько раз.');
@@ -205,6 +206,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   for (const customer of customers) {
     if (customer.previous && Object.hasOwn(customer.fields, 'customer_id') && customer.fields.customer_id !== customer.previous.customerId && data.paymentAllocations?.some(allocation => allocation.shipmentId === customer.previous!.id)) throw new ApiError(409, 'Нельзя заменить клиента с привязанными банковскими платежами. Сначала отмените привязку платежей.');
   }
+  prepareTripTransportPricing(snapshot, fields, customers);
   let allocation: { tonnes: (string | null)[]; additionalCosts: string[] };
   try { allocation = driverFlow
     ? allocateMeasuredTrip(customers.map(customer => customer.previous?.fields.quantity_tonnes ?? null), customers.map(customer => customer.fields.quantity_litres ?? ''), fields.additional_costs ?? '0')
@@ -216,7 +218,9 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
   const prepared = customers.map((customer, index) => {
     const input: Record<string, string | null> = { ...fields, ...customer.fields, purchase_unit: 'tonnes', quantity_tonnes: allocation.tonnes[index], ...(driverFlow ? { quantity_gross_tonnes: allocation.tonnes[index] } : {}), additional_costs: allocation.additionalCosts[index] };
     delete input.trip_flow_version;
+    for (const key of transportPricingFields) delete input[key];
     const result = prepareShipmentFields(input, customer.previous, snapshot, { historicalCarrierId: previousRows[0]?.fields.carrier_id, allowMissingMass: driverFlow });
+    for (const key of transportPricingFields) if (Object.hasOwn(customer.fields, key)) result[key] = customer.fields[key];
     if (driverFlow) result.trip_flow_version = 'driver-v1';
     if (documentPolicy !== undefined) result.trip_document_policy = documentPolicy;
     if (customer.sourceRequest) {

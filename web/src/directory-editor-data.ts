@@ -2,6 +2,7 @@ import type { Company, ShipmentAddress, DirectoryData, Vehicle } from './model'
 import { companyFields, driverFields, allVehicleFields, productTransportFields, vehicleTransportFields } from './directory-fields'
 import { customerManagerId } from './customer-manager'
 import { readOperatorCatalog } from './operator-catalog'
+import { validTransportMoney } from './transport-pricing'
 
 export type EditorTab = 'customers'|'suppliers'|'loadingParty'|'oilDepots'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses'|'customerManagers'|'operatorServices'
 const companyTab = (tab: EditorTab) => ['customers','suppliers','loadingParty'].includes(tab)
@@ -14,6 +15,7 @@ export function directoryDraft(data: DirectoryData, tab: EditorTab, id?: string)
   return {
     fields:Object.fromEntries(Object.entries(entry??{}).filter(([,value])=>typeof value==='string')) as Record<string,string>,
     sections:tab==='vehicles'?(entry as Vehicle|undefined)?.compartmentsLitres?.join(' + ')??'':'',
+    departurePrices:tab==='vehicles'?(entry as Vehicle|undefined)?.compartmentDeparturePricesRub?.join(' + ')??'':'',
     roles:company?.roles.filter(role=>['customer','supplier','carrier','other'].includes(role))??[tab==='customers'?'customer':tab==='suppliers'?'supplier':'other'],
     companyId:id??'', managerId:customerManagerId(data.directories!,id??''),
     additionalReceivers:tab==='addresses'?(entry as ShipmentAddress|undefined)?.additionalReceivers:undefined,
@@ -21,15 +23,18 @@ export function directoryDraft(data: DirectoryData, tab: EditorTab, id?: string)
     addresses:data.directories!.addresses.filter(address=>address.companyId===id).map(({companyId:_companyId,location:_location,...address})=>address),
   }
 }
-type Draft = { fields:Record<string,string>; sections:string; roles:string[]; companyId:string; managerId:string; addresses:Omit<ShipmentAddress,'companyId'>[]; additionalReceivers?: ShipmentAddress['additionalReceivers']; oilDepotDistancesKm?: ShipmentAddress['oilDepotDistancesKm'] }
-export function directoryPayload(tab: EditorTab, {fields,sections,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}: Draft) {
+type Draft = { fields:Record<string,string>; sections:string; departurePrices?:string; roles:string[]; companyId:string; managerId:string; addresses:Omit<ShipmentAddress,'companyId'>[]; additionalReceivers?: ShipmentAddress['additionalReceivers']; oilDepotDistancesKm?: ShipmentAddress['oilDepotDistancesKm'] }
+export function directoryPayload(tab: EditorTab, {fields,sections,departurePrices,roles,companyId,managerId,addresses,oilDepotDistancesKm,additionalReceivers}: Draft) {
   const payload:Record<string,unknown> = companyTab(tab) ? {...Object.fromEntries(companyFields.map(([key])=>[key,fields[key]??''])),name:fields.name,inn:fields.inn??'',roles,defaultDriverId:fields.defaultDriverId??'',defaultVehicleId:fields.defaultVehicleId??'',managerId:managerId||null,addresses:addresses.map(({id,...address})=>({...(id?{id}:{}),...address}))}
         : tab === 'vehicles' ? Object.fromEntries(['plate','name','brand','model','trailer','capacityLitres','carrierId',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)].map(key=>[key,fields[key]??'']))
         : tab === 'products' ? {name:fields.name,...Object.fromEntries(productTransportFields.map(([key])=>[key,fields[key]??'']))}
         : tab === 'operatorServices' ? {name:fields.name,discountPercent:fields.discountPercent??'',...(fields.backgroundColor?{backgroundColor:fields.backgroundColor}:{})}
         : tab === 'drivers' ? {...Object.fromEntries(driverFields.map(([key])=>[key,fields[key]??''])),name:fields.name,phone:fields.phone??'',vehicleId:fields.vehicleId??'',carrierId:fields.carrierId??''} : tab === 'oilDepots' ? Object.fromEntries(['name','address','mapUrl','latitude','longitude','ownerCompanyId','loadingActorCompanyId','infrastructureOwnerCompanyId'].map(key=>[key,fields[key]??''])) : tab === 'addresses' ? {name:fields.name,companyId:fields.companyId,addressKind:fields.addressKind??fields.kind??'delivery',...(fields.pointAddress?{pointAddress:fields.pointAddress}:{}),address:fields.address??'',mapUrl:fields.mapUrl??'',latitude:fields.latitude??'',longitude:fields.longitude??'',receiverName:fields.receiverName??'',receiverPhone:fields.receiverPhone??'',loadingActorCompanyId:fields.loadingActorCompanyId??'',infrastructureOwnerCompanyId:fields.infrastructureOwnerCompanyId??''} : tab === 'customerManagers' ? {companyId,managerId:managerId||null} : {name:fields.name}
   if(tab==='addresses'&&additionalReceivers!==undefined)payload.additionalReceivers=additionalReceivers
-  if(tab==='vehicles')payload.compartmentsLitres=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):undefined
+  if(tab==='vehicles'){
+    payload.compartmentsLitres=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):undefined
+    if(departurePrices!==undefined)payload.compartmentDeparturePricesRub=parseVehicleDeparturePrices(sections,departurePrices)
+  }
   if(tab==='addresses'&&oilDepotDistancesKm!==undefined)payload.oilDepotDistancesKm=oilDepotDistancesKm
   return payload
 }
@@ -53,7 +58,7 @@ export function mergeDirectoryPayload(base:Record<string,unknown>, local:Record<
 export const directoryFieldLabel = (key:string) => Object.fromEntries([
   ...companyFields,...driverFields,...allVehicleFields,...productTransportFields,...vehicleTransportFields,
   ['discountPercent','Скидка, %'],['backgroundColor','Цвет фона'],
-  ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['additionalReceivers','Дополнительные приёмщики'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
+  ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['compartmentDeparturePricesRub','Стоимость выезда секций, ₽'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['additionalReceivers','Дополнительные приёмщики'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
 ])[key]??key
 
 export function withCurrentAddressVersions(payload:Record<string,unknown>,latest:Record<string,unknown>) {
@@ -63,4 +68,15 @@ export function withCurrentAddressVersions(payload:Record<string,unknown>,latest
     const current=addresses.find(address=>row.id && address.id===row.id)
     return current?{...row,version:current.version??0}:row
   })}
+}
+
+/** Order is meaningful: each price belongs to the compartment at the same index. */
+export function parseVehicleDeparturePrices(sections:string,prices:string):string[] {
+  if(!prices.trim())return []
+  const capacities=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):[]
+  const amounts=prices.split(/[+;]/).map(value=>value.trim().replace(/\s+/g,'').replace(',','.'))
+  if(!capacities.length||capacities.some(value=>!value))throw new Error('Сначала укажите секции автомобиля по порядку.')
+  if(amounts.length!==capacities.length)throw new Error(`Укажите стоимость для каждой секции: секций — ${capacities.length}, тарифов — ${amounts.length}.`)
+  if(amounts.some(value=>!validTransportMoney(value)))throw new Error('Стоимость каждой секции должна быть числом от 0 до 999 999 999,99 ₽, не более двух знаков после запятой. Разделяйте тарифы знаком +.')
+  return amounts
 }

@@ -1,3 +1,4 @@
+import { validTransportMoney } from '../web/src/transport-pricing';
 import { allVehicleFields } from '../web/src/directory-fields';
 import Decimal from 'decimal.js';
 import type { Directories, Driver, Vehicle } from '../web/src/model';
@@ -59,5 +60,6 @@ export function validVehicleMetadata(row: Record<string, unknown>): boolean {
     if (!Array.isArray(row.compartmentsLitres) || !row.compartmentsLitres.length || row.compartmentsLitres.length > 20 || !row.compartmentsLitres.every(validLitres)) return false;
     if (row.capacityLitres !== undefined && !row.compartmentsLitres.reduce((total: Decimal, amount: string) => total.plus(amount), new Decimal(0)).eq(row.capacityLitres as string)) return false;
   }
+  if (row.compartmentDeparturePricesRub !== undefined && (!Array.isArray(row.compartmentDeparturePricesRub) || !Array.isArray(row.compartmentsLitres) || row.compartmentDeparturePricesRub.length !== row.compartmentsLitres.length || !row.compartmentDeparturePricesRub.every(validTransportMoney))) return false;
   return true;
 }

@@ -1,3 +1,4 @@
+import { readTransportPricing, validTransportPricing } from '../web/src/transport-pricing';
 import { readTripWorkflowIssues } from './trip-workflow-issues';
 import type { ShipmentAccessContext } from './shipment-operations';
 import { directoryMutation } from './directory-access';
@@ -624,6 +625,20 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return user;
       };
       const actor = authEnabled ? authorized(requestData) : null;
+      if (pathname === '/api/transport-pricing') {
+        if (request.method !== 'PATCH') throw new ApiError(405, 'Метод не поддерживается.');
+        const body = await jsonBody(request);
+        if (!validTransportPricing(body)) throw new ApiError(400, 'Укажите корректные общие тарифы и способ округления.');
+        const transportPricing = await operations.mutate(base.provenance.sourceSha256, data => {
+          if (actor) directoryMutation(requireSection(authorized(data), 'directories'), currentSnapshot(base, data, false), 'vehicles', {});
+          const current = readTransportPricing(data.directories?.transportPricing);
+          if (body.version !== current.version) throw new ApiError(409, 'Тарифы уже изменены. Обновите справочник и повторите сохранение.');
+          const next = { ...body, version: current.version + 1 };
+          data.directories!.transportPricing = next;
+          return { changed: true, result: next };
+        });
+        return write(response, 200, JSON.stringify({ transportPricing }));
+      }
       if (pathname === '/api/navigation') {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const snapshot = currentShipmentAccess(base, requestData);

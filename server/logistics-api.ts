@@ -83,7 +83,7 @@ export function logisticsContext(snapshot: Snapshot, actor: AccountUser): Pick<S
     directories: catalog ? {
       managers: catalog.managers, products: catalog.products, paymentForms: catalog.paymentForms,
       vehicles: catalog.vehicles, drivers: catalog.drivers, addresses,
-      oilDepots: catalog.oilDepots, defaults: catalog.defaults, duplicates: [],
+      transportPricing: catalog.transportPricing, oilDepots: catalog.oilDepots, defaults: catalog.defaults, duplicates: [],
       customerManagers: catalog.customerManagers?.filter(row => companyIds.has(row.companyId)),
       ...(catalog.currentEmployeeId !== undefined ? { currentEmployeeId: catalog.currentEmployeeId } : {}),
       ...(catalog.assignedCustomerIds !== undefined ? { assignedCustomerIds: catalog.assignedCustomerIds } : {}),
