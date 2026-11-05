@@ -1,3 +1,5 @@
+import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
+import PageLoading from './PageLoading'
 import { pageCatalog, enabledPages, type PageId } from './page-catalog'
 import { apiFetch as fetch } from './workspace-api'
 import { hasPageAccess } from './page-access'
@@ -6,23 +8,37 @@ import { NotificationMenu } from './DriverNotifications'
 import './sidebar-notifications.css'
 import ScrollableSegments from './ScrollableSegments'
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
-const InvoicePage = lazy(() => import('./InvoicePage'))
-const OperatorPage = lazy(() => import('./OperatorPage'))
-const ChinaPage = lazy(() => import('./ChinaPage'))
-const BankingPage = lazy(() => import('./BankingPage'))
-const CabinetBalances = lazy(() => import('./CabinetBalances'))
-const OverviewPage = lazy(() => import('./OverviewPage'))
-const ShipmentsPage = lazy(() => import('./ShipmentsPage'))
-const TripsWorkspace = lazy(() => import('./TripsWorkspace'))
-const DirectoriesPage = lazy(() => import('./DirectoriesPage'))
-const DocumentsPage = lazy(() => import('./DocumentsPage'))
-const WorkPage = lazy(() => import('./WorkPage'))
+const pageModules = {
+  invoices: () => import('./InvoicePage'),
+  operator: () => import('./OperatorPage'),
+  china: () => import('./ChinaPage'),
+  payments: () => import('./BankingPage'),
+  'cabinet-balances': () => import('./CabinetBalances'),
+  overview: () => import('./OverviewPage'),
+  shipments: () => import('./ShipmentsPage'),
+  trips: () => import('./TripsWorkspace'),
+  directories: () => import('./DirectoriesPage'),
+  documents: () => import('./DocumentsPage'),
+  work: () => import('./WorkPage'),
+  accounts: () => import('./AccountManagement'),
+}
+const InvoicePage = lazy(pageModules.invoices)
+const OperatorPage = lazy(pageModules.operator)
+const ChinaPage = lazy(pageModules.china)
+const BankingPage = lazy(pageModules.payments)
+const CabinetBalances = lazy(pageModules['cabinet-balances'])
+const OverviewPage = lazy(pageModules.overview)
+const ShipmentsPage = lazy(pageModules.shipments)
+const TripsWorkspace = lazy(pageModules.trips)
+const DirectoriesPage = lazy(pageModules.directories)
+const DocumentsPage = lazy(pageModules.documents)
+const WorkPage = lazy(pageModules.work)
 import AuthGate from './AuthGate'
 const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
 import { hasSection, hasDirectoryGrant, availableDirectoryTabs, isAdministrator, type AccountUser } from './auth-model'
-const AccountManagement = lazy(() => import('./AccountManagement'))
+const AccountManagement = lazy(pageModules.accounts)
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
 type Page = PageId
@@ -48,7 +64,7 @@ export default function App(){
     navigator.serviceWorker?.addEventListener('message', rememberInvoice)
     return () => navigator.serviceWorker?.removeEventListener('message', rememberInvoice)
   }, [])
-  return <AuthGate>{(user,onLogout)=><PageLoadBoundary><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
+  return <AuthGate>{(user,onLogout)=><PageLoadBoundary><Suspense fallback={<PageLoading/>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
 class PageLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
@@ -99,18 +115,28 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     navigator.serviceWorker?.addEventListener('message', openInvoice)
     return () => navigator.serviceWorker?.removeEventListener('message', openInvoice)
   }, [user])
+  useEffect(() => {
+    if (!hasPageAccess(user, page) || !(page in pageModules)) return
+    // Load the selected module alongside its prerequisite data, not after it.
+    // Suspense/ErrorBoundary still owns import errors when the page renders.
+    void pageModules[page as keyof typeof pageModules]().catch(() => {})
+  }, [page, user.version])
+  const activeView = useRef({ page, userVersion: user.version })
+  activeView.current = { page, userVersion: user.version }
   const snapshotRequest = useRef(0)
   const snapshotController = useRef<AbortController | null>(null)
   const requiresSnapshot = ['accounts', 'shipments', 'directories', 'payments'].includes(page)
   const snapshotReady = !!data && snapshotPage === page
   const fetchData = () => {
+    // A completed save in a departed page must not cancel the new page's read.
+    if (activeView.current.page !== page || activeView.current.userVersion !== user.version) return Promise.resolve()
     const request = ++snapshotRequest.current
     snapshotController.current?.abort()
     const controller = new AbortController()
     snapshotController.current = controller
     setError('')
     return fetch('/api/snapshot?shipments=omit' + (page === 'directories' && hasSection(user, 'directories') ? '&context=directories' : ''), { cache: 'no-store', signal: controller.signal })
-      .then(r => { if (!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json() })
+      .then(r => { if ([401, 403].includes(r.status) && request === snapshotRequest.current && !controller.signal.aborted) { setData(null); setSnapshotPage(null) } if (!r.ok) throw new Error('Не удалось загрузить данные раздела.'); return r.json() })
       .then(snapshot => { if (request === snapshotRequest.current && !controller.signal.aborted) { setData(snapshot); setSnapshotPage(page); setShipmentCount(snapshot.overview.shipmentCount) } })
       .catch(e => { if (request === snapshotRequest.current && !controller.signal.aborted) setError(e.message) })
   }
@@ -143,6 +169,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const notificationKind = hasPageAccess(user, 'work') ? 'work' : hasPageAccess(user, 'invoices') ? 'invoices' : hasPageAccess(user, 'operator') ? 'operator' : null
   const active = pages.find(p => p.id === page)!
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
+  const shipmentLoadingHeader = <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>
   return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : page === 'operator' ? 'operator-shell' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={event => {event.preventDefault();document.getElementById('main-content')?.focus()}}>К содержимому</a>
     <button className={`sidebar-scrim ${menu ? 'is-open' : ''}`} aria-label="Закрыть меню" aria-hidden={!menu} tabIndex={-1} onClick={() => setMenu(false)}/>
@@ -161,8 +188,8 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     </aside>
     <div className="workspace-main" inert={menu}>
       <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'invoices' || !hasPageAccess(user, page)) && (page !== 'overview' || !hasPageAccess(user, page)) && <div className="page-heading page-heading-compact"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
-      {page === 'shipments' && (!snapshotReady || error || !hasPageAccess(user, page)) && <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>}
-      {!hasPageAccess(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error}. Проверьте, что сервер запущен из папки проекта.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : requiresSnapshot && !snapshotReady ? <div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div> : <PageLoadBoundary key={page}><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем раздел…</p></div>}><div key={page} className="page-content">
+      {page === 'shipments' && (!snapshotReady || !hasPageAccess(user, page)) && shipmentLoadingHeader}
+      {!hasPageAccess(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error && !snapshotReady ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error} Проверьте соединение и попробуйте снова.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : requiresSnapshot && !snapshotReady ? <PageLoading/> : <PageLoadBoundary key={page}><Suspense fallback={page === 'shipments' ? <>{shipmentLoadingHeader}<PageLoading/></> : <PageLoading title={['overview', 'invoices'].includes(page) ? active.title : undefined} onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}><div key={page} className="page-content">{requiresSnapshot && error && snapshotReady && <div className="soft-notice" role="alert">{error} Показаны ранее загруженные данные. <button className="button" onClick={fetchData}>Повторить загрузку</button></div>}
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
@@ -229,7 +256,7 @@ function CompanyShipmentRecords({company,open}: {company:Company;open:(detail:De
      .finally(()=>{if(!controller.signal.aborted)setLoading(false)})
    return()=>controller.abort()
  },[company.id,offset,retry])
- return <div className="dialog-records">{rows.map(shipment=><button key={shipment.id} onClick={()=>open({kind:'shipment',item:shipment})}><span><strong>{formatDate(shipment.date)} · {shipment.product||'Топливо не указано'}</strong><small>{shipment.customer||'Без покупателя'}</small></span><strong>{number(shipment.liters,2)} л</strong><ChevronRight size={16}/></button>)}{loading&&<p className="soft-notice">Загружаем отгрузки…</p>}{error&&<div className="soft-notice" role="alert">{error} <button className="button" onClick={()=>setRetry(value=>value+1)}>Повторить</button></div>}{!loading&&!error&&!rows.length&&<Empty/>}{!loading&&!error&&rows.length<total&&<button className="button" onClick={()=>setOffset(rows.length)}>Показать ещё 50</button>}</div>
+ return <div className="dialog-records">{rows.map(shipment=><button key={shipment.id} onClick={()=>open({kind:'shipment',item:shipment})}><span><strong>{formatDate(shipment.date)} · {shipment.product||'Топливо не указано'}</strong><small>{shipment.customer||'Без покупателя'}</small></span><strong>{number(shipment.liters,2)} л</strong><ChevronRight size={16}/></button>)}{loading && (rows.length ? <LoadingProgress label="Загружаем следующие отгрузки"/> : <LoadingSkeleton label="Загружаем отгрузки компании" rows={3}/>)}{error&&<div className="soft-notice" role="alert">{error} <button className="button" onClick={()=>setRetry(value=>value+1)}>Повторить</button></div>}{!loading&&!error&&!rows.length&&<Empty/>}{!loading&&!error&&rows.length<total&&<button className="button" onClick={()=>setOffset(rows.length)}>Показать ещё 50</button>}</div>
 }
 function flagLabel(flag:string) {return ({incoming_amount_stored_as_text:'поступление распознано из текста',outgoing_amount_stored_as_text:'списание распознано из текста',manager_formula_broken:'повреждена формула менеджера',manager_unresolved:'менеджер не определён',missing_customer:'не указан покупатель',missing_supplier:'не указан поставщик',missing_counterparty:'не указан контрагент',no_nonzero_amount:'нет ненулевой суммы',missing_or_invalid_date:'дата отсутствует или некорректна',both_incoming_and_outgoing:'одновременно поступление и списание',invalid_date:'некорректная дата',zero_date:'ноль вместо даты',incomplete_source_row:'неполная строка',missing_date:'дата отсутствует'}[flag]||flag.replaceAll('_',' '))}
 

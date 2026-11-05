@@ -1,3 +1,4 @@
+import LoadingSkeleton from './LoadingSkeleton'
 import { useEffect, useState } from 'react'
 import type { BankOperation } from './banking-model'
 import type { SettlementsReport } from './settlements-model'
@@ -28,7 +29,7 @@ export default function SupplierPaymentTrace({ operation }: { operation: BankOpe
   const review = report?.organizations?.flatMap(organization => organization.suppliers.review).find(row => row.id === operation.id)
   return <section className="bank-supplier-trace" aria-label="Распределение оплаты поставщику">
     <h3>Оплата поставщику</h3>
-    {loading ? <p role="status">Загружаем распределение…</p> : error ? <p role="status">{error}</p> : match ? <>
+    {loading ? <LoadingSkeleton label="Загружаем распределение платежа" rows={2}/> : error ? <p role="status">{error}</p> : match ? <>
       <p><strong>{match.company.name}</strong> · {match.organization.name}</p>
       <dl className="bank-details-grid"><div><dt>Исходная сумма платежа</dt><dd>{money(match.receipt.amount)}</dd></div><div><dt>Погашено закупок</dt><dd>{money(match.receipt.allocated)}</dd></div><div><dt>Остаток аванса этого платежа</dt><dd>{money(match.receipt.advance)}</dd></div></dl>
       {match.receipt.allocations.length > 0 ? <div className="bank-table-scroll" role="region" tabIndex={0} aria-label="Закупки, оплаченные платежом"><table className="bank-table"><thead><tr><th>Закупка / отгрузка</th><th>Из этого платежа</th><th>Остаток долга закупки</th></tr></thead><tbody>{match.receipt.allocations.map(allocation => {

@@ -1,5 +1,6 @@
+import PageLoading from './PageLoading'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Building2, Factory, Fuel, LoaderCircle, LogOut, MapPin, Package, Truck, UsersRound, Route, type LucideIcon } from 'lucide-react'
+import { Building2, Factory, Fuel, LogOut, MapPin, Package, Truck, UsersRound, Route, type LucideIcon } from 'lucide-react'
 import AuthGate from './AuthGate'
 import DriverWorkspace from './DriverWorkspace'
 import TripsPage from './TripsPage'
@@ -81,7 +82,7 @@ function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: (
       <div className="logistics-page-heading"><div><h1>{active.title}</h1><p>{active.description}</p></div><span className="logistics-workspace-label">Рабочее место логиста</span></div>
       {!canEnter ? <p className="shipment-error" role="alert">Раздел «Рейсы» недоступен. Обратитесь к администратору.</p> : <>
         {error && <div className="shipment-error logistics-load-error" role="alert"><span>{error}</span><button className="button" disabled={loading} onClick={refresh}>Повторить загрузку</button></div>}
-        {!data && loading && <div className="loading-state" role="status"><LoaderCircle className="spin"/><p>Загружаем рабочее место…</p></div>}
+        {!data && loading && <PageLoading/>}
         {data && <div className="logistics-page-content">
           {active.id === 'trips' ? <TripsPage data={data} canManagePlaces={canManage} onChanged={refresh} allowDelete={canManage}/> : <>
             {!canManage && <p className="logistics-readonly">Справочник доступен для просмотра. Изменения вносит администратор.</p>}

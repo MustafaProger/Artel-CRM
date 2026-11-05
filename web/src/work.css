@@ -38,3 +38,16 @@
 @media(max-width:650px){.work-page .work-task-row{grid-template-columns:44px minmax(0,1fr);gap:0 6px;padding:8px}.work-task-status{grid-column:2;justify-self:start;margin:0 0 10px}.work-task-meta{gap:3px 10px}}
 @media(prefers-reduced-motion:reduce){.work-task-check-box{transition:none}.work-task-check:active .work-task-check-box{transform:none}}
 @media(forced-colors:active){.work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight;border-color:Highlight;color:HighlightText;forced-color-adjust:none}}
+
+/* Keep operation feedback and confirmations visible without crowding the form. */
+.work-editor .work-editor-footer { flex-wrap: wrap; }
+.work-editor .work-editor-footer > .work-confirm,
+.work-editor .work-editor-footer > .work-action-error { flex: 1 0 100%; min-width: 0; margin: 0; }
+.work-editor .work-editor-footer > .work-confirm { padding: 14px; }
+.work-editor .work-confirm .button { white-space: normal; }
+.work-editor .work-confirm .button svg { flex-shrink: 0; }
+.work-editor .work-action-error { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .work-editor .work-editor-footer > .button { flex: 1 1 auto; justify-content: center; }
+  .work-editor .work-confirm .button { margin-top: 8px; }
+}

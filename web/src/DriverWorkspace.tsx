@@ -1,10 +1,11 @@
+import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import TripExecutionAction, { ExecutionEvent } from './TripExecutionAction'
 import { executionStageLabel } from './trip-execution-model'
 import { tripLabel } from './trip-identity'
 import { mapLink } from './map-link'
 import './trip-identity.css'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, ChevronRight, LoaderCircle, LogOut, MapPin, RefreshCw, Route, Search, Truck, X } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, ChevronRight, LogOut, MapPin, RefreshCw, Route, Search, Truck, X } from 'lucide-react'
 import type { AccountUser } from './auth-model'
 import { apiFetch } from './workspace-api'
 import DriverNotifications from './DriverNotifications'
@@ -33,7 +34,7 @@ function Address({ address, mapUrl }: { address: string | null; mapUrl: string |
 
 export default function DriverWorkspace({ user, onLogout }: { user: AccountUser; onLogout: () => void }) {
   const [trips, setTrips] = useState<DriverTrip[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(true), [tripsLoaded, setTripsLoaded] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [section, setSection] = useState<'active' | 'archive'>('active')
@@ -54,10 +55,10 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
     setError('')
     void apiFetch('/api/driver/trips', { cache: 'no-store', signal: pending.signal }).then(async response => {
       const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Не удалось загрузить ваши рейсы.')
-      if (generation === sequence.current) { setTrips(result.trips); setRevision(value => value + 1) }
+      if (!response.ok) { if ([401, 403].includes(response.status) && !pending.signal.aborted && generation === sequence.current) { setTrips([]); setTripsLoaded(false) } throw new Error(result.error || 'Не удалось загрузить ваши рейсы.') }
+      if (generation === sequence.current) { setTrips(result.trips); setTripsLoaded(true); setRevision(value => value + 1) }
     }).catch(reason => {
-      if (!pending.signal.aborted && generation === sequence.current) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.') }
+      if (!pending.signal.aborted && generation === sequence.current) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.') }
     }).finally(() => { if (!pending.signal.aborted && generation === sequence.current) setLoading(false) })
   }, [])
 
@@ -108,14 +109,15 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
       <div key={selectedId || section} className="driver-route-content">
       {selectedId ? <>
         <a className="button driver-back" href="#driver-trips"><ArrowLeft size={16}/>Все мои рейсы</a>
-        {detailLoading && !selected && <div className="driver-empty" role="status"><LoaderCircle size={24} className="spin"/><p>Открываем рейс…</p></div>}
+        {detailLoading && !selected && <LoadingSkeleton variant="form" label="Открываем рейс"/>}
         {detailError && <p className="driver-error" role="alert">{detailError}</p>}
         {selected && <TripDetail key={selected.id} trip={selected} onUpdated={updateTrip} onReload={refresh}/>}
       </> : <>
         <div className="driver-sections" role="group" aria-label="Разделы рейсов"><button type="button" aria-pressed={section === 'active'} className={section === 'active' ? 'is-active' : ''} onClick={() => setSection('active')}>Активные</button><button type="button" aria-pressed={section === 'archive'} className={section === 'archive' ? 'is-active' : ''} onClick={() => setSection('archive')}>Архивные</button></div>
         <label className="driver-search"><Search size={18}/><input type="search" aria-label="Поиск моих рейсов" placeholder="Номер рейса, дата, адрес или клиент" value={query} onChange={event => setQuery(event.target.value)}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск рейсов" onClick={() => setQuery('')}><X size={17}/></button>}</label>
         {error && <div className="driver-error" role="alert"><p>{error}</p><button className="button" onClick={refresh}>Повторить загрузку рейсов</button></div>}
-        {loading && !trips.length ? <div className="driver-empty" role="status"><LoaderCircle size={24} className="spin"/><p>Загружаем ваши рейсы…</p></div> : !error && <>
+        {loading && tripsLoaded && <LoadingProgress label="Обновляем ваши рейсы"/>}
+        {loading && !tripsLoaded ? <LoadingSkeleton variant="trips" label="Загружаем ваши рейсы" rows={2}/> : (tripsLoaded || !error) && <>
           <p className="driver-count" role="status">Рейсов: {visible.length}</p>
           <div className="driver-trip-list">{visible.map(trip => <a href={`#driver-trip/${encodeURIComponent(trip.id)}`} key={trip.id} className="driver-trip-card" aria-label={`Открыть ${tripLabel(trip).toLowerCase()} · ${dateLabel(trip.date)}`}>
             <div className="driver-trip-card-heading"><strong><Truck size={17}/>{tripLabel(trip)}</strong><ChevronRight size={19}/></div><span className="trip-identity-date">{dateLabel(trip.date)}</span>
@@ -124,7 +126,7 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
             <div className="driver-trip-destinations">{trip.deliveries.map((delivery, index) => <p key={delivery.id}><span>{index + 1}</span><span className="driver-destination-name">{[delivery.customer, delivery.address].filter(Boolean).join(' · ') || 'Место доставки уточняется'}{delivery.liters !== null && <small>{delivery.liters} л</small>}</span></p>)}</div>
             <span className="driver-trip-deliveries">{trip.execution ? executionStageLabel[trip.execution.stage] : 'Ожидает погрузки'} · Доставлено {trip.deliveries.filter(d => trip.execution?.deliveries[d.id]).length} из {trip.deliveries.length}</span>
           </a>)}</div>
-          {!visible.length && <div className="driver-empty"><Truck size={30}/><h2>{query ? 'Ничего не найдено' : section === 'archive' ? 'Архивных рейсов пока нет' : 'Активных рейсов пока нет'}</h2><p>{query ? 'Попробуйте другой адрес, дату или имя клиента.' : section === 'archive' ? 'Здесь появятся рейсы после всех доставок и подтверждения «Рейс выполнен».' : 'Когда логист назначит вам рейс, он появится здесь.'}</p></div>}
+          {!visible.length && !error && <div className="driver-empty"><Truck size={30}/><h2>{query ? 'Ничего не найдено' : section === 'archive' ? 'Архивных рейсов пока нет' : 'Активных рейсов пока нет'}</h2><p>{query ? 'Попробуйте другой адрес, дату или имя клиента.' : section === 'archive' ? 'Здесь появятся рейсы после всех доставок и подтверждения «Рейс выполнен».' : 'Когда логист назначит вам рейс, он появится здесь.'}</p></div>}
         </>}
       </>}
       </div>

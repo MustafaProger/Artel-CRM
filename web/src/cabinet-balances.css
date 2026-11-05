@@ -82,3 +82,11 @@
   .cabinet-connection-footer.is-managed { grid-template-columns: minmax(0, 1fr); }
   .cabinet-connection-footer.is-managed > div { display: flex; grid-column: 1; grid-row: 2; }
 }
+
+/* Unsaved input stays visible until the user explicitly discards it. */
+.cabinet-discard-prompt{padding:16px;border:1px solid var(--border);border-radius:16px;background:var(--accent-soft,#edf4ee);margin-block:16px;overflow-wrap:anywhere}
+.cabinet-discard-prompt p{margin:0 0 12px}
+.cabinet-discard-prompt>div{display:flex;flex-wrap:wrap;gap:10px}
+.cabinet-discard-prompt .button{max-width:100%;white-space:normal}
+.cabinet-dialog footer{flex-wrap:wrap;gap:10px}
+.cabinet-dialog footer .button{max-width:100%;white-space:normal}

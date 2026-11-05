@@ -115,7 +115,7 @@ function DirectoryDelete({tab,row,onClose: onDismiss,onDeleted,onChanged}:{tab:T
   return <dialog ref={dialog} className="detail-dialog directory-delete-dialog" aria-labelledby="directory-delete-title" onCancel={event=>{event.preventDefault();close()}}>
     <div className="directory-editor-heading"><h2 id="directory-delete-title">Удаление записи</h2><button className="icon-button" aria-label="Закрыть подтверждение удаления" disabled={saving} onClick={close}><X size={20}/></button></div>
     <div className="directory-editor-body"><p>Удалить «<strong>{row.name}</strong>» из справочника «{tabs.find(item=>item.id===tab)?.name}»?</p>{otherRoles&&<p className="directory-delete-explanation">Компания останется в остальных категориях; её общая карточка и связи сохранятся.</p>}{error&&<p className="shipment-error" role="alert">{error}</p>}</div>
-    <div className="directory-editor-footer"><button className="button" disabled={saving} onClick={close}>Отмена</button><button className="button directory-danger" disabled={saving} onClick={()=>void remove()}>{saving?<LoaderCircle size={17} className="spin"/>:<Trash2 size={17}/>}Удалить</button></div>
+    <div className="directory-editor-footer"><button className="button" disabled={saving} onClick={close}>Отмена</button><button className="button directory-danger" disabled={saving} onClick={()=>void remove()}>{saving?<LoaderCircle size={17} className="spin" aria-hidden="true"/>:<Trash2 size={17} aria-hidden="true"/>}{saving ? 'Удаляем…' : 'Удалить'}</button></div>
   </dialog>
 }
 
@@ -128,6 +128,7 @@ function formatConflictValue(value:unknown,depots:Record<string,string>={},dista
 
 function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab:EditorTab;id?:string;data:DirectoryData;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void|Promise<void>}) {
   const catalog = data.directories!, dialog = useRef<HTMLDialogElement>(null)
+  const closeConfirmation = useRef<HTMLDivElement>(null), errorMessage = useRef<HTMLParagraphElement>(null)
   const [baseline,setBaseline] = useState(data)
   const entry = directoryEntry(baseline,tab,id)
   const busy=useRef(false)
@@ -152,6 +153,12 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
   const [lookupBusy,setLookupBusy] = useState(false), [lookupNotice,setLookupNotice] = useState('')
   const [saving,setSaving] = useState(false), [error,setError] = useState(''), [dirty,setDirty] = useState(false), [confirmClose,setConfirmClose] = useState(false)
   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
+  useEffect(() => {
+    if (!confirmClose) return
+    closeConfirmation.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+    closeConfirmation.current?.scrollIntoView({ block: 'nearest' })
+  }, [confirmClose])
+  useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }) } }, [error])
   useEffect(()=>{if(!dirty)return;const handler=(event:BeforeUnloadEvent)=>{event.preventDefault()};window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler)},[dirty])
   const close = ()=>{if(saving||lookupBusy)return;if(dirty)setConfirmClose(true);else onClose()}
   const update = (key:string,value:string)=>{setFields(old=>{
@@ -242,7 +249,7 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
 
     {kind==='loading'&&<p className="muted">Укажите компании, которые выполняют погрузку и владеют площадкой. Эти сведения используются в транспортных документах.</p>}
   </section>
-  return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form onSubmit={save}>
+  return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form aria-busy={saving} onSubmit={save}>
     <div className="directory-editor-heading"><h2>{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy} onClick={close}><X size={20}/></button></div>
     <div className="directory-editor-body"><fieldset className="directory-edit-fields" disabled={!!conflict}><div className="shipment-field-grid">
       {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id);setDirty(true)}} disabled={saving||lookupBusy||!!catalog.currentEmployeeId}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role));setDirty(true)}}/>{label}</label>)}</fieldset></>}</>
@@ -282,8 +289,8 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
     </details>{extraGroup('Данные транспортного средства',vehicleFields)}{extraGroup('Свидетельство о регистрации (СТС)',stsFields)}{extraGroup('Паспорт транспортного средства (ПТС / ЭПТС)',ptsFields)}</>}
     </fieldset>
     {conflict&&<div className="directory-conflict" ref={conflictPanel} role="region" aria-label="Сверка изменений"><h3>Эти поля изменились во время редактирования</h3><p>Ваш ввод сохранён. Выберите значения для спорных полей. Остальные изменения будут объединены.</p>{conflict.keys.map(key=><fieldset key={key}><legend>{directoryFieldLabel(key)}</legend>{(['mine','saved'] as const).map(choice=><label key={choice}><input type="radio" name={`conflict-${key}`} checked={conflict.choices[key]===choice} onChange={()=>setConflict({...conflict,choices:{...conflict.choices,[key]:choice}})}/><span>{choice==='mine'?'Моё значение':'Сохранённое значение'}: {formatConflictValue((choice==='mine'?conflict.merged:conflict.latest)[key],Object.fromEntries((catalog.oilDepots??[]).map(depot=>[depot.id,depot.name])),key==='oilDepotDistancesKm')}</span></label>)}</fieldset>)}<button type="button" className="button" disabled={conflict.keys.some(key=>!conflict.choices[key])} onClick={resolveConflict}>Применить выбор</button><p className="muted">После сверки нажмите «Сохранить».</p></div>}
-    {error&&<p className="shipment-error" role="alert">{error}</p>}
-    {confirmClose&&<div className="directory-close-confirm" role="alert"><p>Закрыть карточку без сохранения изменений?</p><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
-    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy||!!conflict}>{saving?<LoaderCircle size={17} className="spin"/>:<Save size={17}/>}Сохранить</button></div>
+    {error&&<p ref={errorMessage} tabIndex={-1} className="shipment-error" role="alert">{error}</p>}
+    {confirmClose&&<div ref={closeConfirmation} className="directory-close-confirm" role="alert"><p>Закрыть карточку без сохранения изменений?</p><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
+    </div><div className="directory-editor-footer"><button className="button" type="button" disabled={saving||lookupBusy} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving||lookupBusy||!!conflict}>{saving?<LoaderCircle size={17} className="spin" aria-hidden="true"/>:<Save size={17} aria-hidden="true"/>}{saving ? 'Сохраняем…' : 'Сохранить'}</button></div>
   </form></dialog>{participant&&<DirectoryEditor tab="loadingParty" id={participant.value||undefined} data={{...data,companies:relatedCompanies}} onChanged={onChanged} onClose={()=>setParticipant(null)} onSaved={company=>{if(!company)return;setSavedCompanies(old=>[...old.filter(row=>row.id!==company.id),company]);participant.onSelect(company.id);setParticipant(null)}}/>}</>
 }

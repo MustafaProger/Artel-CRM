@@ -1,3 +1,4 @@
+import LoadingSkeleton from './LoadingSkeleton'
 import { watchVisibleRefresh } from './visible-refresh'
 import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -172,7 +173,7 @@ export default function SberStatements({ onBack, connectionId = 'sber-nk-artel' 
     {data?.progress && <div className="bank-notice sber-sync-progress" role="status"><strong>{scheduledRetry ? 'Повтор запланирован' : busy || backgroundSync ? 'Получаем банковские данные' : 'Есть незавершённая загрузка'}</strong><p>{displayDate(data.progress.from)} — {displayDate(data.progress.to)} · сохранено дней: {data.progress.completedDays} из {data.progress.totalDays}</p><progress value={data.progress.completedDays} max={Math.max(1, data.progress.totalDays)} aria-label="Дней выписки загружено"/><p>Текущая дата: {displayDate(data.progress.day)}{data.progress.pages !== undefined ? ` · страниц: ${data.progress.pages}` : ''}{retryPending ? ` · повтор не ранее ${displayTimestamp(data.progress.nextAttemptAt)}` : ''}</p>{backgroundSync ? <p>{scheduledRetry ? 'Загрузка продолжится автоматически после паузы. Страницу можно закрыть.' : 'Загрузка выполняется в фоне. Страницу можно закрыть.'}</p> : !busy && <p>Нажмите «Продолжить загрузку», чтобы закончить этот период.</p>}</div>}
     {syncError && <div className="bank-notice bank-error" role="alert"><strong>{scheduledRetry ? 'Обновление временно отложено' : 'Не удалось завершить обновление'}</strong><p>{syncError}</p><p>Ранее загруженные выписки и операции сохранены.</p></div>}
     {error && <div className="bank-notice bank-error" role="alert"><strong>Не удалось загрузить сохранённые данные</strong><p>{error}</p>{data && <p>Показаны ранее загруженные данные за {displayDate(dataPeriod.from)} — {displayDate(dataPeriod.to)}.</p>}<button className="button" disabled={loading || busy} onClick={() => void load().catch(() => {})}>Повторить загрузку</button></div>}
-    {loading && !data ? <div className="bank-empty" role="status"><LoaderCircle className="spin"/><h3>Загружаем сохранённую выписку…</h3></div> : data && <>
+    {loading && !data ? <LoadingSkeleton variant="sber" label="Загружаем сохранённую выписку"/> : data && <>
       <div className="panel bank-ledger sber-summary" aria-busy={loading}>
         <div className="bank-ledger-title"><div><h3>Выписки по дням</h3><p>{displayDate(dataPeriod.from)} — {displayDate(dataPeriod.to)}</p></div><label className="sber-zero-toggle"><input type="checkbox" checked={hideZero} onChange={event => setHideZero(event.target.checked)}/>Скрыть дни без оборотов</label></div>
         {loading && <div className="bank-loading-line" role="status"><LoaderCircle size={14} className="spin"/>Обновляем сохранённые данные…</div>}

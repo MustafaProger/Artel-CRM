@@ -1,3 +1,4 @@
+import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { TripIssueLabel } from './TripWorkflowAlert'
 import TripProcessPanel from './TripProcessPanel'
 import { Activity } from 'lucide-react'
@@ -5,13 +6,22 @@ import { tripLabel } from './trip-identity'
 import './trip-identity.css'
 import { useDialogMotion } from './useDialogMotion'
 import { apiFetch as fetch } from './workspace-api'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map as MapIcon, LoaderCircle, Pencil, Plus, Search, Send, Trash2, Truck } from 'lucide-react'
 import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
 import type { TripRequest } from './trip-request-model'
 import ScrollableSegments from './ScrollableSegments'
 import TripRequestsPanel from './TripRequestsPanel'
-const TripRequestsMap = lazy(() => import('./TripRequestsMap'))
+type RequestsMapComponent = typeof import('./TripRequestsMap').default
+let readyRequestsMap: RequestsMapComponent | null = null
+let requestsMapModule: Promise<RequestsMapComponent> | null = null
+function loadRequestsMap() {
+  if (!requestsMapModule) requestsMapModule = import('./TripRequestsMap').then(module => {
+    readyRequestsMap = module.default
+    return module.default
+  }).catch(reason => { requestsMapModule = null; throw reason })
+  return requestsMapModule
+}
 import TripRequestEditor from './TripRequestEditor'
 import './trip-requests.css'
 import ShipmentTripEditor from './ShipmentTripEditor'
@@ -32,6 +42,20 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   }, [])
   const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
   const [view, setView] = useState<'requests' | 'map' | 'trips' | 'process'>('requests')
+  const [RequestsMap, setRequestsMap] = useState<RequestsMapComponent | null>(() => readyRequestsMap)
+  const [mapLoadError, setMapLoadError] = useState(''), [mapLoadRevision, setMapLoadRevision] = useState(0)
+  // Load the map module alongside its data. One outer placeholder remains mounted
+  // until both are ready, regardless of which request finishes first.
+  useEffect(() => {
+    if (view !== 'map' || RequestsMap) return
+    let active = true
+    setMapLoadError('')
+    void loadRequestsMap().then(component => {
+      if (active) setRequestsMap(() => component)
+    }).catch(() => { if (active) setMapLoadError('Не удалось загрузить карту. Повторите попытку.') })
+    return () => { active = false }
+  }, [view, RequestsMap, mapLoadRevision])
+  const [tripsLoaded, setTripsLoaded] = useState(false), [requestsLoaded, setRequestsLoaded] = useState(false)
   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
@@ -50,10 +74,11 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       try {
         const response = await fetch('/api/shipment-trips', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]) })
         const result = await response.json()
-        if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рейсы')
+        if (!response.ok) { if ([401, 403].includes(response.status) && !controller.signal.aborted) { setTrips([]); setTripsLoaded(false); setError(result.error || 'Доступ к рейсам недоступен.') } throw new Error(result.error || 'Не удалось загрузить рейсы') }
         if (controller.signal.aborted) return
         const indicatorsOnly = background && hasList && view === 'trips'
         hasList = true
+        setTripsLoaded(true)
         setTrips(previous => {
           const fresh = new Map((result.trips as ShipmentTrip[]).map(trip => [trip.id, trip]))
           // Updating indicators must not reorder cards, unmount open panels or
@@ -74,7 +99,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
         setAutomation(result.automation ?? { enabled: false })
         setError('')
       } catch (reason) {
-        if (!controller.signal.aborted && !background) { setTrips([]); setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }
+        if (!controller.signal.aborted && !background) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }
       } finally {
         inFlight = false
         if (!controller.signal.aborted && !background) setLoading(false)
@@ -92,8 +117,8 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
     const generation = ++requestGeneration.current
     const controller = new AbortController()
     setRequestsLoading(true); setRequestsError('')
-    void fetch('/api/trip-requests', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Не удалось загрузить заявки.'); return result })
-      .then(result => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequests(result.requests); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
+    void fetch('/api/trip-requests', { signal: controller.signal }).then(async response => { const result = await response.json(); if (!response.ok) { if ([401, 403].includes(response.status) && !controller.signal.aborted && generation === requestGeneration.current) { setRequests([]); setRequestCompanies([]); setRequestAddresses([]); setRequestsLoaded(false) } throw new Error(result.error || 'Не удалось загрузить заявки.') } return result })
+      .then(result => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequests(result.requests); setRequestsLoaded(true); setRequestCompanies(result.companies ?? []); setRequestAddresses(result.addresses ?? []) } })
       .catch(reason => { if (!controller.signal.aborted && generation === requestGeneration.current) { setRequestsError(reason instanceof Error ? reason.message : 'Нет связи с сервером') } })
       .finally(() => { if (!controller.signal.aborted && generation === requestGeneration.current) setRequestsLoading(false) })
     return () => controller.abort()
@@ -102,12 +127,12 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   const requestSaved = (saved: TripRequest) => {
     requestGeneration.current++
     setRequests(previous => saved.status === 'active' ? [...previous.filter(row => row.id !== saved.id), saved] : previous.filter(row => row.id !== saved.id))
-    setRequestsLoading(false); setRequestsError('')
+    setRequestsLoaded(true); setRequestsLoading(false); setRequestsError('')
   }
   const requestDeleted = (id: string) => {
     requestGeneration.current++
     setRequests(previous => previous.filter(row => row.id !== id))
-    setRequestsLoading(false); setRequestsError('')
+    setRequestsLoaded(true); setRequestsLoading(false); setRequestsError('')
   }
   const reloadRequests = () => setRequestRefresh(value => value + 1)
   const reloadAll = () => { setRefresh(value => value + 1); reloadRequests() }
@@ -122,14 +147,19 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
   return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
     <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { if (item.id === view) return; setView(item.id); setNotice(''); reloadRequests() }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
-    {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} error={error} onReload={() => setRefresh(value => value + 1)}/>}
-    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={reloadRequests} onSaved={requestSaved} onDeleted={requestDeleted}/>}
-    {view === 'map' && <section aria-label="Карта заявок">{requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={reloadRequests}>Повторить загрузку</button></div>}{requestsLoading && !requestCompanies.length ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : (!requestsError || requests.length > 0) && <Suspense fallback={<p role="status">Загружаем карту…</p>}><TripRequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/></Suspense>}</section>}
+    {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} loaded={tripsLoaded} error={error} onReload={() => setRefresh(value => value + 1)}/>}
+    {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} loaded={requestsLoaded} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={reloadRequests} onSaved={requestSaved} onDeleted={requestDeleted}/>}
+    {view === 'map' && <section aria-label="Карта заявок">
+      {requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={reloadRequests}>Повторить загрузку</button></div>}
+      {mapLoadError && <div className="shipment-error" role="alert">{mapLoadError}<button className="button" onClick={() => { setMapLoadError(''); setMapLoadRevision(value => value + 1) }}>Повторить загрузку карты</button></div>}
+      {!mapLoadError && (!requestsError || requests.length > 0) && (requestsLoading && !requestsLoaded || !RequestsMap ? <LoadingSkeleton variant="map" label="Загружаем карту заявок"/> : <RequestsMap requests={requests} addresses={requestAddresses} oilDepots={directories.oilDepots} onEditRequest={setMapRequest}/>)}
+    </section>}
     {view === 'trips' && <><div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск рейса" placeholder="Номер рейса, клиент, водитель…" value={query} onChange={event => { setQuery(event.target.value); setPage(0) }}/></label><button className="button primary mobile-icon-action" aria-label="Новый рейс" title="Новый рейс" onClick={() => setEditor({})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новый рейс</span></button></div>
     {requestsError && <div className="shipment-error" role="alert">{requestsError} <button type="button" className="button" onClick={reloadRequests}>Повторить загрузку заявок</button></div>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRefresh(value => value + 1)}>Повторить загрузку</button></div>}
-    {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем рейсы…</div> : <>
+    {loading && tripsLoaded && <LoadingProgress label="Обновляем рейсы"/>}
+    {loading && !tripsLoaded ? <LoadingSkeleton variant="trips" label="Загружаем рейсы" rows={2}/> : <>
       <div className="trips-list">{filtered.slice(currentPage * 20, (currentPage + 1) * 20).map(trip => {
         const issues = trip.workflowIssues ?? []
         const vehicle = directories.vehicles.find(item => item.id === trip.fields.vehicle_id)
@@ -188,7 +218,7 @@ function DeleteTripDialog({ tripId, data, onClose: onDismiss, onDeleted }: { tri
   }
   return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="trip-delete-title" onCancel={event => { event.preventDefault(); if (!inFlight.current) onClose() }}>
     <h2 id="trip-delete-title">Удалить рейс целиком?</h2>
-    {loading ? <p role="status">Проверяем состав рейса и документы Saby…</p> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">{blocked}</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
+    {loading ? <LoadingSkeleton label="Проверяем состав рейса и документы Saby" rows={3}/> : trip && <><p>{tripLabel(trip)} · {formatDate(trip.fields.date)} · доставок: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(row => <span key={row.id}>{data.companies.find(company => company.id === row.fields.customer_id)?.name || 'Клиент'} · {number(row.fields.quantity_litres, 2)} л</span>)}</div>{blocked ? <p className="shipment-error" role="alert">{blocked}</p> : <p>Рейс и все его доставки будут удалены из общего учёта CRM.</p>}</>}
     {error && <div className="shipment-error" role="alert">{error}<button className="button" disabled={loading || saving} onClick={() => setReload(value => value + 1)}>Обновить состав</button></div>}
     <footer><button type="button" className="button" disabled={saving} onClick={onClose} autoFocus>Отмена</button><button type="button" className="button danger" disabled={loading || saving || !trip || !!blocked || !!error} onClick={() => void remove()}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}Удалить рейс</button></footer>
   </dialog>

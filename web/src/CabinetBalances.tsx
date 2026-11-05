@@ -1,3 +1,4 @@
+import LoadingSkeleton from './LoadingSkeleton'
 import { watchVisibleRefresh } from './visible-refresh';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowRight, Building2, ExternalLink, LockKeyhole, Plus, RefreshCw, X } from 'lucide-react';
@@ -13,15 +14,17 @@ async function request<T>(options?: RequestInit, path = '/api/cabinets'): Promis
 }
 const automatic = (provider: CabinetProvider) => ['glopro', 'natcar', 'rosneft'].includes(provider);
 export default function CabinetBalances() {
-  const [data, setData] = useState<CabinetResponse | null>(null), [error, setError] = useState('');
+  const [data, setData] = useState<CabinetResponse | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true);
   const [editor, setEditor] = useState<CabinetProvider | 'choose' | null>(null), [notice, setNotice] = useState('');
   const [syncing, setSyncing] = useState<string[]>([]);
   const [organizationEditor, setOrganizationEditor] = useState<CabinetConnection | null>(null);
   const controller = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
     controller.current?.abort(); const pending = new AbortController(); controller.current = pending;
+    setLoading(true); setError('');
     try { const result = await request<CabinetResponse>({ signal: pending.signal }); if (!pending.signal.aborted) { setData(result); setError(''); } }
     catch (reason) { if (!pending.signal.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
+    finally { if (!pending.signal.aborted) setLoading(false); }
   }, []);
   useEffect(() => { void refresh(); const stop = watchVisibleRefresh(() => { void refresh(); }, 20_000); return () => { stop(); controller.current?.abort(); }; }, [refresh]);
   const synchronize = async (id: string) => {
@@ -39,8 +42,8 @@ export default function CabinetBalances() {
       <button className="button primary" disabled={!data?.credentialStorageReady} onClick={() => setEditor('choose')}><Plus size={18}/>Добавить кабинет</button>
     </header>
     {notice && <p role="status" className="soft-notice">{notice}</p>}
-    {error && <div role="alert" className="soft-notice">{error} <button className="button" onClick={() => void refresh()}>Повторить</button></div>}
-    {!data && !error && <p role="status">Загружаем подключения…</p>}
+    {error && <div role="alert" className="soft-notice">{error} <button className="button" disabled={loading} onClick={() => void refresh()}>Повторить</button></div>}
+    {!data && loading && <LoadingSkeleton variant="cabinet" label="Загружаем кабинеты и остатки"/>}
     {data && <>
       {!data.credentialStorageReady && <p className="soft-notice"><LockKeyhole size={16} aria-hidden="true"/> Сохранение доступов пока недоступно: требуется настройка защиты на сервере.</p>}
       <div className="cabinet-layout"><div className="cabinet-connected">
@@ -92,11 +95,13 @@ function OrganizationFields({ value, onChange, disabled }: { value: string[]; on
 function OrganizationEditor({ connection, onClose, onSaved }: { connection: CabinetConnection; onClose: () => void; onSaved: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);
   const [organizations, setOrganizations] = useState(connection.organizationNames?.length ? [...connection.organizationNames] : ['']);
-  const [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [confirmClose, setConfirmClose] = useState(false);
+  const initialOrganizations = connection.organizationNames?.length ? connection.organizationNames : [''];
+  const dirty = JSON.stringify(organizations) !== JSON.stringify(initialOrganizations);
   const motion = useDialogMotion(dialog, onClose);
-  const close = () => { if (!busy.current) motion.close(); };
+  const close = () => { if (busy.current) return; if (dirty) setConfirmClose(true); else motion.close(); };
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (busy.current) return; busy.current = true; setSaving(true); setError('');
+    event.preventDefault(); if (busy.current || confirmClose) return; busy.current = true; setSaving(true); setError('');
     try {
       await request({ method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ organizationNames: organizations.map(name => name.trim()).filter(Boolean), expectedOrganizationNames: connection.organizationNames }) }, `/api/cabinets/${connection.id}/organizations`);
       await motion.complete(onSaved);
@@ -106,9 +111,10 @@ function OrganizationEditor({ connection, onClose, onSaved }: { connection: Cabi
   return <dialog ref={dialog} className="cabinet-dialog" aria-labelledby="cabinet-organizations-title" onCancel={event => { event.preventDefault(); close(); }}><form onSubmit={submit}>
     <header><h2 id="cabinet-organizations-title">Организации natcar</h2><button type="button" className="icon-button" aria-label="Закрыть" onClick={close} disabled={saving}><X size={20}/></button></header>
     <p className="cabinet-dialog-description">Кабинет «{connection.label}». Логин и пароль вводить повторно не нужно.</p>
-    <OrganizationFields value={organizations} onChange={setOrganizations} disabled={saving}/>
+    <OrganizationFields value={organizations} onChange={value => { setOrganizations(value); setConfirmClose(false); }} disabled={saving}/>
     {error && <p role="alert" className="shipment-error">{error}</p>}
-    <footer><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button className="button primary" disabled={saving}>{saving ? 'Сохранение…' : 'Сохранить организации'}</button></footer>
+    {confirmClose && <CabinetDiscardPrompt onContinue={() => setConfirmClose(false)} onDiscard={() => motion.close()}/>}
+    <footer><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button className="button primary" disabled={saving || confirmClose} aria-busy={saving}>{saving ? 'Сохранение…' : 'Сохранить организации'}</button></footer>
   </form></dialog>;
 }
 
@@ -118,11 +124,14 @@ function ConnectionEditor({ initialProvider, onClose, onSaved, yandexConnected }
   const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);
   const [label, setLabel] = useState(''), [login, setLogin] = useState(''), [password, setPassword] = useState('');
   const [organizations, setOrganizations] = useState<string[]>(['']);
-  const [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [discardAction, setDiscardAction] = useState<'close' | 'provider' | null>(null);
+  const dirty = !!(label || login || password || organizations.some(Boolean) || organizations.length > 1);
   const motion = useDialogMotion(dialog, onClose);
-  const close = () => { if (!busy.current) motion.close(); };
+  const clearProvider = () => { setProvider(null); setLabel(''); setLogin(''); setPassword(''); setOrganizations(['']); setError(''); setDiscardAction(null); };
+  const close = () => { if (busy.current) return; if (dirty) setDiscardAction('close'); else motion.close(); };
+  const changeProvider = () => { if (busy.current) return; if (dirty) setDiscardAction('provider'); else clearProvider(); };
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (busy.current || !provider) return; busy.current = true; setSaving(true); setError('');
+    event.preventDefault(); if (busy.current || discardAction || !provider) return; busy.current = true; setSaving(true); setError('');
     try {
       await request({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, label, login, password, ...(provider === 'natcar' ? { organizationNames: organizations.map(n => n.trim()).filter(Boolean) } : {}) }) });
       setPassword(''); setLogin(''); await motion.complete(() => onSaved(provider));
@@ -130,10 +139,10 @@ function ConnectionEditor({ initialProvider, onClose, onSaved, yandexConnected }
     finally { busy.current = false; setSaving(false); }
   };
   return <dialog ref={dialog} className="cabinet-dialog" aria-labelledby="cabinet-editor-title" onCancel={event => { event.preventDefault(); close(); }}>
-    <form onSubmit={submit}>
+    <form onSubmit={submit} onInputCapture={() => setDiscardAction(null)}>
       <header><h2 id="cabinet-editor-title">{entry ? `Добавить кабинет ${entry.name}` : 'Добавить кабинет'}</h2><button type="button" className="icon-button" aria-label="Закрыть" onClick={close} disabled={saving}><X size={20}/></button></header>
       {!entry || !provider ? <><p className="cabinet-dialog-description">Шаг 1 из 2 · Выберите сервис</p><div className="cabinet-provider-options">{cabinetProviders.filter(item => item.id !== 'yandex' || !yandexConnected).map(item => <button type="button" className="cabinet-provider-option" key={item.id} onClick={() => setProvider(item.id)}><ProviderMark provider={item.id}/><span><strong>{item.name}</strong><small>{automatic(item.id) ? 'Автоматическая загрузка остатков' : 'Сохранение доступа · остатки пока недоступны'}</small></span><ArrowRight size={18}/></button>)}</div></> : <>
-      <button type="button" className="cabinet-back" disabled={saving} onClick={() => { setProvider(null); setLogin(''); setPassword(''); setError(''); }}><ArrowLeft size={15}/>Выбрать другой сервис</button>
+      <button type="button" className="cabinet-back" disabled={saving} onClick={changeProvider}><ArrowLeft size={15}/>Выбрать другой сервис</button>
       <p className="cabinet-dialog-description">Шаг 2 из 2 · Данные для входа в {entry.name}</p>
       {!automatic(provider) && <p className="cabinet-pending">Получение остатков пока недоступно. Сейчас можно сохранить доступ для дальнейшей настройки.</p>}
       <label>Название кабинета<input required maxLength={120} value={label} onChange={event => setLabel(event.target.value)} placeholder="Например, НК АРТЕЛЬ" disabled={saving}/></label>
@@ -142,7 +151,15 @@ function ConnectionEditor({ initialProvider, onClose, onSaved, yandexConnected }
       <label>Пароль<input required maxLength={4096} type="password" autoComplete="off" value={password} onChange={event => setPassword(event.target.value)} disabled={saving}/></label>
       <p className="cabinet-hint cabinet-security"><LockKeyhole size={15} aria-hidden="true"/> Доступ сохраняется на сервере в зашифрованном виде. {automatic(provider) ? 'После сохранения сервер выполнит вход и прочитает остатки у поставщиков.' : 'Одноразовые коды здесь не нужны.'}</p>
       {error && <p role="alert" className="shipment-error">{error}</p>}
-      <footer><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button className="button primary" disabled={saving}>{saving ? 'Сохранение…' : automatic(provider) ? 'Добавить кабинет' : 'Сохранить доступ'}</button></footer></>}
+      {discardAction && <CabinetDiscardPrompt message={discardAction === 'provider' ? 'Сменить сервис и удалить введённые данные?' : undefined} onContinue={() => setDiscardAction(null)} onDiscard={() => discardAction === 'provider' ? clearProvider() : motion.close()}/>}
+      <footer><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button className="button primary" disabled={saving || !!discardAction} aria-busy={saving}>{saving ? 'Сохранение…' : automatic(provider) ? 'Добавить кабинет' : 'Сохранить доступ'}</button></footer></>}
     </form>
   </dialog>;
+}
+
+
+function CabinetDiscardPrompt({ message = 'Закрыть без сохранения изменений?', onContinue, onDiscard }: { message?: string; onContinue: () => void; onDiscard: () => void }) {
+  const keep = useRef<HTMLButtonElement>(null);
+  useEffect(() => { keep.current?.focus(); keep.current?.scrollIntoView({ block: 'nearest' }); }, []);
+  return <div className="cabinet-discard-prompt" role="alert"><p>{message}</p><div><button ref={keep} type="button" className="button" onClick={onContinue}>Продолжить редактирование</button><button type="button" className="button" onClick={onDiscard}>Не сохранять</button></div></div>;
 }

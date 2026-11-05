@@ -54,7 +54,14 @@ for (const [name, launcher] of Object.entries({ chromium, webkit })) for (const 
     await card.getByRole('button', { name: 'Изменить рейс', exact: true }).click();
     const dialog = page.getByRole('dialog'); await dialog.waitFor();
     await dialog.getByLabel('Примечание к рейсу', { exact: true }).fill('Уточнение после прибытия');
+    // Saving closes the form before the three lists finish refreshing. Wait for
+    // those reads before reloading; WebKit cancels unfinished reads on navigation.
+    const refreshedLists = Promise.all(['/api/shipment-trips', '/api/trip-requests', '/api/trip-requests/context'].map(path =>
+      page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === 'GET' && response.ok()).then(response => response.finished()),
+    ));
     await dialog.getByRole('button', { name: 'Сохранить рейс', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+    await refreshedLists;
+    await card.getByText('Уточнение после прибытия', { exact: true }).waitFor();
     assert.ok((await f.store.read(f.source)).driverTripProgress[f.tripId].arrivedAt, 'unchanged composition preserves arrival');
     await page.reload();
     await page.locator('.trips-section-tabs').getByRole('button', { name: 'Рейсы', exact: true }).click();

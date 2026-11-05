@@ -1,3 +1,4 @@
+import LoadingSkeleton, { LoadingProgress, SkeletonTableRows } from './LoadingSkeleton'
 import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ArrowDownToLine, ArrowUp, ArrowDown, Filter, Check, ChevronDown, LoaderCircle, Pencil, Plus, Menu, Search, Trash2, Truck, X } from 'lucide-react'
@@ -40,7 +41,7 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
   const [exporting,setExporting] = useState(false), [exportError,setExportError] = useState(''), [notice,setNotice] = useState('')
   const [scrollTop,setScrollTop] = useState(0), [viewportHeight,setViewportHeight] = useState(600)
   const scroller = useRef<HTMLDivElement>(null), request = useRef<AbortController|null>(null), exportRequest = useRef<AbortController|null>(null)
-  const generation = useRef(0), busy = useRef(false)
+  const generation = useRef(0), busy = useRef(false), loadedParams = useRef<string | null>(null)
   useEffect(() => setQuery(initialQuery), [initialQuery])
   useEffect(() => {const timer = setTimeout(() => setDebouncedQuery(query),250);return () => clearTimeout(timer)}, [query])
   useEffect(() => {try {localStorage.setItem('artel:shipment-template',template)} catch {/* The view also works without persistent browser storage. */}}, [template])
@@ -51,9 +52,10 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
     const controller = new AbortController();request.current = controller;busy.current = true;setLoading(true);setError('')
     try {
       const response = await fetch(`/api/shipments?${params}&limit=${PAGE_SIZE}&offset=${offset}`,{signal:controller.signal})
-      if(!response.ok) throw await apiError(response)
+      if (!response.ok) { if ([401, 403].includes(response.status) && currentGeneration === generation.current && !controller.signal.aborted) { setItems([]); setTotal(0); setSummary(null); setHasMore(false); setNextOffset(0) } throw await apiError(response) }
       const result: ShipmentPageResult = await response.json()
       if(currentGeneration !== generation.current) return
+      if (replace) { setScrollTop(0); scroller.current?.scrollTo({ top: 0, behavior: 'instant' }) }
       setItems(previous => replace ? result.items : [...previous,...result.items.filter(item => !previous.some(p => p.id === item.id))])
       setTotal(result.total);setHasMore(result.hasMore);setNextOffset(result.nextOffset);setSummary(result.summary)
     } catch(e) {if(!controller.signal.aborted && currentGeneration === generation.current) setError(e instanceof Error ? e.message : 'Не удалось загрузить отгрузки')}
@@ -62,11 +64,14 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
   useEffect(() => {
     request.current?.abort();busy.current = false
     const current = ++generation.current
-    setItems([]);setTotal(0);setHasMore(false);setNextOffset(0);setSummary(null);setScrollTop(0)
-    scroller.current?.scrollTo({top:0,behavior:'instant'})
+    if (loadedParams.current !== params) {
+      setItems([]);setTotal(0);setHasMore(false);setNextOffset(0);setSummary(null);setScrollTop(0)
+      scroller.current?.scrollTo({top:0,behavior:'instant'})
+      loadedParams.current = params
+    }
     void loadPage(0,true,current)
     return () => {request.current?.abort();++generation.current;busy.current = false}
-  }, [loadPage,revision])
+  }, [loadPage,revision,params])
   useEffect(() => {
     const element = scroller.current
     if(!element) return
@@ -134,7 +139,8 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
         <table className={`shipment-grid${canResizeColumns ? ' shipment-grid-resizable' : ''}`} style={{width:columns.reduce((total,column) => total + column.width,0) + (showActions ? 80 : 0)}} aria-rowcount={total + 2} aria-colcount={columns.length + extraColumns}>
           <colgroup>{columns.map(column => <col key={column.key} style={{width:column.width}}/>)}{showActions && <col style={{width:80}}/>}</colgroup>
           <thead><tr className="shipment-group-headings">{groups.map((group,index) => <th key={`${group.key}-${index}`} colSpan={group.count} scope="colgroup" className={`group-${group.key}`}>{group.title}</th>)}{showActions && <th rowSpan={2} className="shipment-actions-heading" scope="col">Действия</th>}</tr><tr className="shipment-column-headings">{columns.map(column => <th key={column.key} scope="col" aria-sort={sort===column.key?(direction==='asc'?'ascending':'descending'):'none'} data-field={column.key} className={`group-${column.group} ${stickyStyle(column) ? 'shipment-sticky' : ''}`} style={stickyStyle(column)}><div className="column-controls"><button className="column-sort" aria-label={`Сортировать: ${column.title}`} onClick={()=>{setSort(column.key);setDirection(sort===column.key&&direction==='asc'?'desc':'asc')}}>{column.title}{sort===column.key&&(direction==='asc'?<ArrowUp size={13}/>:<ArrowDown size={13}/>)}</button><button className={`column-filter ${filters[column.key]?'is-filtered':''}`} aria-label={`Фильтр: ${column.title}`} aria-pressed={!!filters[column.key]} onClick={()=>setFilterColumn(column)}><Filter size={14}/></button></div>{canResizeColumns && <ShipmentColumnResize key={`${shipmentType}-${chosenTemplate.title}-${column.key}`} column={column} onResize={resizeColumn}/>}</th>)}</tr></thead>
-          <tbody>
+          <tbody className={loading && !items.length ? 'loading-skeleton' : undefined} data-skeleton-layout={loading && !items.length ? 'shipments' : undefined} aria-busy={loading && !items.length}>
+            {loading && !items.length && <SkeletonTableRows columns={columns.length + extraColumns}/>}
             {start > 0 && <tr className="shipment-spacer" aria-hidden="true"><td colSpan={columns.length + extraColumns} style={{height:start * ROW_HEIGHT}}/></tr>}
             {visible.map((shipment,index) => <tr key={shipment.id} data-testid="shipment-row" data-shipment-id={shipment.id} aria-rowindex={start + index + 3}>
               {columns.map((column,columnIndex) => {
@@ -147,9 +153,10 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
             {end < items.length && <tr className="shipment-spacer" aria-hidden="true"><td colSpan={columns.length + extraColumns} style={{height:(items.length - end) * ROW_HEIGHT}}/></tr>}
           </tbody>
         </table>
-        {!items.length && <div className="shipment-table-state">{loading ? <><LoaderCircle className="spin" size={25}/><strong>Загружаем отгрузки…</strong></> : error ? <><strong>Не удалось загрузить операции</strong><p role="alert">{error}</p><button className="button" onClick={() => void loadPage(0,true,generation.current)}>Повторить загрузку</button></> : <><Truck size={30}/><strong>Операций пока нет</strong><p>Измените фильтры или добавьте отгрузку.</p><button className="button" onClick={() => {setQuery('');setManager('all');setOrganization('all');setSettlement('all');setFilters({});onPeriodChange('all')}}>Показать все группы</button></>}</div>}
+        {loading && !items.length && <span className="loading-skeleton-status" role="status">Загружаем отгрузки…</span>}
+        {!items.length && !loading && <div className="shipment-table-state">{error ? <><strong>Не удалось загрузить операции</strong><p role="alert">{error}</p><button className="button" onClick={() => void loadPage(0,true,generation.current)}>Повторить загрузку</button></> : <><Truck size={30}/><strong>Операций пока нет</strong><p>Измените фильтры или добавьте отгрузку.</p><button className="button" onClick={() => {setQuery('');setManager('all');setOrganization('all');setSettlement('all');setFilters({});onPeriodChange('all')}}>Показать все группы</button></>}</div>}
       </div>
-      <div className="shipment-load-footer"><span data-testid="shipments-loaded-count" data-loaded={items.length} data-total={total}>Загружено {number(items.length)} из {number(total)}</span>{summary&&<span className="shipment-footer-totals">{number(summary.liters.total,2)} л · {number(summary.revenue.total,2)} ₽</span>}{loading && items.length > 0 ? <span role="status"><LoaderCircle size={17} className="spin"/>Загружаем следующие 50…</span> : error && items.length > 0 ? <><span className="shipment-error-text" role="alert">{error}</span><button className="button" onClick={loadMore}>Повторить</button></> : hasMore ? <button className="button" onClick={loadMore}>Загрузить ещё 50 <ChevronDown size={16}/></button> : items.length > 0 ? <span><Check size={16}/>Все операции загружены</span> : null}</div>
+      <div className="shipment-load-footer"><span data-testid="shipments-loaded-count" data-loaded={items.length} data-total={total}>{loading && !items.length ? 'Загружаем отгрузки…' : `Загружено ${number(items.length)} из ${number(total)}`}</span>{summary&&<span className="shipment-footer-totals">{number(summary.liters.total,2)} л · {number(summary.revenue.total,2)} ₽</span>}{loading && items.length > 0 ? <LoadingProgress label="Обновляем список отгрузок"/> : error && items.length > 0 ? <><span className="shipment-error-text" role="alert">{error}</span><button className="button" onClick={loadMore}>Повторить</button></> : hasMore ? <button className="button" onClick={loadMore}>Загрузить ещё 50 <ChevronDown size={16}/></button> : items.length > 0 ? <span><Check size={16}/>Все операции загружены</span> : null}</div>
     </section>
     {filterColumn&&<ShipmentColumnFilter column={filterColumn} params={params} filter={filters[filterColumn.key]} onClose={()=>setFilterColumn(null)} onApply={filter=>{setFilters(previous=>{const next={...previous};if(filter)next[filterColumn.key]=filter;else delete next[filterColumn.key];return next});setFilterColumn(null)}}/>}
     {editor&&data.directories&&<ShipmentEditor shipmentType={shipmentType} shipment={editor.shipment} companies={data.companies} directories={data.directories} defaultPaymentForm={settlement==='cash'?'нал':settlement==='f2'?'ф2':'б/нал'} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice('Отгрузка сохранена');refresh()}}/>}
@@ -189,5 +196,5 @@ function DeleteShipmentDialog({shipment,companies,onClose: onDismiss,onDeleted}:
     } catch(e) {setError(e instanceof Error ? e.message : 'Не удалось удалить операцию')}
     finally {setSaving(false)}
   }
-  return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="shipment-delete-title" onCancel={e => {e.preventDefault();if(!saving) onClose()}}><h2 id="shipment-delete-title">{shipment.fields.trip_id ? 'Удалить отгрузку всей машины?' : 'Удалить эту отгрузку?'}</h2>{shipment.fields.trip_id ? <>{loading ? <p role="status">Загружаем состав отгрузки…</p> : trip && <><p>{formatDate(trip.fields.date)} · {number(trip.fields.quantity_tonnes,6)} т · клиентов: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(customer=><span key={customer.id}>{companies.find(company=>company.id===customer.fields.customer_id)?.name ?? 'Клиент'} · {number(customer.fields.quantity_litres,2)} л</span>)}</div><p>Все перечисленные клиенты этой машины будут удалены из отгрузок и исключены из итогов.</p></>}</> : <><p>{formatDate(shipment.date)} · {shipment.customer || 'Контрагент не указан'}</p><div className="shipment-delete-details"><span>{shipment.product || 'Топливо не указано'}</span><strong>{number(shipment.liters,2)} л · {number(shipment.revenue,2)} ₽</strong></div><p>Операция будет удалена из CRM и исключена из итогов.</p></>}{error && <div className="shipment-error" role="alert">{error}{shipment.fields.trip_id && <button className="button" disabled={loading||saving} onClick={()=>setReload(value=>value+1)}>Обновить состав</button>}</div>}<footer><button className="button" onClick={onClose} disabled={saving} autoFocus>Отмена</button><button className="button danger" onClick={remove} disabled={saving||loading||!!shipment.fields.trip_id&&!trip}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>} {saving ? 'Удаляем…' : shipment.fields.trip_id ? 'Удалить всю отгрузку' : 'Удалить операцию'}</button></footer></dialog>
+  return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="shipment-delete-title" onCancel={e => {e.preventDefault();if(!saving) onClose()}}><h2 id="shipment-delete-title">{shipment.fields.trip_id ? 'Удалить отгрузку всей машины?' : 'Удалить эту отгрузку?'}</h2>{shipment.fields.trip_id ? <>{loading ? <LoadingSkeleton label="Загружаем состав отгрузки" rows={3}/> : trip && <><p>{formatDate(trip.fields.date)} · {number(trip.fields.quantity_tonnes,6)} т · клиентов: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(customer=><span key={customer.id}>{companies.find(company=>company.id===customer.fields.customer_id)?.name ?? 'Клиент'} · {number(customer.fields.quantity_litres,2)} л</span>)}</div><p>Все перечисленные клиенты этой машины будут удалены из отгрузок и исключены из итогов.</p></>}</> : <><p>{formatDate(shipment.date)} · {shipment.customer || 'Контрагент не указан'}</p><div className="shipment-delete-details"><span>{shipment.product || 'Топливо не указано'}</span><strong>{number(shipment.liters,2)} л · {number(shipment.revenue,2)} ₽</strong></div><p>Операция будет удалена из CRM и исключена из итогов.</p></>}{error && <div className="shipment-error" role="alert">{error}{shipment.fields.trip_id && <button className="button" disabled={loading||saving} onClick={()=>setReload(value=>value+1)}>Обновить состав</button>}</div>}<footer><button className="button" onClick={onClose} disabled={saving} autoFocus>Отмена</button><button className="button danger" onClick={remove} disabled={saving||loading||!!shipment.fields.trip_id&&!trip}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>} {saving ? 'Удаляем…' : shipment.fields.trip_id ? 'Удалить всю отгрузку' : 'Удалить операцию'}</button></footer></dialog>
 }

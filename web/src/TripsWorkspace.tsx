@@ -1,3 +1,4 @@
+import PageLoading from './PageLoading'
 import { useEffect, useState } from 'react'
 import type { DirectoryData } from './model'
 import { apiFetch } from './workspace-api'
@@ -20,6 +21,6 @@ export default function TripsWorkspace({ canManagePlaces, allowDelete = false }:
   }, [revision])
   return <>
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRevision(value => value + 1)}>Повторить загрузку справочников</button></div>}
-    {data ? <TripsPage allowDelete={allowDelete} data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <p role="status">Загружаем справочники рейсов…</p>}
+    {data ? <TripsPage allowDelete={allowDelete} data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <PageLoading/>}
   </>
 }

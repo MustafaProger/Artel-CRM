@@ -120,7 +120,21 @@ export function useDialogMotion(dialog: RefObject<HTMLDialogElement | null>, onD
     mounted.current = true
     const element = dialog.current
     const preventNativeClose = (event: Event) => event.preventDefault()
+    // Browsers may force-close a dialog on repeated Escape even when its native
+    // cancel event was prevented. Route the key through the same form guard
+    // before the native close watcher runs (including retry while saving).
+    const requestGuardedClose = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || !element?.open) return
+      if (!(event.target instanceof Element) || event.target.closest('dialog[open]') !== element) return
+      // The window listener runs after React's child-widget handlers, so a
+      // combobox or nested picker can consume Escape first.
+      const cancelRequest = new Event('cancel', { cancelable: true })
+      event.preventDefault()
+      event.stopPropagation()
+      element.dispatchEvent(cancelRequest)
+    }
     element?.addEventListener('cancel', preventNativeClose)
+    window.addEventListener('keydown', requestGuardedClose)
     if (autoOpen) open()
     return () => {
       mounted.current = false
@@ -128,6 +142,7 @@ export function useDialogMotion(dialog: RefObject<HTMLDialogElement | null>, onD
       pending.current = null
       clearTimeout(openingTimer.current)
       element?.removeEventListener('cancel', preventNativeClose)
+      window.removeEventListener('keydown', requestGuardedClose)
       element?.close()
       if (element) { element.inert = false; delete element.dataset.modalMotion }
       restore()

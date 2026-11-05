@@ -1,3 +1,4 @@
+import PageLoading from './PageLoading'
 import { lazy, Suspense, useState } from 'react'
 import { Check, MapPin } from 'lucide-react'
 import { tripRequestExplicitCoordinates } from './trip-request-map-coordinates'
@@ -15,6 +16,6 @@ export default function DeliveryPointPicker({ latitude, longitude, mapUrl, disab
   return <div className="delivery-point-picker">
     <div className="delivery-point-summary">{point?.status === 'found' ? <><Check size={16} aria-hidden="true"/><span>Точка выбрана: {point.latitude.toFixed(6)}, {point.longitude.toFixed(6)}</span></> : <span>Точка доставки ещё не выбрана</span>}</div>
     <button type="button" className="button" aria-expanded={open} disabled={disabled} onClick={() => setOpen(value => !value)}><MapPin size={16}/>{open ? 'Скрыть карту выбора' : point?.status === 'found' ? 'Изменить точку на карте' : 'Выбрать точку на карте'}</button>
-    {open && <Suspense fallback={<p role="status">Загружаем карту…</p>}><PointMap latitude={point?.status === 'found' ? String(point.latitude) : null} longitude={point?.status === 'found' ? String(point.longitude) : null} disabled={disabled} onChange={onChange}/></Suspense>}
+    {open && <Suspense fallback={<div className="loading-map-frame"><PageLoading label="Загружаем карту…"/></div>}><PointMap latitude={point?.status === 'found' ? String(point.latitude) : null} longitude={point?.status === 'found' ? String(point.longitude) : null} disabled={disabled} onChange={onChange}/></Suspense>}
   </div>
 }

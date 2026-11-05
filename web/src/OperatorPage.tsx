@@ -1,3 +1,4 @@
+import LoadingSkeleton from './LoadingSkeleton'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from 'lucide-react'
 import Decimal from 'decimal.js'
@@ -81,7 +82,7 @@ export default function OperatorPage({ creatorName }: { creatorName: string }) {
   return <OperatorServicesContext.Provider value={data?.services ?? []}><section className="operator-workspace" aria-label="Операторская">
     <div className="operator-topbar">
       <ScrollableSegments className="operator-tabs" role="tablist" label="Раздел операторской" value={tab}>
-        {[['plans', `Задания · ${(data?.plans ?? []).filter(plan => plan.status === 'active').length + scheduled.filter(entry => entry.status === 'open').length}`], ['operations', 'Операции'], ['return', `Возвраты · ${(data?.cases ?? []).filter(entry => entry.kind === 'return' && entry.status === 'open').length}`], ['deferred', `Ожидают заправки · ${(data?.cases ?? []).filter(entry => entry.kind === 'deferred' && entry.status === 'open').length}`], ['reconciliation', 'Сверки']].map(([id, label]) => <button type="button" key={id} id={`operator-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="operator-content" onClick={() => { if (id !== tab || focusedCaseId) setCaseStatus('open'); setTab(id); setFocusedCaseId('') }}>{label}</button>)}
+        {[['plans', `Задания · ${(data?.plans ?? []).filter(plan => plan.status === 'active').length + scheduled.filter(entry => entry.status === 'open').length}`], ['operations', 'Операции'], ['return', `Возвраты · ${(data?.cases ?? []).filter(entry => entry.kind === 'return' && entry.status === 'open').length}`], ['deferred', `Ожидают заправки · ${(data?.cases ?? []).filter(entry => entry.kind === 'deferred' && entry.status === 'open').length}`], ['reconciliation', 'Сверки']].map(([id, label]) => <button type="button" key={id} id={`operator-tab-${id}`} role="tab" disabled={!data} aria-selected={tab === id} aria-controls="operator-content" onClick={() => { if (id !== tab || focusedCaseId) setCaseStatus('open'); setTab(id); setFocusedCaseId('') }}>{label}</button>)}
       </ScrollableSegments>
       {tab !== 'reconciliation' && <div className="operator-controls">
         {tab === 'plans' && data && <div className="operator-plan-heading">
@@ -105,7 +106,7 @@ export default function OperatorPage({ creatorName }: { creatorName: string }) {
     {payment.pending && <button type="button" className="button" disabled={payment.busy} onClick={() => void payment.retry()}>Проверить сохранение оплаты</button>}
     {payment.busy && <p role="status">Сохраняем отметку оплаты…</p>}
     {message && <p className="operator-feedback" role="status">{message}</p>}
-    {!data ? <p role="status">{busy ? 'Загружаем операторскую…' : 'Данные не загружены.'}</p> : <div id="operator-content" role="tabpanel" aria-labelledby={`operator-tab-${tab}`}>
+    {!data ? busy || !error ? <LoadingSkeleton variant="operator" label="Загружаем операторскую"/> : <p role="status">Данные не загружены. Нажмите «Обновить».</p> : <div id="operator-content" role="tabpanel" aria-labelledby={`operator-tab-${tab}`}>
       <div hidden={tab !== 'reconciliation'}><OperatorReconciliation workspace={data} busy={busy} onRefresh={() => void reload()} onSaved={next => setData(next)} onOperation={row => setEditor({kind:'fuel',row})} onDate={(date, service) => {setFrom(date);setTo(date);setServiceId(service);setQuery('');setPaid('all');setPlanId('');setFocusedCaseId('');setTab('operations');document.getElementById('operator-tab-operations')?.focus({preventScroll:true})}}/></div>
       {tab === 'plans' && <>
       <section className="operator-task-section" aria-label="Задания на приём оплаты"><h2>Приём оплаты</h2><PlanCards plans={data.plans.filter(plan => plan.status === planStatus)} onSelect={id => { setPlanId(id); setFrom('');setTo('');setServiceId('');setQuery('');setPaid('all'); setTab('operations') }} onEdit={plan => setPlanEditor({ plan })} /></section>

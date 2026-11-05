@@ -1,3 +1,4 @@
+import LoadingSkeleton from './LoadingSkeleton'
 import { TripIssueLabel } from './TripWorkflowAlert'
 import { useState } from 'react'
 import { Check, ChevronDown, MapPin, RefreshCw, Search, Truck } from 'lucide-react'
@@ -12,8 +13,8 @@ import AnimatedDetails from './AnimatedDetails'
 import TripCopyButton from './TripCopyButton'
 import './trip-execution.css'
 
-export default function TripProcessPanel({ trips, data, loading, error, onReload }: {
-  trips: ShipmentTrip[]; data: DirectoryData; loading: boolean; error: string; onReload: () => void
+export default function TripProcessPanel({ trips, data, loading, loaded = trips.length > 0, error, onReload }: {
+  trips: ShipmentTrip[]; data: DirectoryData; loading: boolean; loaded?: boolean; error: string; onReload: () => void
 }) {
   const [query, setQuery] = useState(''), [filter, setFilter] = useState<'active' | 'completed' | 'all'>('active')
   const [vehicleId, setVehicleId] = useState(''), [stage, setStage] = useState('')
@@ -37,7 +38,7 @@ export default function TripProcessPanel({ trips, data, loading, error, onReload
     </div>
     <div className="execution-context"><span>Показано рейсов: {visibleCount}{loading ? ' · Обновляем…' : ' · Автообновление 30 с'}</span><AnimatedDetails className="execution-help" summary="Как работают статусы?"><div className="execution-help-body"><p>Водитель нажимает «Прибыл на место доставки» у нужного клиента. Сотрудник с доступом к рейсу может нажать «Завершить доставку». В истории сохраняются автор и время отметки.</p><dl>{(['planned','loading','enroute','delivering','completed'] as const).map(s => <div key={s}><dt>{executionStageLabel[s]}</dt><dd>{executionStageHint[s]}</dd></div>)}</dl><p>Последняя подтверждённая доставка автоматически завершает рейс. Документы СБИС и приёмка клиента в ЭТрН учитываются отдельно.</p><p>Если отметки нет, это не доказывает, что старый рейс фактически не выполнен.</p></div></AnimatedDetails></div>
     {error && <p className="shipment-error" role="alert">{error}</p>}
-    {loading && !trips.length && <p role="status">Загружаем рейсы…</p>}
+    {loading && !loaded && <LoadingSkeleton variant="process" label="Загружаем процесс рейсов"/>}
     <div className="execution-fleet">{groups.map(group => <article className="execution-vehicle" key={group.id}>
       <header><div><Truck size={19}/><h3>{group.plate}</h3></div><span>Рейсов: {group.visible.length}</span></header>
       <div className="execution-trip-list panel">{group.visible.map(trip => {

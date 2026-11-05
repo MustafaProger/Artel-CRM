@@ -1,3 +1,4 @@
+import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { useRef, useState } from 'react'
 import { ArrowUpRight, ClipboardList, LoaderCircle, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { Company, Directories } from './model'
@@ -12,8 +13,8 @@ import { useDialogMotion } from './useDialogMotion'
 import { number } from './utils'
 import './trip-requests.css'
 
-export default function TripRequestsPanel({ requests, loading, error, companies, directories, onReload, onSaved, onDeleted }: {
-  requests: TripRequest[]; loading: boolean; error: string; companies: Company[]; directories: Directories; onReload: () => void; onSaved: (request: TripRequest) => void; onDeleted: (id: string) => void
+export default function TripRequestsPanel({ requests, loading, loaded = requests.length > 0, error, companies, directories, onReload, onSaved, onDeleted }: {
+  requests: TripRequest[]; loading: boolean; loaded?: boolean; error: string; companies: Company[]; directories: Directories; onReload: () => void; onSaved: (request: TripRequest) => void; onDeleted: (id: string) => void
 }) {
   const [query, setQuery] = useState(''), [editor, setEditor] = useState<{ request?: TripRequest } | null>(null), [deleting, setDeleting] = useState<TripRequest | null>(null)
   const [notice, setNotice] = useState('')
@@ -22,7 +23,8 @@ export default function TripRequestsPanel({ requests, loading, error, companies,
     <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск заявки" placeholder="Компания, адрес, комментарий…" value={query} onChange={event => setQuery(event.target.value)}/></label><button type="button" className="button primary mobile-icon-action" aria-label="Новая заявка" title="Новая заявка" onClick={() => setEditor({})}><Plus size={17}/><span className="mobile-action-label">Новая заявка</span></button></div>
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={onReload}>Повторить загрузку</button></div>}
-    {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : <>
+    {loading && loaded && <LoadingProgress label="Обновляем заявки"/>}
+    {loading && !loaded ? <LoadingSkeleton variant="requests" label="Загружаем заявки" rows={4}/> : <>
       {!!visible.length && <div className="trip-request-summary"><span>Заявок: {visible.length}</span><strong>{number(visible.reduce((sum, request) => sum + Number(request.quantityLitres), 0))} л</strong></div>}
       <div className="trip-requests-list">{visible.map(request => {
         const place = getDeliveryPlaceDisplay(request.addressName, request.address)

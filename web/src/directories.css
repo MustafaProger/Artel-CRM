@@ -25,3 +25,13 @@
 
 .address-receivers{min-width:0;display:grid;gap:14px}.address-receivers-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.address-receivers-heading h4{margin:0;font-size:15px;font-weight:600}.address-receiver-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 44px;gap:12px;align-items:end}.address-receiver-row>.icon-button{width:44px;min-height:44px}.address-receivers>.muted{margin:0;font-size:13px;line-height:1.5}
 @media(max-width:600px){.address-receiver-row{grid-template-columns:minmax(0,1fr) 44px;gap:10px}.address-receiver-row>.shipment-field{grid-column:1}.address-receiver-row>.icon-button{grid-column:2;grid-row:1/3;align-self:center}.address-receivers-heading .button{white-space:normal;text-align:left}}
+
+/* Status messages need their own breathing room above the results card. */
+.directories-page > .directory-notice { margin: 0 0 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.directory-editor-footer { flex-wrap: wrap; }
+.directory-editor-footer .button svg { flex-shrink: 0; }
+.directory-close-confirm .button { white-space: normal; }
+.directory-delete-dialog .directory-editor-body { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .directory-delete-dialog .directory-editor-footer > .button { flex: 1; justify-content: center; }
+}

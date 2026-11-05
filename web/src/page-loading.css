@@ -1,0 +1,5 @@
+.page-loading-stage{width:100%;min-width:0}
+.page-loading{display:flex;align-items:center;justify-content:center;gap:12px;min-height:132px;padding:24px;color:var(--muted,#61636a);font-size:14px;line-height:1.5}
+.page-loading__spinner{flex-shrink:0;width:20px;height:20px;border:2px solid var(--border,#dce3df);border-top-color:var(--accent,#176849);border-radius:50%;animation:page-loading-spin .8s linear infinite}
+@keyframes page-loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.page-loading__spinner{animation:none}}

@@ -1,4 +1,5 @@
 import { useDialogMotion } from './useDialogMotion'
+import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, Check, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { isScopedEmployee, type AccountUser } from './auth-model';
@@ -109,7 +110,8 @@ export default function WorkPage() {
     </div>
     {notice && <p className="work-notice" role="status">{notice}</p>}
     {error && <p className="shipment-error" role="alert">{error}</p>}
-    {!data && <div className="panel work-empty">{loading ? 'Загрузка рабочего пространства…' : 'Данные не загружены. Нажмите «Обновить».'}</div>}
+    {!data && (loading ? <LoadingSkeleton label="Загружаем рабочее пространство" variant={view === 'calendar' ? 'work-calendar' : 'work'} rows={4}/> : <div className="panel work-empty">Данные не загружены. Нажмите «Обновить».</div>)}
+    {data && loading && <LoadingProgress label="Обновляем рабочее пространство"/>}
     {data && <>
       <div className="work-layout">
         <section className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
@@ -159,6 +161,7 @@ export default function WorkPage() {
 
 function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
+  const confirmation = useRef<HTMLDivElement>(null), errorMessage = useRef<HTMLParagraphElement>(null);
   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const [requestId] = useState(() => crypto.randomUUID());
   const entry = editor.entry, task = entry as WorkTask | undefined, record = entry as WorkCompanyRecord | undefined, note = entry as WorkNote | undefined;
@@ -166,14 +169,22 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const [files, setFiles] = useState<File[]>([]);
   const archived = !!task?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState(''), [dirty, setDirty] = useState(false), [confirmClose, setConfirmClose] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false), [pendingAction, setPendingAction] = useState<SavedAction | null>(null);
   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
+  useEffect(() => {
+    if (!confirmClose && !confirmDelete) return;
+    confirmation.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+    confirmation.current?.scrollIntoView({ block: 'nearest' });
+  }, [confirmClose, confirmDelete]);
+  useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }); } }, [error]);
   useEffect(() => { if (!dirty) return; const prevent = (event: BeforeUnloadEvent) => event.preventDefault(); window.addEventListener('beforeunload', prevent); return () => window.removeEventListener('beforeunload', prevent); }, [dirty]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })); setDirty(true); };
-  const close = () => { if (inFlight.current) return; if (dirty) setConfirmClose(true); else onClose(); };
+  const close = () => { if (inFlight.current) return; if (confirmDelete) { setConfirmDelete(false); return; } if (dirty) setConfirmClose(true); else onClose(); };
   const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
     if (inFlight.current) return;
     if (method !== 'DELETE' && !dialog.current?.querySelector('form')?.reportValidity()) return;
     inFlight.current = true; onSaving(true); setSaving(true); setError('');
+    setPendingAction(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved');
     try {
       let body: Record<string, unknown> = { version: entry?.version };
       if (method !== 'DELETE') {
@@ -185,14 +196,14 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
       }
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Не удалось сохранить запись.');
+      if (!response.ok) throw new Error(result.error || (method === 'DELETE' ? 'Не удалось удалить запись.' : 'Не удалось сохранить запись.'));
       await complete(() => onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry));
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
-    finally { inFlight.current = false; onSaving(false); setSaving(false); }
+    finally { inFlight.current = false; onSaving(false); setSaving(false); setPendingAction(null); }
   };
   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number } = {}) => <label className="work-field"><span>{label}{options.required ? ' *' : ''}</span>{options.multiline ? <textarea aria-label={label} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;
   const heading = editor.kind === 'tasks' ? entry ? 'Задача' : 'Новая задача' : editor.kind === 'companies' ? 'Работа с компанией' : entry ? 'Заметка' : 'Новая заметка';
-  return <dialog ref={dialog} className="detail-dialog work-editor" aria-labelledby="work-editor-title" onCancel={event => { event.preventDefault(); close(); }}><form onSubmit={event => { event.preventDefault(); void save(entry ? 'PATCH' : 'POST'); }}>
+  return <dialog ref={dialog} className="detail-dialog work-editor" aria-labelledby="work-editor-title" onCancel={event => { event.preventDefault(); close(); }}><form aria-busy={saving} onSubmit={event => { event.preventDefault(); if (!confirmClose && !confirmDelete) void save(entry ? 'PATCH' : 'POST'); }}>
     <header className="work-editor-heading"><h2 id="work-editor-title">{heading}</h2><button type="button" className="icon-button" aria-label="Закрыть рабочую запись" disabled={saving} onClick={close}><X size={20}/></button></header>
     <div className="work-editor-body">
       {editor.kind !== 'companies' && input('Название', 'title', { required: true })}
@@ -209,13 +220,16 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
       {editor.kind !== 'notes' && <section className="work-comments"><h3>Комментарии</h3>{record?.comments?.map(comment => <article key={comment.id}><small>{userName(comment.authorId)} · {dateLabel(comment.createdAt)}</small><p>{comment.text}</p></article>)}{input('Новый комментарий', 'comment', { multiline: true })}</section>}
       {editor.kind !== 'notes' && <section className="work-files"><h3>Файлы</h3><p className="work-hint">До 1 МБ на файл, до 2 МБ и 20 файлов в карточке. Доступны сотруднику, которому назначена запись.</p>{record?.attachments?.map(file => <a key={file.id} className="work-file" href={`/api/work/${editor.kind}/${encodeURIComponent(entry!.id)}/files/${encodeURIComponent(file.id)}`} download={file.name}>{file.name} · {Math.ceil(file.size / 1024)} КБ</a>)}<label className="work-field"><span>Прикрепить файлы</span><input type="file" multiple aria-label="Прикрепить файлы" disabled={saving} onChange={event => { const selected = [...files, ...Array.from(event.target.files ?? [])]; event.target.value = ''; if (selected.some(file => file.size > workFileLimit) || selected.reduce((sum, file) => sum + file.size, 0) + (record?.attachments ?? []).reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit || selected.length + (record?.attachments?.length ?? 0) > 20) { setError('Превышен предел файлов: 1 МБ на файл, 2 МБ и 20 файлов в карточке.'); return; } setFiles(selected); setDirty(true); setError(''); }}/></label>{files.map((file, index) => <div className="work-file" key={index}>{file.name}<button type="button" className="icon-button" aria-label={`Убрать файл ${file.name}`} disabled={saving} onClick={() => setFiles(files.filter((_, i) => i !== index))}><X size={15}/></button></div>)}</section>}
       {entry && <p className="work-hint">Изменено: {dateLabel(entry.updatedAt)} · {userName(entry.updatedBy)}</p>}
-      {error && <p className="shipment-error" role="alert">{error}</p>}
-      {confirmClose && <div className="work-confirm" role="alert"><p>Закрыть без сохранения изменений?</p><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>}
     </div>
     <footer className="work-editor-footer">
-      {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => void save('DELETE')}><Trash2 size={16}/>Удалить</button>}
-      {entry && editor.kind !== 'notes' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', !archived)}>{archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
-      <button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving}><Save size={16}/>{saving ? 'Сохранение…' : 'Сохранить'}</button>
+      {error && <p ref={errorMessage} tabIndex={-1} className="shipment-error work-action-error" role="alert">{error}</p>}
+      {confirmClose ? <div ref={confirmation} className="work-confirm" role="alert"><p>Закрыть без сохранения изменений?</p><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>
+        : confirmDelete ? <div ref={confirmation} className="work-confirm work-delete-confirm" role="group" aria-label="Подтверждение удаления"><p>Удалить «<strong>{fields.title || fields.question || heading}</strong>»? Запись исчезнет из раздела «Работа».</p><button type="button" className="button" disabled={saving} onClick={() => setConfirmDelete(false)}>Оставить запись</button><button type="button" className="button work-delete" disabled={saving} onClick={() => void save('DELETE')}>{saving ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Trash2 size={16} aria-hidden="true"/>}{saving ? 'Удаляем…' : 'Удалить запись'}</button></div>
+        : <>
+          {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => { setConfirmDelete(true); setError(''); }}><Trash2 size={16} aria-hidden="true"/>Удалить</button>}
+          {entry && editor.kind !== 'notes' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', !archived)}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
+          <button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving}>{pendingAction === 'saved' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}{pendingAction === 'saved' ? 'Сохраняем…' : 'Сохранить'}</button>
+        </>}
     </footer>
   </form></dialog>;
 }

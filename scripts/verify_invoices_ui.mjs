@@ -274,26 +274,44 @@ try {
       await page.keyboard.press('Escape'); await expect(page.getByRole('dialog', {name:'Настройки',exact:true})).toBeHidden(); await expect(page.getByRole('button',{name:'Настройки счетов',exact:true})).toBeFocused();
       await page.evaluate(() => { document.querySelector('.invoice-settings-dialog')?.close(); document.querySelector('.invoice-form')?.scrollIntoView({block:'start'}); });
       workspaceMode = 'hold'; await page.reload();
-      await expect(page.getByRole('region', { name: 'Новый счёт', exact: true }).getByText('Загружаем данные…', { exact: true })).toBeVisible();
+      const initialSkeleton = page.locator('[data-skeleton-layout="invoice"]');
+      await expect(initialSkeleton).toBeVisible();
+      await expect(page.locator('.loading-skeleton:visible')).toHaveCount(1);
+      await expect(page.locator('.invoice-create-panel,.invoice-history-panel')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Настройки счетов', exact: true })).toBeDisabled();
+      await expect(page.getByRole('dialog', { name: 'Настройки', exact: true })).toBeHidden();
+      await expect.poll(() => typeof releaseGet).toBe('function');
       await capture(`loading-${width}`); await audit(`loading-${width}`);
       workspaceMode = 'failed'; releaseGet();
-      await expect(page.getByRole('region', { name: 'Новый счёт', exact: true }).getByText('Синтетическая ошибка загрузки.', { exact: true })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'Синтетическая ошибка загрузки.' })).toBeVisible();
+      await expect(page.locator('.loading-skeleton:visible')).toHaveCount(0);
       await capture(`error-${width}`); await audit(`error-${width}`);
       workspaceMode = 'ready'; await page.getByRole('button', { name: 'Повторить', exact: true }).click();
       await expect(page.locator('.invoice-form')).toBeVisible();
-      workspaceMode = 'hold'; await page.reload();
+      // Settings become available only after the shared page data has arrived.
+      // A later refresh keeps those confirmed settings, without another skeleton.
       await page.getByRole('button', { name: 'Настройки счетов', exact: true }).click();
       const settingsPanel = page.getByRole('dialog', { name: 'Настройки', exact: true });
-      await expect(settingsPanel.getByText('Загружаем данные…', { exact: true })).toBeVisible();
-      await capture(`settings-loading-${width}`); await audit(`settings-loading-${width}`);
-      workspaceMode = 'failed'; releaseGet();
-      await expect(settingsPanel.getByText('Синтетическая ошибка загрузки.', { exact: true })).toBeVisible();
-      await expect(settingsPanel.getByRole('button', { name: 'Повторить', exact: true })).toHaveCount(1);
-      await capture(`settings-error-${width}`); await audit(`settings-error-${width}`);
-      workspaceMode = 'ready'; await settingsPanel.getByRole('button', { name: 'Повторить', exact: true }).click();
+      workspaceMode = 'hold'; releaseGet = undefined;
+      await settingsPanel.getByRole('button', { name: 'Обновить справочники', exact: true }).click();
+      await expect.poll(() => typeof releaseGet).toBe('function');
       await expect(settingsPanel.getByRole('list', { name: 'Подключённые базы', exact: true })).toBeVisible();
-      await expect(settingsPanel.getByRole('button', { name: 'Повторить', exact: true })).toHaveCount(0);
-      await page.evaluate(() => { document.querySelector('.invoice-settings-dialog')?.close(); document.querySelector('.invoice-form')?.scrollIntoView({block:'start'}); });
+      await expect(page.locator('.loading-skeleton:visible')).toHaveCount(0);
+      await capture(`settings-refresh-${width}`); await audit(`settings-refresh-${width}`);
+      workspaceMode = 'failed'; releaseGet();
+      await expect(settingsPanel.getByRole('button', { name: 'Обновить справочники', exact: true })).toBeEnabled();
+      await expect(settingsPanel.getByRole('list', { name: 'Подключённые базы', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(settingsPanel).toBeHidden();
+      await expect(page.getByRole('alert').filter({ hasText: 'Синтетическая ошибка загрузки.' })).toBeVisible();
+      await expect(page.locator('.invoice-form')).toBeVisible();
+      await capture(`settings-refresh-error-${width}`); await audit(`settings-refresh-error-${width}`);
+      workspaceMode = 'ready'; await page.getByRole('button', { name: 'Повторить', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Повторить', exact: true })).toHaveCount(0);
+      await page.getByRole('button', { name: 'Настройки счетов', exact: true }).click();
+      await expect(settingsPanel.getByRole('list', { name: 'Подключённые базы', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(settingsPanel).toBeHidden();
       await fill('9000');
       check(`${engine}: four-field/adaptive geometry, preview/details, no overflow, settings/loading/error/retry, ${width}px`);
     }
@@ -443,7 +461,7 @@ try {
   }
   assert.equal(report.errors.length, 0, report.errors.join('\n'));
   // Directors use the same full-access policy for invoices as the other CRM sections.
-  browser = await chromium.launch({ headless: true }); const context = await browser.newContext(); await authenticateContext(context, runtime.base, admin.cookie); const page = await context.newPage();
+  browser = await chromium.launch({ headless: true }); const context = await browser.newContext(); await authenticateContext(context, runtime.base, admin.cookie); await context.route('**/*', route => new URL(route.request().url()).origin === runtime.base ? route.continue() : route.abort()); const page = await context.newPage();
   let invoiceRequests = 0; await page.route('**/api/invoices**', route => { invoiceRequests++; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture()) }); });
   await page.goto(runtime.base + '/#invoices'); await expect(page.getByRole('combobox', { name: 'Продавец', exact: true })).toBeVisible(); assert.ok(invoiceRequests > 0);
   await page.goto(runtime.base + '/#accounts'); await page.locator('.account-row').filter({ hasText: 'QA Директор' }).getByRole('button', { name: 'Изменить', exact: true }).click();

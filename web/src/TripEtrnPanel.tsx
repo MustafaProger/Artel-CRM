@@ -1,3 +1,4 @@
+import LoadingSkeleton from './LoadingSkeleton'
 import { tripLabel } from './trip-identity'
 import TripExchangeActions from './TripExchangeActions'
 import type { TripWorkflowIssue } from './trip-workflow-issues'
@@ -188,7 +189,7 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
     : 'Передача ЭТрН клиентам'
   if (!result) return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`} aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>Документы Saby</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Загрузка документов"/>}</div>
-    {error ? <p className="shipment-error" role="alert">{error}</p> : <p role="status">Загружаем маршрут и этапы обмена…</p>}
+    {error ? <p className="shipment-error" role="alert">{error}</p> : <LoadingSkeleton label="Загружаем маршрут и этапы обмена" rows={4}/>}
     {onDelete && !busy && <button type="button" className="button danger" onClick={onDelete}>Удалить рейс</button>}
     {!busy && <button type="button" className="button" onClick={() => { setBusy(true); setError(''); void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) }) }}><RefreshCw size={15}/>Повторить загрузку</button>}
   </section>
