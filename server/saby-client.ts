@@ -477,8 +477,8 @@ export class SabyClient {
     return documentType === 'ConsignmentNote' ? this.signingClient(side).downloadAttachment(id, attachmentId, revision) : this.signingClient(side).downloadTransportOrderAttachment(id, attachmentId, revision);
   }
   /** Fresh exact source-title signature for a linked response, never a caller-supplied URL. */
-  async downloadSigningSignature(side: SabySigningSide, id: string, attachmentId: string, revision: string, selectedThumbprint: string, documentType?: 'ConsignmentNote', sourceSubtype: '1110339' | '1110340' = '1110339'): Promise<Uint8Array> {
-    if (sourceSubtype === '1110340' && documentType !== 'ConsignmentNote') throw new SabyError('validation', 'Титул перевозчика допустим только для ЭТрН.');
+  async downloadSigningSignature(side: SabySigningSide, id: string, attachmentId: string, revision: string, selectedThumbprint: string, documentType?: 'ConsignmentNote', sourceSubtype: '1110339' | '1110340' | '1110341' = '1110339'): Promise<Uint8Array> {
+    if (sourceSubtype !== '1110339' && documentType !== 'ConsignmentNote') throw new SabyError('validation', 'Титул перевозчика или получателя допустим только для ЭТрН.');
     const fingerprint = (value: unknown) => sabyText(value)?.replace(/\s|:/g, '').toLowerCase();
     const selected = fingerprint(selectedThumbprint);
     if (!selected || !/^[a-f0-9]{40,128}$/.test(selected)) throw new SabyError('validation', 'Не определена выбранная подпись исходного титула.');

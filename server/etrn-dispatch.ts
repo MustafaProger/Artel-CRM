@@ -172,6 +172,26 @@ export function consignmentClientAcceptanceCandidate(remote: SabyObject, recipie
     && rows(stages[0].Вложение).some(file => file.Идентификатор === title.Идентификатор);
 }
 
+/** A completed native exchange omits stages. Metadata is only a candidate for exact T3/T2 read-back. */
+function nativeRecipientAcceptanceTitle(remote: SabyObject, recipient: { inn: string; kpp: string }) {
+  const invalid = (value: SabyObject) => !!value.Ошибка || Number(value.КоличествоОшибок ?? 0) !== 0 || Array.isArray(value.Ошибки) && value.Ошибки.length > 0;
+  const state = sabyObject(remote.Состояние) ? remote.Состояние : {};
+  if (remote.Тип !== 'ConsignmentNote' || remote.Удален === 'Да' || remote.ЧастичныеДанные === 'Да' || invalid(remote) || invalid(state) || String(state.Код) !== '7' || state.НеполнаяОбработка === 'Да' ||
+      !Array.isArray(remote.ТекущиеЭтапы) || remote.ТекущиеЭтапы.length !== 0 || remote.Этап !== undefined && (!Array.isArray(remote.Этап) || remote.Этап.length !== 0) || !['Исходящий', 'Входящий'].includes(String(remote.Направление)) ||
+      !sabyObject(remote.Стороны) || !partyMatches(remote.Стороны.Получатель, recipient) ||
+      remote.Направление === 'Исходящий' && !partyMatches(remote.Контрагент, recipient) || remote.Грузополучатель !== undefined && !partyMatches(remote.Грузополучатель, recipient)) return null;
+  const revision = sabyDocumentWorkflow(remote).revision;
+  const titles = rows(remote.Вложение).filter(row => row.Подтип === '1110341' && row.ВерсияФормата === '5.01' && row.Удален !== 'Да' && row.Актуален !== 'Нет');
+  if (!revision || titles.length !== 1) return null;
+  const file = titles[0], signatures = rows(file.Подпись), fileRevision = sabyObject(file.Редакция) ? file.Редакция.Идентификатор : file.Редакция;
+  if (!sabyText(file.Идентификатор) || invalid(file) || fileRevision && fileRevision !== revision || signatures.length !== 1) return null;
+  const signature = signatures[0], cert = sabyObject(signature.Сертификат) ? signature.Сертификат : {}, signatureFile = sabyObject(signature.Файл) ? signature.Файл : {};
+  const thumbprint = String(cert.Отпечаток ?? '').replace(/[\s:]/g, '').toLowerCase();
+  if (invalid(signature) || signature.Удален === 'Да' || signature.Актуален === 'Нет' || cert.ИНН !== recipient.inn ||
+      cert.КПП !== undefined && recipient.inn.length === 10 && cert.КПП !== recipient.kpp || !/^[a-f0-9]{40,128}$/.test(thumbprint) || !(sabyText(signatureFile.Ссылка) || sabyText(signatureFile.ДвоичныеДанные))) return null;
+  return { id: String(file.Идентификатор), revision, thumbprint };
+}
+
 /** Automatic stage six exists only for new driver-v1 attempts carrying the saved server policy. */
 export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: string): Promise<{ completedAt: string | null; lastError: string | null }> {
   const { base, store, tripId, authorize } = options, source = base.provenance.sourceSha256;
@@ -510,6 +530,37 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         verifiedNativeTitles = true;
       }
       let accepted = false;
+      if (doc.snapshot.documentMode !== 'nk-direct-v1' && doc.orderDraftVersion === 1 && doc.senderTitleVersion === 2 && doc.dispatch!.carrierIdentity && nativeRecipientAcceptanceTitle(remote, doc.snapshot.profile.recipient)) {
+        const manifest = doc.dispatch!.carrier.prepared!;
+        // No provider action is needed after the recipient has signed. Bind the
+        // receipt to our exact signed T2, in both cabinets, on two fresh reads.
+        const readAcceptance = async (senderRemote?: SabyObject) => {
+          const sourceRemote = senderRemote ?? await client.readSigningDocument('sender', doc.id!, 'ConsignmentNote');
+          const carrierRemote = await client.readSigningDocument('carrier', sideId('carrier'), 'ConsignmentNote');
+          await business(sourceRemote, 'sender'); await business(carrierRemote, 'carrier');
+          const receipt = nativeRecipientAcceptanceTitle(sourceRemote, doc.snapshot.profile.recipient), incomingReceipt = nativeRecipientAcceptanceTitle(carrierRemote, doc.snapshot.profile.recipient);
+          if (!receipt || !incomingReceipt || receipt.id !== incomingReceipt.id || receipt.thumbprint !== incomingReceipt.thumbprint) return fail('Подписанная приёмка клиента изменилась или не совпадает в кабинетах.');
+          const sourceTitle = title(sourceRemote, '1110340'), incomingTitle = title(carrierRemote, '1110340');
+          if (sourceTitle.id !== manifest.binding.attachmentId || incomingTitle.id !== manifest.binding.attachmentId || incomingTitle.revision !== manifest.binding.revision) fail('Исходный подписанный титул перевозчика изменился перед проверкой приёмки клиента.');
+          const sourceBytes = await client.downloadSigningAttachment('sender', doc.id!, sourceTitle.id, sourceTitle.revision, 'ConsignmentNote');
+          const incomingBytes = await client.downloadSigningAttachment('carrier', sideId('carrier'), incomingTitle.id, incomingTitle.revision, 'ConsignmentNote');
+          const saved = manifest.attachments.filter(file => file.id === sourceTitle.id && file.subtype === '1110340');
+          if (saved.length !== 1 || saved[0].name !== sourceBytes.name || saved[0].name !== incomingBytes.name || saved[0].sha256 !== bytesHash(sourceBytes.bytes) || saved[0].sha256 !== bytesHash(incomingBytes.bytes)) fail('Подписанный титул перевозчика не совпадает с сохранённым доказательством.');
+          const sourceSignature = await client.downloadSigningSignature('sender', doc.id!, sourceTitle.id, sourceTitle.revision, manifest.binding.certificateThumbprint, 'ConsignmentNote', '1110340');
+          const incomingSignature = await client.downloadSigningSignature('carrier', sideId('carrier'), incomingTitle.id, incomingTitle.revision, manifest.binding.certificateThumbprint, 'ConsignmentNote', '1110340');
+          if (bytesHash(sourceSignature) !== bytesHash(incomingSignature)) fail('Подпись НК в кабинетах не совпадает.');
+          const receiptBytes = await client.downloadSigningAttachment('sender', doc.id!, receipt.id, receipt.revision, 'ConsignmentNote');
+          const incomingReceiptBytes = await client.downloadSigningAttachment('carrier', sideId('carrier'), incomingReceipt.id, incomingReceipt.revision, 'ConsignmentNote');
+          const receiptSignature = await client.downloadSigningSignature('sender', doc.id!, receipt.id, receipt.revision, receipt.thumbprint, 'ConsignmentNote', '1110341');
+          const incomingReceiptSignature = await client.downloadSigningSignature('carrier', sideId('carrier'), incomingReceipt.id, incomingReceipt.revision, incomingReceipt.thumbprint, 'ConsignmentNote', '1110341');
+          if (receiptBytes.name !== incomingReceiptBytes.name || bytesHash(receiptBytes.bytes) !== bytesHash(incomingReceiptBytes.bytes) || bytesHash(receiptSignature) !== bytesHash(incomingReceiptSignature)) fail('Подписанная приёмка клиента в кабинетах не совпадает.');
+          verifyNkRecipientAcceptance(receiptBytes.bytes, sourceBytes.bytes, sourceSignature);
+          return { receipt, incomingReceipt, receiptHash: bytesHash(receiptBytes.bytes), receiptSignatureHash: bytesHash(receiptSignature), sourceTitle, incomingTitle, sourceSignatureHash: bytesHash(sourceSignature) };
+        };
+        const receipt = await readAcceptance(remote), fresh = await readAcceptance();
+        if (JSON.stringify(receipt) !== JSON.stringify(fresh)) fail('Подписанная приёмка клиента изменилась во время сверки.');
+        accepted = true;
+      }
       if (doc.snapshot.documentMode === 'nk-direct-v1' && consignmentClientAcceptanceCandidate(remote, doc.snapshot.profile.recipient)) {
         const receiptTitle = title(remote, '1110341'), carrierTitle = title(remote, '1110340');
         const receiptBytes = await client.downloadSigningAttachment('sender', doc.id!, receiptTitle.id, receiptTitle.revision, 'ConsignmentNote');

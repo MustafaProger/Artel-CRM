@@ -18,7 +18,7 @@ function fixture(inline = true) {
     const request = JSON.parse(String(init?.body)); requests.push(request.method); assert.equal(request.method, 'СБИС.ПрочитатьДокумент');
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: document }));
   };
-  const read = () => new SabyClient(config, send).downloadSigningSignature('sender', 'synthetic-document', 'source-title', 'current', fingerprint, 'ConsignmentNote');
+  const read = (subtype: '1110339' | '1110340' | '1110341' = '1110339', consignment = true) => new SabyClient(config, send).downloadSigningSignature('sender', 'synthetic-document', 'source-title', 'current', fingerprint, consignment ? 'ConsignmentNote' : undefined, subtype);
   return { document, title, signature, requests, read, setBytes: (bytes: Buffer) => { returned = bytes; } };
 }
 
@@ -30,6 +30,21 @@ test('source signature reads current exact title and canonical inline bytes with
 test('source signature resolves provider link through existing bounded same-account download', async () => {
   const f = fixture(false); assert.deepEqual(Buffer.from(await f.read()), Buffer.from('synthetic'));
   assert.deepEqual(f.requests, ['СБИС.ПрочитатьДокумент', 'https://disk.saby.ru/synthetic/source.sgn']);
+});
+
+test('recipient signature requires explicit T3 subtype and an exact current consignment title', async () => {
+  const f = fixture(false); f.title.Подтип = '1110341';
+  assert.deepEqual(Buffer.from(await f.read('1110341')), Buffer.from('synthetic'));
+  await assert.rejects(f.read(), SabyError);
+  const count = f.requests.length;
+  await assert.rejects(f.read('1110341', false), SabyError);
+  assert.equal(f.requests.length, count);
+  f.title.Редакция = { Идентификатор: 'old' };
+  await assert.rejects(f.read('1110341'), SabyError);
+  delete f.title.Редакция;
+  f.signature.Ошибка = { Код: 'invalid-signature' };
+  await assert.rejects(f.read('1110341'), SabyError);
+  assert.equal(f.requests.filter(request => request.startsWith('https:')).length, 1);
 });
 
 test('source signature refuses stale, ambiguous, deleted or wrong-source evidence before download', async () => {

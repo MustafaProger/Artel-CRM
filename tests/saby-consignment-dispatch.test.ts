@@ -90,7 +90,13 @@ async function fixture(native?: 'phone' | 'electronic', alias?: 'valid' | 'title
   let carrierStateOverride: string | undefined, carrierSignatureThumbprint = fps.carrier;
   let carrierMismatch: 'title' | 'signature' | 'revision' | 'stage' | 'missing-reply' | 'duplicate-reply' | null = null;
   let carrierDraftPrepares = 0, carrierSigningPrepares = 0;
-  let changeSenderRevisionAfterCarrier = false;
+  let changeSenderRevisionAfterCarrier = false, completedRecipient = false;
+  let transformRemote: ((remote: SabyObject, side: Side) => void) | undefined;
+  let transformDownload: ((url: string, bytes: Uint8Array) => Uint8Array) | undefined;
+  const recipientBytes = () => {
+    const carrier = parseXml(t2), body = xmlChildren(carrier, 'Документ')[0], info = xmlChildren(body, 'СодИнфПрвПрием')[0];
+    return Buffer.from(`<?xml version="1.0" encoding="utf-8"?><Файл ИдФайл="T3-SYNTHETIC" ВерсФорм="5.01"><Документ КНД="1110341"><ИдИнфПрвПрием ИдФайлИнфПрвПрием="${carrier.attributes.ИдФайл}" ДатФайлПрвПрием="${body.attributes.ДатИнфПрвПрием}" ВрФайлПрвПрием="${body.attributes.ВрИнфПрвПрием}" ЭП="c3ludGhldGlj"/><СодИнфГП УИД_ТрН="${info.attributes.УИД_ТрН}" СодОпПр="Груз принят"><ПриемГрузГП/></СодИнфГП><Подписант/></Документ></Файл>`);
+  };
   const requests: { side: Side; req: IntegrationRpc }[] = [];
   const document = (side: Side): SabyObject => {
     const own = side === 'sender' ? config.customer : config.carrier;
@@ -101,13 +107,24 @@ async function fixture(native?: 'phone' | 'electronic', alias?: 'valid' | 'title
     if (side === 'carrier' && carrierMismatch === 'stage') active.Идентификатор = 'changed-carrier-stage';
     const replies = carrierPrepared && !(side === 'carrier' && carrierMismatch === 'missing-reply') ? [file('carrier')] : [];
     if (side === 'carrier' && carrierMismatch === 'duplicate-reply') replies.push({ ...file('carrier'), Идентификатор: 'another-carrier-title' });
-    return { Идентификатор: side === 'carrier' && alias ? incomingId : doc.id, Тип: 'ConsignmentNote', Номер: doc.number, Дата: '01.04.2025', Направление: side === 'sender' ? 'Исходящий' : 'Входящий', НашаОрганизация: party(own), Грузоотправитель: party(config.customer), ТранспортнаяКомпания: party(config.carrier), Грузополучатель: party(snapshot.profile.recipient), Стороны: { Отправитель: party(config.customer), Перевозчик: party(config.carrier), Получатель: party(alias === 'recipient' && side === 'carrier' ? config.carrier : snapshot.profile.recipient) }, Редакция: [{ Идентификатор: revision, Актуален: 'Да' }], Состояние: { Код: side === 'carrier' && carrierStateOverride !== undefined ? carrierStateOverride : signedCarrier ? '7' : side === 'sender' && signedSender ? '4' : side === 'sender' ? '0' : '10' }, ...(nativeRecipientSummary && signedCarrier && side === 'sender' ? { Контрагент: party(snapshot.profile.recipient), ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор, Наименование: active.Название }] } : { Этап: [active], ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор }] }), Вложение: [file('sender'), ...replies] };
+    const result: SabyObject = { Идентификатор: side === 'carrier' && alias ? incomingId : doc.id, Тип: 'ConsignmentNote', Номер: doc.number, Дата: '01.04.2025', Направление: side === 'sender' ? 'Исходящий' : 'Входящий', НашаОрганизация: party(own), Грузоотправитель: party(config.customer), ТранспортнаяКомпания: party(config.carrier), Грузополучатель: party(snapshot.profile.recipient), Стороны: { Отправитель: party(config.customer), Перевозчик: party(config.carrier), Получатель: party(alias === 'recipient' && side === 'carrier' ? config.carrier : snapshot.profile.recipient) }, Редакция: [{ Идентификатор: revision, Актуален: 'Да' }], Состояние: { Код: side === 'carrier' && carrierStateOverride !== undefined ? carrierStateOverride : signedCarrier ? '7' : side === 'sender' && signedSender ? '4' : side === 'sender' ? '0' : '10' }, ...(nativeRecipientSummary && signedCarrier && side === 'sender' ? { Контрагент: party(snapshot.profile.recipient), ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор, Наименование: active.Название }] } : { Этап: [active], ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор }] }), Вложение: [file('sender'), ...replies] };
+    if (completedRecipient) {
+      result.Состояние = { Код: '7', НеполнаяОбработка: 'Нет' }; delete result.Этап; result.ТекущиеЭтапы = [];
+      result.Контрагент = party(side === 'sender' ? snapshot.profile.recipient : config.customer);
+      (result.Вложение as SabyObject[]).push({ Идентификатор: 'recipient-title', Подтип: '1110341', ВерсияФормата: '5.01', Редакция: { Номер: '1' },
+        Файл: { Имя: 'recipient.xml', Ссылка: `https://disk.saby.ru/${side}-recipient.xml` }, Подпись: [{ Сертификат: { ИНН: snapshot.profile.recipient.inn, Отпечаток: 'ef'.repeat(20) }, Файл: { Ссылка: `https://disk.saby.ru/${side}-recipient.sgn` } }] });
+    }
+    transformRemote?.(result, side);
+    return result;
   };
   const cert = (side: Side) => { const org = side === 'sender' ? config.customer : config.carrier; return { Certificate: { Type: 'Client', CertificateInfo: { Thumbprint: fps[side], IsValid: true, IsQualified: true, NotBefore: '2020-01-01T00:00:00Z', NotAfter: '2099-01-01T00:00:00Z', SubjectName: { '1.2.643.100.4': org.inn, '2.5.4.4': 'Тестовый', '2.5.4.42': 'Подписант' } } }, OurCompany: { Inn: org.inn, Kpp: org.kpp } }; };
   const send: typeof fetch = async (url, init) => {
     if (init?.method === 'GET' && String(url).endsWith('carrier-copy.xml') && (alias === 'title' || carrierMismatch === 'title')) return new Response(Buffer.from('different title'));
     if (init?.method === 'GET' && String(url).endsWith('carrier-source.sgn') && (alias === 'signature' || carrierMismatch === 'signature')) return new Response(Buffer.from('different signature'));
-    if (init?.method === 'GET') return new Response(String(url).endsWith('.sgn') ? senderSignature : String(url).includes('carrier.xml') ? t2 : senderBytes);
+    if (init?.method === 'GET') {
+      const bytes = String(url).endsWith('.sgn') ? senderSignature : String(url).endsWith('-recipient.xml') ? recipientBytes() : String(url).includes('carrier.xml') ? t2 : senderBytes;
+      return new Response(transformDownload ? transformDownload(String(url), bytes) : bytes);
+    }
     const req = JSON.parse(String(init?.body)) as IntegrationRpc;
     const side: Side = new Headers(init?.headers).get('X-SBISSessionID') === 'synthetic-carrier-session' ? 'carrier' : 'sender';
     requests.push({ side, req });
@@ -182,6 +199,9 @@ async function fixture(native?: 'phone' | 'electronic', alias?: 'valid' | 'title
     completeExternalSender: () => { signedSender = true; pending = false; },
     completeExternalCarrier: () => { signedSender = true; signedCarrier = true; carrierPrepared = true; pending = false; },
     nativeSummary: () => { nativeRecipientSummary = true; },
+    completeNativeRecipient: () => { completedRecipient = true; },
+    transformRemote: (fn: typeof transformRemote) => { transformRemote = fn; },
+    transformDownload: (fn: typeof transformDownload) => { transformDownload = fn; },
     regenerateCarrier: () => { regenerateCarrierTitle = true; },
     setCarrierState: (value: string) => { carrierStateOverride = value; },
     changeCarrierSignature: () => { carrierSignatureThumbprint = 'ef'.repeat(20); },
@@ -597,6 +617,79 @@ test('native recipient summary requires verified titles, exact parties, state an
     { ...remote, ТекущиеЭтапы: [{ ...remote.ТекущиеЭтапы[0], Завершен: 'Да' }] },
     { ...remote, Этап: [{ Идентификатор: 'recipient-current', Название: 'Приемка груза', Исполнитель: [{ Контрагент: party({ ...recipient, inn: '0000000000' }) }] }] },
   ]) assert.equal(consignmentClientDispatchConfirmed(changed, recipient, true), false);
+});
+
+for (const observed of [false, true]) test(`a completed native exchange proves recipient T3 after ${observed ? 'observed regenerated' : 'locally signed'} T2 without provider actions`, async () => {
+  const f = await fixture('electronic', 'valid');
+  try {
+    f.setReceipt(false);
+    if (observed) f.regenerateCarrier();
+    await f.run();
+    const before = structuredClone(f.saved()), writes = f.writes().length;
+    if (observed) f.completeExternalCarrier();
+    f.completeNativeRecipient();
+    const result = await f.run(), after = f.saved();
+    assert.ok(result.completedAt, result.lastError ?? 'no completion');
+    assert.ok(after.dispatch?.recipientAcceptedAt);
+    assert.equal(after.dispatch?.lastError, undefined);
+    assert.deepEqual(after.snapshot, before.snapshot);
+    assert.deepEqual(after.dispatch?.sender, before.dispatch?.sender);
+    assert.deepEqual(after.dispatch?.carrierDraft, before.dispatch?.carrierDraft);
+    assert.deepEqual(after.dispatch?.carrierFill, before.dispatch?.carrierFill);
+    if (observed) {
+      assert.deepEqual(after.dispatch?.carrierObservedCompletion?.previousStep, before.dispatch?.carrier);
+      assert.equal(after.dispatch?.carrier.executeAttempted, undefined);
+    } else assert.deepEqual(after.dispatch?.carrier, before.dispatch?.carrier);
+    assert.equal(f.writes().length, writes);
+    const saved = JSON.stringify(after.dispatch);
+    f.reload(); await f.run();
+    assert.equal(JSON.stringify(f.saved().dispatch), saved);
+    assert.equal(f.writes().length, writes);
+  } finally { await f.close(); }
+});
+
+for (const mismatch of ['missing-title', 'duplicate-title', 'unsigned', 'wrong-signer', 'wrong-recipient', 'wrong-kpp', 'stale-title', 'signature-error', 'pending-state', 'partial-processing', 'active-stage', 'refused', 'uid', 'source-file', 'source-signature', 'cabinet-bytes', 'cabinet-signature', 'fresh-bytes', 'fresh-signer'] as const) test(`completed native recipient proof rejects ${mismatch} without provider writes or intent reset`, async () => {
+  const f = await fixture('electronic', 'valid');
+  try {
+    f.setReceipt(false); await f.run(); f.completeNativeRecipient();
+    const before = structuredClone(f.saved().dispatch!), writes = f.writes().length;
+    let receiptDownloads = 0;
+    f.transformRemote((remote, side) => {
+      const files = remote.Вложение as SabyObject[], receipt = files.find(file => file.Подтип === '1110341')!;
+      const signatures = receipt.Подпись as SabyObject[], cert = signatures[0].Сертификат as SabyObject;
+      if (mismatch === 'missing-title') remote.Вложение = files.filter(file => file !== receipt);
+      else if (mismatch === 'duplicate-title') files.push({ ...receipt, Идентификатор: 'other-receipt' });
+      else if (mismatch === 'unsigned') receipt.Подпись = [];
+      else if (mismatch === 'wrong-signer' || mismatch === 'fresh-signer' && receiptDownloads >= 2) cert.ИНН = '9999999999';
+      else if (mismatch === 'wrong-recipient') (remote.Стороны as SabyObject).Получатель = party({ ...f.snapshot.profile.recipient, inn: '9999999999' });
+      else if (mismatch === 'wrong-kpp') cert.КПП = '999999999';
+      else if (mismatch === 'stale-title') receipt.Редакция = 'stale';
+      else if (mismatch === 'signature-error') signatures[0].Ошибки = ['synthetic'];
+      else if (mismatch === 'pending-state') remote.Состояние = { Код: '4' };
+      else if (mismatch === 'partial-processing') remote.Состояние = { Код: '7', НеполнаяОбработка: 'Да' };
+      else if (mismatch === 'active-stage') remote.ТекущиеЭтапы = [{ Идентификатор: 'unrelated', Наименование: 'Согласование' }];
+      if (side === 'carrier' && mismatch === 'cabinet-signature') (signatures[0].Файл as SabyObject).Ссылка = 'https://disk.saby.ru/changed-recipient.sgn';
+    });
+    f.transformDownload((url, bytes) => {
+      if (url.endsWith('changed-recipient.sgn')) return Buffer.from('changed-signature');
+      if (!url.endsWith('-recipient.xml')) return bytes;
+      receiptDownloads++;
+      let xml = Buffer.from(bytes).toString('utf8');
+      if (mismatch === 'refused') xml = xml.replace('СодОпПр="Груз принят"', 'СодОпОтк="Груз отклонён"');
+      else if (mismatch === 'uid') xml = xml.replace(/УИД_ТрН="[^"]+"/, 'УИД_ТрН="another-uid"');
+      else if (mismatch === 'source-file') xml = xml.replace(/ИдФайлИнфПрвПрием="[^"]+"/, 'ИдФайлИнфПрвПрием="another-file"');
+      else if (mismatch === 'source-signature') xml = xml.replace('ЭП="c3ludGhldGlj"', 'ЭП="b3RoZXI="');
+      else if (mismatch === 'cabinet-bytes' && url.endsWith('/carrier-recipient.xml') || mismatch === 'fresh-bytes' && receiptDownloads > 2) xml = xml.replace('T3-SYNTHETIC', 'T3-CHANGED');
+      return Buffer.from(xml);
+    });
+    const result = await f.run(), after = f.saved().dispatch!;
+    assert.equal(result.completedAt, null);
+    assert.equal(after.recipientAcceptedAt, undefined);
+    assert.ok(result.lastError);
+    for (const key of ['sender', 'carrierDraft', 'carrierFill', 'carrierIdentity', 'carrierObservedCompletion'] as const) assert.deepEqual(after[key], before[key]);
+    for (const key of ['binding', 'prepared', 'executeAttempted', 'dispatchState'] as const) assert.deepEqual(after.carrier[key], before.carrier[key]);
+    assert.equal(f.writes().length, writes);
+  } finally { await f.close(); }
 });
 
 
