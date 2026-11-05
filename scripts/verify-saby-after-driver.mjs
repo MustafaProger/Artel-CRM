@@ -24,6 +24,20 @@ async function startBuilt(f) {
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   return { base: `http://127.0.0.1:${server.address().port}`, server: { close: () => new Promise(done => server.close(done)) } };
 }
+// Dialog visibility changes before React starts refreshing its lists. Bind each
+// awaited read to the successful mutation, then consume its entire response.
+function afterMutationRefresh(page, method, tripId) {
+  const paths = ['/api/shipment-trips', '/api/trip-requests', '/api/trip-requests/context'];
+  let acknowledged = false;
+  const requests = new Set();
+  const acknowledge = response => { if (response.request().method() === method && new URL(response.url()).pathname === `/api/shipment-trips/${tripId}` && response.ok()) acknowledged = true; };
+  const track = request => { if (acknowledged && request.method() === 'GET' && paths.includes(new URL(request.url()).pathname)) requests.add(request); };
+  page.on('response', acknowledge); page.on('request', track);
+  return Promise.all(paths.map(path => page.waitForResponse(response => requests.has(response.request()) && new URL(response.url()).pathname === path).then(async response => {
+    assert.equal(response.ok(), true, `Refresh failed: ${path}`);
+    assert.equal(await response.finished(), null, `Refresh body interrupted: ${path}`);
+  }))).finally(() => { page.off('response', acknowledge); page.off('request', track); });
+}
 await mkdir(out, { recursive: true });
 const report = { passed: false, syntheticOnly: true, externalRequests: [], checks: [], errors: [], errorDetails: [] };
 for (const [name, launcher] of Object.entries({ chromium, webkit })) for (const width of [375, 1440]) {
@@ -54,7 +68,11 @@ for (const [name, launcher] of Object.entries({ chromium, webkit })) for (const 
     await card.getByRole('button', { name: 'Изменить рейс', exact: true }).click();
     const dialog = page.getByRole('dialog'); await dialog.waitFor();
     await dialog.getByLabel('Примечание к рейсу', { exact: true }).fill('Уточнение после прибытия');
+    phase = 'saving';
+    const savedRefresh = afterMutationRefresh(page, 'PATCH', f.tripId);
     await dialog.getByRole('button', { name: 'Сохранить рейс', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+    await savedRefresh;
+    await card.getByText('Уточнение после прибытия', { exact: true }).waitFor();
     assert.ok((await f.store.read(f.source)).driverTripProgress[f.tripId].arrivedAt, 'unchanged composition preserves arrival');
     await page.waitForLoadState('networkidle');
     phase = 'reload';
@@ -68,7 +86,11 @@ for (const [name, launcher] of Object.entries({ chromium, webkit })) for (const 
     const axe = await new AxeBuilder({ page }).include('dialog').analyze(); assert.deepEqual(axe.violations.map(v => v.id), []);
     await page.screenshot({ path: resolve(out, `${name}-${width}-delete.png`), fullPage: true });
     phase = 'delete';
+    const deletedRefresh = afterMutationRefresh(page, 'DELETE', f.tripId);
     await remove.click(); await dialog.waitFor({ state: 'hidden' }); await card.waitFor({ state: 'detached' });
+    await deletedRefresh;
+    await page.locator('.trips-list').waitFor({ state: 'visible' });
+    assert.equal(await card.count(), 0, 'deleted trip must remain absent after the lists finish refreshing');
     await page.waitForLoadState('networkidle');
     phase = 'closing';
     assert.equal(f.api.calls.length, 0);
