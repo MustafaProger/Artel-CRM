@@ -200,7 +200,7 @@ export interface OperatorService extends NamedEntry {
   discountHistory?: { effectiveFrom: string; discountPercent: string }[];
 }
 export interface Product extends NamedEntry, ProductTransportDetails {}
-export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
+export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[]; compartmentDeparturePricesRub?: string[] }
 export interface Driver extends NamedEntry, DriverDetails { carrierId?: string; vehicleId: string; phone?: string }
 export interface AddressReceiver { name: string; phone: string }
 export interface ShipmentAddress extends NamedEntry { location?: TripRequestLocationResult; companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; additionalReceivers?: AddressReceiver[]; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string; oilDepotDistancesKm?: Record<string, string> }
@@ -217,6 +217,7 @@ export interface PaymentAllocation {
 }
 export interface DuplicateCandidate { kind: string; names: string[]; ids: string[]; reason: string }
 export interface Directories {
+  transportPricing?: import('./transport-pricing').TransportPricingSettings;
   currentEmployeeId?: string | null;
   /** Derived per authenticated manager; never stored as role assignments. */
   assignedCustomerIds?: string[];

@@ -43,7 +43,7 @@ export function canAccessTripRequest(actor: AccountUser | null, _snapshot: Snaps
 export function tripRequestCatalog(snapshot: Snapshot) {
   const companies = snapshot.companies.filter(row => row.roles.includes('customer') && !row.directoryArchived).map(row => ({ id: row.id, name: row.name, roles: ['customer'], shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] }));
   const ids = new Set(companies.map(row => row.id));
-  const addresses = (snapshot.directories?.addresses ?? []).filter(row => row.kind === 'delivery' && ids.has(row.companyId)).map(({ id, version, companyId, kind, name, address, mapUrl, latitude, longitude }) => ({ id, version: version ?? 0, companyId, kind, name, address: address || name, mapUrl, latitude, longitude }));
+  const addresses = (snapshot.directories?.addresses ?? []).filter(row => row.kind === 'delivery' && ids.has(row.companyId)).map(({ id, version, companyId, kind, name, address, mapUrl, latitude, longitude, oilDepotDistancesKm }) => ({ id, version: version ?? 0, companyId, kind, name, address: address || name, mapUrl, latitude, longitude, oilDepotDistancesKm }));
   return { companies, addresses };
 }
 

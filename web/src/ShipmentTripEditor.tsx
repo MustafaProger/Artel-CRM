@@ -23,16 +23,16 @@ import { getDeliveryPlaceDisplay } from './trip-request-display'
 import TripRequestEditor from './TripRequestEditor'
 import type { Company } from './model'
 import './trip-requests.css'
+import { changedTransportContext, tripTransportStates, type TransportCustomerDraft } from './trip-transport-draft'
+import { TransportAmountField, TransportPriceBreakdown, TransportSectionAssignment } from './TripTransportPrice'
 
-interface CustomerDraft {
-  key: string
+interface CustomerDraft extends TransportCustomerDraft {
   id?: string
   paidAmount?: string | null
   sourceRequestId?: string
   sourceRequestVersion?: number
   requestCompanyName?: string
   requestAddressName?: string
-  fields: Record<string, string>
 }
 interface TripDraft {
   fields: Record<string, string>
@@ -70,6 +70,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const [requestsForbidden, setRequestsForbidden] = useState(false)
   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
   const [requestRefresh, setRequestRefresh] = useState(0), [creatingRequest, setCreatingRequest] = useState(false)
+  const [expandedTransport, setExpandedTransport] = useState<Set<string>>(() => new Set())
   const [uncertain, setUncertain] = useState(false)
   const [conflict, setConflict] = useState(false)
   const [addedAddresses, setAddedAddresses] = useState<ShipmentAddress[]>([])
@@ -80,13 +81,15 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const defaultPaymentId = directories.paymentForms.find(p => p.name === defaultPaymentForm)?.id ?? ''
   const newCustomer = (): CustomerDraft => ({
     key: crypto.randomUUID(),
-    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '0', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', etrn_not_required: 'false', delivery_notes: '' },
+    pricingLive: true,
+    fields: { customer_id: '', payment_form_id: defaultPaymentId, quantity_litres: '', sale_price_per_litre: '', transport_amount: '', transport_pricing_mode: 'auto', transport_section_indexes: '', transport_price_snapshot: '', unloading_address_id: '', manager_id: '', invoice_not_required: 'false', etrn_not_required: 'false', delivery_notes: '' },
   })
   const [draft, setDraft] = useState<TripDraft>(() => ({
     fields: { trip_flow_version: 'driver-v1', organization_id: tripMode ? 'artel' : '', ...loadingDateFields(today()), supplier_id: '', oil_depot_id: '', carrier_id: '', loading_address_id: '', purchase_price_unspecified_unit: '', quantity_tonnes: '', product_id: '', driver_id: '', vehicle_id: '', additional_costs: '0', trip_notes: '', intermediate_stops_in_order: '' },
     customers: [newCustomer()],
   }))
   const [initial, setInitial] = useState(() => serialize(draft))
+  const originalPricingDraft = useMemo<TripDraft | undefined>(() => tripId ? JSON.parse(initial) as TripDraft : undefined, [tripId, initial])
   const [versions, setVersions] = useState<Record<string, number>>({})
   const [tripNumber, setTripNumber] = useState<number | undefined>()
   const [loading, setLoading] = useState(!!tripId)
@@ -198,23 +201,36 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const unifiedCargoMass = isUnpackagedDiesel(product)
   const depot = directories.oilDepots?.find(entry => entry.id === fields.oil_depot_id)
   const vehicleEntries = directories.vehicles.map(entry => ({ id: entry.id, name: entry.name || entry.plate, detail: [entry.name && entry.name !== entry.plate ? entry.plate : '', entry.capacityLitres ? `${number(entry.capacityLitres)} л` : ''].filter(Boolean).join(' · ') }))
+  const transportStates = tripTransportStates(fields, draft.customers, directories, [...addresses, ...requestAddresses.filter(address => !addresses.some(existing => existing.id === address.id))], originalPricingDraft)
 
   const changed = () => { setConfirmClose(false); setError('') }
   const update = (key: string, value: string) => {
     setDraft(previous => {
       const next = { ...previous.fields, [key]: value }
       if (key === 'loading_at') Object.assign(next, loadingDateFields(value))
-      if (key === 'oil_depot_id') Object.assign(next, { loading_address_id: '', loading_address: '', loading_map_url: '' })
+      if (key === 'oil_depot_id' && previous.fields.oil_depot_id !== value) Object.assign(next, { loading_address_id: '', loading_address: '', loading_map_url: '', loading_latitude: '', loading_longitude: '' })
       if (key === 'driver_id' && previous.fields.driver_id !== value) {
         next.vehicle_id = driverVehicleId(directories, value)
       }
       if ((key === 'quantity_tonnes' || key === 'product_id') && isUnpackagedDiesel(directories.products.find(entry => entry.id === next.product_id))) next.quantity_gross_tonnes = next.quantity_tonnes
-      return { ...previous, fields: next }
+      const vehicleChanged = next.vehicle_id !== previous.fields.vehicle_id
+      const pricingContextChanged = vehicleChanged || next.oil_depot_id !== previous.fields.oil_depot_id
+      return { ...previous, fields: next, customers: pricingContextChanged ? previous.customers.map(customer => changedTransportContext(customer, vehicleChanged)) : previous.customers }
     })
     changed()
   }
   const updateCustomer = (customerKey: string, key: string, value: string) => {
-    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, fields: { ...customer.fields, [key]: value, ...(key === 'unloading_address_id' ? { unloading_address: '', unloading_map_url: '' } : {}), ...(key === 'customer_id' ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', manager_id: customerManagerId(directories, value) } : {}) } }) }))
+    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => {
+      if (customer.key !== customerKey) return customer
+      const contextChanged = ['customer_id', 'unloading_address_id', 'quantity_litres', 'transport_section_indexes'].includes(key) && customer.fields[key] !== value
+      const current = contextChanged ? changedTransportContext(customer) : customer
+      return { ...current, ...(contextChanged && ['customer_id', 'unloading_address_id'].includes(key) ? { pricingLocation: undefined } : {}), ...(key === 'transport_amount' ? { pricingLive: false, pricingNotice: '' } : {}), fields: { ...current.fields, [key]: value, ...(key === 'transport_section_indexes' ? { transport_pricing_mode: current.fields.transport_pricing_mode || 'manual' } : {}), ...(key === 'transport_amount' ? { transport_pricing_mode: 'manual', transport_price_snapshot: '' } : {}), ...(key === 'unloading_address_id' && contextChanged ? { unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '' } : {}), ...(key === 'customer_id' && contextChanged ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '', manager_id: customerManagerId(directories, value) } : {}) } }
+    }) }))
+    changed()
+  }
+  const setTransportMode = (customerKey: string, automatic: boolean) => {
+    const amount = transportStates.get(customerKey)?.fields.transport_amount ?? ''
+    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, pricingLive: automatic, pricingNotice: '', fields: { ...customer.fields, transport_pricing_mode: automatic ? 'auto' : 'manual', transport_price_snapshot: '', transport_amount: amount } }) }))
     changed()
   }
   const selectRequest = (customerKey: string, requestId: string) => {
@@ -224,8 +240,9 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       changed(); return
     }
     setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : {
-      ...customer, sourceRequestId: request.id, sourceRequestVersion: request.version, requestCompanyName: request.companyName, requestAddressName: request.addressName,
-      fields: { ...customer.fields, customer_id: request.companyId, unloading_address_id: request.addressId, unloading_address: request.address, unloading_map_url: request.mapUrl ?? '', quantity_litres: request.quantityLitres, sale_price_per_litre: request.salePricePerLitre ?? '', delivery_notes: request.comment, manager_id: customerManagerId(directories, request.companyId) },
+      ...changedTransportContext(customer), sourceRequestId: request.id, sourceRequestVersion: request.version, requestCompanyName: request.companyName, requestAddressName: request.addressName,
+      pricingLocation: { address: request.address, latitude: request.latitude, longitude: request.longitude, locationSnapshot: request.locationSnapshot },
+      fields: { ...changedTransportContext(customer).fields, customer_id: request.companyId, unloading_address_id: request.addressId, unloading_address: request.address, unloading_map_url: request.mapUrl ?? '', quantity_litres: request.quantityLitres, sale_price_per_litre: request.salePricePerLitre ?? '', delivery_notes: request.comment, manager_id: customerManagerId(directories, request.companyId) },
     }) }))
     changed()
   }
@@ -256,7 +273,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     if (!driverFlow && !numericValue(fields.quantity_tonnes)?.gt(0)) return 'Укажите плановую массу груза больше нуля.'
     if (!directories.products.some(product => product.id === fields.product_id)) return 'Выберите товар из списка.'
     for (const [index, customer] of draft.customers.entries()) {
-      const values = customer.fields
+      const transport = transportStates.get(customer.key)!
+      const values = transport.fields
       const prefix = `Клиент ${index + 1}: `
       if (!customer.id && customer.sourceRequestId) {
         if (requestsLoading || requestsError) return 'Дождитесь загрузки доступных заявок или повторите загрузку.'
@@ -268,6 +286,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       if (!directories.paymentForms.some(payment => payment.id === values.payment_form_id)) return `${prefix}выберите форму оплаты.`
       if (!numericValue(values.quantity_litres)?.gt(0)) return `${prefix}укажите количество литров больше нуля.`
       if (!numericValue(values.sale_price_per_litre)?.gt(0)) return `${prefix}укажите цену за литр больше нуля.`
+      if (transport.automatic && transport.errors.length) return `${prefix}автоматический расчёт перевозки неполон. ${transport.errors.join(' ')}`
+      if (values.transport_pricing_mode && !values.transport_amount) return `${prefix}завершите расчёт перевозки или введите сумму вручную.`
       if (!numericValue(values.transport_amount || '0')?.gte(0)) return `${prefix}сумма перевозки должна быть неотрицательным числом.`
       if (!directories.managers.some(manager => manager.id === values.manager_id)) return `${prefix}выберите менеджера.`
     }
@@ -291,7 +311,10 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     const clean = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).filter(([key]) => !snapshotFields.has(key) && !(driverFlow && driverOwnedFields.has(key))).map(([key, value]) => [key, value.trim() || null]))
     const payload = {
       fields: clean({ ...fields, additional_costs: fields.additional_costs || '0' }),
-      customers: draft.customers.map(customer => ({ ...(customer.id ? { id: customer.id } : { sourceRequestId: customer.sourceRequestId, sourceRequestVersion: customer.sourceRequestVersion }), fields: clean({ ...customer.fields, transport_amount: customer.fields.transport_amount || '0' }) })),
+      customers: draft.customers.map(customer => {
+        const priced = transportStates.get(customer.key)!.fields
+        return { ...(customer.id ? { id: customer.id } : { sourceRequestId: customer.sourceRequestId, sourceRequestVersion: customer.sourceRequestVersion }), fields: clean({ ...priced, transport_amount: priced.transport_amount || '0' }) }
+      }),
       ...(tripId ? { versions } : { idempotencyKey: idempotencyKey.current }),
     }
     const body = retryPayload.current ?? JSON.stringify(payload)
@@ -320,7 +343,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       const response = await fetch(tripId ? `/api/shipment-trips/${encodeURIComponent(tripId)}` : '/api/shipment-trips', { method: tripId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(20000) })
       const result = await response.json()
       if (!response.ok) {
-        if (response.status === 409) { setRequestRefresh(value => value + 1); onRequestsChanged?.() }
+        if (response.status === 409) { setRequestRefresh(value => value + 1); onRequestsChanged?.(); onDirectoriesChanged?.() }
         if (response.status === 409 && tripId && await recoverPatch()) return
         if (response.status < 500) { retryPayload.current = null; setUncertain(false) }
         else setUncertain(true)
@@ -395,6 +418,9 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
             {requestsError && <div className="shipment-error" role="alert">{requestsError} {!requestsForbidden && <button type="button" className="button" disabled={saving} onClick={() => setRequestRefresh(value => value + 1)}>Повторить загрузку заявок</button>}</div>}
             {!requestsForbidden && <button type="button" className="button" disabled={disabled} onClick={() => setCreatingRequest(true)}>Новая заявка</button>}
             {draft.customers.map((customer, index) => {
+              const transport = transportStates.get(customer.key)!
+              const transportPanelId = `trip-transport-${customer.key}`
+              const transportExpanded = expandedTransport.has(customer.key)
               const requestBound = !!customer.sourceRequestId || !!customer.fields.source_request_id
               const source = requests.find(item => item.id === customer.sourceRequestId)
               const requestEntries = requests.filter(request => request.id === customer.sourceRequestId || !draft.customers.some(row => row.sourceRequestId === request.id)).map(request => {
@@ -403,7 +429,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
               })
               const litres = numericValue(customer.fields.quantity_litres)
               const price = numericValue(customer.fields.sale_price_per_litre)
-              const calculation = allocation ? calculateShipment({ ...fields, ...customer.fields, payment_form: directories.paymentForms.find(p => p.id === customer.fields.payment_form_id)?.name ?? null, quantity_tonnes: allocation.tonnes[index], additional_costs: allocation.additionalCosts[index] }, { sale: 'litres', purchase: 'tonnes', profit: directories.defaults.profit, debtSign: 'paid-minus-sale' }) : null
+              const calculation = allocation ? calculateShipment({ ...fields, ...transport.fields, payment_form: directories.paymentForms.find(p => p.id === customer.fields.payment_form_id)?.name ?? null, quantity_tonnes: allocation.tonnes[index], additional_costs: allocation.additionalCosts[index] }, { sale: 'litres', purchase: 'tonnes', profit: directories.defaults.profit, debtSign: 'paid-minus-sale' }) : null
               return <fieldset key={customer.key} className="shipment-fieldset group-sale shipment-trip-customer" data-testid="trip-customer" data-customer-key={customer.key}>
                 <legend>Клиент {index + 1}</legend>
                 {draft.customers.length > 1 && <div className="shipment-trip-customer-actions"><button type="button" className="button shipment-trip-remove" aria-label={`Удалить клиента ${index + 1}`} disabled={disabled} onClick={() => removeCustomer(customer.key)}><Trash2 size={15}/>Удалить клиента {index + 1}</button></div>}
@@ -413,9 +439,11 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
                   {select('Форма оплаты', 'payment_form_id', directories.paymentForms, { required: true, customer })}
                   {input('Количество литров, л', 'quantity_litres', { required: true, customer })}
                   {input('Цена за литр, ₽', 'sale_price_per_litre', { required: true, customer })}
-                  {input('Сумма перевозки, ₽', 'transport_amount', { customer })}
+                  <TransportSectionAssignment vehicle={vehicle} state={transport} disabled={disabled} customerNumber={index + 1} onChange={indexes => updateCustomer(customer.key, 'transport_section_indexes', JSON.stringify(indexes))}/>
+                  <TransportAmountField state={transport} disabled={disabled} panelId={transportPanelId} expanded={transportExpanded} notice={customer.pricingNotice} onToggle={() => setExpandedTransport(previous => { const next = new Set(previous); if (next.has(customer.key)) next.delete(customer.key); else next.add(customer.key); return next })} onAmount={amount => updateCustomer(customer.key, 'transport_amount', amount)} onAutomatic={() => setTransportMode(customer.key, true)} onManual={() => setTransportMode(customer.key, false)}/>
                   {select('Менеджер', 'manager_id', directories.managers, { required: true, customer })}
                 </div>
+                <TransportPriceBreakdown state={transport} expanded={transportExpanded} panelId={transportPanelId}/>
                 <div className="shipment-trip-delivery-fields"><h4>Доставка</h4><div className="shipment-field-grid">
                   <div className="form-field-wide">{requestBound ? <div className="shipment-field"><span>Место выгрузки</span><div className="trip-request-readonly">{customer.requestAddressName && <strong>{customer.requestAddressName}<br/></strong>}{customer.fields.unloading_address || 'Выберите заявку'}</div></div> : location(customer)}</div>
                   {!driverFlow && dateTimeInput('Плановая выгрузка', customer.fields.unloading_planned_at || '', value => updateCustomer(customer.key, 'unloading_planned_at', value))}

@@ -1,0 +1,13 @@
+.transport-settings { padding: 20px 24px; margin-bottom: 16px; }
+.transport-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.transport-settings-heading h2 { margin: 0; font-size: 18px; }
+.transport-settings-heading p { margin: 5px 0 0; color: var(--muted, #65776e); font-size: 13px; }
+.transport-settings-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 12px; font-size: 14px; }
+.transport-settings-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.transport-settings-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.directory-pricing-hint { margin: 10px 0 0; color: var(--muted, #65776e); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .transport-settings { padding: 16px; }
+  .transport-settings-heading { align-items: flex-start; flex-direction: column; }
+  .transport-settings-fields { grid-template-columns: minmax(0, 1fr); }
+}

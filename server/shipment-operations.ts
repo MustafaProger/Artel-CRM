@@ -1,3 +1,4 @@
+import { transportPricingFields } from './transport-pricing';
 import { validLoadingDate } from '../web/src/trip-input-rules';
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
@@ -18,6 +19,7 @@ import { validTripDocumentPolicy } from './trip-document-mode';
 
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 export const SHIPMENT_FIELDS = [
+  ...transportPricingFields,
   'shipment_type', 'organization_id', 'document_number', 'month', 'date', 'customer_name', 'manager_label', 'payment_form', 'product',
   'quantity_tonnes', 'quantity_litres', 'sale_price_per_tonne', 'sale_price_per_litre', 'customer_amount',
   'supplier_name', 'purchase_price_unspecified_unit', 'purchase_amount', 'carrier_name', 'transport_amount',
@@ -467,7 +469,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   }
   data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
-  automatic.push('trip_flow_version', 'trip_document_policy', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
+  automatic.push(...transportPricingFields, 'trip_flow_version', 'trip_document_policy', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);
@@ -549,6 +551,12 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
     }
   }
   const fields = validateShipmentFields(data, previous, snapshot.companies);
+  // Standalone shipment edits cannot retain a stale automatic quote. Trip edits
+  // attach their separately validated quote after this common preparation.
+  if (previous?.fields.transport_pricing_mode === 'auto' && ['transport_amount', 'quantity_litres', 'vehicle_id', 'oil_depot_id', 'customer_id', 'unloading_address_id'].some(key => Object.hasOwn(data, key) && fields[key] !== previous.fields[key])) {
+    fields.transport_pricing_mode = 'manual'; fields.transport_price_snapshot = null;
+    if (fields.vehicle_id !== previous.fields.vehicle_id) fields.transport_section_indexes = null;
+  }
   if (azs) {
     for (const key of ['date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','customer_amount','purchase_amount']) if (fields[key] == null || fields[key] === '') throw new ApiError(400, `Заполните обязательное поле АЗС: ${key}.`);
     if (!['cash','cashless'].includes(settlementKind(fields.payment_form))) throw new ApiError(400, 'Для АЗС доступны только наличные и безнал. Ф2 недоступна.');

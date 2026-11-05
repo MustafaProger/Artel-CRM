@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { directoryDraft, directoryPayload, mergeDirectoryPayload, withCurrentAddressVersions } from '../web/src/directory-editor-data';
+import { directoryDraft, directoryPayload, mergeDirectoryPayload, withCurrentAddressVersions, parseVehicleDeparturePrices } from '../web/src/directory-editor-data';
 import type { DirectoryData } from '../web/src/model';
 
 test('merges unrelated edits and preserves hidden fields from the server',()=>{
@@ -48,4 +48,22 @@ test('unrelated company edits preserve concurrent distances; overlapping address
   assert.deepEqual(merged.conflicts,[]);assert.deepEqual(merged.merged.addresses,latest.addresses);
   const overlap=mergeDirectoryPayload(base,{...base,addresses:[{...base.addresses[0],oilDepotDistancesKm:{depot:''}}]},latest);
   assert.deepEqual(overlap.conflicts,['addresses']);
+});
+test('vehicle section tariffs retain ordered identity even for equal volumes and normalize entered rubles',()=>{
+  assert.deepEqual(parseVehicleDeparturePrices('4000 + 4000 + 3000','3 700 + 5 000,50 + 0'),['3700','5000.50','0']);
+  for(const value of ['3000 + 4000','3000 + + 4000','3000 + -1 + 4000','3000 + 1.005 + 4000','3000 + 1000000000 + 4000','3000 + NaN + 4000'])assert.throws(()=>parseVehicleDeparturePrices('4000 + 4000 + 3000',value));
+  assert.throws(()=>parseVehicleDeparturePrices('','3000'));
+  assert.deepEqual(parseVehicleDeparturePrices('4000 + 4000',''),[]);
+});
+test('vehicle tariff edits survive drafts and detect conflicts without overwriting concurrent vehicle changes',()=>{
+  const vehicle={id:'v',plate:'QA',compartmentsLitres:['4000','4000'],compartmentDeparturePricesRub:['3000','5000']};
+  const data={companies:[],directories:{addresses:[],vehicles:[vehicle]}} as unknown as DirectoryData;
+  const draft=directoryDraft(data,'vehicles','v');
+  assert.equal(draft.departurePrices,'3000 + 5000');
+  assert.deepEqual(directoryPayload('vehicles',draft).compartmentDeparturePricesRub,['3000','5000']);
+  const base={plate:'QA',compartmentDeparturePricesRub:['3000','5000']};
+  const local={...base,compartmentDeparturePricesRub:['3500','5000']};
+  const latest={...base,plate:'QA2'};
+  assert.deepEqual(mergeDirectoryPayload(base,local,latest),{merged:{...local,plate:'QA2'},conflicts:[]});
+  assert.deepEqual(mergeDirectoryPayload(base,local,{...base,compartmentDeparturePricesRub:['3000','5500']}).conflicts,['compartmentDeparturePricesRub']);
 });

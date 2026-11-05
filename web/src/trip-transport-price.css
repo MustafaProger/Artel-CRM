@@ -1,0 +1,38 @@
+.trip-transport-sections{margin:0;padding:12px 14px;border:1px solid var(--line,#dce5df);border-radius:12px;min-width:0}
+.trip-transport-sections legend{padding:0 5px;font-size:13px;font-weight:600}
+.trip-transport-sections>p,.trip-transport-breakdown-body>p{margin:0;font-size:12px;line-height:1.6;color:var(--muted,#63766a)}
+.trip-transport-section-options{display:flex;flex-wrap:wrap;gap:8px 20px}
+.trip-transport-section-options>label{display:flex;align-items:center;gap:9px;min-height:44px;font-size:12px;cursor:pointer}
+.trip-transport-section-options input{width:18px!important;height:18px!important;min-height:18px!important;flex:0 0 18px;accent-color:var(--accent,#17674f)}
+.trip-transport-section-options label>span{display:grid;gap:3px}
+.trip-transport-section-options strong{font-size:13px;font-weight:600}
+.trip-transport-section-options label>span>span{color:var(--muted,#63766a)}
+.trip-transport-amount{min-width:0;display:grid;align-content:start;gap:4px}
+.trip-transport-actions{display:flex;align-items:center;gap:4px 16px;flex-wrap:wrap}
+.trip-transport-actions .trip-text-button{min-height:32px;text-align:left;line-height:1.4}
+.trip-transport-actions .trip-text-button:focus-visible{outline:2px solid var(--accent,#17674f);outline-offset:3px;border-radius:4px}
+.trip-transport-toggle svg{transition:transform 180ms ease;flex-shrink:0}
+.trip-transport-toggle[aria-expanded=true] svg{transform:rotate(180deg)}
+.trip-transport-status{margin:0;font-size:11px;line-height:1.5;color:var(--muted,#63766a)}
+.trip-transport-status.incomplete{color:#75550d}
+.trip-transport-breakdown{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows 200ms ease,opacity 160ms ease,visibility 0s linear 200ms}
+.trip-transport-breakdown.is-open{grid-template-rows:1fr;opacity:1;visibility:visible;transition:grid-template-rows 200ms ease,opacity 160ms ease,visibility 0s}
+.trip-transport-breakdown-clip{min-height:0;overflow:hidden}
+.trip-transport-breakdown-body{display:grid;gap:12px;padding:16px 0 0;max-width:720px;font-size:12px;line-height:1.6}
+.trip-transport-breakdown-body .trip-transport-route{overflow-wrap:anywhere;color:#4f6057}
+.trip-transport-calculation{margin:0;display:grid;gap:7px}
+.trip-transport-calculation>div{display:flex;justify-content:space-between;gap:16px;min-width:0}
+.trip-transport-calculation dt{min-width:0;overflow-wrap:anywhere}
+.trip-transport-calculation dd{margin:0;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.trip-transport-subtotal{padding-top:9px;border-top:1px solid var(--line,#dce5df)}
+.trip-transport-total{font-weight:650;font-size:14px}
+.trip-transport-missing{margin:0;padding-left:18px;color:#75550d}
+.trip-transport-rounding-note{font-size:11px!important}
+.shipment-trip-editor .shipment-trip-client-totals .shipment-trip-auto{color:#4f6057}
+.shipment-trip-editor .shipment-trip-fleet p>span{color:#4f6057}
+.shipment-trip-editor .trip-request-selection .company-combobox.has-wrapped-selection{position:relative;padding-block:10px;align-items:center}
+.shipment-trip-editor .trip-request-selection .directory-selection-value{flex:1;min-width:0;overflow-wrap:anywhere;line-height:1.45;pointer-events:none}
+.shipment-trip-editor .trip-request-selection .company-combobox.has-wrapped-selection>input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:text}
+.shipment-trip-editor .trip-request-selection .company-combobox.has-wrapped-selection>.icon-button{position:relative;z-index:1}
+@media(max-width:600px){.trip-transport-sections{padding:10px}.trip-transport-section-options{gap:5px 14px}.trip-transport-actions .trip-text-button{min-height:40px}.trip-transport-calculation>div{gap:8px}.trip-transport-breakdown-body{padding-top:12px}}
+@media(prefers-reduced-motion:reduce){.trip-transport-breakdown,.trip-transport-toggle svg{transition:none}}

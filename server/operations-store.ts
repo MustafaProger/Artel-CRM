@@ -1,3 +1,4 @@
+import { readTransportPriceSnapshot, readTransportSectionIndexes, validTransportPricing } from '../web/src/transport-pricing';
 import { validateTripExchangeControls, type TripExchangeControl } from './trip-exchange-control';
 import { WorkPartition, isWorkPartition } from './work-partition';
 import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
@@ -118,6 +119,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
       for (const [kind, ids] of Object.entries(directories.deletedEntries)) if (!['companies','managers','products','paymentForms','vehicles','drivers','addresses','oilDepots'].includes(kind) || !strings(ids) || ids.some(id=>!id) || new Set(ids).size!==ids.length) throw new StoreError('Invalid directory deletions');
     }
     if (!object(directories) || !object(directories.defaults) || ![null,'template-payment-form','simple','excel-rounded','excel-exact','excel-legacy'].includes(directories.defaults.profit as null) || !Array.isArray(data.paymentAllocations)) throw new StoreError('Invalid directories');
+    if (directories.transportPricing !== undefined && !validTransportPricing(directories.transportPricing)) throw new StoreError('Invalid transport pricing');
     if (directories.customerManagers !== undefined) {
       if (!Array.isArray(directories.customerManagers)) throw new StoreError('Invalid customer managers');
       const customers = new Set<string>();
@@ -186,6 +188,10 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   for (const [id, row] of Object.entries(data.shipments)) {
     if (!id || !object(row) || !object(row.fields) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.createdAt !== 'string' || typeof row.updatedAt !== 'string' || (row.deleted !== undefined && typeof row.deleted !== 'boolean')) throw new StoreError('Invalid shipment override');
     if (Object.values(row.fields).some(value => value !== null && typeof value !== 'string')) throw new StoreError('Invalid shipment fields');
+    if (row.fields.transport_pricing_mode != null && !['auto', 'manual'].includes(String(row.fields.transport_pricing_mode))) throw new StoreError('Invalid transport pricing mode');
+    if (row.fields.transport_section_indexes != null) { try { readTransportSectionIndexes(String(row.fields.transport_section_indexes)); } catch { throw new StoreError('Invalid transport section indexes'); } }
+    if (row.fields.transport_price_snapshot != null && !readTransportPriceSnapshot(String(row.fields.transport_price_snapshot))) throw new StoreError('Invalid transport quote');
+    if (row.fields.transport_pricing_mode === 'auto' && !readTransportPriceSnapshot(String(row.fields.transport_price_snapshot ?? ''))) throw new StoreError('Missing transport quote');
     if (row.fields.trip_document_policy != null && (!validTripDocumentPolicy(row.fields.trip_document_policy) || row.fields.trip_flow_version !== 'driver-v1' || !row.fields.trip_id)) throw new StoreError('Invalid trip document policy');
     if (row.fields.source_request_id) {
       const request = (data.tripRequests as Record<string, TripRequest> | undefined)?.[String(row.fields.source_request_id)];

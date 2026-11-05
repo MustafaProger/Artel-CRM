@@ -1,3 +1,4 @@
+import { validTransportMoney } from '../web/src/transport-pricing';
 import { saveOilDepot } from './oil-depots';
 import { deliveryDistances } from './delivery-distances';
 import { locationDetailKeys, locationDetails } from './location-details';
@@ -76,7 +77,7 @@ export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snap
   }
   if (!['managers','products','paymentForms','vehicles','drivers','addresses'].includes(String(kind))) throw new ApiError(400,'Неизвестный справочник.');
   const key = kind as 'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses';
-  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name',...productTransportFields.map(([key])=>key)],paymentForms:['name'],vehicles:['carrierId','plate','name','brand','model','trailer','capacityLitres','compartmentsLitres',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)],drivers:['carrierId','name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind','pointAddress','oilDepotDistancesKm',...locationDetailKeys]};
+  const permitted: Record<typeof key, string[]> = {managers:['name'],products:['name',...productTransportFields.map(([key])=>key)],paymentForms:['name'],vehicles:['carrierId','plate','name','brand','model','trailer','capacityLitres','compartmentsLitres','compartmentDeparturePricesRub',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)],drivers:['carrierId','name','vehicleId','phone',...driverFields.map(([key])=>key)],addresses:['name','companyId','addressKind','pointAddress','oilDepotDistancesKm',...locationDetailKeys]};
   if (Object.keys(input).some(k => k !== 'kind' && !permitted[key].includes(k))) throw new ApiError(400,'Неизвестное поле справочника.');
   const text = (field: string, required = true) => {
     if (typeof input[field] !== 'string' || !(input[field] as string).trim() || (input[field] as string).length > 500) {
@@ -102,7 +103,14 @@ export function addDirectoryEntry(input: Record<string, unknown>, snapshot: Snap
       if (!Array.isArray(input.compartmentsLitres) || input.compartmentsLitres.some(value => typeof value !== 'string')) throw new ApiError(400, 'Укажите объёмы секций списком чисел.');
       compartmentsLitres = (input.compartmentsLitres as string[]).map(value => value.replace(/\s/g, '').replace(',', '.'));
     }
-    entry = { ...Object.fromEntries(allVehicleFields.map(([key])=>[key,text(key,false)])), ...vehicleTransportDetails(input), id, plate, ...(carrierId ? { carrierId } : {}), brand: text('brand', false), model: text('model', false), trailer: text('trailer', false), ...(name ? { name } : {}), ...(capacityLitres ? { capacityLitres } : {}), ...(compartmentsLitres ? { compartmentsLitres } : {}) };
+    let compartmentDeparturePricesRub: string[] | undefined;
+    if (input.compartmentDeparturePricesRub !== undefined && input.compartmentDeparturePricesRub !== null) {
+      if (!Array.isArray(input.compartmentDeparturePricesRub) || input.compartmentDeparturePricesRub.some(value => typeof value !== 'string')) throw new ApiError(400, 'Укажите тарифы секций списком неотрицательных сумм.');
+      compartmentDeparturePricesRub = (input.compartmentDeparturePricesRub as string[]).map(value => value.replace(/\s/g, '').replace(',', '.'));
+      if (!compartmentDeparturePricesRub.length) compartmentDeparturePricesRub = undefined;
+      if (compartmentDeparturePricesRub && (!compartmentsLitres || compartmentDeparturePricesRub.length !== compartmentsLitres.length || !compartmentDeparturePricesRub.every(validTransportMoney))) throw new ApiError(400, 'Укажите отдельный неотрицательный тариф для каждой секции, до двух знаков после запятой.');
+    }
+    entry = { ...Object.fromEntries(allVehicleFields.map(([key])=>[key,text(key,false)])), ...vehicleTransportDetails(input), id, plate, ...(carrierId ? { carrierId } : {}), brand: text('brand', false), model: text('model', false), trailer: text('trailer', false), ...(name ? { name } : {}), ...(capacityLitres ? { capacityLitres } : {}), ...(compartmentsLitres ? { compartmentsLitres } : {}), ...(compartmentDeparturePricesRub ? { compartmentDeparturePricesRub } : {}) };
     if (!validVehicleMetadata({ ...entry })) throw new ApiError(400, 'Укажите положительные объёмы в литрах. Сумма секций должна совпадать с объёмом автомобиля.');
   } else {
     const name = text('name');
