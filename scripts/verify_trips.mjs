@@ -48,7 +48,7 @@ try {
   await page.getByRole('button', { name: 'Новый рейс', exact: true }).click();
   let dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Сохранить рейс', exact: true }).click(); await expect(dialog.getByRole('alert')).toContainText('Выберите нашу организацию');
-  await choose(dialog, 'Наша организация', 'НК АРТЕЛЬ'); await dialog.getByLabel('Дата отгрузки', { exact: false }).fill('2026-09-28');
+  await choose(dialog, 'Наша организация', 'НК АРТЭЛЬ'); await dialog.getByLabel('Дата отгрузки', { exact: false }).fill('2026-09-28');
   await choose(dialog, 'Поставщик', 'QA Склад');
   await dialog.getByRole('button', { name: 'Новое место в справочнике' }).first().click();
   await dialog.getByLabel('Название нового места').fill('QA Погрузка'); await dialog.getByLabel('Адрес новой площадки').fill('Синтетическая улица, 10');

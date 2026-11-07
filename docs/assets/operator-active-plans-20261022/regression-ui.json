@@ -1,0 +1,265 @@
+{
+  "synthetic": true,
+  "mode": "built",
+  "artifacts": {
+    "serverBundleSha256": "38240b1ce9c6af3ec2b7a82063783ab4b41208520ea8748384ac3126990eeb56",
+    "frontend": {
+      "app-dist/apple-touch-icon.png": "cc2f8f324a3b8a882cca72490a7ee38f94e4d7cdabd66b207c9e9ad1464c6a46",
+      "app-dist/assets/AccountManagement-Cctdaej3.js": "6df7cefcd9844c7f0d1f303c64d0ffb4af6935ec147baa0df7d45905eb31510d",
+      "app-dist/assets/BankingPage-CuiggEDx.js": "8dcd1724be62227d74f65d2bbdc6fa790060a0f4e9c9d064e54ba5e3d92ebce9",
+      "app-dist/assets/CabinetBalances-DSeiHmUe.js": "ef6b9ff3c3baed51599f93d7977b3256df0c9c37309d3e376349af1e9fb3fb4d",
+      "app-dist/assets/ChinaPage-CBoI_GNT.js": "9a0ce3bb484753718d2f5ad39452c829010f7570aba4b9231aa64ec69f10c27d",
+      "app-dist/assets/DeliveryPointPicker-COp5MfH5.js": "0b3616e426ef222e4b859b59941029186e28bc172bb91e945f221f129208aaec",
+      "app-dist/assets/DirectoriesPage-CUwNP4Cm.js": "44c1e240ce90141a3cf03a3a07025e34c86e5f61e2cc5a6cfd47f97bdf217f6b",
+      "app-dist/assets/DirectorySelect-BfTRTB0z.js": "57794aa827e042cef41ddccfe5f9c1e3dcae6ff806fba2ab17ac2d0f88ee0866",
+      "app-dist/assets/DriverWorkspace-BgWN-CkD.js": "86d4dd5dbc1abd208d3f58421e60ac3ad21fca73b14f3b40c7497c65643f7e35",
+      "app-dist/assets/InvoicePage-BPWxtXHo.js": "435e6a5322f350c72bdc113d25db296a6f2259293e49cd02be208095c174998d",
+      "app-dist/assets/OperatorPage-CmYKWc1W.js": "e2795561ae7b2d449c1e3787782adc5be3237242d2f97a7dcc02ef1b80b06b52",
+      "app-dist/assets/OverviewPage-x7LEb4Xl.js": "55863df15d974efd17325cff41c9782460eb7270b156c537fd256e84fe42421c",
+      "app-dist/assets/RoleFilter-DSSU703u.js": "c385ce1f99f3fb3435e0099f83ced6d2ed0d2a702208d0bdc8869a114f758d44",
+      "app-dist/assets/ShipmentTripEditor-BWohQIKO.js": "dd544280f85e657189633109fd24f8f1dccb5f3353dd7344a6b5f00331e9b1d0",
+      "app-dist/assets/ShipmentsPage-C4ur_Sed.js": "16f4bbdab4ecfa1d811e4244cf3d702d72dfce659aeadb5ee6a235525a108c7a",
+      "app-dist/assets/TripsPage-DKONOggj.js": "d03c28545a832b2c32baccc7c36d89d9c4c91ae03c56639a36e363b64c037b77",
+      "app-dist/assets/WorkPage-hBVBoRC3.js": "9ccf42e98a7925685242490cd66ebeed4a539be24b5b736425678d4d62b934ad",
+      "app-dist/assets/crm-DvpQKm0h.js": "85fcde674f711471fdeb25ca3649b12a6d3cb4c7546fabfef51c78445ba3e19d",
+      "app-dist/assets/crm-shared-OhX99nUm.js": "907e8adee1444f3a7193f2755eee4a7d303423745139480c0057a3a3d6af2ccf",
+      "app-dist/assets/map-link-C7xs8Hf-.js": "2915a458ae278902c37618555f395227aac9635bc8897b8fb96c3da15267ac9c",
+      "app-dist/assets/operator-catalog-CsrhwJtV.js": "916ca02c1ede27136113595ab49bdf6cd779f313368baf27dad8382ece1e13f6",
+      "app-dist/assets/overview-model-w8zBn-JH.js": "20f5bf619287cbc96da6d9c0a2565e443ebc249e7e2f89aa674f42e100e34e49",
+      "app-dist/assets/shipment-calculations-Dszf6w9W.js": "a00f498070c2dc51bb18a7ad3096ac32b5d0ab707daa13819a58abe719610dc5",
+      "app-dist/assets/style-CuegNK3o.css": "646d600eadec0189f39fae75865835f471b771347bfad5b2f320ee87fbf310b7",
+      "app-dist/assets/trip-order-Dw3D4rEg.js": "8d774049c7b72b9dd60decdfe13eb5d98b803bd0592bef7c164b92792e385d30",
+      "app-dist/assets/trip-request-map-coordinates-DCZn5Mmt.js": "16befada1374174af146adf19b54c28c60d8b4e8554d338dbf318cd19416329f",
+      "app-dist/assets/vendor-DDZNJ3Hy.js": "60c42ef3e848cdc452275611d935df5341d8b3139e11d5612744223fe753a45f",
+      "app-dist/favicon.svg": "cc8f489314e35fec89095c6cf334f57aa826e3245a312b6c87452c70d2137f7f",
+      "app-dist/icons/apple-touch-icon.png": "cc2f8f324a3b8a882cca72490a7ee38f94e4d7cdabd66b207c9e9ad1464c6a46",
+      "app-dist/icons/favicon-32.png": "40e581abcd4e64591b16121d109014a6e4e2c02bd3a4673623e7a6731c326f95",
+      "app-dist/icons/favicon-64.png": "a6112ea14dc4e33551e1fefed18d6d585b6f46ab90796a39fabe5dec70e866ea",
+      "app-dist/icons/icon-1024.png": "917b406e95b45ba3304f5e56b6c3734a0f01b896329550909727934ff38b2167",
+      "app-dist/icons/icon-192.png": "18510242d2962b3033888472f001f787b7c815e0d1f24f00b38de47769809227",
+      "app-dist/icons/icon-512.png": "a8c7881205cea2f767fe04efe23f53882c8a573aa29e4974ad950e9fff310636",
+      "app-dist/icons/icon-maskable-512.png": "a8c7881205cea2f767fe04efe23f53882c8a573aa29e4974ad950e9fff310636",
+      "app-dist/index.html": "3219a48d58e4d0056756414f4cabd21bd9890f4d3b28a5f38d4b5f50d6e75b13",
+      "app-dist/manifest.webmanifest": "10deb61c9c59760afe794fd1c8de7c88470f7ffb5bd75572ed918be080090d2c",
+      "app-dist/sw.js": "da7fb11ad8c1f853ce08905a7ee7d2cb13ea222ed1cdbb3de3bbe2d834ec70cc"
+    }
+  },
+  "checks": [
+    "chromium: old 100 litres credits 7200 at new price 90",
+    {
+      "engine": "chromium",
+      "width": 320,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 600,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1100,
+      "form": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "form": true
+    },
+    "chromium: real synthetic save across two tasks plus early manager",
+    {
+      "engine": "chromium",
+      "width": 320,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 600,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1100,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1920,
+      "journal": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    "chromium: filter both tasks; double click one write; lost response same key no duplicate; conflict reload; persistence; details retain requisites",
+    "chromium: no case table Возвраты",
+    "chromium: no case table Ожидают заправки",
+    {
+      "engine": "webkit",
+      "width": 320,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 600,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1100,
+      "form": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "form": true
+    },
+    "webkit: real synthetic save across two tasks plus early manager",
+    {
+      "engine": "webkit",
+      "width": 320,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 600,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1100,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1920,
+      "journal": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "bankOnly": true,
+      "immediatePaymentBothWaysAndMenu": true,
+      "keyboardFocus": {
+        "border": "0px",
+        "radius": "999px",
+        "outline": "3px",
+        "focus": true
+      }
+    },
+    "webkit: filter both tasks; double click one write; lost response same key no duplicate; conflict reload; persistence; details retain requisites",
+    "webkit: no case table Возвраты",
+    "webkit: no case table Ожидают заправки"
+  ],
+  "axe": [
+    {
+      "engine": "chromium",
+      "screen": "form",
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "width": 390,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "screen": "cases",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "screen": "form",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "screen": "journal",
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "screen": "cases",
+      "violations": []
+    }
+  ],
+  "errors": [],
+  "passed": true,
+  "stateSha256": "fe237e6a0fb92c51427712f1479060835c3f5558c403cc1f527df4256f1e4384"
+}

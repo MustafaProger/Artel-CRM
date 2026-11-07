@@ -31,8 +31,8 @@ let reconciles = 0, advanceOnReconcile = false;
 const preview = () => ({
   order: { id: workflow.order.id, number: workflow.order.number, date: workflow.order.date, revision: workflow.order.revision },
   previewToken: `synthetic-${workflow.order.revision}`, ready: true, blockers: [], checkedAt: '2026-10-06T10:00:00Z',
-  sender: { organization: 'АРТЕЛЬ', signatures: [{ id: 'synthetic-sender-1', owner: 'Первый тестовый владелец', expiresAt: '2027-08-01' }, { id: 'synthetic-sender-2', owner: 'Другой тестовый владелец', expiresAt: '2027-09-01' }] },
-  carrier: { organization: 'НК АРТЕЛЬ', signatures: [{ id: 'synthetic-carrier', owner: 'Тестовый владелец НК', expiresAt: '2027-08-07 21:46:48 UTC' }] },
+  sender: { organization: 'АРТЭЛЬ', signatures: [{ id: 'synthetic-sender-1', owner: 'Первый тестовый владелец', expiresAt: '2027-08-01' }, { id: 'synthetic-sender-2', owner: 'Другой тестовый владелец', expiresAt: '2027-09-01' }] },
+  carrier: { organization: 'НК АРТЭЛЬ', signatures: [{ id: 'synthetic-carrier', owner: 'Тестовый владелец НК', expiresAt: '2027-08-07 21:46:48 UTC' }] },
   ...(workflow.signing ? { signing: workflow.signing } : {}),
 });
 let runtime, browser, page;
@@ -88,9 +88,9 @@ try {
   };
   const diagnose = async () => {
     await panel.getByRole('button', { name: /Проверить доступные подписи|Проверить подписи заново/ }).click();
-    await expect(panel.getByRole('combobox', { name: 'Подпись АРТЕЛЬ', exact: true })).toBeEnabled();
-    await panel.getByRole('combobox', { name: 'Подпись АРТЕЛЬ', exact: true }).selectOption('synthetic-sender-1');
-    await expect(panel.getByRole('combobox', { name: 'Подпись НК АРТЕЛЬ', exact: true })).toHaveValue('synthetic-carrier');
+    await expect(panel.getByRole('combobox', { name: 'Подпись АРТЭЛЬ', exact: true })).toBeEnabled();
+    await panel.getByRole('combobox', { name: 'Подпись АРТЭЛЬ', exact: true }).selectOption('synthetic-sender-1');
+    await expect(panel.getByRole('combobox', { name: 'Подпись НК АРТЭЛЬ', exact: true })).toHaveValue('synthetic-carrier');
   };
   const consent = () => panel.getByRole('checkbox', { name: /Подтверждаю подписание и отправку/ });
   const launch = () => panel.getByRole('button', { name: 'Подписать и продолжить обмен', exact: true });
@@ -115,9 +115,9 @@ try {
   check('Signature expiry crosses UTC midnight into the same Moscow date shown by Saby');
   await expect(launch()).toBeDisabled(); await expect(consent()).not.toBeChecked();
   await consent().check(); await expect(launch()).toBeEnabled();
-  await panel.getByRole('combobox', { name: 'Подпись АРТЕЛЬ', exact: true }).selectOption('synthetic-sender-2');
+  await panel.getByRole('combobox', { name: 'Подпись АРТЭЛЬ', exact: true }).selectOption('synthetic-sender-2');
   await expect(consent()).not.toBeChecked(); await expect(launch()).toBeDisabled();
-  await panel.getByRole('combobox', { name: 'Подпись АРТЕЛЬ', exact: true }).selectOption('synthetic-sender-1');
+  await panel.getByRole('combobox', { name: 'Подпись АРТЭЛЬ', exact: true }).selectOption('synthetic-sender-1');
   check('Both organizations have visible signature choices; consent names the exact order and resets after a choice changes');
 
   for (const width of [1440, 768, 390, 320]) {
@@ -154,14 +154,14 @@ try {
   const reads = workflowReads; await page.clock.fastForward(300_001);
   await expect.poll(() => workflowReads).toBeGreaterThan(reads); assert.equal(starts.length, 1); assert.equal(reconciles, 0);
   await expect(panel).toContainText('Может потребоваться подтверждение владельца');
-  await expect(main.locator('.workflow-current strong')).toContainText('АРТЕЛЬ · ожидаем подпись');
+  await expect(main.locator('.workflow-current strong')).toContainText('АРТЭЛЬ · ожидаем подпись');
   await shot('sender-waiting');
   check('Double click sends one idempotent launch; polling only reads and waiting is not shown as signed');
   check('A delayed pre-launch workflow GET cannot remove the saved signing task or restore competing manual filling');
 
   advanceOnReconcile = true;
   await panel.getByRole('button', { name: 'Сверить состояние подписания', exact: true }).click();
-  await expect(main.locator('.workflow-current strong')).toContainText('НК АРТЕЛЬ · ожидаем подпись');
+  await expect(main.locator('.workflow-current strong')).toContainText('НК АРТЭЛЬ · ожидаем подпись');
   assert.equal(reconciles, 1); assert.equal(starts.length, 1);
   check('Explicit reconciliation uses the existing workflow POST and displays its fresh result without launching another signing task');
   workflow.signing.state = 'completed'; workflow.signing.carrier.state = 'confirmed'; workflow.carrierConfirmed = true; workflow.phase = 'awaiting_loading';

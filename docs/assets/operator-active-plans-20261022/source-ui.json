@@ -1,0 +1,25 @@
+{
+  "synthetic": true,
+  "mode": "source",
+  "checks": [
+    {
+      "engine": "chromium",
+      "zeroHidden": true,
+      "negativeHidden": true,
+      "bothSelectors": true,
+      "activeSelectable": true,
+      "historyPreserved": true
+    },
+    {
+      "engine": "webkit",
+      "zeroHidden": true,
+      "negativeHidden": true,
+      "bothSelectors": true,
+      "activeSelectable": true,
+      "historyPreserved": true
+    }
+  ],
+  "axe": [],
+  "errors": [],
+  "passed": true
+}

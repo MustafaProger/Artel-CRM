@@ -1,8 +1,8 @@
 export type BankProvider = 'sber' | 'tbank'
 export const bankConnections = [
-  { id: 'sber-nk-artel', provider: 'sber', bankName: 'СберБизнес', company: 'НК АРТЕЛЬ' },
-  { id: 'sber-artel', provider: 'sber', bankName: 'СберБизнес', company: 'АРТЕЛЬ' },
-  { id: 'tbank-nk-artel', provider: 'tbank', bankName: 'Т-Банк', company: 'НК АРТЕЛЬ', envPrefix: 'ARTEL_BANK_TBANK_NK' },
+  { id: 'sber-nk-artel', provider: 'sber', bankName: 'СберБизнес', company: 'НК АРТЭЛЬ' },
+  { id: 'sber-artel', provider: 'sber', bankName: 'СберБизнес', company: 'АРТЭЛЬ' },
+  { id: 'tbank-nk-artel', provider: 'tbank', bankName: 'Т-Банк', company: 'НК АРТЭЛЬ', envPrefix: 'ARTEL_BANK_TBANK_NK' },
 ] as const
 export interface BankAccount { number: string; currency: string; name?: string; status?: string; bankBic?: string }
 export interface BankParty { name?: string; inn?: string; kpp?: string; account?: string; bankName?: string; bic?: string; correspondentAccount?: string }
