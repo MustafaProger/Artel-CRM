@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import Decimal from 'decimal.js';
 import type { Plugin } from 'vite';
-import { hasSection, type AccountUser } from '../web/src/auth-model';
+import { hasSection, isAdministrator, type AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
 import { activeUsers, authenticate, deleteUser, login, logout, logisticsRequest, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie } from './auth';
@@ -49,6 +49,7 @@ import { createTripRequestLocations } from './trip-request-locations';
 import { createYandexTiles, serveYandexTile } from './yandex-tiles';
 import { tripRequestExplicitCoordinates, type TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
 import { getSabyTrip, submitSabyTrip } from './saby-service';
+import { assertTripTransportDocumentsAllowed, isNkSupplyDelivery } from './trip-document-mode';
 import { getEtrnTrip, saveEtrnProfile, exchangeEtrn, preparedEtrnXml, downloadEtrnFile, saveTripLoadingFacts, exchangePreparedEtrn } from './etrn-service';
 import { getTripSigningPreview, validateSigningStart } from './trip-saby-signing';
 import { enqueueAutomaticTripSaby, startAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow } from './trip-saby-workflow';
@@ -59,6 +60,7 @@ import { createTripSabyScheduler, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS
 import { dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
+import { invoiceRequestBody, invoiceRouteAllowed, requireInvoiceAccount, type InvoiceBridge } from './invoice-bridge';
 
 // Sum saved decimal strings exactly, including the source workbook's precision.
 const ExactDecimal = Decimal.clone({ precision: 80 });
@@ -306,6 +308,7 @@ export function isLocalRequest(request: Pick<IncomingMessage, 'headers' | 'socke
 }
 
 export interface LocalApiOptions {
+  invoiceBridge?: InvoiceBridge;
   pushConfig?: PushConfig;
   pushSender?: PushSender;
   cronSecret?: string;
@@ -537,7 +540,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             const actor = requireUser(fresh, request);
             requireDriverRoute(actor, pathname, request.method!);
             const action = recordDriverTripAction(base, fresh, actor, decodeURIComponent(match[1]), match[2] as 'arrive' | 'depart', body);
-            return { ...action, result: { value: action.result, continueWorkflow: match[2] === 'depart' && action.changed } };
+            const localSupply = isNkSupplyDelivery(getShipmentTrip(currentSnapshot(base, fresh), decodeURIComponent(match[1])), fresh);
+            return { ...action, result: { value: action.result, continueWorkflow: match[2] === 'depart' && action.changed && !localSupply } };
           });
           write(response, 200, JSON.stringify(result.value));
           if (result.continueWorkflow && options.sabyWorkflowMonitoringEnabled) {
@@ -555,21 +559,50 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (logistics) requireTripSection(user, true);
         if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
+        if (pathname.startsWith('/api/push/') && user.role !== 'driver') {
+          if (!hasSection(user, 'work') && !hasSection(user, 'invoices')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
+          if (request.headers['x-artel-account'] !== undefined && request.headers['x-artel-account'] !== user.id) throw new ApiError(401, 'Пользователь изменился. Обновите страницу.');
+        }
         if (section && !(user.role === 'driver' && pathname.startsWith('/api/push/')) && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
         return user;
       };
       const actor = authEnabled ? authorized(await operations.read(base.provenance.sourceSha256)) : null;
+      if (pathname === '/api/invoices' || pathname.startsWith('/api/invoices/')) {
+        if (!invoiceRouteAllowed(request.url!, request.method ?? '')) throw new ApiError(404, 'Маршрут не найден.');
+        if (!actor) throw new ApiError(401, 'Войдите в приложение.');
+        requireInvoiceAccount(actor, request);
+        if (!options.invoiceBridge) throw new ApiError(503, 'Обработчик счетов пока не подключён.');
+        const body = await invoiceRequestBody(request);
+        const currentActor = authorized(await operations.read(base.provenance.sourceSha256));
+        requireInvoiceAccount(currentActor, request);
+        const refreshCatalogs = request.method === 'GET' && request.url === '/api/invoices' && request.headers['x-artel-catalog-refresh'] === '1';
+        const reply = await options.invoiceBridge.request(request.url!, request.method, body, { crmUserId: currentActor.id, sessionHash: pushSessionHash(request), displayName: currentActor.name.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim() || 'Сотрудник CRM' }, refreshCatalogs);
+        // A slow reply must not expose one account's history after logout or access revocation.
+        requireInvoiceAccount(authorized(await operations.read(base.provenance.sourceSha256)), request);
+        if (!response.destroyed) {
+          response.writeHead(reply.status, {
+            'Content-Type': reply.contentType.startsWith('application/pdf') ? 'application/pdf' : 'application/json; charset=utf-8',
+            'Content-Length': reply.body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+            ...(reply.contentType.startsWith('application/pdf') ? { 'Content-Disposition': 'attachment; filename="invoice.pdf"' } : {}),
+          });
+          response.end(reply.body);
+        }
+        return;
+      }
+      const directoryCompany = (company: Company): Company => logistics ? logisticsCompany(company) : actor && !isAdministrator(actor)
+        ? { ...company, shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] }
+        : company;
       if (pathname === '/api/operator' || pathname.startsWith('/api/operator/')) {
         // This workspace always requires a real active account, including local mode.
-        const match = pathname.match(/^\/api\/operator(?:\/(recipients|refuellings)(?:\/([a-f0-9-]{36})(?:\/(payment|archive))?)?)?$/);
+        const match = pathname.match(/^\/api\/operator(?:\/(recipients|refuellings|plans)(?:\/([a-f0-9-]{36})(?:\/(payment|archive|delete))?)?)?$/);
         if (!match) throw new ApiError(404, 'Маршрут не найден.');
         if (request.method === 'GET' && !match[1]) {
           const stored = await operations.read(base.provenance.sourceSha256);
-          return write(response, 200, JSON.stringify(readOperator(stored, authorized(stored))));
+          return write(response, 200, JSON.stringify(readOperator(stored, authorized(stored), currentSnapshot(base, stored, false).directories)));
         }
         if (!match[1] || request.method !== (match[2] ? 'PATCH' : 'POST')) throw new ApiError(405, 'Метод не поддерживается.');
-        const body = await jsonBody(request, false, 16384);
-        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings', body, match[2], match[3] as 'payment' | 'archive' | undefined));
+        const body = await jsonBody(request, false, 262144);
+        const saved = await operations.mutate(base.provenance.sourceSha256, stored => mutateOperator(stored, authorized(stored), match[1] as 'recipients' | 'refuellings' | 'plans', body, match[2], match[3] as 'payment' | 'archive' | 'delete' | undefined, currentSnapshot(base, stored, false).directories));
         return write(response, match[2] || saved.replayed ? 200 : 201, JSON.stringify(saved));
       }
       const tripRequestMatch = pathname.match(/^\/api\/trip-requests(?:\/([^/]+))?$/);
@@ -668,7 +701,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { result: { device: { ...device }, ...createPushProbe(data, device) }, changed: true };
           });
           try {
-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: actor.role === 'driver' ? '/#driver-trips' : '/#work', probe: { id: probeId, token } }), config);
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: actor.role === 'driver' ? '/#driver-trips' : hasSection(actor, 'work') ? '/#work' : '/#invoices', probe: { id: probeId, token } }), config);
           } catch (error) {
             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
             // A browser receipt is stronger evidence than a sender timeout after delivery.
@@ -688,7 +721,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         } else {
           await operations.mutate(base.provenance.sourceSha256, data => {
             const user = authorized(data);
-            const changed = request.method === 'DELETE' ? unsubscribe(data, body.endpoint, user.id) : subscribe(data, body.subscription, user.id, pushSessionHash(request));
+            const changed = request.method === 'DELETE' ? unsubscribe(data, body.endpoint, user.id) : subscribe(data, body.subscription, user.id, pushSessionHash(request), body.explicit === true);
             return { result: null, changed };
           });
         }
@@ -785,6 +818,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
         const data = await operations.read(base.provenance.sourceSha256); authorize(currentSnapshot(base, data), data);
         const read = (latest: import('./operations-store').OperationsData) => ({ ...getTripSabyWorkflow({ base, data: latest, tripId, prepare: prepareTripSaby, config: options.sabyClient?.config, monitoringEnabled: options.sabyWorkflowMonitoringEnabled, actorId: actor?.id }), driverConfirmation: driverTripConfirmation(currentSnapshot(base, latest, false), latest, tripId), loadingFacts: latest.etrn?.trips[tripId]?.loadingFacts ? { arrivedAt: latest.etrn.trips[tripId].loadingFacts!.arrivedAt, departedAt: latest.etrn.trips[tripId].loadingFacts!.departedAt, deliveries: latest.etrn.trips[tripId].loadingFacts!.deliveries } : null });
+        if (workflowMatch[2] !== 'loading-facts' && !(request.method === 'GET' && !workflowMatch[2])) assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
         if (request.method === 'GET' && workflowMatch[2] === 'signing') return write(response, 200, JSON.stringify(await getTripSigningPreview(context)));
         if (workflowMatch[2] === 'signing') throw new ApiError(405, 'Метод не поддерживается.');
         if (request.method === 'GET' && !workflowMatch[2]) return write(response, 200, JSON.stringify(read(data)));
@@ -828,6 +862,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const tripId = decodeURIComponent(etrnMatch[1]);
         const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => {
           if (actor) requireWholeTrip(authorized(data), snapshot, tripId);
+          assertTripTransportDocumentsAllowed(getShipmentTrip(snapshot, tripId), data);
         };
         const context = { base, store: operations, tripId, authorize, client: options.sabyClient };
         if (request.method === 'GET' && !etrnMatch[2]) {
@@ -858,6 +893,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const tripId = decodeURIComponent(sabyTripMatch[1]);
         const authorize = (snapshot: Snapshot, data: import('./operations-store').OperationsData) => {
           if (actor) requireWholeTrip(authorized(data), snapshot, tripId);
+          assertTripTransportDocumentsAllowed(getShipmentTrip(snapshot, tripId), data);
         };
         if (request.method === 'GET') {
           const data = await operations.read(base.provenance.sourceSha256);
@@ -907,11 +943,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       const body = await jsonBody(request, request.method === 'DELETE');
       if (logistics) requireLogisticsDirectoryInput(pathname, body);
-      if(actor && (pathname.startsWith('/api/directories') || pathname.startsWith('/api/companies') || request.method==='DELETE'))requireManage(actor);
+      const directoryWrite = pathname === '/api/directories' || !!directoryMatch || pathname === '/api/companies/lookup' || pathname === '/api/companies/from-inn';
+      if (actor && directoryWrite) { requireSection(actor, 'directories'); if (logistics) requireManage(actor); }
+      else if (actor && request.method === 'DELETE') requireManage(actor);
       if (pathname === '/api/directories' || directoryMatch) {
         const savedAddresses: string[] = [];
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          if(actor)requireManage(authorized(data));
+          if (actor) {
+            const currentActor = requireSection(authorized(data), 'directories');
+            if (logistics) requireManage(currentActor);
+            if (!isAdministrator(currentActor) && request.method === 'DELETE' && directoryMatch?.[1] === 'drivers' && data.accounts?.users.some(user => user.role === 'driver' && user.driverId === decodeURIComponent(directoryMatch[2]))) throw new ApiError(403, 'У водителя есть учётная запись. Удаление доступно администратору в связи с отключением доступа.');
+          }
           const snapshot = currentSnapshot(base, data);
           if (logistics) requireLogisticsDirectoryTarget(pathname, body, snapshot, authorized(data));
           const result = directoryMatch && request.method === 'DELETE' ? deleteDirectoryEntry(directoryMatch[1],decodeURIComponent(directoryMatch[2]),body,snapshot,data) : directoryMatch
@@ -929,22 +971,25 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           return { result, changed: !!directoryMatch || body.kind === 'companies' || result.created };
         });
         for (const address of new Set(savedAddresses)) void locations.resolve(address, 'background').catch(() => undefined);
-        const safeResult = logistics && 'entry' in result && (pathname === '/api/directories' ? body.kind === 'companies' : directoryMatch?.[1] === 'companies') ? { ...result, entry: logisticsCompany(result.entry as Company) } : result;
+        const safeResult = 'entry' in result && (pathname === '/api/directories' ? body.kind === 'companies' : directoryMatch?.[1] === 'companies') ? { ...result, entry: directoryCompany(result.entry as Company) } : result;
         return write(response, result.created ? 201 : 200, JSON.stringify(safeResult));
       }
       if (pathname === '/api/companies/lookup') {
         if (Object.keys(body).some(key=>key!=='inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН.');
         const company = await lookupCheckoCompany(body.inn.trim(), options.checkoApiKey ?? process.env.CHECKO_API_KEY, options.fetcher);
-        return write(response, 200, JSON.stringify({ company: logistics ? logisticsCompany(company) : company }));
+        if (actor) requireSection(authorized(await operations.read(base.provenance.sourceSha256)), 'directories');
+        return write(response, 200, JSON.stringify({ company: directoryCompany(company) }));
       }
       if (pathname === '/api/companies/from-inn') {
         if (Object.keys(body).some(key => key !== 'inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр с верными контрольными цифрами.');
         const inn = body.inn.trim();
-        const existing = currentSnapshot(base, await operations.read(base.provenance.sourceSha256)).companies.find(company => company.inn === inn);
-        if (existing) return write(response, 200, JSON.stringify({ company: existing, created: false }));
+        const stored = await operations.read(base.provenance.sourceSha256);
+        if (actor) requireSection(authorized(stored), 'directories');
+        const existing = currentSnapshot(base, stored).companies.find(company => company.inn === inn);
+        if (existing) return write(response, 200, JSON.stringify({ company: directoryCompany(existing), created: false }));
         const found = await lookupCheckoCompany(inn, options.checkoApiKey ?? process.env.CHECKO_API_KEY, options.fetcher);
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          if(actor)requireManage(authorized(data));
+          if (actor) { const currentActor = requireSection(authorized(data), 'directories'); if (logistics) requireManage(currentActor); }
           const snapshot = currentSnapshot(base, data);
           const duplicate = snapshot.companies.find(company => company.inn === inn);
           if (duplicate) return { result: { company: duplicate, created: false }, changed: false };
@@ -953,7 +998,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           data.companies.push(found);
           return { result: { company: found, created: true }, changed: true };
         });
-        return write(response, result.created ? 201 : 200, JSON.stringify(result));
+        return write(response, result.created ? 201 : 200, JSON.stringify({ ...result, company: directoryCompany(result.company) }));
       }
       if (pathname === '/api/shipment-trips' || tripIdMatch) {
         const id = tripIdMatch ? decodeURIComponent(tripIdMatch[1]) : undefined;

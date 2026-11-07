@@ -11,6 +11,8 @@ import { prepareTripSaby } from './trip-saby-preparation';
 import { authorizeAutomaticTripSaby, runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
 import { authorizeSigningActor } from './trip-saby-signing';
 import { carrierFastPolling } from './trip-saby-carrier';
+import { getShipmentTrip } from './shipment-trips';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
 
 export const SABY_WORKFLOW_TICK_MS = 60_000;
 export const SABY_CARRIER_WAIT_TICK_MS = 15_000;
@@ -77,6 +79,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
       authorizeAutomaticTripSaby(snapshot, data, tripId, current, config);
       const actor = publicUser(user);
       requireTripSection(actor, true); requireWholeTrip(actor, snapshot, tripId);
+      assertTripTransportDocumentsAllowed(getShipmentTrip(snapshot, tripId), data);
     };
     const checkAccess = async () => { const data = await store.read(source); authorize(currentSnapshot(base, data), data); };
     // Every fetch, including authentication, organization lookups and attachment GETs,

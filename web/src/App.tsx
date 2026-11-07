@@ -5,6 +5,7 @@ import ScrollableSegments from './ScrollableSegments'
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LoaderCircle, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
+const InvoicePage = lazy(() => import('./InvoicePage'))
 const OperatorPage = lazy(() => import('./OperatorPage'))
 const ChinaPage = lazy(() => import('./ChinaPage'))
 const BankingPage = lazy(() => import('./BankingPage'))
@@ -21,12 +22,29 @@ const AccountManagement = lazy(() => import('./AccountManagement'))
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
 type Page = PageId
-const pageIcons = { LayoutDashboard, ClipboardList, Truck, Route, Wallet, Landmark, PackageCheck, Globe, Headphones, Banknote, UsersRound, BookOpen }
+const pageIcons = { FileText, LayoutDashboard, ClipboardList, Truck, Route, Wallet, Landmark, PackageCheck, Globe, Headphones, Banknote, UsersRound, BookOpen }
 const pages = pageCatalog.map(page => ({ ...page, icon: pageIcons[page.icon] }))
-const getPage = (): Page => location.hash === '#companies' ? 'shipments' : enabledPages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : 'overview'
+const getPage = (): Page => location.hash === '#companies' ? 'shipments' : enabledPages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : /^\/invoices(?:\/|$)/.test(location.pathname) ? 'invoices' : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
-export default function App(){return <AuthGate>{(user,onLogout)=><PageLoadBoundary><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
+function invoiceHistoryLocation(event: MessageEvent) {
+  if (event.origin && event.origin !== location.origin || event.data?.type !== 'artel-open-invoices') return false
+  const params = new URLSearchParams(location.search)
+  params.set('invoiceView', 'history')
+  if (typeof event.data.jobId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.data.jobId)) params.set('invoiceJob', event.data.jobId)
+  else params.delete('invoiceJob')
+  history.replaceState(null, '', `${location.pathname}?${params}#invoices`)
+  return true
+}
+export default function App(){
+  useEffect(() => {
+    // The intent must survive an open login screen. Access still comes from the
+    // authenticated page catalog; the message never fetches another owner's job.
+    const rememberInvoice = (event: MessageEvent) => { invoiceHistoryLocation(event) }
+    navigator.serviceWorker?.addEventListener('message', rememberInvoice)
+    return () => navigator.serviceWorker?.removeEventListener('message', rememberInvoice)
+  }, [])
+  return <AuthGate>{(user,onLogout)=><PageLoadBoundary><Suspense fallback={<div className="loading-state"><LoaderCircle className="spin"/><p>Загружаем CRM…</p></div>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
 class PageLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
@@ -40,7 +58,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const availablePages = pages.filter(item => hasPageAccess(user, item.id))
   const [data,setData] = useState<Snapshot | null>(null)
   const [error,setError] = useState('')
-  const [page,setPage] = useState<Page>(() => location.hash ? getPage() : availablePages[0]?.id ?? 'overview')
+  const [page,setPage] = useState<Page>(() => location.hash || /^\/invoices(?:\/|$)/.test(location.pathname) ? getPage() : availablePages[0]?.id ?? 'overview')
   const [menu,setMenu] = useState(false)
   const [mobile,setMobile] = useState(() => matchMedia('(max-width: 760px)').matches)
   useEffect(() => { const media = matchMedia('(max-width: 760px)'); const change = () => {setMobile(media.matches);setMenu(false)}; media.addEventListener('change', change); return () => media.removeEventListener('change', change) }, [])
@@ -66,6 +84,15 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     window.addEventListener('keydown', trapFocus)
     return () => {window.removeEventListener('keydown', trapFocus);if(opener?.isConnected)opener.focus()}
   }, [menu])
+  useEffect(() => {
+    const openInvoice = (event: MessageEvent) => {
+      if (!hasPageAccess(user, 'invoices') || !invoiceHistoryLocation(event)) return
+      setPage('invoices'); setMenu(false); setDetail(null)
+      window.dispatchEvent(new Event('artel:invoice-history'))
+    }
+    navigator.serviceWorker?.addEventListener('message', openInvoice)
+    return () => navigator.serviceWorker?.removeEventListener('message', openInvoice)
+  }, [user])
   const snapshotRequest = useRef(0)
   const fetchData = () => { const request=++snapshotRequest.current;setError(''); return fetch('/api/snapshot?shipments=omit',{cache:'no-store'}).then(r => {if(!r.ok) throw new Error('Не удалось открыть локальную выгрузку'); return r.json()}).then(snapshot=>{if(request===snapshotRequest.current)setData(snapshot)}).catch(e => {if(request===snapshotRequest.current)setError(e.message)}) }
   useEffect(() => { void fetchData() }, [])
@@ -84,7 +111,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const navigate = (id: Page) => {location.hash = id;setPage(id);setMenu(false);window.scrollTo({top:0,behavior:'instant'})}
   const active = pages.find(p => p.id === page)!
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
-  return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
+  return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : page === 'operator' ? 'operator-shell' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={event => {event.preventDefault();document.getElementById('main-content')?.focus()}}>К содержимому</a>
     <button className={`sidebar-scrim ${menu ? 'is-open' : ''}`} aria-label="Закрыть меню" aria-hidden={!menu} tabIndex={-1} onClick={() => setMenu(false)}/>
     <aside id="app-navigation" ref={sidebarRef} inert={(mobile || page === 'shipments') && !menu} role={menu ? 'dialog' : undefined} aria-modal={menu ? true : undefined} aria-label={menu ? 'Меню разделов' : undefined} className={`sidebar ${menu ? 'is-open' : ''}`}>
@@ -107,13 +134,14 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
-      {page === 'operator' && <OperatorPage/>}
+      {page === 'invoices' && <InvoicePage user={user}/>}
+      {page === 'operator' && <OperatorPage creatorName={user.name}/>}
       {page === 'accounts' && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'work' && <WorkPage/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
-      {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
+      {page === 'directories' && <DirectoriesPage canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
       {page === 'trips' && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
       {page === 'payments' && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div></Suspense></PageLoadBoundary>}

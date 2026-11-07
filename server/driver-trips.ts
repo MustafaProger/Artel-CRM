@@ -9,6 +9,7 @@ import type { OperationsData } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
 import { checkTripVersions } from './shipment-trips';
 import { tripCreatedAt } from '../web/src/trip-order';
+import { isNkSupplyDelivery } from './trip-document-mode';
 
 const Exact = Decimal.clone({ precision: 100 });
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -42,7 +43,8 @@ function projectTrip(snapshot: Snapshot, id: string, rows: Shipment[], actor: Ac
   const progress = data?.driverTripProgress?.[id];
   // Only the workflow's terminal evidence can archive. Its legacy `completed` phase means drafts exist.
   const workflow = data?.tripSaby?.trips[id];
-  const eligible = rows.filter(requiresEtrn);
+  const supplyDelivery = !!data && isNkSupplyDelivery({ id, fields }, data);
+  const eligible = supplyDelivery ? [] : rows.filter(requiresEtrn);
   const localComplete = !eligible.length && !!data && !!driverTripConfirmation(snapshot, data, id)?.confirmedAt;
   const completed = localComplete || !!workflow?.stage6CompletedAt && workflow.phase === 'completed' && workflow.driverFlow?.state === 'ready'
     && !!progress?.departedAt && !!workflow.carrierEvidence && workflow.signing?.sender.state === 'confirmed' && workflow.signing.carrier.state === 'confirmed'
@@ -54,7 +56,7 @@ function projectTrip(snapshot: Snapshot, id: string, rows: Shipment[], actor: Ac
     });
   return {
     id, ...(number ? { number } : {}), createdAt: tripCreatedAt(rows), date: first.date, driverName: driver?.fullName || driver?.name || actor.name,
-    flowVersion: fields.trip_flow_version ?? null, etrnRequired: eligible.length > 0, versions: rowVersions(rows), archived: !!completed,
+    flowVersion: fields.trip_flow_version ?? null, ...(supplyDelivery ? { documentMode: 'nk_supply_delivery' as const } : {}), etrnRequired: eligible.length > 0, versions: rowVersions(rows), archived: !!completed,
     arrivedAt: progress?.arrivedAt ?? null, departedAt: progress?.departedAt ?? null,
     vehiclePlate: fields.vehicle_plate ?? null, supplier: first.supplier,
     loadingAddress: fields.loading_address ?? null, loadingMapUrl: fields.loading_map_url ?? null,

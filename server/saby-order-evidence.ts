@@ -5,6 +5,8 @@ import { SabyError } from './saby-client';
 export interface XmlNode { name: string; attributes: Record<string, string>; children: Array<XmlNode | string> }
 export interface SabySenderTitleIdentity { fileId: string; date: string; time: string }
 export interface SabyCarrierVehicleIdentity { plate: string; vin: string; stsNumber: string }
+/** Persisted on newly authorized workflows; absent historical workflows keep their original rules. */
+export type SabySenderVerificationPolicy = 'address-multidelivery-v1';
 export const SABY_SENDER_COORDINATE_MISMATCH = 'Координаты маршрута в Saby отличаются от сохранённых сведений CRM. Требуется сверка координат перед продолжением; документ не изменён.';
 function failure(): never { throw new SabyError('unknown', 'Текущий титул заявки в Saby не подтверждает сохранённые сведения рейса. Новые ЭТрН не создаются; требуется сверка.', true); }
 const namePattern = /^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё.:-]*$/u;
@@ -129,6 +131,68 @@ function permitOmittedSingleDeliveryInformation(current: XmlNode, frozen: XmlNod
   cargos[1][0].children = cargos[1][0].children.filter(node => node !== originalBlocks[0]);
   if (currentBlocks.length) cargos[0][0].children = cargos[0][0].children.filter(node => node !== currentBlocks[0]);
 }
+/** Each omitted cargo block must be independently recoverable from the intact numbered summary.
+ * Its route number binds that identity to the same cargo slot, volume, mass and unloading address.
+ * In particular, the first recipient's INN cannot establish the identity of later recipients.
+ * Validate the entire mapping before removing anything from either comparison tree.
+ */
+function permitOmittedDeliveryInformation(current: XmlNode, frozen: XmlNode): void {
+  const contents = [current, frozen].map(root => child(child(root, 'Документ'), 'СодИнфГО'));
+  const cargos = contents.map(content => namedChildren(content, 'ОпГруз'));
+  const routes = contents.map(content => namedChildren(content, 'АдрПункт'));
+  const infos = contents.map(content => namedChildren(content, 'ИнфПол'));
+  const count = cargos[1].length;
+  if (!count || cargos[0].length !== count || routes.some(points => points.length !== count + 1) || infos.some(blocks => blocks.length !== 1)) return;
+  const actualInfo = plainInformation(infos[0][0]); const frozenInfo = plainInformation(infos[1][0]);
+  if (!actualInfo || !frozenInfo || actualInfo.size !== frozenInfo.size || [...frozenInfo].some(([key, value]) => actualInfo.get(key) !== value)) return;
+  if (!actualInfo.get('Рейс CRM')?.trim() || actualInfo.get('Рейс CRM') !== actualInfo.get('Доставка CRM')) return;
+  for (const prefix of ['Доставка ', 'ИНН получателя доставки ']) {
+    const keys = [...actualInfo.keys()].filter(key => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)));
+    if (keys.length !== count || Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`).some(key => !keys.includes(key))) return;
+  }
+  for (const points of routes) {
+    if (points.some((point, index) => point.attributes.ПорНомПункт !== String(index + 1) || point.attributes.Опер !== (index ? 'Выгрузка' : 'Погрузка'))) return;
+  }
+  const removed: Array<{ node: XmlNode; block: XmlNode }> = [];
+  const deliveryIds = new Set<string>(); const decimal = /^\d{1,18}(?:\.\d{1,8})?$/;
+  for (let index = 0; index < count; index++) {
+    const before = cargos[1][index]; const after = cargos[0][index];
+    const originalBlocks = namedChildren(before, 'ИнфПол'); const currentBlocks = namedChildren(after, 'ИнфПол');
+    if (originalBlocks.length !== 1 || currentBlocks.length > 1) return;
+    const information = plainInformation(originalBlocks[0]);
+    const required = ['Доставка CRM', 'Получатель доставки', 'ИНН получателя', 'Адрес доставки'];
+    if (!information || information.size !== required.length || required.some(key => !information.get(key)?.trim())) return;
+    const deliveryId = information.get('Доставка CRM')!; const recipient = information.get('Получатель доставки')!;
+    const inn = information.get('ИНН получателя')!; const address = information.get('Адрес доставки')!;
+    if (deliveryIds.has(deliveryId) || !/^\d{10}(?:\d{2})?$/.test(inn) || actualInfo.get(`ИНН получателя доставки ${index + 1}`) !== inn) return;
+    deliveryIds.add(deliveryId);
+    if (index === 0 && (actualInfo.get('Получатель доставки') !== recipient || actualInfo.get('ИНН получателя') !== inn)) return;
+    const prefix = `${deliveryId}: ${recipient}; `; const suffix = ` л; ${address}`;
+    const summary = actualInfo.get(`Доставка ${index + 1}`)!;
+    if (!summary.startsWith(prefix) || !summary.endsWith(suffix)) return;
+    const litres = summary.slice(prefix.length, summary.length - suffix.length);
+    if (!decimal.test(litres) || !new Decimal(litres).gt(0)) return;
+    for (let side = 0; side < 2; side++) {
+      const cargo = cargos[side][index]; const points = namedChildren(cargo, 'Пункт');
+      if (points.length !== 1 || !noContent(points[0]) || Object.keys(points[0].attributes).length !== 3 ||
+        points[0].attributes.Погр !== '1' || points[0].attributes.Выгр !== String(index + 2) || points[0].attributes.КолГрМест !== '1') return;
+      if (!decimal.test(cargo.attributes.Объем ?? '') || !new Decimal(cargo.attributes.Объем).times(1000).eq(litres)) return;
+      const locations = namedChildren(routes[side][index + 1], 'АдресПункт');
+      if (locations.length !== 1) return;
+      const full = fullAddress(locations[0]); if (!full) return;
+      const detail = namedChildren(full, 'АдрИнф')[0];
+      if (detail.attributes.КодСтр !== '643' || detail.attributes.АдрТекст !== address) return;
+    }
+    if (currentBlocks.length && (!noContent(currentBlocks[0]) || Object.keys(currentBlocks[0].attributes).length)) {
+      const retained = plainInformation(currentBlocks[0]);
+      if (!retained || retained.size !== information.size || [...information].some(([key, value]) => retained.get(key) !== value)) return;
+      continue;
+    }
+    removed.push({ node: before, block: originalBlocks[0] });
+    if (currentBlocks.length) removed.push({ node: after, block: currentBlocks[0] });
+  }
+  for (const { node, block } of removed) node.children = node.children.filter(value => value !== block);
+}
 /** FNS defines this flag solely as the UTC indicator of ДатВрОпер.
  * An added 1 conveys no time when that date is absent on both sides.
  * Restrict to the same unique numbered unloading point; all other fields remain compared.
@@ -160,13 +224,23 @@ function fullAddress(node: XmlNode): XmlNode | undefined {
   if (details.length !== 1 || address.children.some(value => typeof value === 'string' ? !!value.trim() : value !== details[0]) || !/^\d{3}$/.test(details[0].attributes.КодСтр ?? '') || !details[0].attributes.АдрТекст?.trim() || !noContent(details[0])) return;
   return address;
 }
-function permitCoordinatePresenceChanges(current: XmlNode, frozen: XmlNode, path = ''): void {
+function permitCoordinatePresenceChanges(current: XmlNode, frozen: XmlNode, path = '', policy?: SabySenderVerificationPolicy): void {
   if (current.name !== frozen.name) return;
   const here = `${path}/${current.name}`;
   const nodes = (node: XmlNode) => node.children.filter((value): value is XmlNode => typeof value !== 'string' && !(here === '/Файл/Документ' && value.name === 'ПодпИнфГО'));
   if (['/Файл/Документ/СодИнфГО/ПунктПод/АдрПунктПод', '/Файл/Документ/СодИнфГО/АдрПункт/АдресПункт'].includes(here)) {
     const existing = nodes(frozen).filter(node => node.name === 'Коорд');
     const added = nodes(current).filter(node => node.name === 'Коорд');
+    if (policy === 'address-multidelivery-v1' && (existing.length || added.length)) {
+      const actualAddress = fullAddress(current); const expectedAddress = fullAddress(frozen);
+      // User instruction 20.10.2026: the exact full address takes precedence over valid
+      // provider coordinates, including changed coordinates already present on both sides.
+      // Only this new persisted policy changes that rule; historical attempts stay strict.
+      if (existing.length > 1 || added.length > 1 || [...existing, ...added].some(point => !validCoordinates(point)) ||
+        !actualAddress || !expectedAddress || JSON.stringify(exactAddress(actualAddress)) !== JSON.stringify(exactAddress(expectedAddress))) failure();
+      current.children = current.children.filter(node => node !== added[0]);
+      frozen.children = frozen.children.filter(node => node !== existing[0]);
+    }
     // User instruction 06.10.2026: accept coordinates added by Saby only while the address stays unchanged.
     // Remove them from the comparison copy only; comparison of every remaining address field still follows.
     if (!existing.length && added.length === 1) {
@@ -181,7 +255,7 @@ function permitCoordinatePresenceChanges(current: XmlNode, frozen: XmlNode, path
   }
   const actual = nodes(current); const expected = nodes(frozen);
   if (actual.length !== expected.length) return;
-  actual.forEach((node, index) => permitCoordinatePresenceChanges(node, expected[index], here));
+  actual.forEach((node, index) => permitCoordinatePresenceChanges(node, expected[index], here, policy));
 }
 function canonical(node: XmlNode, path = '', diagnosticIgnoreCoordinates = false): unknown {
   const current = `${path}/${node.name}`;
@@ -213,12 +287,13 @@ function canonical(node: XmlNode, path = '', diagnosticIgnoreCoordinates = false
   flush(); return [node.name, attributes, children];
 }
 /** Allow Saby's file/signing header preparation, never changes to route, cargo or organization IDs. */
-export function verifySabySenderBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array): SabySenderTitleIdentity {
+export function verifySabySenderBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array, policy?: SabySenderVerificationPolicy): SabySenderTitleIdentity {
   const current = parseXml(currentBytes); const frozen = parseXml(frozenBytes);
   const currentIdentity = identity(current); identity(frozen);
-  permitOmittedSingleDeliveryInformation(current, frozen);
+  if (policy === 'address-multidelivery-v1') permitOmittedDeliveryInformation(current, frozen);
+  else permitOmittedSingleDeliveryInformation(current, frozen);
   permitInertUnloadingUtcFlag(current, frozen);
-  permitCoordinatePresenceChanges(current, frozen);
+  permitCoordinatePresenceChanges(current, frozen, '', policy);
   if (JSON.stringify(canonical(current)) !== JSON.stringify(canonical(frozen))) {
     if (JSON.stringify(canonical(current, '', true)) === JSON.stringify(canonical(frozen, '', true))) {
       throw new SabyError('validation', SABY_SENDER_COORDINATE_MISMATCH);

@@ -19,7 +19,7 @@ export interface PushProbe {
   userId: string; deviceId: string; tokenHash: string; createdAt: number; expiresAt: number;
   providerAcceptedAt?: number; notificationCreatedAt?: number;
 }
-export interface PushData { devices: PushDevice[]; deliveries: Record<string, Delivery>; taskAssignments?: Record<string, TaskAssignment>; tripAssignments?: Record<string, TripAssignment>; probes?: Record<string, PushProbe>; lastRunAt?: number }
+export interface PushData { devices: PushDevice[]; deliveries: Record<string, Delivery>; taskAssignments?: Record<string, TaskAssignment>; tripAssignments?: Record<string, TripAssignment>; probes?: Record<string, PushProbe>; lastRunAt?: number; invoiceEvents?: Record<string, { userId: string; jobId: string; occurredAt: number }>; invoiceRevocations?: Record<string, number> }
 export interface PushConfig { publicKey: string; privateKey: string; subject: string; schedule: boolean }
 export type PushSender = (device: PushDevice, payload: string, config: PushConfig) => Promise<unknown>;
 export const pushConfig = (): PushConfig => ({ publicKey: process.env.VAPID_PUBLIC_KEY ?? '', privateKey: process.env.VAPID_PRIVATE_KEY ?? '', subject: process.env.VAPID_SUBJECT ?? '', schedule: process.env.PUSH_SCHEDULE_ENABLED === 'true' });
@@ -59,6 +59,14 @@ export function validatePush(value: PushData | undefined) {
     ids.add(device.id); endpoints.add(device.endpoint);
   }
   if (value.lastRunAt !== undefined && !Number.isSafeInteger(value.lastRunAt)) throw new Error('Invalid push heartbeat');
+  if (value.invoiceEvents !== undefined) {
+    if (!value.invoiceEvents || typeof value.invoiceEvents !== 'object' || Array.isArray(value.invoiceEvents)) throw new Error('Invalid invoice events');
+    for (const [id, row] of Object.entries(value.invoiceEvents)) if (!row || !/^[a-f0-9-]{36}$/.test(row.jobId) || id !== `invoice-ready:${row.jobId}` || typeof row.userId !== 'string' || !row.userId || !Number.isSafeInteger(row.occurredAt) || row.occurredAt < 0) throw new Error('Invalid invoice event');
+  }
+  if (value.invoiceRevocations !== undefined) {
+    if (!value.invoiceRevocations || typeof value.invoiceRevocations !== 'object' || Array.isArray(value.invoiceRevocations)) throw new Error('Invalid invoice revocations');
+    for (const [id, at] of Object.entries(value.invoiceRevocations)) if (!/^[a-f0-9]{64}$/.test(id) || !Number.isSafeInteger(at) || at < 0) throw new Error('Invalid invoice revocation');
+  }
   for (const [key, row] of Object.entries(value.deliveries)) {
     if (!/^[a-f0-9]{64}$/.test(key) || !row || typeof row.deviceId !== 'string' || !Number.isSafeInteger(row.at) || !Number.isSafeInteger(row.retryAt) || !Number.isSafeInteger(row.attempts) || row.attempts < 1 || row.lease !== undefined && typeof row.lease !== 'string' || row.sent !== undefined && typeof row.sent !== 'boolean') throw new Error('Invalid push delivery');
   }
@@ -109,11 +117,12 @@ export function queueTripAssignment(data: OperationsData, id: string, rows: Ship
   const push = data.push ??= { devices: [], deliveries: {} };
   (push.tripAssignments ??= {})[id] = { token: randomUUID(), driverId, at: Date.now() };
 }
-export function subscribe(data: OperationsData, value: unknown, userId: string, sessionHash: string) {
+export function subscribe(data: OperationsData, value: unknown, userId: string, sessionHash: string, explicit = true) {
   const subscription = parseSubscription(value);
   const push = data.push ??= { devices: [], deliveries: {} };
   const previous = push.devices.find(device => device.endpoint === subscription.endpoint);
   if (previous?.userId === userId && previous.sessionHash === sessionHash && JSON.stringify(previous.keys) === JSON.stringify(subscription.keys)) return false;
+  if (!explicit) throw new ApiError(409, 'Нажмите «Включить уведомления», чтобы подключить это устройство к текущему аккаунту.');
   if (!previous && (push.devices.length >= 1000 || push.devices.filter(device => device.userId === userId).length >= 10)) throw new ApiError(409, 'Достигнут лимит устройств для уведомлений. Отключите неиспользуемое устройство.');
   if (previous) push.devices = push.devices.filter(device => device.id !== previous.id);
   // Preserve delivery identity on re-login, but never transfer another account's deliveries.
@@ -142,7 +151,7 @@ const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssign
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);
   return rows.length > 0 && rows.every(row => row.fields.driver_id === assignment.driverId);
 };
-interface PushCandidate { kind: string; id: string; assigneeId: string; token: string; event: 'reminder' | 'assignment' | 'trip-assignment' }
+interface PushCandidate { kind: string; id: string; assigneeId: string; token: string; event: 'reminder' | 'assignment' | 'trip-assignment' | 'invoice-ready'; occurredAt?: number }
 function candidates(data: OperationsData, now: number): PushCandidate[] {
   const reminders: PushCandidate[] = reminderCandidates(data, now).map(row => ({ kind: row.kind, id: row.id, assigneeId: row.assigneeId, token: row.reminderAt!, event: 'reminder' }));
   const assignments: PushCandidate[] = [];
@@ -157,7 +166,14 @@ function candidates(data: OperationsData, now: number): PushCandidate[] {
       assignments.push({ kind: 'driver-trips', id, assigneeId: user.id, token: assignment.token, event: 'trip-assignment' });
     }
   }
+  for (const [id, event] of Object.entries(data.push?.invoiceEvents ?? {})) {
+    if (event.occurredAt > now - 7 * assignmentLifetime && data.accounts?.users.some(user => user.id === event.userId && hasSection(user, 'invoices'))) assignments.push({ kind: 'invoices', id, assigneeId: event.userId, token: String(event.occurredAt), event: 'invoice-ready', occurredAt: event.occurredAt });
+  }
   return [...reminders, ...assignments];
+}
+function invoiceDeviceAvailable(data: OperationsData, row: PushCandidate, device: PushDevice, now: number) {
+  return row.event !== 'invoice-ready' || device.createdAt <= row.occurredAt!
+    && !!data.accounts?.sessions.some(session => session.hash === device.sessionHash && session.userId === device.userId && !session.audience && session.expiresAt > now);
 }
 const deliveryKey = (kind: string, id: string, reminderAt: string, deviceId: string) => hash(`${kind}:${id}:${reminderAt}:${deviceId}`);
 const candidateKey = (row: PushCandidate, deviceId: string) => deliveryKey(row.event === 'assignment' ? 'task-assignment' : row.kind, row.id, row.token, deviceId);
@@ -196,9 +212,10 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
       if (!assignmentTrip(data, id, assignment, now)) { delete push.tripAssignments![id]; changed = true; }
     }
     const pending: (PushCandidate & { key: string; device: PushDevice })[] = [];
-    const counts = { reminder: 0, assignment: 0, 'trip-assignment': 0 };
+    const counts = { reminder: 0, assignment: 0, 'trip-assignment': 0, 'invoice-ready': 0 };
     const relevant = new Set<string>();
     for (const row of candidates(data, now)) for (const device of push.devices.filter(device => device.userId === row.assigneeId)) {
+      if (!invoiceDeviceAvailable(data, row, device, now)) continue;
       const key = candidateKey(row, device.id);
       relevant.add(key);
       if (row.event === 'reminder' && !includeReminders || filter && (row.event !== filter.event || filter.id !== undefined && row.id !== filter.id)) continue;
@@ -221,12 +238,13 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
     const availableCandidates = candidates(current, now);
     await Promise.all(claimed.slice(offset, offset + 5).map(async item => {
       const device = current.push?.devices.find(device => device.id === item.device.id && device.userId === item.device.userId);
-      const available = device && current.push?.deliveries[item.key]?.lease === lease && availableCandidates.some(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.event === item.event && row.token === item.token);
+      const available = device && current.push?.deliveries[item.key]?.lease === lease && availableCandidates.some(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.event === item.event && row.token === item.token && invoiceDeviceAvailable(current, row, device, Date.now()));
       if (!available) { results.push({ key: item.key, deviceId: item.device.id, sent: false, expired: false, cancelled: true }); return; }
       try {
         const trip = item.event === 'trip-assignment';
-        const body = trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.' : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
-        await sender(device, JSON.stringify({ title: trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
+        const invoice = item.event === 'invoice-ready';
+        const body = invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».' : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.' : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
+        await sender(device, JSON.stringify({ title: trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices` : trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });
       } catch (error) {
         const status = (error as { statusCode?: number }).statusCode;
