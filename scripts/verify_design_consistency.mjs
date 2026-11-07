@@ -326,7 +326,7 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Добавить пользователя', exact: true }).evaluate(el => !!el.closest('.account-panel')), false);
   report.checks.push('Single search focus ring; stable neutral directory hover across nested controls; reduced motion; headings removed; account action outside panel');
 
-  for (const company of ['НК АРТЕЛЬ', 'АРТЕЛЬ']) {
+  for (const company of ['НК АРТЭЛЬ', 'АРТЭЛЬ']) {
     await visit('overview'); await visit('payments');
     await page.getByRole('button', { name: `Открыть СберБизнес — ${company}`, exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Выписки по дням', exact: true })).toBeVisible();
@@ -339,7 +339,7 @@ try {
     await expect(page.getByRole('heading', { name: 'Выписки по дням', exact: true })).toBeVisible();
     await from.fill(`${day.slice(0, 7)}-01`);
     await expect(page.getByRole('button', { name: 'Показать период', exact: true })).toBeEnabled();
-    await capture(`bank-default-${company === 'АРТЕЛЬ' ? 'artel' : 'nk'}`);
+    await capture(`bank-default-${company === 'АРТЭЛЬ' ? 'artel' : 'nk'}`);
   }
   report.checks.push('Both Sber connections open with a valid current-month period; invalid drafts cannot replace the saved statement');
 

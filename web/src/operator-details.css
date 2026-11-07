@@ -1,0 +1,38 @@
+/* A native modal keeps focus and background scrolling inside the details panel. */
+dialog.operator-details-drawer { position:fixed; inset:0 0 0 auto; margin:0; width:min(520px,100%); height:100dvh; max-height:100dvh; max-width:100%; padding:0; border:0; border-radius:22px 0 0 22px; background:var(--surface,#fff); color:var(--text,#25362e); box-shadow:-16px 0 64px #15382425; overflow:hidden; }
+dialog.operator-details-drawer[open] { display:flex; flex-direction:column; }
+dialog.operator-details-drawer[data-modal-motion] { --modal-x:100%; --modal-y:0px; --modal-scale:1; }
+.operator-details-drawer::backdrop { background:#182e2459; }
+.operator-details-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; flex:none; padding:20px 24px; border-bottom:1px solid #e2e7e4; }
+.operator-details-heading h2 { margin:0; min-width:0; font-size:19px; line-height:1.4; overflow-wrap:anywhere; }
+.operator-details-heading .icon-button, .app-shell .operator-details-button { flex:none; width:44px; height:44px; min-width:44px; min-height:44px; padding:0; border-radius:50%; color:#476554; background:#f1f6f2; }
+.operator-details-body { display:grid; align-content:start; gap:22px; min-height:0; overflow:auto; overscroll-behavior:contain; padding:24px 24px max(24px,env(safe-area-inset-bottom)); }
+.operator-details-body > * { min-width:0; }
+.operator-details-body h3 { margin:0 0 10px; font-size:16px; line-height:1.5; overflow-wrap:anywhere; }
+.operator-details-body p { margin:0; font-size:13px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.operator-details-body dl, .operator-details-body dd { margin:0; }
+.operator-details-body dt { color:#5b6d62; font-size:12px; line-height:1.5; }
+.operator-details-meta { display:grid; gap:14px; }
+.operator-details-meta > div { display:grid; gap:4px; }
+.operator-details-meta dd { font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.operator-details-body .operator-plan-details { padding:0; border:0; }
+.operator-details-body .operator-plan-details ul { margin:0; }
+.operator-details-body .operator-case-task { display:grid; gap:8px; }
+.operator-details-body .operator-case-task strong { display:flex; gap:6px; align-items:center; font-size:13px; }
+.operator-details-body .operator-case-task small { color:#5b6d62; line-height:1.5; }
+.operator-details-body .operator-case-history summary, .operator-details-body .operator-case-source { min-height:44px; }
+.operator-details-actions { display:flex; flex-wrap:wrap; gap:8px; padding-top:18px; border-top:1px solid #e2e7e4; }
+.operator-details-actions .button { min-height:44px; }
+.operator-details-drawer :is(button,summary):focus-visible { outline:2px solid #216447; outline-offset:3px; }
+.operator-workspace .operator-card > header { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; }
+.operator-workspace .operator-card .operator-card-state { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+.operator-workspace .operator-card .operator-card-state > span { color:#785f25; }
+.operator-workspace .operator-card .operator-card-state > .is-paid, .operator-workspace .operator-card .operator-card-state > .is-completed { color:#286a47; }
+.operator-workspace .operator-card .operator-case-deadline { display:flex; align-items:center; gap:6px; font-size:12px; line-height:1.5; color:#5b6d62; }
+.operator-workspace .operator-card .operator-case-deadline.is-overdue { color:#805d19; }
+@media(max-width:600px) {
+  dialog.operator-details-drawer { width:100%; border-radius:0; }
+  .operator-details-heading { padding:16px; padding-top:max(16px,env(safe-area-inset-top)); }
+  .operator-details-body { padding:20px 16px max(24px,env(safe-area-inset-bottom)); }
+  .operator-workspace .operator-case-card .operator-card-state { flex-wrap:wrap; max-width:150px; }
+}

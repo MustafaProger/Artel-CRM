@@ -49,7 +49,7 @@ async function fixture(sender: PushSender) {
   for (const request of [director, alice, bob]) {
     const key = createECDH('prime256v1'); key.generateKeys();
     const subscription = { endpoint: `https://fcm.googleapis.com/fcm/send/${randomUUID()}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
-    assert.equal((await request('/api/push/subscription', 'POST', { subscription })).status, 200);
+    assert.equal((await request('/api/push/subscription', 'POST', { explicit: true, subscription })).status, 200);
   }
   return { store, folder, director, alice, bob, users,
     close: async () => { await new Promise<void>(done => server.close(() => done())); await rm(folder, { recursive: true, force: true }); } };

@@ -1,0 +1,670 @@
+{
+  "readOnly": true,
+  "businessWrites": 0,
+  "verified": true,
+  "account": "Egor",
+  "widths": [
+    {
+      "banks": [
+        "111",
+        "Альфа-Банк",
+        "",
+        "ВТБ",
+        "",
+        "Сбербанк",
+        "",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Газпромбанк",
+        "",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Сбербанк",
+        "Сбербанк",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Т-Банк",
+        "Сбербанк",
+        "ВТБ",
+        "Сбербанк"
+      ],
+      "driverCaseBadges": 0,
+      "operations": 16,
+      "overflow": false,
+      "styles": [
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        }
+      ],
+      "width": 320
+    },
+    {
+      "banks": [
+        "111",
+        "Альфа-Банк",
+        "",
+        "ВТБ",
+        "",
+        "Сбербанк",
+        "",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Газпромбанк",
+        "",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Сбербанк",
+        "Сбербанк",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Т-Банк",
+        "Сбербанк",
+        "ВТБ",
+        "Сбербанк"
+      ],
+      "driverCaseBadges": 0,
+      "operations": 16,
+      "overflow": false,
+      "styles": [
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        }
+      ],
+      "width": 390
+    },
+    {
+      "banks": [
+        "111",
+        "Альфа-Банк",
+        "",
+        "ВТБ",
+        "",
+        "Сбербанк",
+        "",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Газпромбанк",
+        "",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Сбербанк",
+        "Сбербанк",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Т-Банк",
+        "Сбербанк",
+        "ВТБ",
+        "Сбербанк"
+      ],
+      "driverCaseBadges": 0,
+      "operations": 16,
+      "overflow": false,
+      "styles": [
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        }
+      ],
+      "width": 600
+    },
+    {
+      "banks": [
+        "111",
+        "Альфа-Банк",
+        "",
+        "ВТБ",
+        "",
+        "Сбербанк",
+        "",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Газпромбанк",
+        "",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Сбербанк",
+        "Сбербанк",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Т-Банк",
+        "Сбербанк",
+        "ВТБ",
+        "Сбербанк"
+      ],
+      "driverCaseBadges": 0,
+      "operations": 16,
+      "overflow": false,
+      "styles": [
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        }
+      ],
+      "width": 1100
+    },
+    {
+      "banks": [
+        "111",
+        "Альфа-Банк",
+        "",
+        "ВТБ",
+        "",
+        "Сбербанк",
+        "",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Газпромбанк",
+        "",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Сбербанк",
+        "Сбербанк",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Т-Банк",
+        "Сбербанк",
+        "ВТБ",
+        "Сбербанк"
+      ],
+      "driverCaseBadges": 0,
+      "operations": 16,
+      "overflow": false,
+      "styles": [
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        }
+      ],
+      "width": 1470
+    },
+    {
+      "banks": [
+        "111",
+        "Альфа-Банк",
+        "",
+        "ВТБ",
+        "",
+        "Сбербанк",
+        "",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Газпромбанк",
+        "",
+        "Т-Банк",
+        "ВТБ",
+        "Альфа-Банк",
+        "Сбербанк",
+        "Сбербанк",
+        "Сбербанк",
+        "Т-Банк",
+        "ВТБ",
+        "Т-Банк",
+        "Сбербанк",
+        "ВТБ",
+        "Сбербанк"
+      ],
+      "driverCaseBadges": 0,
+      "operations": 16,
+      "overflow": false,
+      "styles": [
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        },
+        {
+          "border": "0px",
+          "radius": "999px"
+        }
+      ],
+      "width": 1920
+    }
+  ],
+  "checks": [
+    {
+      "keyboardFocus": {
+        "focusVisible": true,
+        "label": "Оплата Сергей Волков",
+        "outline": "3px"
+      }
+    },
+    {
+      "menuImmediateLabel": true,
+      "deletionStillLocked": true
+    },
+    {
+      "details": {
+        "financialFieldsDisabled": true,
+        "history": true,
+        "savedRequisites": true
+      }
+    },
+    {
+      "label": "Возвраты",
+      "status": "Открытые",
+      "cards": 2,
+      "overflow": false,
+      "tables": 0
+    },
+    {
+      "label": "Возвраты",
+      "status": "Выполненные",
+      "cards": 5,
+      "overflow": false,
+      "tables": 0
+    },
+    {
+      "label": "Ожидают заправки",
+      "status": "Открытые",
+      "cards": 3,
+      "overflow": false,
+      "tables": 0
+    },
+    {
+      "label": "Ожидают заправки",
+      "status": "Выполненные",
+      "cards": 3,
+      "overflow": false,
+      "tables": 0
+    },
+    {
+      "caseDetails": {
+        "drawer": true,
+        "history": true
+      }
+    },
+    {
+      "unsavedCalculation": {
+        "credit": "7200.00",
+        "due": "65700.00"
+      }
+    }
+  ],
+  "viewportRestored": true,
+  "at": "2026-10-21T19:55:03.108Z",
+  "notPerformed": [
+    "Production payment writes",
+    "Real transfers",
+    "Saby Reserve/Prepare/Execute",
+    "Physical phone/WebKit device"
+  ]
+}

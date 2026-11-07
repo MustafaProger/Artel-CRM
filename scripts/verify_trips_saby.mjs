@@ -102,7 +102,7 @@ try {
   await page.goto(base + '/#trips'); await expect(page.getByRole('heading', { name: 'Рейсов пока нет' })).toBeVisible();
   await page.getByRole('button', { name: 'Новый рейс', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await choose(dialog, 'Наша организация', 'АРТЕЛЬ'); await dialog.getByLabel('Дата отгрузки', { exact: false }).fill('2026-09-29');
+  await choose(dialog, 'Наша организация', 'АРТЭЛЬ'); await dialog.getByLabel('Дата отгрузки', { exact: false }).fill('2026-09-29');
   await choose(dialog, 'Поставщик', 'QA Склад'); await choose(dialog, 'Место загрузки', 'QA Погрузка');
   await dialog.getByLabel('Плановая погрузка', { exact: true }).fill('2026-09-29T10:30');
   await dialog.getByLabel('Цена поставщика за тонну, ₽', { exact: false }).fill('50000'); await dialog.getByLabel('Тоннаж всей машины, т', { exact: false }).fill('8'); await choose(dialog, 'Товар', 'QA Груз');

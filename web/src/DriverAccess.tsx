@@ -16,6 +16,7 @@ type DriverAccessState = {
 /** Passwords exist only in this mounted issuance panel, never in the directory draft. */
 export default function DriverAccess({ driverId, disabled, onBusyChange, onChanged }: { driverId: string; disabled: boolean; onBusyChange: (busy: boolean) => void; onChanged?: () => void }) {
   const [access, setAccess] = useState<DriverAccessState | null>(null)
+  const [login, setLogin] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [needsCheck, setNeedsCheck] = useState(false)
@@ -41,7 +42,7 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
       const response = await apiFetch(endpoint, { cache: 'no-store' })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || 'Не удалось проверить доступ водителя.')
-      if (sequence === request.current) { setAccess(result.access); setNeedsCheck(false) }
+      if (sequence === request.current) { setAccess(result.access); setLogin(result.access.login ?? ''); setNeedsCheck(false) }
     } catch (reason) {
       if (sequence === request.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.')
     } finally {
@@ -69,9 +70,10 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
     setShowCustomPassword(false)
   }
 
-  const change = async (action: 'issue' | 'reset' | 'revoke') => {
+  const change = async (action: 'issue' | 'reset' | 'revoke' | 'login') => {
     if (submitting.current || disabled || loading || needsCheck || !access) return
-    if (action !== 'revoke' && customPassword && !validPassword) return
+    if ((action === 'issue' || action === 'reset') && customPassword && !validPassword) return
+    if (action === 'login' && (!access.userId || !/^[a-z0-9._-]{3,64}$/.test(login.trim().toLowerCase()))) return
     submitting.current = true
     setBusy(true)
     onBusyChange(true)
@@ -82,25 +84,26 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
     let responseReceived = false
     try {
       const response = await apiFetch(endpoint, {
-        method: action === 'revoke' ? 'PATCH' : 'POST',
+        method: action === 'revoke' || action === 'login' ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action === 'revoke' ? { version: access.version, active: false } : { version: access.version, action, ...(customPassword ? { password } : {}) }),
+        body: JSON.stringify(action === 'login' ? { version: access.version, login } : action === 'revoke' ? { version: access.version, active: false } : { version: access.version, action, ...(customPassword ? { password } : {}) }),
       })
       const result = await response.json()
       responseReceived = true
       if (!response.ok) {
-        if (response.status === 409) await refresh()
+        if (response.status === 409 && action !== 'login') await refresh()
         throw new Error(result.error || 'Не удалось изменить доступ водителя.')
       }
       setAccess(result.access)
+      setLogin(result.access.login ?? '')
       onChanged?.()
       cancelConfirmation()
       if (typeof result.temporaryPassword === 'string') setTemporaryPassword(result.temporaryPassword)
-      setNotice(action === 'revoke' ? 'Доступ отозван. Прежние сеансы завершены.' : result.temporaryPassword ? 'Данные входа готовы к передаче водителю.' : 'У водителя уже есть доступ. Для нового пароля выберите «Выдать новый пароль».')
+      setNotice(action === 'login' ? 'Логин сохранён. Пароль прежний; водителю нужно войти заново.' : action === 'revoke' ? 'Доступ отозван. Прежние сеансы завершены.' : result.temporaryPassword ? 'Данные входа готовы к передаче водителю.' : 'У водителя уже есть доступ. Для нового пароля выберите «Выдать новый пароль».')
     } catch (reason) {
       if (!responseReceived) {
         setNeedsCheck(true)
-        setError('Результат изменения доступа не подтверждён. Проверьте доступ снова. Если пароль был создан, выдайте новый: повторно прочитать его нельзя.')
+        setError(action === 'login' ? 'Результат изменения логина не подтверждён. Проверьте доступ снова перед повторным сохранением.' : 'Результат изменения доступа не подтверждён. Проверьте доступ снова. Если пароль был создан, выдайте новый: повторно прочитать его нельзя.')
       } else setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.')
     } finally {
       submitting.current = false
@@ -128,7 +131,7 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
     {loading && !access && <p role="status"><LoaderCircle size={16} className="spin"/> Проверяем доступ…</p>}
     {access && <>
       <div className="driver-access-details">
-        <label className="shipment-field"><span>Логин водителя</span><input aria-label="Логин водителя" value={access.login ?? ''} placeholder="Будет назначен при выдаче" readOnly autoComplete="off"/></label>
+        <div className="driver-access-login"><label className="shipment-field"><span>Логин водителя</span><input aria-label="Логин водителя" value={login} onChange={event => setLogin(event.target.value)} placeholder="Будет назначен при выдаче" disabled={!access.userId || disabled || busy || loading || needsCheck || !!confirmation || !!temporaryPassword} maxLength={64} autoComplete="off" autoCapitalize="none" spellCheck={false} aria-describedby={access.userId ? "driver-login-help" : undefined} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (login.trim().toLowerCase() !== access.login) void change('login') } }}/></label>{access.userId && <><p id="driver-login-help" className="driver-access-hint">3–64 символа: латинские буквы, цифры, точка, дефис или подчёркивание. Пароль сохранится; водитель войдёт заново.</p><button type="button" className="button" disabled={disabled || busy || loading || needsCheck || !!confirmation || !!temporaryPassword || login.trim().toLowerCase() === access.login || !/^[a-z0-9._-]{3,64}$/.test(login.trim().toLowerCase())} onClick={() => void change('login')}>Сохранить логин</button></>}</div>
         <div className="driver-access-url"><span>Адрес входа</span><a href={access.loginUrl} target="_blank" rel="noreferrer">{access.loginUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')}<ExternalLink size={14}/></a></div>
       </div>
       {!temporaryPassword && !confirmation && <div className="driver-access-controls">

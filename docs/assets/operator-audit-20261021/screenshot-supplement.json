@@ -1,0 +1,38 @@
+{
+  "readOnly": true,
+  "businessWrites": 0,
+  "viewportRestored": true,
+  "captures": [
+    {
+      "mainLeft": 0,
+      "overflow": false,
+      "width": 320
+    },
+    {
+      "mainLeft": 0,
+      "overflow": false,
+      "width": 390
+    },
+    {
+      "mainLeft": 0,
+      "overflow": false,
+      "width": 600
+    },
+    {
+      "mainLeft": 205.09375,
+      "overflow": false,
+      "width": 1100
+    },
+    {
+      "mainLeft": 231.875,
+      "overflow": false,
+      "width": 1470
+    },
+    {
+      "mainLeft": 234,
+      "overflow": false,
+      "width": 1920
+    }
+  ],
+  "note": "Page screenshots replace native-window crops; originals retained"
+}

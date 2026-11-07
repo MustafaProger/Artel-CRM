@@ -1,0 +1,44 @@
+{
+  "configSha256": "ff962e4113c2d0873e3429fb07f1c17c698790c388615ac2a061db3abf2e5c17",
+  "smokeScriptHashes": {
+    "build-crm.py": "61f957069064fdd6593e04aea625cd506a9447268b8c2cdc776d3c6b93704e69",
+    "image-smoke.mjs": "baf077f524f78ffce52331bc1dc45559ab9a73fcae55c35230f96fc8a764e697",
+    "invoice-image-smoke.mjs": "7e799fd0d434a652d825b4c0cfac3af028914cd4eb28fb39db2a39826de698d3",
+    "nk-direct-autostart-image-smoke.mjs": "eb915c0bd57da38f616b4e34ec9d2a5988ad22caadf6968c0457939f581e0576",
+    "operator-cases-image-smoke.mjs": "5bd353708fdfbd4032925dab5ba282b14fd836a1b838790c5db28b5c637c10d1",
+    "production-entrypoint.sh": "ea0c1e5273d6a4485c1cd0516d9627ca31b61ca6377d3c87099b010c5609be22",
+    "saby-direct-protocol-image-smoke.mjs": "740b2ea4d3986826e93396037ceeffcd3e32f548a392b3b78185a06b7dad9423",
+    "static-image-smoke.mjs": "4d3d51f8480a3abf671669467497f6fe47488ea0d6c410f60cc973987591f9cc"
+  },
+  "evidenceManifestSha256": "2d7e883e0b81da6f8d49704e04fa9c7a5084f8c6a621e13e86b40ddf0b7b909f",
+  "productionMountsUsed": false,
+  "network": "none",
+  "images": {
+    "image": {
+      "tag": "artel-crm:20261021-operator-audit-7bad1751",
+      "id": "sha256:1d6ed544b30d9c11b7ac7e687a6110d7ac8c9becc34c1b27c2fa9061a775b555",
+      "checks": {
+        "image-smoke.mjs": true,
+        "invoice-image-smoke.mjs": true,
+        "nk-direct-autostart-image-smoke.mjs": true,
+        "saby-direct-protocol-image-smoke.mjs": true,
+        "operator-cases-image-smoke.mjs": true,
+        "production-entrypoint.sh": true,
+        "static-image-smoke.mjs": true
+      }
+    },
+    "recoveryImage": {
+      "tag": "artel-crm:20261021-operator-audit-7bad1751-recovery",
+      "id": "sha256:1d6ed544b30d9c11b7ac7e687a6110d7ac8c9becc34c1b27c2fa9061a775b555",
+      "checks": {
+        "image-smoke.mjs": true,
+        "invoice-image-smoke.mjs": true,
+        "nk-direct-autostart-image-smoke.mjs": true,
+        "saby-direct-protocol-image-smoke.mjs": true,
+        "operator-cases-image-smoke.mjs": true,
+        "production-entrypoint.sh": true,
+        "static-image-smoke.mjs": true
+      }
+    }
+  }
+}
