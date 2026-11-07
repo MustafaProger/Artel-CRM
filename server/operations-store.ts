@@ -1,4 +1,6 @@
 import { validateOperator } from './operator';
+import { validTripDocumentPolicy } from './trip-document-mode';
+import { operatorDiscount } from './operator-directories';
 import type { OperatorData } from '../web/src/operator-model';
 import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
 import { validateCabinets } from './cabinet-connections';
@@ -113,6 +115,20 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
         customers.add(row.companyId);
       }
     }
+    for (const key of ['operatorGroups', 'operatorServices']) {
+      const rows = directories[key];
+      if (rows === undefined) continue;
+      if (!Array.isArray(rows)) throw new StoreError('Invalid operator directory');
+      const seen = new Set<string>();
+      for (const row of rows) {
+        if (!object(row) || typeof row.id !== 'string' || !row.id || seen.has(row.id) || typeof row.name !== 'string' || !row.name.trim() || row.name.length > 500 || row.version !== undefined && (!Number.isSafeInteger(row.version) || Number(row.version) < 0)) throw new StoreError('Invalid operator directory entry');
+        if (key === 'operatorServices') {
+          if (typeof row.discountPercent !== 'string' || !/^\d+(?:\.\d+)?$/.test(row.discountPercent)) throw new StoreError('Invalid operator discount');
+          try { operatorDiscount(row.discountPercent); } catch { throw new StoreError('Invalid operator discount'); }
+        }
+        seen.add(row.id);
+      }
+    }
     if (directories.oilDepots !== undefined) {
       if (!Array.isArray(directories.oilDepots)) throw new StoreError('Invalid oil depots');
       const seen = new Set<string>();
@@ -148,6 +164,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   for (const [id, row] of Object.entries(data.shipments)) {
     if (!id || !object(row) || !object(row.fields) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || typeof row.createdAt !== 'string' || typeof row.updatedAt !== 'string' || (row.deleted !== undefined && typeof row.deleted !== 'boolean')) throw new StoreError('Invalid shipment override');
     if (Object.values(row.fields).some(value => value !== null && typeof value !== 'string')) throw new StoreError('Invalid shipment fields');
+    if (row.fields.trip_document_policy != null && (!validTripDocumentPolicy(row.fields.trip_document_policy) || row.fields.trip_flow_version !== 'driver-v1' || !row.fields.trip_id)) throw new StoreError('Invalid trip document policy');
     if (row.fields.source_request_id) {
       const request = (data.tripRequests as Record<string, TripRequest> | undefined)?.[String(row.fields.source_request_id)];
       if (!request || request.status !== 'consumed' || request.shipmentId !== id || request.tripId !== row.fields.trip_id || request.companyId !== row.fields.customer_id || request.addressId !== row.fields.unloading_address_id) throw new StoreError('Invalid shipment request source');

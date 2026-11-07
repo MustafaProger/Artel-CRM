@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { SabyClient, SabyError, isSabyFailureDiagnostic, sabyConfigFromEnv, type SabyObject } from '../server/saby-client';
 import { captureSignedTitle, createCarrierDraftBinding, createSigningBinding, normalizeSigningCertificate, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, restorePreparedSigning, signingActionRequest, signingCertificateForOrganization, signingManifestHash, type SabyPreparedSigning, type SabySigningKeyType, type SabySigningSide } from '../server/saby-signing';
@@ -8,6 +9,9 @@ const fp = 'a'.repeat(40);
 const config = { sessionId: 'synthetic-sender-session', login: 'synthetic-login', password: 'synthetic-password', accountNumber: 'synthetic-sender', carrierAccountNumber: 'synthetic-carrier',
   customer: { inn: '0000000000', kpp: '000000000', name: 'Synthetic sender', address: 'Synthetic' }, carrier: { inn: '1111111111', kpp: '111111111', name: 'Synthetic carrier', address: 'Synthetic' } };
 const bytes = Buffer.from('<synthetic-final>payload</synthetic-final>');
+// Full provider envelope shape from a native UI draft; every private string,
+// party identifier, certificate, link and filename has been replaced.
+const nativeConsignment = (): SabyObject => JSON.parse(readFileSync(new URL('./fixtures/saby-native-consignment-envelope.json', import.meta.url), 'utf8'));
 const digest = (input: Uint8Array) => createHash('sha256').update(input).digest('hex');
 const certificateRow = (side: SabySigningSide = 'sender'): SabyObject => {
   const org = side === 'sender' ? config.customer : config.carrier;
@@ -65,6 +69,39 @@ test('certificate normalization ties both certificate subject and account organi
   assert.equal(signingCertificateForOrganization(expired, config.customer), null);
   const unqualified = certificateRow(); ((unqualified.Certificate as SabyObject).CertificateInfo as SabyObject).IsQualified = false;
   assert.equal(signingCertificateForOrganization(unqualified, config.customer), null);
+});
+
+test('native ConsignmentNote canonical parties bind both NK sides without a TransportOrder', () => {
+  const directConfig = new SabyClient(config).forNkDirectEtrn().config, certificate = normalizeSigningCertificate(certificateRow('carrier'))!;
+  for (const side of ['sender', 'carrier'] as const) {
+    const remote = nativeConsignment();
+    if (side === 'carrier') {
+      remote.Состояние = { Код: '4' };
+      const stage = (remote.Этап as SabyObject[])[0]; stage.Название = 'Получение груза'; ((stage.Действие as SabyObject[])[0]).Название = 'Принят';
+      remote.ТекущиеЭтапы = [{ Идентификатор: stage.Идентификатор }]; (remote.Вложение as SabyObject[])[0].Подтип = '1110340';
+    }
+    const binding = createSigningBinding(remote, side, certificate, directConfig, 'Отложенный', 'ConsignmentNote');
+    assert.equal(binding.documentType, 'ConsignmentNote'); assert.equal(binding.routePolicy, 'nk-direct-v1'); assert.equal(binding.organizationInn, binding.counterpartyInn);
+    const legacy = structuredClone(remote), parties = legacy.Стороны as SabyObject;
+    legacy.Грузоотправитель = parties.Отправитель; legacy.ТранспортнаяКомпания = parties.Перевозчик; delete legacy.Стороны;
+    assert.deepEqual(createSigningBinding(legacy, side, certificate, directConfig, 'Отложенный', 'ConsignmentNote'), binding);
+    for (const change of [
+      (doc:SabyObject)=>{doc.Стороны=null;},
+      (doc:SabyObject)=>{doc.Стороны=[];},
+      (doc:SabyObject)=>{delete (doc.Стороны as SabyObject).Отправитель;},
+      (doc:SabyObject)=>{delete (doc.Стороны as SabyObject).Перевозчик;},
+      (doc:SabyObject)=>{(doc.Стороны as SabyObject).Отправитель={};},
+      (doc:SabyObject)=>{(doc.Стороны as SabyObject).Перевозчик=null;},
+      (doc:SabyObject)=>{doc.ТранспортнаяКомпания={СвЮЛ:{ИНН:'2222222222',КПП:'222222222'}};},
+      (doc:SabyObject)=>{doc.Грузоотправитель={СвЮЛ:{ИНН:'2222222222',КПП:'222222222'}};},
+    ]) {
+      const changed=structuredClone(remote); changed.Грузоотправитель=structuredClone(legacy.Грузоотправитель); changed.ТранспортнаяКомпания=structuredClone(legacy.ТранспортнаяКомпания); change(changed);
+      assert.throws(()=>createSigningBinding(changed,side,certificate,directConfig,'Отложенный','ConsignmentNote'),SabyError);
+    }
+  }
+  // Unrelated canonical blocks never alter the historical TransportOrder identity contract.
+  const order=advertiseAutomaticSigning(document());order.Стороны={Перевозчик:null};
+  assert.equal(createSigningBinding(order,'sender',normalizeSigningCertificate(certificateRow())!,config,'Отложенный').documentType,undefined);
 });
 
 test('binding uses current stage summary IDs and fails on wrong side, historical stage, ambiguous revision or signed title', () => {

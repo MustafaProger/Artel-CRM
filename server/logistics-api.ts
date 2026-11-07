@@ -24,6 +24,7 @@ export function requireLogisticsRoute(path: string, method: string) {
   else if (/^\/api\/shipment-trips\/[^/]+\/saby-workflow\/signing\/start$/.test(path)) methods = ['POST'];
   else if (/^\/api\/shipment-trips\/[^/]+\/saby-workflow\/(loading-facts|carrier-details|start)$/.test(path)) methods = ['POST'];
   else if (/^\/api\/shipment-trips\/[^/]+\/etrn$/.test(path)) methods = ['GET', 'PUT'];
+  else if (/^\/api\/shipment-trips\/[^/]+\/etrn\/loading-details$/.test(path)) methods = ['GET', 'PUT'];
   else if (/^\/api\/shipment-trips\/[^/]+\/etrn\/(submit|refresh)$/.test(path)) methods = ['POST'];
   else if (/^\/api\/shipment-trips\/[^/]+\/etrn\/(xml\/[^/]+|files\/[^/]+\/[^/]+)$/.test(path)) methods = ['GET'];
   else if (path === '/api/companies/lookup') methods = ['POST'];

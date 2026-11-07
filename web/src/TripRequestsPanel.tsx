@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ArrowUpRight, ClipboardList, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ArrowUpRight, ClipboardList, LoaderCircle, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { Company, Directories } from './model'
 import type { TripRequest } from './trip-request-model'
 import { getDeliveryPlaceDisplay } from './trip-request-display'
@@ -18,7 +18,7 @@ export default function TripRequestsPanel({ requests, loading, error, companies,
   const [notice, setNotice] = useState('')
   const visible = requests.filter(request => [request.companyName, request.addressName, request.address, request.comment].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
   return <section className="trip-requests-panel" aria-label="Заявки на доставку">
-    <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск заявки" placeholder="Компания, адрес, комментарий…" value={query} onChange={event => setQuery(event.target.value)}/></label><button type="button" className="icon-button" aria-label="Обновить заявки" title="Обновить заявки" disabled={loading} onClick={onReload}><RefreshCw size={17}/></button><button type="button" className="button primary mobile-icon-action" aria-label="Новая заявка" title="Новая заявка" onClick={() => setEditor({})}><Plus size={17}/><span className="mobile-action-label">Новая заявка</span></button></div>
+    <div className="trips-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск заявки" placeholder="Компания, адрес, комментарий…" value={query} onChange={event => setQuery(event.target.value)}/></label><button type="button" className="button primary mobile-icon-action" aria-label="Новая заявка" title="Новая заявка" onClick={() => setEditor({})}><Plus size={17}/><span className="mobile-action-label">Новая заявка</span></button></div>
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={onReload}>Повторить загрузку</button></div>}
     {loading ? <div className="shipment-trip-loading" role="status"><LoaderCircle className="spin" size={22}/>Загружаем заявки…</div> : <>

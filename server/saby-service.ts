@@ -10,6 +10,7 @@ import { getShipmentTrip } from './shipment-trips';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
 import { buildSabyTransportDocument, sabyTransportBlockers, type SabyTransportSnapshot } from './saby-transport-order';
 import { hasEtrnDocuments } from './etrn-service';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
 
 export interface SabyDocumentRecord extends SabyDocumentSummary {
   marker: string;
@@ -81,6 +82,7 @@ function summary(record: SabyTripRecord | undefined, ready: boolean): SabyTripRe
 export function getSabyTrip(base: Snapshot, data: OperationsData, tripId: string, config = sabyConfigFromEnv()): SabyTripResponse {
   const snapshot = currentSnapshot(base, data);
   const trip = getShipmentTrip(snapshot, tripId);
+  assertTripTransportDocumentsAllowed(trip, data);
   const record = data.saby?.trips[tripId];
   const errors = record?.documents.some(doc => doc.status !== 'error' || doc.id) ? sabyCredentialBlockers(config) : blockers(snapshot, trip, config);
   return { saby: summary(data.saby?.trips[tripId], errors.length === 0), readiness: { ready: errors.length === 0, blockers: errors } };
@@ -114,6 +116,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
   const claimed = await store.mutate(source, data => {
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId);
+    assertTripTransportDocumentsAllowed(trip, data);
     if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Для рейса уже запущена общая заявка Saby. Используйте обновление общего обмена.');
     const existing = data.saby?.trips[tripId];
     if (existing?.documents.every(doc => doc.status === 'draft')) return { result: null, changed: false };
