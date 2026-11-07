@@ -14,6 +14,7 @@ import type { CreateTripSabyDelivery } from './trip-saby-workflow';
 import { validateEtrnDispatch, type EtrnDispatch } from './etrn-dispatch';
 import { reconcileLinkedConsignmentDraft, validateLinkedDraftState, type LinkedDraftState } from './etrn-linked-draft';
 import { verifyConsignmentSenderBusiness } from './saby-consignment-evidence';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -89,6 +90,7 @@ export function hasEtrnDocuments(data: OperationsData, tripId: string): boolean 
 function makeSnapshot(base: Snapshot, data: OperationsData, tripId: string, shipmentId: string, profile: SabyConsignmentProfile | null, config: SabyConfig) {
   const snapshot = currentSnapshot(base, data);
   const trip = getShipmentTrip(snapshot, tripId);
+  assertTripTransportDocumentsAllowed(trip, data);
   if (!trip.customers.some(row => row.id === shipmentId)) throw new ApiError(404, 'Доставка не найдена в этом рейсе.');
   const prepared = buildSabyConsignmentSnapshot(snapshot, trip, shipmentId, config.customer, config.carrier, profile);
   if (!profile && config.consignmentSigner) Object.assign(prepared.profile.signer, config.consignmentSigner);
@@ -104,6 +106,7 @@ function documentSummary(doc: EtrnDocument, tripId: string, shipmentId: string):
 }
 export function getEtrnTrip(base: Snapshot, data: OperationsData, tripId: string, config = sabyConfigFromEnv()): EtrnTripResponse {
   const trip = getShipmentTrip(currentSnapshot(base, data), tripId);
+  assertTripTransportDocumentsAllowed(trip, data);
   const saved = data.etrn?.trips[tripId];
   const configurationBlockers = sabyConfigurationBlockers(config);
   const displayOrganization = (org: SabyConfig['customer']) => ({ name: org.name, inn: org.inn, kpp: org.kpp, address: org.address, phone: org.phone ?? '' });
@@ -128,6 +131,7 @@ export async function saveEtrnProfile(options: EtrnOptions, shipmentId: string, 
   const profile = readSabyConsignmentProfile(raw);
   await store.mutate(base.provenance.sourceSha256, data => {
     authorize(currentSnapshot(base, data), data);
+    assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
     if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Рейс запущен в Saby. Исправления документов выполняются в Saby; факты погрузки вводятся отдельно.');
     const previous = data.etrn?.trips[tripId]?.deliveries[shipmentId];
     if (previous?.document && (previous.document.status !== 'error' || previous.document.id)) throw new ApiError(409, 'ЭТрН уже передана или результат передачи неизвестен. Сначала выполните сверку.');
@@ -181,6 +185,7 @@ export async function exchangeEtrn(options: EtrnOptions, shipmentId: string, ref
   const leaseId = randomUUID();
   const claimed = await store.mutate(source, data => {
     authorize(currentSnapshot(base, data), data);
+    assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
     if (data.tripSaby?.trips[tripId] && !refresh) throw new ApiError(409, 'ЭТрН этого рейса создаются общей цепочкой Saby после подтверждения перевозчика.');
     const preparation = data.etrn?.trips[tripId]?.deliveries[shipmentId];
     if (!preparation) throw new ApiError(422, 'Сначала сохраните и проверьте сведения ЭТрН.');
@@ -298,6 +303,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
   const source = base.provenance.sourceSha256, shipmentId = input.shipmentId;
   const leaseId = randomUUID();
   const initial = await store.read(source); authorize(currentSnapshot(base, initial), initial);
+  assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, initial), tripId), initial);
   requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, initial), tripId), shipmentId);
   const facts = initial.etrn?.trips[tripId]?.loadingFacts;
   if (!facts) return { status: 'error', id: null, lastError: 'Заявка подтверждена. Заполните фактические сведения погрузки всего рейса.', waitingForLoading: true };
@@ -306,6 +312,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
   if (allErrors.length) return { status: 'error', id: null, lastError: [...new Set(allErrors)].join(' ') };
   const claimed = await store.mutate(source, data => {
     authorize(currentSnapshot(base, data), data);
+    assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
     requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
     const workflow = data.tripSaby?.trips[tripId];
     if (!workflow?.deliveries.some(row => row.shipmentId === shipmentId)) throw new ApiError(409, 'Доставка не входит в согласованный состав ЭТрН.');
@@ -414,6 +421,7 @@ export async function exchangePreparedEtrn(options: EtrnOptions, input: CreateTr
 }
 
 export function preparedEtrnXml(base: Snapshot, data: OperationsData, tripId: string, shipmentId: string, config = sabyConfigFromEnv()) {
+  assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
   requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
   const row = data.etrn?.trips[tripId]?.deliveries[shipmentId];
   if (!row) throw new ApiError(422, 'Сначала сохраните подготовку ЭТрН.');
@@ -433,6 +441,7 @@ export async function downloadEtrnFile(options: EtrnOptions, shipmentId: string,
   const { base, store, tripId, authorize } = options;
   const source = base.provenance.sourceSha256;
   const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+  assertTripTransportDocumentsAllowed(getShipmentTrip(currentSnapshot(base, data), tripId), data);
   requireEtrnDelivery(getShipmentTrip(currentSnapshot(base, data), tripId), shipmentId);
   const doc = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
   const file = doc?.artifacts.find(file => file.key === key);

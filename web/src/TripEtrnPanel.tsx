@@ -42,16 +42,20 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
       if (!mounted.current || generation !== requestGeneration.current) return
       if (!response.ok) throw new Error(body.error || 'Не удалось загрузить состояние Saby')
       setResult(body); setRefreshError(''); setStartUncertain(false)
-      await loadDocuments(generation)
+      if (body.documentMode === 'nk_supply_delivery') { setEtrn(null); setLegacy(null); return }
+      await Promise.all([loadDocuments(generation), fetch(`/api/shipment-trips/${encodeURIComponent(trip.id)}/saby`).then(async legacyResponse => {
+        if (!legacyResponse.ok) return
+        const legacyBody = await legacyResponse.json()
+        if (mounted.current && generation === requestGeneration.current) setLegacy(legacyBody)
+      }).catch(() => {})])
     } catch (reason) {
       if (!mounted.current || generation !== requestGeneration.current) return
       throw reason
     }
-  }, [endpoint, loadDocuments])
+  }, [endpoint, loadDocuments, trip.id])
   useEffect(() => {
     mounted.current = true; setBusy(true)
     void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) })
-    void fetch(`/api/shipment-trips/${encodeURIComponent(trip.id)}/saby`).then(async response => { if (response.ok && mounted.current) setLegacy(await response.json()) }).catch(() => {})
     return () => { mounted.current = false; requestGeneration.current++ }
   }, [read, trip.id])
   const perform = useCallback(async (loadingFacts?: LoadingFacts, carrierDetails = false, start?: TripSabyResponse['start']) => {
@@ -136,6 +140,17 @@ export default function TripEtrnPanel({ trip, data }: { trip: ShipmentTrip; data
     } catch { setRefreshError('Не удалось скопировать. Можно выделить данные ниже и скопировать вручную.') }
   }
   const haveLegacy = !result?.locked && (!!legacy?.saby.documents.length || etrn?.deliveries.some(delivery => delivery.document))
+  if (result?.documentMode === 'nk_supply_delivery') return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
+    <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>Доставка НК по договору поставки</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление состояния"/>}</div>
+    <p>НК АРТЭЛЬ продаёт своё топливо и сама доставляет его клиентам. Заявка на перевозку и ЭТрН в Saby для этой схемы не создаются.</p>
+    <p className="etrn-note">Задание водителя, прибытие, убытие и массы каждой доставки сохраняются в CRM.</p>
+    {confirmedByDriverAt && <div className="workflow-driver-confirmation"><Check size={18} aria-hidden="true"/><div><strong>Данные подтверждены водителем</strong><time dateTime={confirmedByDriverAt}>{workflowTime(confirmedByDriverAt)} · Москва</time><p>Массы и убытие сохранены в CRM после нажатия «Убыл».</p></div></div>}
+    {error && <p className="shipment-error" role="alert">{error}</p>}
+    <div className="etrn-actions"><button type="button" className="button" disabled={busy} onClick={() => {
+      setBusy(true); setError('')
+      void read().catch(reason => setError(reason instanceof Error ? reason.message : 'Нет связи с сервером')).finally(() => { if (mounted.current) setBusy(false) })
+    }}><RefreshCw size={15}/>Обновить состояние</button></div>
+  </section>
   if (result?.notRequired) return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby"><h3>ЭТрН не нужна</h3><p>Для всех клиентов рейса передача в Saby отключена. Задание водителя и факты погрузки сохраняются в CRM.</p></section>
   return <section className="trip-saby-panel etrn-panel" aria-label="Документы рейса в Saby" aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>АРТЭЛЬ → НК АРТЭЛЬ → Клиенты</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Обновление документов"/>}</div>

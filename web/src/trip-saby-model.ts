@@ -63,6 +63,8 @@ export interface TripSabyAutomationCapability { enabled: boolean; message?: stri
 export interface TripSabyAutomation extends TripSabyAutomationCapability { enrolled: boolean }
 export interface TripSabyResponse {
   notRequired?: boolean;
+  documentMode?: 'nk_supply_delivery';
+  parties?: { sender: string; carrier: string };
   status: 'not_sent' | 'sent' | 'error';
   phase: 'preparation' | 'submitting' | 'awaiting_driver' | 'unknown' | 'awaiting_carrier' | 'awaiting_loading' | 'creating_etrn' | 'sending_etrn' | 'completed' | 'error';
   ready: boolean;

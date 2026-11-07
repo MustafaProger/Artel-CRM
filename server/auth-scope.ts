@@ -49,10 +49,10 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   const requestCustomerIds = new Set(shipments.filter(row => row.fields.source_request_id).map(row => row.customerId));
   // Shared company lookup is operational input, never a back door to directory details or records.
   const companies = (directoryAccess || shipmentAccess || hasSection(actor, 'work') ? snapshot.companies : [])
-    .filter(company => canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || company.roles.some(role => role === 'supplier' || role === 'carrier'))
+    .filter(company => directoryAccess || canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || company.roles.some(role => role === 'supplier' || role === 'carrier'))
     .map(company => ({
-    ...(directoryAccess && (canManage(actor) || customerIds.has(company.id)) ? company : companyLookup(company)),
-    roles: canManage(actor) || customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'supplier' || role === 'carrier' || role === 'customer' && requestCustomerIds.has(company.id)),
+    ...(directoryAccess ? company : companyLookup(company)),
+    roles: directoryAccess || canManage(actor) || customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'supplier' || role === 'carrier' || role === 'customer' && requestCustomerIds.has(company.id)),
     shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: [], managerLabels: [], flags: [],
   }));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };
@@ -66,10 +66,10 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
       drivers: catalog.drivers.map(({ id, name, vehicleId }) => ({ id, name, vehicleId })),
       deletedEntries: undefined,
     }),
-    managers: canManage(actor) ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
+    managers: directoryAccess || canManage(actor) ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
     deletedEntries: canManage(actor) ? catalog.deletedEntries : undefined,
-    customerManagers: canManage(actor) ? catalog.customerManagers : catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
-    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || canManage(actor) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
+    customerManagers: directoryAccess || canManage(actor) ? catalog.customerManagers : catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
+    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (directoryAccess || address.kind !== 'delivery' || customerIds.has(address.companyId) || canManage(actor) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
     assignedCustomerIds: [...customerIds],
     currentEmployeeId: actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
     duplicates: [],

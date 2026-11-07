@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import { currentSnapshot } from '../server/shipment-operations';
 import { sabyConsignmentBlockers, serializeSabyConsignmentNote } from '../server/saby-consignment-note';
-import { sabyAllowedPickupAt, sabyTransportBlockers, sabyTransportDraftBlockers, serializeSabyTransportDraft, serializeSabyTransportOrder } from '../server/saby-transport-order';
+import { buildSabyTransportDocument, buildSabyTransportDraftDocument, sabyAllowedPickupAt, sabyTransportBlockers, sabyTransportDraftBlockers, serializeSabyTransportDraft, serializeSabyTransportOrder } from '../server/saby-transport-order';
 import { integrationConfig, integrationRuntime } from './helpers/trip-saby-integration';
 
 const attempt = '11111111-1111-4111-8111-111111111111';
@@ -200,5 +200,33 @@ test('historical frozen driver draft remains without a pickup deadline and ignor
     const noMetadata = structuredClone(old); delete noMetadata.processingDurationMinutes;
     assert.deepEqual(serializeSabyTransportDraft(noMetadata, attempt, created, '041').xml, original.xml);
     assert.deepEqual(old, before);
+  } finally { await runtime.close(); }
+});
+
+
+test('new policy adds receiver INNs in draft and final XML without altering historical serialization', async () => {
+  const { runtime, prepared } = await driverPreparation();
+  try {
+    const policy = 'address-multidelivery-v1' as const;
+    const draft = serializeSabyTransportDraft(prepared.order, attempt, created, '041');
+    const currentDraft = serializeSabyTransportDraft(prepared.order, attempt, created, '041', policy);
+    const expectedAdditions = prepared.order.deliveries!.map((row, index) => `<ТекстИнф Идентиф="ИНН получателя доставки ${index + 1}" Значение="${row.customer.inn}"/>`).join('');
+    assert.equal(decode(currentDraft.xml).replace(expectedAdditions, ''), decode(draft.xml));
+    assert.doesNotMatch(decode(draft.xml), /ИНН получателя доставки/);
+    const builtDraft = buildSabyTransportDraftDocument(prepared.order, 'marker', attempt, created, '041', policy);
+    const draftFile = (builtDraft.Вложение as Array<{ Файл: { ДвоичныеДанные: string } }>)[0].Файл;
+    assert.deepEqual(Buffer.from(draftFile.ДвоичныеДанные, 'base64'), currentDraft.xml);
+    const order = structuredClone(prepared.order);
+    Object.assign(order.fields, { quantity_tonnes: '14.73', quantity_gross_tonnes: '14.73' });
+    order.deliveries!.forEach((row, index) => Object.assign(row.fields, { quantity_tonnes: index ? '7.985' : '6.745', quantity_gross_tonnes: index ? '7.985' : '6.745' }));
+    const historical = serializeSabyTransportOrder(order, attempt, created, '041');
+    const current = serializeSabyTransportOrder(order, attempt, created, '041', policy);
+    assert.equal(decode(current.xml).replace(expectedAdditions, ''), decode(historical.xml));
+    xsd(current.xml, 'transport-order-1110361');
+    const built = buildSabyTransportDocument(order, 'marker', attempt, created, '041', policy);
+    const file = (built.Вложение as Array<{ Файл: { ДвоичныеДанные: string } }>)[0].Файл;
+    assert.deepEqual(Buffer.from(file.ДвоичныеДанные, 'base64'), current.xml);
+    assert.deepEqual(serializeSabyTransportDraft(prepared.order, attempt, created, '041').xml, draft.xml);
+    assert.deepEqual(serializeSabyTransportOrder(order, attempt, created, '041').xml, historical.xml);
   } finally { await runtime.close(); }
 });
