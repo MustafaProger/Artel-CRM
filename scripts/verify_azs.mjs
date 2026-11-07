@@ -42,7 +42,7 @@ try {
   await expect(page.getByLabel('Вид таблицы')).toHaveCount(0);await expect(page.getByLabel('Форма расчёта').locator('option[value="f2"]')).toHaveCount(0);check('separate workspaces, tanker UPD/month/date, exact AZS table, no F2');
   await page.getByRole('button',{name:'Добавить отгрузку',exact:true}).click();let editor=page.getByRole('dialog',{name:'Добавить отгрузку АЗС',exact:true});
   await expect(editor.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('');
-  await choose(editor,'Наша организация','АРТЕЛЬ');
+  await choose(editor,'Наша организация','АРТЭЛЬ');
   await editor.getByLabel('УПД',{exact:true}).fill('AZS-QA-001');await editor.getByLabel('Дата',{exact:true}).fill('2026-09-01');
   await choose(editor,'Контрагент',customer.name);await expect(editor.getByRole('combobox',{name:/^Менеджер/})).toHaveValue(manager.name);
   await choose(editor,'Поставщик',supplier.name);await choose(editor,'Товар',product.name);await choose(editor,'Форма оплаты','б/нал');

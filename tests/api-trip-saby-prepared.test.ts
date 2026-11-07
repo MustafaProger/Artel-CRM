@@ -1,3 +1,4 @@
+import { getShipmentTrip, saveShipmentTrip } from '../server/shipment-trips';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
@@ -102,6 +103,34 @@ test('revocation after CN reservation read preserves its ID and prevents its XML
     await assert.rejects(rt.run({ client: new SabyClient(integrationConfig(), send), authorize: () => { if (revoked) throw new ApiError(403, 'Нет доступа'); } }), error => error instanceof ApiError && error.status === 403);
     assert.equal(rt.api.writes('ConsignmentNote').length, 1); assert.ok(Object.values((await rt.store.read(rt.source)).etrn!.trips[rt.tripId].deliveries)[0].document?.id);
   } finally { await rt.close(); }
+});
+
+test('prepared ETRN checks its own lease after the network queue before reservation', async () => {
+  const rt = await preparedRuntime(); let release!: () => void; let entered!: () => void; let requests = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }); const barrier = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await awaitingLoading(rt); await saveTripLoadingFacts(rt.context, rt.facts(), 'synthetic-employee');
+    const workflow = (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId];
+    const delivery = workflow.deliveries[0];
+    const client = rt.client.withRequestBudget(async action => {
+      if (++requests === 3) { entered(); await barrier; }
+      return action();
+    });
+    const sending = exchangePreparedEtrn({ ...rt.context, client }, {
+      shipmentId: delivery.shipmentId, snapshot: delivery.snapshot,
+      order: { id: workflow.order.id!, number: workflow.order.number!, date: workflow.order.date! },
+      carrierEvidence: workflow.carrierEvidence!, remoteOrder: rt.api.docs.get(workflow.order.id!)!,
+    });
+    await started;
+    await rt.store.mutate(rt.source, data => {
+      data.etrn!.trips[rt.tripId].deliveries[delivery.shipmentId].document!.leaseUntil = '2020-01-01T00:00:00.000Z';
+      return { result: undefined, changed: true };
+    });
+    release();
+    await assert.rejects(sending, error => error instanceof ApiError && error.status === 409);
+    assert.equal(rt.api.writes('ConsignmentNote').length, 0);
+    assert.equal(rt.api.reserves('TransportOrder').length, 1);
+  } finally { release(); await rt.close(); }
 });
 
 test('HTTP workflow endpoints enforce auth, return safe state, run order, and accept employee loading facts', async () => {
@@ -270,4 +299,41 @@ test('unexpected write response IDs are retained privately without replacing int
       assert.doesNotMatch(JSON.stringify(response), /unexpectedDocumentIds|unexpected-synthetic-document-id/);
     } finally { await rt.close(); }
   }
+});
+
+
+test('mixed legacy trip excludes recipient, route stops, quantities and validation from every Saby payload', async () => {
+  const rt = await preparedRuntime();
+  try {
+    await rt.store.mutate(rt.source, data => {
+      const excluded = data.shipments[rt.trip.customers[0].id];
+      data.companies.push({ ...data.companies.find(row => row.id === 'customer')!, id: 'excluded-invalid-customer', name: 'Excluded synthetic recipient', inn: undefined, address: undefined });
+      excluded.fields.etrn_not_required = 'true'; excluded.fields.customer_id = 'excluded-invalid-customer';
+      excluded.fields.unloading_address_id = null; excluded.fields.unloading_address = 'EXCLUDED-ADDRESS';
+      return { result: null, changed: true };
+    });
+    const data = await rt.store.read(rt.source), source = currentSnapshot(rt.base, data), trip = getShipmentTrip(source, rt.tripId);
+    const prepared = rt.prepare(source, data, trip, rt.client.config);
+    assert.deepEqual(prepared.blockers, []);
+    assert.equal(prepared.order.fields.quantity_litres, '6000');
+    assert.equal(prepared.order.fields.quantity_tonnes, source.shipments.find(row => row.id === trip.customers[1].id)!.fields.quantity_tonnes);
+    assert.deepEqual(prepared.deliveries.map(row => row.shipmentId), [trip.customers[1].id]);
+    assert.deepEqual(prepared.order.intermediateStops, []);
+    assert.doesNotMatch(JSON.stringify(prepared), /EXCLUDED-ADDRESS|excluded-invalid-customer|Точка только общей заявки/);
+    await awaitingLoading(rt);
+    const frozen = await rt.store.read(rt.source);
+    assert.throws(() => saveShipmentTrip(rt.base, frozen, { fields: trip.fields, customers: trip.customers.map(row => ({ id: row.id, fields: { ...row.fields, etrn_not_required: 'false' } })), versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) }, trip.id), /уже передаётся или сохранён в Saby/);
+    const missingMass = structuredClone(source);
+    missingMass.shipments.find(row => row.id === trip.customers[1].id)!.fields.quantity_tonnes = null;
+    assert.ok(rt.prepare(missingMass, data, trip, rt.client.config).blockers.some(message => /нет сохранённых масс/.test(message)));
+    const facts = rt.facts(); delete facts.deliveries[trip.customers[0].id];
+    await saveTripLoadingFacts(rt.context, facts, 'synthetic-employee');
+    const complete = await rt.run(); assert.equal(complete.phase, 'completed', complete.lastError ?? '');
+    assert.equal(rt.api.reserves('TransportOrder').length, 1); assert.equal(rt.api.reserves('ConsignmentNote').length, 1);
+    for (const row of rt.api.writes().filter(row => row.params.Документ.Вложение)) {
+      const xml = decodeUpload(row.params.Документ);
+      assert.doesNotMatch(xml, /EXCLUDED-ADDRESS|Точка только общей заявки|Объем="8"|МасНетЗнач="12000"/);
+    }
+    assert.equal((await rt.store.read(rt.source)).etrn!.trips[rt.tripId].deliveries[trip.customers[0].id], undefined);
+  } finally { await rt.close(); }
 });
