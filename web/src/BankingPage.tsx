@@ -1,3 +1,4 @@
+import { useDialogMotion } from './useDialogMotion'
 import ScrollableSegments from './ScrollableSegments'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Decimal from 'decimal.js'
@@ -164,9 +165,9 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   </section>
 }
 const partyFields: [keyof BankParty, string][] = [['name','Наименование'],['inn','ИНН'],['kpp','КПП'],['account','Расчётный счёт'],['bankName','Банк'],['bic','БИК / SWIFT'],['correspondentAccount','Корреспондентский счёт']]
-function PaymentPanel({ id, onClose }: { id: string; onClose: () => void }) {
+function PaymentPanel({ id, onClose: onDismiss }: { id: string; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), [row, setRow] = useState<BankOperation | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false), [copied, setCopied] = useState('')
-  useEffect(() => { const element = dialog.current; element?.showModal(); const overflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => { element?.close(); document.body.style.overflow = overflow } }, [])
+  const { close: onClose } = useDialogMotion(dialog, onDismiss)
   useEffect(() => {
     const controller = new AbortController()
     api<{ operation: BankOperation }>(`/api/banking/operations/${id}`, undefined, controller.signal).then(({operation}) => {

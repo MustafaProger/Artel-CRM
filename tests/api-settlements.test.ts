@@ -226,7 +226,11 @@ test('overview ledger isolates two assigned portfolios, empty managers, unassign
       for (const privateValue of [foreign.id, oldOwner.id, pending.id, unknown.id, index ? incoming.id : otherIncoming.id, index ? incoming.purpose! : otherIncoming.purpose!]) assert.ok(!json.includes(privateValue), privateValue);
       const snap: Snapshot = (await manager('/api/snapshot')).body;
       assert.deepEqual(snap.shipments.map(row => row.id), [own.id]);
-      assert.ok(!snap.companies.some(company => company.id === f.companies[1 - index].id));
+      const foreignCompany = snap.companies.find(company => company.id === f.companies[1 - index].id);
+      assert.ok(foreignCompany, 'Directory access exposes the company card, never its financial records');
+      assert.deepEqual(foreignCompany.shipmentIds, []); assert.deepEqual(foreignCompany.paymentIds, []);
+      assert.deepEqual(foreignCompany.managerLabels, []); assert.deepEqual(foreignCompany.flags, []);
+      assert.deepEqual(snap.payments, []); assert.deepEqual(snap.stocks, []);
       assert.equal(snap.overview.shipmentCount, 1); assert.equal(snap.overview.revenue.total, index ? '130000' : '40000');
       assert.equal((await manager(`/api/shipments/${foreign.id}`)).status, 404);
       assert.equal((await manager(`/api/shipments/${oldOwner.id}`)).status, 404);
