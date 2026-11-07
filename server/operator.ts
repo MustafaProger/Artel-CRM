@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { AccountUser } from '../web/src/auth-model';
-import type { OperatorData, OperatorRecipientFields, OperatorRefuellingFields } from '../web/src/operator-model';
+import type { OperatorCatalogSource, OperatorData, OperatorRecipientFields, OperatorRefuelling, OperatorRefuellingFields, OperatorRefuellingV2Fields, OperatorWorkspace } from '../web/src/operator-model';
+import { calculateOperatorAmount } from '../web/src/operator-calculation';
+import { readOperatorCatalog } from '../web/src/operator-catalog';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
 import { requireSection } from './permissions';
@@ -10,10 +12,11 @@ const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const recipientKeys = ['name', 'bank', 'card', 'phone', 'details'];
 const fuelKeys = ['date', 'name', 'service', 'discountPercent', 'litres', 'pricePerLitre', 'amount', 'comment'];
+const fuelV2Keys = ['schemaVersion', 'date', 'name', 'groupId', 'serviceId', 'serviceVersion', 'discountPercent', 'litres', 'pricePerLitre', 'amount', 'amountMode', 'recipientText', 'comment'];
 const empty = (): OperatorData => ({ recipients: {}, refuellings: {}, requests: {} });
 function text(body: Record<string, unknown>, key: string, required = false, max = 500) {
   const value = body[key];
-  if (typeof value !== 'string' || value.length > max || [...value].some(c => c.charCodeAt(0) < 32 && !['\n','\r','\t'].includes(c)) || required && !value.trim()) throw new ApiError(400, `Проверьте поле «${({name:'Имя / наименование',bank:'Банк',card:'Номер карты',phone:'Телефон',details:'Другие реквизиты',service:'Сервис',comment:'Комментарий'} as Record<string,string>)[key] ?? key}».`);
+  if (typeof value !== 'string' || value.length > max || [...value].some(c => c.charCodeAt(0) < 32 && !['\n','\r','\t'].includes(c)) || required && !value.trim()) throw new ApiError(400, `Проверьте поле «${({name:'Имя / наименование',bank:'Банк',card:'Номер карты',phone:'Телефон',details:'Другие реквизиты',service:'Сервис',comment:'Комментарий',recipientText:'Имя и реквизиты',groupId:'Группа',groupName:'Группа',serviceId:'Сервис'} as Record<string,string>)[key] ?? key}».`);
   return value.trim();
 }
 function decimal(body: Record<string, unknown>, key: string, label: string, scale: number, zero = false, max = '1000000000000') {
@@ -34,6 +37,73 @@ function fuelFields(body: Record<string, unknown>): OperatorRefuellingFields {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date) throw new ApiError(400, 'Укажите существующую дату заправки.');
   return { date, name: text(body, 'name', true), service: text(body, 'service', true), discountPercent: decimal(body, 'discountPercent', 'Скидка, %', 6, true, '100'), litres: decimal(body, 'litres', 'Литры', 6), pricePerLitre: decimal(body, 'pricePerLitre', 'Цена за литр', 6), amount: decimal(body, 'amount', 'Сумма', 2), comment: text(body, 'comment', false, 4000) };
 }
+const precisionFields = { litres: 'Литры', pricePerLitre: 'Цена за литр' } as const;
+type LegacyPrecision = NonNullable<OperatorRefuellingV2Fields['legacyPrecision']>;
+function validatedPrecision(body: Record<string, unknown>): LegacyPrecision | undefined {
+  if (body.legacyPrecision === undefined) return;
+  const value = body.legacyPrecision;
+  if (!object(value) || !Object.keys(value).length || Object.keys(value).some(key => !Object.hasOwn(precisionFields, key))) throw new ApiError(400, 'Некорректная точность исторической записи.');
+  const result: LegacyPrecision = {};
+  for (const key of Object.keys(precisionFields) as (keyof LegacyPrecision)[]) {
+    if (!Object.hasOwn(value, key)) continue;
+    const preserved = decimal(value, key, precisionFields[key], 6);
+    if (new Decimal(preserved).decimalPlaces() <= 2 || !new Decimal(preserved).eq(decimal(body, key, precisionFields[key], 6))) throw new ApiError(400, 'Историческое значение изменено. Укажите не более двух знаков после запятой.');
+    result[key] = preserved;
+  }
+  return result;
+}
+function preservedPrecision(body: Record<string, unknown>, prior: OperatorRefuelling | undefined): LegacyPrecision | undefined {
+  if (!prior) return;
+  const source = prior.schemaVersion === 2 ? prior.legacyPrecision : prior;
+  const result: LegacyPrecision = {};
+  for (const key of Object.keys(precisionFields) as (keyof LegacyPrecision)[]) {
+    const historic = source?.[key];
+    if (historic === undefined || new Decimal(historic).decimalPlaces() <= 2) continue;
+    const entered = decimal(body, key, precisionFields[key], 6);
+    if (new Decimal(historic).eq(entered)) result[key] = historic;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+function fuelV2Fields(body: Record<string, unknown>): OperatorRefuellingV2Fields {
+  if (body.schemaVersion !== 2 || !['auto', 'manual'].includes(String(body.amountMode))) throw new ApiError(400, 'Некорректный способ расчёта суммы.');
+  if (!Number.isSafeInteger(body.serviceVersion) || Number(body.serviceVersion) < 0) throw new ApiError(400, 'Некорректная версия сервиса.');
+  const date = body.date;
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date) throw new ApiError(400, 'Укажите существующую дату заправки.');
+  const amountMode = body.amountMode as 'auto' | 'manual';
+  const legacyPrecision = validatedPrecision(body);
+  const fields: OperatorRefuellingV2Fields = {
+    schemaVersion: 2, date, name: text(body, 'name', true),
+    groupId: text(body, 'groupId', true), groupName: text(body, 'groupName', true),
+    serviceId: text(body, 'serviceId', true), serviceVersion: Number(body.serviceVersion), service: text(body, 'service', true),
+    discountPercent: decimal(body, 'discountPercent', 'Скидка, %', 6, true, '100'),
+    litres: decimal(body, 'litres', 'Литры', legacyPrecision?.litres ? 6 : 2), pricePerLitre: decimal(body, 'pricePerLitre', 'Цена за литр', legacyPrecision?.pricePerLitre ? 6 : 2),
+    amount: new Decimal(decimal(body, 'amount', 'Сумма', 2, amountMode === 'auto')).toFixed(2), amountMode,
+    recipientText: text(body, 'recipientText', true, 4000), comment: text(body, 'comment', false, 4000),
+    ...(legacyPrecision ? { legacyPrecision } : {}),
+  };
+  if (amountMode === 'auto' && fields.amount !== calculateOperatorAmount(fields.litres, fields.pricePerLitre, fields.discountPercent, !!legacyPrecision)) throw new ApiError(400, 'Сумма не соответствует расчёту. Проверьте литры, цену и скидку.');
+  return fields;
+}
+function selectedV2Fields(body: Record<string, unknown>, prior: OperatorRefuelling | undefined, directories: OperatorCatalogSource): OperatorRefuellingV2Fields {
+  const catalog = readOperatorCatalog(directories);
+  const groupId = text(body, 'groupId', true), serviceId = text(body, 'serviceId', true);
+  const previous = prior?.schemaVersion === 2 ? prior : undefined;
+  const group = catalog.groups.find(row => row.id === groupId);
+  const groupName = previous?.groupId === groupId ? previous.groupName : group?.name;
+  if (!groupName) throw new ApiError(400, 'Выберите группу из справочника.');
+  const selected = catalog.services.find(row => row.id === serviceId);
+  const unchanged = previous?.serviceId === serviceId ? previous : undefined;
+  if (!unchanged && !selected) throw new ApiError(400, 'Выберите сервис из справочника.');
+  const serviceVersion = unchanged ? unchanged.serviceVersion : selected!.version ?? 0;
+  // A legacy row has no service ID. Only an exact name match preserves its terms
+  // during the explicit conversion; choosing a different service uses its rate.
+  const legacyTerms = prior && prior.schemaVersion === undefined && prior.service === selected?.name ? prior : undefined;
+  const snapshotDiscount = unchanged?.discountPercent ?? legacyTerms?.discountPercent ?? selected!.discountPercent;
+  const serviceName = unchanged?.service ?? legacyTerms?.service ?? selected!.name;
+  const discountPercent = decimal(body, 'discountPercent', 'Скидка, %', 6, true, '100');
+  if (body.serviceVersion !== serviceVersion || !new Decimal(discountPercent).eq(snapshotDiscount)) throw new ApiError(409, 'Скидка или данные сервиса изменились. Обновите список и проверьте расчёт перед сохранением.');
+  return fuelV2Fields({ ...body, groupName, service: serviceName, serviceVersion, discountPercent: snapshotDiscount, legacyPrecision: preservedPrecision(body, prior) });
+}
 function keys(body: Record<string, unknown>, allowed: string[]) {
   if (Object.keys(body).some(k => !allowed.includes(k))) throw new ApiError(400, 'Есть неизвестные параметры.');
 }
@@ -49,8 +119,15 @@ export function validateOperator(value: unknown) {
     metadata(row,id); recipientFields(row);
   }
   for (const [id,row] of Object.entries(value.refuellings)) {
-    if (!object(row) || typeof row.recipientId !== 'string' || !Object.hasOwn(value.recipients,row.recipientId) || !object(row.recipient) || typeof row.paid !== 'boolean' || typeof row.createdBy !== 'string' || !Array.isArray(row.paymentHistory)) throw new Error('Invalid refuelling');
-    metadata(row,id); fuelFields(row); recipientFields(row.recipient);
+    if (!object(row) || typeof row.paid !== 'boolean' || typeof row.createdBy !== 'string' || !Array.isArray(row.paymentHistory)) throw new Error('Invalid refuelling');
+    metadata(row,id);
+    if (row.schemaVersion === 2) {
+      if (Object.hasOwn(row, 'recipientId') || Object.hasOwn(row, 'recipient')) throw new Error('Invalid version 2 recipient');
+      fuelV2Fields(row);
+    } else {
+      if (row.schemaVersion !== undefined || typeof row.recipientId !== 'string' || !Object.hasOwn(value.recipients,row.recipientId) || !object(row.recipient)) throw new Error('Invalid legacy refuelling');
+      fuelFields(row); recipientFields(row.recipient);
+    }
     let paid = false;
     for (const event of row.paymentHistory) {
       if (!object(event) || typeof event.paid !== 'boolean' || event.paid === paid || typeof event.actorId !== 'string' || !event.actorId || typeof event.actorName !== 'string' || !event.actorName || typeof event.at !== 'string' || !Number.isFinite(Date.parse(event.at))) throw new Error('Invalid payment history');
@@ -62,12 +139,12 @@ export function validateOperator(value: unknown) {
     if (!uuid.test(key) || !object(record) || typeof record.actorId !== 'string' || !record.actorId || typeof record.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(record.fingerprint) || !['recipients','refuellings'].includes(String(record.collection)) || typeof record.id !== 'string' || !Object.hasOwn(value[record.collection as string] as object,record.id)) throw new Error('Invalid operator request');
   }
 }
-export function readOperator(data: OperationsData, actor: AccountUser) {
+export function readOperator(data: OperationsData, actor: AccountUser, directories: OperatorCatalogSource = {}): OperatorWorkspace {
   requireSection(actor, 'operator');
   const state = data.operator ?? empty();
-  return { recipients: Object.values(state.recipients).sort((a,b) => a.name.localeCompare(b.name,'ru')), refuellings: Object.values(state.refuellings).sort((a,b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)) };
+  return { ...readOperatorCatalog(directories), recipients: Object.values(state.recipients).sort((a,b) => a.name.localeCompare(b.name,'ru')), refuellings: Object.values(state.refuellings).sort((a,b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)) };
 }
-export function mutateOperator(data: OperationsData, actor: AccountUser, collection: 'recipients' | 'refuellings', body: Record<string,unknown>, id?: string, action?: 'payment' | 'archive') {
+export function mutateOperator(data: OperationsData, actor: AccountUser, collection: 'recipients' | 'refuellings', body: Record<string,unknown>, id?: string, action?: 'payment' | 'archive', directories: OperatorCatalogSource = {}) {
   requireSection(actor,'operator');
   const state = data.operator ?? empty();
   if (id && !Object.hasOwn(state[collection],id)) throw new ApiError(404,'Запись не найдена.');
@@ -98,14 +175,21 @@ export function mutateOperator(data: OperationsData, actor: AccountUser, collect
     const fields = recipientFields(body);
     state.recipients[recordId] = {...fields,id:recordId,version:(previous?.version ?? 0)+1,archived:state.recipients[recordId]?.archived ?? false,createdAt:previous?.createdAt ?? now,updatedAt:now};
   } else if (!action && collection === 'refuellings') {
-    keys(body,[...fuelKeys,'recipientId','recipientVersion','idempotencyKey',...(id?['version']:[])]);
     const prior = id ? state.refuellings[id] : undefined;
     if (prior?.paid) throw new ApiError(409,'Для исправления оплаченной записи сначала снимите подтверждение оплаты. История сохранится.');
-    const fields = fuelFields(body);
-    const recipient = typeof body.recipientId === 'string' && Object.hasOwn(state.recipients,body.recipientId) ? state.recipients[body.recipientId] : undefined;
-    if (!recipient || recipient.archived) throw new ApiError(400,'Выберите действующие реквизиты получателя.');
-    if (body.recipientVersion !== recipient.version) throw new ApiError(409,'Реквизиты изменились. Обновите список и проверьте получателя.');
-    state.refuellings[recordId] = {...fields,id:recordId,version:(prior?.version ?? 0)+1,recipientId:recipient.id,recipient:recipientFields({...recipient}),paid:false,paymentHistory:prior?.paymentHistory ?? [],createdBy:prior?.createdBy ?? actor.id,createdAt:prior?.createdAt ?? now,updatedAt:now};
+    const common = { id:recordId, version:(prior?.version ?? 0)+1, paid:false, paymentHistory:prior?.paymentHistory ?? [], createdBy:prior?.createdBy ?? actor.id, createdAt:prior?.createdAt ?? now, updatedAt:now };
+    if (body.schemaVersion === 2) {
+      keys(body,[...fuelV2Keys,'idempotencyKey',...(id?['version']:[])]);
+      state.refuellings[recordId] = { ...selectedV2Fields(body, prior, directories), ...common };
+    } else {
+      if (prior?.schemaVersion === 2) throw new ApiError(400, 'Используйте актуальную форму записи.');
+      keys(body,[...fuelKeys,'recipientId','recipientVersion','idempotencyKey',...(id?['version']:[])]);
+      const fields = fuelFields(body);
+      const recipient = typeof body.recipientId === 'string' && Object.hasOwn(state.recipients,body.recipientId) ? state.recipients[body.recipientId] : undefined;
+      if (!recipient || recipient.archived) throw new ApiError(400,'Выберите действующие реквизиты получателя.');
+      if (body.recipientVersion !== recipient.version) throw new ApiError(409,'Реквизиты изменились. Обновите список и проверьте получателя.');
+      state.refuellings[recordId] = {...fields, ...common, recipientId:recipient.id, recipient:recipientFields({...recipient})};
+    }
   } else throw new ApiError(404,'Действие не найдено.');
   state.requests[key] = {fingerprint,actorId:actor.id,collection,id:recordId};
   data.operator = state;
