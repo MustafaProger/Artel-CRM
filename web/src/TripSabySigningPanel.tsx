@@ -3,6 +3,7 @@ import { Check, Clock3, LoaderCircle, PenLine, RefreshCw } from 'lucide-react'
 import { apiFetch as fetch } from './workspace-api'
 import type { TripSabyAutomation, TripSabyOrderSummary, TripSabyResponse, TripSabySigning, TripSabySigningPreview, TripSabySigningStartRequest } from './trip-saby-model'
 import { signingStepView, workflowDate, workflowOrderLabel, workflowTime } from './trip-workflow-view'
+import { ourOrganizationDisplayName } from './our-organizations'
 
 interface Props {
   endpoint: string
@@ -16,7 +17,7 @@ interface Props {
   onReconcile: () => Promise<void>
 }
 
-const sides = [['sender', 'АРТЕЛЬ', 'Подпись АРТЕЛЬ'], ['carrier', 'НК АРТЕЛЬ', 'Подпись НК АРТЕЛЬ']] as const
+const sides = [['sender', 'АРТЭЛЬ', 'Подпись АРТЭЛЬ'], ['carrier', 'НК АРТЭЛЬ', 'Подпись НК АРТЭЛЬ']] as const
 
 export default function TripSabySigningPanel({ endpoint, order, signing, automation, disabled, onBusyChange, onWorkflowChange, onRefresh, onReconcile }: Props) {
   const [preview, setPreview] = useState<TripSabySigningPreview | null>(null)
@@ -99,7 +100,7 @@ export default function TripSabySigningPanel({ endpoint, order, signing, automat
 
   return <section className="workflow-signing" aria-label="Подписание заявки" aria-busy={busy}>
     <header><h4>{automatic ? legacyAutomatic ? 'Состояние подписи' : 'Автоматическое подписание' : 'Подписание из CRM'}</h4><span>{workflowOrderLabel(order)}</span></header>
-    <p className="etrn-note">{automatic ? legacyAutomatic ? 'Сохранено состояние ранее начатого обмена. Автоматический режим не запускает повторную отправку этой заявки.' : 'После сохранения рейса CRM автоматически обрабатывает заявку и запрашивает подписи обеих сторон. Результаты Saby показаны ниже.' : 'После запуска CRM запросит подпись и отправку заявки АРТЕЛЬ, затем заполнит ответ НК и запросит его подпись. Если Saby потребует согласие владельца, его нужно подтвердить.'}</p>
+    <p className="etrn-note">{automatic ? legacyAutomatic ? 'Сохранено состояние ранее начатого обмена. Автоматический режим не запускает повторную отправку этой заявки.' : 'После сохранения рейса CRM автоматически обрабатывает заявку и запрашивает подписи обеих сторон. Результаты Saby показаны ниже.' : 'После запуска CRM запросит подпись и отправку заявки АРТЭЛЬ, затем заполнит ответ НК и запросит его подпись. Если Saby потребует согласие владельца, его нужно подтвердить.'}</p>
     {error && <p className="shipment-error" role="alert">{error}</p>}
     {uncertain && !operation && <p className="workflow-sync-warning" role="status">Результат запуска пока неизвестен. Повторный запуск заблокирован: сначала нужно получить сохранённое состояние из Saby.</p>}
     {(operation || preview) && <ul className="workflow-signing-sides">{sides.map(([side, organization, label]) => {
@@ -109,7 +110,7 @@ export default function TripSabySigningPanel({ endpoint, order, signing, automat
       const chosen = options?.signatures.find(signature => signature.id === selections[side])
       const expiresOn = workflowDate(chosen?.expiresAt)
       return <li className="workflow-signing-side" key={side}>
-        <strong>{state?.state === 'confirmed' ? <Check size={17} aria-hidden="true"/> : <Clock3 size={17} aria-hidden="true"/>}{options?.organization || organization}</strong>
+        <strong>{state?.state === 'confirmed' ? <Check size={17} aria-hidden="true"/> : <Clock3 size={17} aria-hidden="true"/>}{ourOrganizationDisplayName(options?.organization || organization)}</strong>
         {status && <><p><strong>{status.title}</strong></p><p>{status.text}</p></>}
         {!automatic && !operation && options && <>
           {options.signatures.length ? <label className="shipment-field"><span>{label}</span><select value={selections[side]} disabled={busy || disabled || uncertain || !currentPreview} onChange={event => { setSelections(previous => ({ ...previous, [side]: event.target.value })); setConfirmed(false) }}>
@@ -124,7 +125,7 @@ export default function TripSabySigningPanel({ endpoint, order, signing, automat
       <p className="etrn-note">Подписи проверены {workflowTime(preview.checkedAt)} · Москва. Наличие подписи в списке ещё не подтверждает, что Saby сможет использовать её для этой заявки.</p>
       {!currentPreview && <p className="workflow-sync-warning" role="status">Заявка изменилась после проверки. Проверьте подписи заново перед запуском.</p>}
       {!!preview.blockers.length && <ul className="workflow-fill-blockers">{preview.blockers.map(message => <li key={message}>{message}</li>)}</ul>}
-      <label className="workflow-signing-confirmation"><input type="checkbox" checked={confirmed && !!currentPreview} disabled={busy || disabled || uncertain || !currentPreview || !preview.ready || !selected} onChange={event => setConfirmed(event.target.checked)}/><span>Подтверждаю подписание и отправку: {workflowOrderLabel(order)}. Использовать выбранные подписи АРТЕЛЬ и НК АРТЕЛЬ.</span></label>
+      <label className="workflow-signing-confirmation"><input type="checkbox" checked={confirmed && !!currentPreview} disabled={busy || disabled || uncertain || !currentPreview || !preview.ready || !selected} onChange={event => setConfirmed(event.target.checked)}/><span>Подтверждаю подписание и отправку: {workflowOrderLabel(order)}. Использовать выбранные подписи АРТЭЛЬ и НК АРТЭЛЬ.</span></label>
     </>}
     {operation && <p className="etrn-note" role="status">{operation.state === 'completed' ? 'Подписание обеих сторон подтверждено.' : operation.state === 'blocked' ? 'Подписание приостановлено. Причина указана выше.' : operation.state === 'unknown' ? 'Продолжение приостановлено до подтверждения последней операции. Повторная отправка не выполняется.' : legacyAutomatic ? 'Показано сохранённое состояние прежнего обмена.' : 'Запуск сохранён. CRM продолжает эту цепочку и после закрытия страницы.'} Запущено {workflowTime(operation.requestedAt)} · Москва.</p>}
     <div className="etrn-actions">

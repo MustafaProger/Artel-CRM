@@ -1,3 +1,5 @@
+import { requiresEtrn } from './trip-etrn-scope';
+import { readTripNumbers } from './trip-numbering';
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
 import type { AccountUser } from '../web/src/auth-model';
@@ -6,6 +8,11 @@ import { ApiError } from './api-error';
 import type { OperationsData } from './operations-store';
 import { currentSnapshot } from './shipment-operations';
 import { checkTripVersions } from './shipment-trips';
+import { tripCreatedAt } from '../web/src/trip-order';
+import { isNkDirectEtrn } from './trip-document-mode';
+import { nkDirectEtrnCompleted } from './nk-direct-etrn';
+import { enqueueNkDirectDeparture, nkDirectAutostartSourceHash } from './nk-direct-autostart';
+import { sabyConfigFromEnv, type SabyConfig } from './saby-client';
 
 const Exact = Decimal.clone({ precision: 100 });
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -13,6 +20,15 @@ const rowVersions = (rows: Shipment[]) => Object.fromEntries(rows.map(row => [ro
 const sameVersions = (value: unknown, expected: Record<string, number>) => object(value) && Object.keys(value).length === Object.keys(expected).length && Object.entries(expected).every(([id, version]) => value[id] === version);
 const compositionHash = (rows: Shipment[]) => createHash('sha256').update(JSON.stringify([...rows].sort((a, b) => a.id.localeCompare(b.id)).map(row => [row.id, ...['trip_flow_version', 'driver_id', 'vehicle_id', 'customer_id', 'unloading_address_id', 'unloading_address', 'product_id', 'quantity_litres', 'oil_depot_id', 'loading_address', 'loading_planned_at'].map(key => row.fields[key] ?? null)]))).digest('hex');
 const moscowLocal = (value: string) => new Date(Date.parse(value) + 3 * 3600_000).toISOString().slice(0, 19);
+
+/** Driver button events are separate from operator loading facts and legal signatures. */
+export function driverTripConfirmation(snapshot: Snapshot, data: OperationsData, tripId: string) {
+  const rows = snapshot.shipments.filter(row => row.fields.trip_id === tripId);
+  if (!rows.length || rows.some(row => row.fields.trip_flow_version !== 'driver-v1')) return null;
+  const progress = data.driverTripProgress?.[tripId];
+  if (!progress || rows.some(row => row.fields.driver_id !== progress.driverId) || progress.compositionHash !== compositionHash(rows)) return { arrivedAt: null, confirmedAt: null };
+  return { arrivedAt: progress.arrivedAt, confirmedAt: progress.departedAt ?? null };
+}
 
 function ownedTrips(snapshot: Snapshot, actor: AccountUser) {
   if (actor.role !== 'driver' || !actor.driverId || !snapshot.directories?.drivers.some(row => row.id === actor.driverId)) throw new ApiError(403, 'Доступен только кабинет назначенного водителя.');
@@ -24,23 +40,26 @@ function ownedTrips(snapshot: Snapshot, actor: AccountUser) {
 }
 
 /** Keep this projection explicit. Shipment.fields contains financial and legal metadata. */
-function projectTrip(snapshot: Snapshot, id: string, rows: Shipment[], actor: AccountUser, data?: OperationsData) {
+function projectTrip(snapshot: Snapshot, id: string, rows: Shipment[], actor: AccountUser, data?: OperationsData, number?: number) {
   const first = rows[0], fields = first.fields;
   const driver = snapshot.directories?.drivers.find(row => row.id === actor.driverId);
   const progress = data?.driverTripProgress?.[id];
   // Only the workflow's terminal evidence can archive. Its legacy `completed` phase means drafts exist.
   const workflow = data?.tripSaby?.trips[id];
-  const completed = !!workflow?.stage6CompletedAt && workflow.phase === 'completed' && workflow.driverFlow?.state === 'ready'
+  const directEtrn = !!data && isNkDirectEtrn({ id, fields }, data);
+  const eligible = rows.filter(requiresEtrn);
+  const localComplete = !eligible.length && !!data && !!driverTripConfirmation(snapshot, data, id)?.confirmedAt;
+  const completed = localComplete || (directEtrn && !!data && !!driverTripConfirmation(snapshot, data, id)?.confirmedAt && nkDirectEtrnCompleted(data, id)) || !directEtrn && !!workflow?.stage6CompletedAt && workflow.phase === 'completed' && workflow.driverFlow?.state === 'ready'
     && !!progress?.departedAt && !!workflow.carrierEvidence && workflow.signing?.sender.state === 'confirmed' && workflow.signing.carrier.state === 'confirmed'
-    && workflow.deliveries.length === rows.length && rows.every(row => {
+    && workflow.deliveries.length === eligible.length && eligible.every(row => {
       const delivery = workflow.deliveries.find(item => item.shipmentId === row.id);
       const doc = data?.etrn?.trips[id]?.deliveries[row.id]?.document;
       return !!delivery?.id && delivery.status === 'draft' && doc?.id === delivery.id && !!doc.dispatch?.completedAt
         && doc.dispatch.sender.state === 'confirmed' && doc.dispatch.carrier.state === 'confirmed';
     });
   return {
-    id, date: first.date, driverName: driver?.fullName || driver?.name || actor.name,
-    flowVersion: fields.trip_flow_version ?? null, versions: rowVersions(rows), archived: !!completed,
+    id, ...(number ? { number } : {}), createdAt: tripCreatedAt(rows), date: first.date, driverName: driver?.fullName || driver?.name || actor.name,
+    flowVersion: fields.trip_flow_version ?? null, ...(directEtrn ? { documentMode: 'nk_direct_etrn' as const } : {}), ...(data?.etrn?.trips[id]?.directAutostart ? { documentAutomation: 'after_driver_departure' as const } : {}), etrnRequired: eligible.length > 0, versions: rowVersions(rows), archived: !!completed,
     arrivedAt: progress?.arrivedAt ?? null, departedAt: progress?.departedAt ?? null,
     vehiclePlate: fields.vehicle_plate ?? null, supplier: first.supplier,
     loadingAddress: fields.loading_address ?? null, loadingMapUrl: fields.loading_map_url ?? null,
@@ -57,20 +76,21 @@ function projectTrip(snapshot: Snapshot, id: string, rows: Shipment[], actor: Ac
 }
 export function readDriverTrips(snapshot: Snapshot, actor: AccountUser, id?: string, query = '', data?: OperationsData) {
   const owned = ownedTrips(snapshot, actor);
+  const numbers = data ? readTripNumbers(snapshot, data) : {};
   if (id) {
     const rows = owned.find(([tripId]) => tripId === id)?.[1];
     if (!rows) throw new ApiError(404, 'Рейс не найден.');
-    return { trip: projectTrip(snapshot, id, rows, actor, data) };
+    return { trip: projectTrip(snapshot, id, rows, actor, data, numbers[id]) };
   }
   const needle = query.trim().toLocaleLowerCase('ru-RU').slice(0, 200);
-  const trips = owned.map(([tripId, rows]) => projectTrip(snapshot, tripId, rows, actor, data))
+  const trips = owned.map(([tripId, rows]) => projectTrip(snapshot, tripId, rows, actor, data, numbers[tripId]))
     .filter(trip => !needle || JSON.stringify(trip).toLocaleLowerCase('ru-RU').includes(needle))
     .sort((a, b) => (b.date ?? '').localeCompare(a.date ?? '') || a.id.localeCompare(b.id));
   return { trips, total: trips.length };
 }
 
 /** Must run within OperationsStore.mutate after fresh requireUser authentication. No external calls. */
-export function recordDriverTripAction(base: Snapshot, data: OperationsData, actor: AccountUser, tripId: string, action: 'arrive' | 'depart', body: Record<string, unknown>) {
+export function recordDriverTripAction(base: Snapshot, data: OperationsData, actor: AccountUser, tripId: string, action: 'arrive' | 'depart', body: Record<string, unknown>, config: SabyConfig = sabyConfigFromEnv()) {
   if (Object.keys(body).some(key => !['versions', ...(action === 'depart' ? ['masses'] : [])].includes(key))) throw new ApiError(400, 'В запросе есть недоступные водителю поля.');
   const snapshot = currentSnapshot(base, data, false);
   const rows = ownedTrips(snapshot, actor).find(([id]) => id === tripId)?.[1];
@@ -107,6 +127,7 @@ export function recordDriverTripAction(base: Snapshot, data: OperationsData, act
   }
   if (data.etrn?.trips[tripId]?.loadingFacts || Object.values(data.etrn?.trips[tripId]?.deliveries ?? {}).some(row => row.document)) throw new ApiError(409, 'Факты или документы уже существуют. Нужна сверка логистом.');
   if (now < progress!.arrivedAt) throw new ApiError(409, 'Серверное время раньше прибытия. Повторите действие после восстановления времени.');
+  const previousSourceHash = nkDirectAutostartSourceHash(base, data, tripId);
   const total = Object.values(masses).reduce((sum, value) => sum.plus(value), new Exact(0)).toFixed();
   for (const row of rows) {
     const previous = data.shipments[row.id];
@@ -117,5 +138,6 @@ export function recordDriverTripAction(base: Snapshot, data: OperationsData, act
   const etrn = data.etrn.trips[tripId] ??= { deliveries: {}, updatedAt: now };
   etrn.loadingFacts = { arrivedAt: moscowLocal(progress!.arrivedAt), departedAt: moscowLocal(now), deliveries: Object.fromEntries(rows.map(row => [row.id, { grossMassTonnes: masses[row.id], massMethod: '03' }])), recordedAt: now, actorId: actor.id };
   etrn.updatedAt = now;
+  enqueueNkDirectDeparture({ base, data, tripId, actor, config, previousSourceHash });
   return response(true);
 }

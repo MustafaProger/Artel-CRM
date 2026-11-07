@@ -1,3 +1,4 @@
+import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import Decimal from 'decimal.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ShipmentTrip, Snapshot } from '../web/src/model';
@@ -9,6 +10,7 @@ import { getShipmentTrip } from './shipment-trips';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyConfigurationBlockers, sabyCredentialBlockers, sabyObject, sabyText, type SabyConfig, type SabyObject } from './saby-client';
 import { buildSabyTransportDocument, sabyTransportBlockers, type SabyTransportSnapshot } from './saby-transport-order';
 import { hasEtrnDocuments } from './etrn-service';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
 
 export interface SabyDocumentRecord extends SabyDocumentSummary {
   marker: string;
@@ -40,6 +42,7 @@ export function validateSabyData(value: unknown): asserts value is SabyData | un
 export function hasSabyDocuments(data: OperationsData, tripId: string): boolean { return !!data.tripSaby?.trips[tripId] || hasEtrnDocuments(data, tripId) || !!data.saby?.trips[tripId]?.documents.some(doc => doc.status !== 'error' || !!doc.id); }
 
 function snapshots(snapshot: Snapshot, trip: ShipmentTrip, config: SabyConfig): SabyTransportSnapshot[] {
+  trip = etrnTrip(snapshot, trip);
   return trip.customers.map(customer => {
     const company = snapshot.companies.find(company => company.id === customer.fields.customer_id);
     const supplier = snapshot.companies.find(company => company.id === trip.fields.supplier_id);
@@ -59,6 +62,8 @@ function snapshots(snapshot: Snapshot, trip: ShipmentTrip, config: SabyConfig): 
   });
 }
 function blockers(snapshot: Snapshot, trip: ShipmentTrip, config: SabyConfig): string[] {
+  trip = etrnTrip(snapshot, trip);
+  if (!trip.customers.length) return [ETRN_NOT_REQUIRED];
   const errors = [...sabyConfigurationBlockers(config), ...snapshots(snapshot, trip, config).flatMap(sabyTransportBlockers)];
   const vehicle = config.transportProfile?.vehicleById?.[trip.fields.vehicle_id ?? ''];
   if (vehicle && /^\d+(?:\.\d+)?$/.test(vehicle.capacityCubicMetres) && /^\d+(?:\.\d+)?$/.test(vehicle.payloadTonnes)) {
@@ -77,6 +82,7 @@ function summary(record: SabyTripRecord | undefined, ready: boolean): SabyTripRe
 export function getSabyTrip(base: Snapshot, data: OperationsData, tripId: string, config = sabyConfigFromEnv()): SabyTripResponse {
   const snapshot = currentSnapshot(base, data);
   const trip = getShipmentTrip(snapshot, tripId);
+  assertTripTransportDocumentsAllowed(trip, data);
   const record = data.saby?.trips[tripId];
   const errors = record?.documents.some(doc => doc.status !== 'error' || doc.id) ? sabyCredentialBlockers(config) : blockers(snapshot, trip, config);
   return { saby: summary(data.saby?.trips[tripId], errors.length === 0), readiness: { ready: errors.length === 0, blockers: errors } };
@@ -110,6 +116,7 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
   const claimed = await store.mutate(source, data => {
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
     const trip = getShipmentTrip(snapshot, tripId);
+    assertTripTransportDocumentsAllowed(trip, data);
     if (data.tripSaby?.trips[tripId]) throw new ApiError(409, 'Для рейса уже запущена общая заявка Saby. Используйте обновление общего обмена.');
     const existing = data.saby?.trips[tripId];
     if (existing?.documents.every(doc => doc.status === 'draft')) return { result: null, changed: false };
@@ -129,6 +136,11 @@ export async function submitSabyTrip({ base, store, tripId, authorize, client = 
     return { result: structuredClone(records), changed: true };
   });
   if (claimed) {
+    client = client.withRequestGuard(async () => {
+      const data = await store.read(source); authorize(currentSnapshot(base, data), data);
+      const record = data.saby?.trips[tripId];
+      if (!record || record.leaseId !== leaseId || !record.leaseUntil || Date.parse(record.leaseUntil) <= Date.now()) throw new ApiError(409, 'Сеанс передачи Saby истёк или изменён. Выполните сверку состояния.');
+    });
     const attempted = new Set<string>();
     const update = async (shipmentId: string, patch: Partial<SabyDocumentRecord>) => store.mutate(source, data => {
       const record = data.saby?.trips[tripId];
