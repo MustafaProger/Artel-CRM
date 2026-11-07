@@ -43,9 +43,9 @@ try {
   const fit=async locator=>assert.ok(await locator.evaluate(node=>node.scrollWidth<=node.clientWidth+1),'Horizontal overflow');
   await page.goto(runtime.base+'/#trips');await page.getByRole('button',{name:'Новый рейс',exact:true}).click();
   let dialog=page.getByRole('dialog');
-  await expect(dialog.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('АРТЕЛЬ');
+  await expect(dialog.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('АРТЭЛЬ');
   const nk=dialog.getByRole('checkbox',{name:'Собственный клиент НК Артэль — НК отправитель и перевозчик'});
-  await nk.check();await expect(dialog.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('НК АРТЕЛЬ');await nk.uncheck();
+  await nk.check();await expect(dialog.getByRole('combobox',{name:/^Наша организация/})).toHaveValue('НК АРТЭЛЬ');await nk.uncheck();
   await dialog.getByLabel('Дата отгрузки / погрузки',{exact:true}).fill('2026-10-07');
   await expect(dialog.getByLabel('Дата отгрузки / погрузки — время',{exact:true})).toBeEmpty();
   await expect(dialog.getByLabel('Плановая погрузка',{exact:true})).toHaveCount(0);
@@ -160,7 +160,7 @@ try {
   await card.getByRole('button',{name:'Saby',exact:true}).click();
   const send=panel.getByRole('button',{name:'Создать заявку в Saby',exact:true});await expect(send).toBeEnabled();
   await send.evaluate(button=>{button.click();button.click();});await expect(send).toBeDisabled();assert.equal(postCount,1);releaseSend();
-  await expect(panel).toContainText('АРТЕЛЬ · подпись и отправка');await expect(panel.getByRole('heading',{name:'Фактическая погрузка'})).toHaveCount(0);
+  await expect(panel).toContainText('АРТЭЛЬ · подпись и отправка');await expect(panel.getByRole('heading',{name:'Фактическая погрузка'})).toHaveCount(0);
   await expect(panel.getByRole('button',{name:'Создать заявку в Saby',exact:true})).toHaveCount(0);
   await panel.getByRole('button',{name:'Обновить из Saby',exact:true}).click();await expect(panel.getByRole('heading',{name:'Фактическая погрузка'})).toBeVisible();
   await expect(panel.getByLabel('Прибытие на погрузку · Москва',{exact:true})).toBeEmpty();

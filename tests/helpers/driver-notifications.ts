@@ -1,3 +1,4 @@
+import { prepareTripRequestFixture } from './trip-request-fixture';
 import assert from 'node:assert/strict';
 import { createECDH, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -31,6 +32,7 @@ export async function driverNotificationFixture(sender: PushSender, pushConfig =
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const request = async (path: string, method = 'GET', body?: unknown, cookie = '') => {
+    if (method === 'POST' && path === '/api/shipment-trips' && cookie) await prepareTripRequestFixture(rt.store, rt.base, body);
     const response = await fetch(origin + path, { method, headers: { cookie, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, body: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] ?? '' };
   };
