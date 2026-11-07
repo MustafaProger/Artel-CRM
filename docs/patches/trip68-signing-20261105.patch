@@ -1,0 +1,212 @@
+--- a/server/etrn-dispatch.ts
++++ b/server/etrn-dispatch.ts
+@@ -29,17 +29,21 @@
+   /** Read-only linkage of the NK inbox copy to the exact signed sender title. */
+   carrierIdentity?: { documentId: string; senderRevision: string; senderAttachmentId: string; titleSha256: string; signatureSha256: string };
+   carrierReconciliation?: { version: 1; previousBinding: SabySigningBinding; preparedHash: string };
++  /** A signed replacement T2 observed after an interrupted Prepare. Original intent is retained; no Execute is inferred. */
++  carrierObservedCompletion?: { version: 1; previousStep: { state: 'preparing' | 'unknown' | 'blocked'; binding: SabySigningBinding }; preparedHash: string; draftHash: string; fillHash: string };
+   carrierDraft?: { binding: SabySigningBinding; state: 'preparing' | 'ready' | 'unknown' };
+   carrierFill?: { id: string; revision: string; name: string; beforeHash: string; afterHash: string; attempted: true };
+   completedAt?: string; recipientAcceptedAt?: string; lastError?: string;
+ }
+ const rows = (value: unknown): SabyObject[] => Array.isArray(value) ? value.filter(sabyObject) : sabyObject(value) ? [value] : [];
+ const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
++const intentHash = (value: unknown) => bytesHash(Buffer.from(JSON.stringify(value ?? null)));
++const sameBinding = (left: SabySigningBinding, right: SabySigningBinding) => JSON.stringify(Object.entries(left).sort(([a], [b]) => a.localeCompare(b))) === JSON.stringify(Object.entries(right).sort(([a], [b]) => a.localeCompare(b)));
+ const stamp = () => new Date().toISOString();
+ const fail = (message: string): never => { throw new SabyError('validation', message); };
+ export function validateEtrnDispatch(value: unknown, documentId: string | null): void {
+   if (value === undefined) return;
+-  if (!sabyObject(value) || value.version !== 1 || !documentId || Object.keys(value).some(key => !['version', 'sender', 'carrier', 'operatorUid', 'carrierDraft', 'carrierFill', 'carrierIdentity', 'carrierReconciliation', 'completedAt', 'recipientAcceptedAt', 'lastError'].includes(key))) throw new Error('Invalid ETRN dispatch');
++  if (!sabyObject(value) || value.version !== 1 || !documentId || Object.keys(value).some(key => !['version', 'sender', 'carrier', 'operatorUid', 'carrierDraft', 'carrierFill', 'carrierIdentity', 'carrierReconciliation', 'carrierObservedCompletion', 'completedAt', 'recipientAcceptedAt', 'lastError'].includes(key))) throw new Error('Invalid ETRN dispatch');
+   if (value.operatorUid !== undefined && (!validConsignmentOperatorUid(value.operatorUid) || !sabyObject(value.sender) || !value.sender.prepared)) throw new Error('Invalid ETRN operator UID evidence');
+   const identity = value.carrierIdentity;
+   if (identity !== undefined) {
+@@ -67,10 +71,26 @@
+     if (step.executeAttempted && (!step.prepared || step.verified !== true) || step.state === 'confirmed' && (!step.prepared || !step.executeAttempted && step.observedSignature !== true)) throw new Error('Missing ETRN execution evidence');
+     if (step.observedSignature !== undefined && (step.observedSignature !== true || side !== 'carrier' || !identity ||
+         !step.prepared || step.verified !== true || step.executeAttempted !== undefined || step.dispatchState !== undefined ||
+-        (step.binding as SabySigningBinding | undefined)?.stageId !== 'observed-signed' || value.carrierDraft || value.carrierFill || value.carrierReconciliation)) throw new Error('Invalid observed ETRN signature');
++        (step.binding as SabySigningBinding | undefined)?.stageId !== 'observed-signed' || value.carrierReconciliation ||
++        (value.carrierDraft || value.carrierFill) && !value.carrierObservedCompletion)) throw new Error('Invalid observed ETRN signature');
+     if ((step.binding as SabySigningBinding | undefined)?.stageId === 'observed-signed' && step.observedSignature !== true) throw new Error('Missing observed ETRN signature evidence');
+     if (step.dispatchState !== undefined && !['not_sent', 'attempted', 'acknowledged'].includes(String(step.dispatchState))) throw new Error('Invalid ETRN dispatch state');
+     if (step.verified && !step.prepared || step.dispatchState === 'not_sent' && (step.executeAttempted || step.verified !== true) || ['attempted', 'acknowledged'].includes(String(step.dispatchState)) && step.executeAttempted !== true) throw new Error('Inconsistent ETRN dispatch state');
++  }
++  if (value.carrierObservedCompletion !== undefined) {
++    const evidence = value.carrierObservedCompletion;
++    const step = value.carrier as unknown as EtrnDispatchStep;
++    const draft = value.carrierDraft as EtrnDispatch['carrierDraft'];
++    if (!sabyObject(evidence) || evidence.version !== 1 || Object.keys(evidence).sort().join(',') !== 'draftHash,fillHash,preparedHash,previousStep,version' ||
++        !sabyObject(evidence.previousStep) || Object.keys(evidence.previousStep).sort().join(',') !== 'binding,state' || !['preparing', 'unknown', 'blocked'].includes(String(evidence.previousStep.state)) ||
++        !identity || !draft || draft.state !== 'ready' || !step.observedSignature || !step.prepared || !step.binding || value.carrierReconciliation ||
++        evidence.preparedHash !== step.prepared.preparedHash || evidence.draftHash !== intentHash(draft) || evidence.fillHash !== intentHash(value.carrierFill)) throw new Error('Invalid observed ETRN completion evidence');
++    const previous = evidence.previousStep.binding as SabySigningBinding;
++    assertSigningBinding(previous);
++    if (previous.routePolicy !== undefined || previous.side !== 'carrier' || previous.documentType !== 'ConsignmentNote' || previous.stageId === 'observed-signed' ||
++        previous.attachmentId === 'unprepared-carrier-title' || previous.attachmentId === step.binding.attachmentId ||
++        !sameBinding({ ...previous, attachmentId: 'unprepared-carrier-title' }, draft.binding) ||
++        !sameBinding({ ...previous, stageId: 'observed-signed', attachmentId: step.binding.attachmentId }, step.binding)) throw new Error('Changed observed ETRN preparation intent');
+   }
+   if (value.carrierReconciliation !== undefined) {
+     const recovery = value.carrierReconciliation;
+@@ -297,6 +317,41 @@
+         }
+         if (step.executeAttempted) { await update(row => { row.dispatch![side].state = 'waiting'; row.dispatch!.lastError = evidence.reason; }); break; }
+       }
++      // Saby may regenerate and sign T2 after Prepare while CRM has only its
++      // durable original binding. Observe that completed result before asking
++      // for an action that no longer exists. Never repeat Prepare or Execute.
++      if (side === 'carrier' && doc.dispatch!.carrierIdentity && doc.dispatch!.sender.state === 'confirmed' &&
++          doc.snapshot.documentMode !== 'nk-direct-v1' && doc.orderDraftVersion === 1 && doc.senderTitleVersion === 2 &&
++          doc.dispatch!.carrierDraft?.state === 'ready' && !doc.dispatch!.carrierReconciliation && !doc.dispatch!.carrierObservedCompletion &&
++          ['preparing', 'unknown', 'blocked'].includes(step.state) && Object.keys(step).sort().join(',') === 'binding,state' && step.binding &&
++          sameBinding({ ...step.binding, attachmentId: 'unprepared-carrier-title' }, doc.dispatch!.carrierDraft.binding)) {
++        const previousStep = structuredClone(step) as NonNullable<EtrnDispatch['carrierObservedCompletion']>['previousStep'];
++        const draftHash = intentHash(doc.dispatch!.carrierDraft), fillHash = intentHash(doc.dispatch!.carrierFill);
++        const observed = await client.readSigningDocument('carrier', sideId('carrier'), 'ConsignmentNote');
++        const signedTitles = rows(observed.Вложение).filter(file => file.Подтип === '1110340' && file.Удален !== 'Да' && file.Актуален !== 'Нет' && rows(file.Подпись).length > 0);
++        if (signedTitles.length) {
++          await business(observed, 'carrier');
++          const latest = await store.read(source); authority(latest);
++          const selection = latest.tripSaby!.trips[tripId].autoAuthorization!.selection.carrier;
++          if (previousStep.binding.certificateThumbprint !== selection) fail('Сохранённое намерение НК относится к другой выбранной подписи.');
++          const certificate = signingCertificateForOrganization(await client.readSigningCertificate('carrier', selection), doc.snapshot.carrierOrganization);
++          if (!certificate || certificate.thumbprint !== selection) fail('Выбранная подпись ЭТрН недоступна для организации.');
++          const manifest = await captureSignedTitle(client, 'carrier', observed, certificate!, 'ConsignmentNote');
++          if (manifest.binding.attachmentId === previousStep.binding.attachmentId ||
++              !sameBinding({ ...previousStep.binding, stageId: 'observed-signed', attachmentId: manifest.binding.attachmentId }, manifest.binding) ||
++              rows(observed.Вложение).some(file => file.Идентификатор === previousStep.binding.attachmentId && file.Удален !== 'Да' && file.Актуален !== 'Нет')) fail('Подписанный титул НК не подтверждает сохранённое намерение подготовки.');
++          await business(await client.readSigningDocument('carrier', sideId('carrier'), 'ConsignmentNote'), 'carrier');
++          const evidence = await readSigningEvidence(client, manifest);
++          if (evidence.state !== 'confirmed') fail(evidence.reason);
++          await update(row => {
++            if (intentHash(row.dispatch!.carrier) !== intentHash(previousStep) || intentHash(row.dispatch!.carrierDraft) !== draftHash || intentHash(row.dispatch!.carrierFill) !== fillHash ||
++                row.dispatch!.carrierReconciliation || row.dispatch!.carrierObservedCompletion) throw new ApiError(409, 'Намерение НК изменилось во время сверки подписи.');
++            row.dispatch!.carrierObservedCompletion = { version: 1, previousStep, preparedHash: manifest.preparedHash, draftHash, fillHash };
++            row.dispatch!.carrier = { state: 'confirmed', binding: manifest.binding, prepared: manifest, verified: true, observedSignature: true };
++          });
++          continue;
++        }
++      }
+       // Saby may complete the carrier title before CRM observes its signing stage.
+       // Adopt only a positive signature with no prior local mutation intent. Never
+       // replace a prepared/unknown operation or manufacture an Execute record.
+--- a/tests/saby-consignment-dispatch.test.ts
++++ b/tests/saby-consignment-dispatch.test.ts
+@@ -87,6 +87,7 @@
+   const stage = (side: Side) => ({ Идентификатор: `stage-${side}`, Название: side === 'sender' ? 'Отправка' : 'Получение груза', Действие: [{ Название: side === 'sender' ? 'Погружен' : 'Принят', ТребуетПодписания: 'Да', Сертификат: { Отпечаток: fps[side], Ключ: { Тип: 'Отложенный', Активирован: 'Да' } } }] });
+   let signedSender = false, signedCarrier = false, carrierPrepared = false, receipt = true, loss: 'prepare' | 'execute' | 'fill-accepted' | 'fill-unsent' | null = null, pending = false;
+   let regenerateCarrierTitle = false, nativeRecipientSummary = false;
++  let carrierStateOverride: string | undefined, carrierSignatureThumbprint = fps.carrier;
+   let carrierMismatch: 'title' | 'signature' | 'revision' | 'stage' | 'missing-reply' | 'duplicate-reply' | null = null;
+   let carrierDraftPrepares = 0, carrierSigningPrepares = 0;
+   let changeSenderRevisionAfterCarrier = false;
+@@ -94,13 +95,13 @@
+   const document = (side: Side): SabyObject => {
+     const own = side === 'sender' ? config.customer : config.carrier;
+     const revision = (side === 'carrier' && carrierMismatch === 'revision' || side === 'sender' && signedCarrier && changeSenderRevisionAfterCarrier) ? '99999999-9999-4999-8999-999999999998' : side === 'carrier' && (alias || sameIdRevision) ? incomingRevision : doc.revision;
+-    const file = (which: Side) => ({ Идентификатор: attachmentIds[which], Редакция: { Идентификатор: revision, Номер: '1' }, СсылкаВКабинет: cabinetUrl, Подтип: which === 'sender' ? '1110339' : '1110340', ВерсияФормата: '5.01', Направление: which === side ? 'Исходящий' : 'Входящий', Файл: { Имя: which === 'sender' ? t1.name : 'carrier.xml', Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && (alias || sameIdRevision) ? 'carrier-copy' : which}.xml` }, ...((which === 'sender' ? signedSender : signedCarrier) ? { Подпись: [{ Сертификат: { Отпечаток: fps[which], ИНН: (which === 'sender' ? config.customer : config.carrier).inn }, Файл: { Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && (alias || sameIdRevision) ? 'carrier-source' : which}.sgn` } }] } : {}) });
++    const file = (which: Side) => ({ Идентификатор: attachmentIds[which], Редакция: { Идентификатор: revision, Номер: '1' }, СсылкаВКабинет: cabinetUrl, Подтип: which === 'sender' ? '1110339' : '1110340', ВерсияФормата: '5.01', Направление: which === side ? 'Исходящий' : 'Входящий', Файл: { Имя: which === 'sender' ? t1.name : 'carrier.xml', Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && (alias || sameIdRevision) ? 'carrier-copy' : which}.xml` }, ...((which === 'sender' ? signedSender : signedCarrier) ? { Подпись: [{ Сертификат: { Отпечаток: which === 'carrier' ? carrierSignatureThumbprint : fps.sender, ИНН: (which === 'sender' ? config.customer : config.carrier).inn }, Файл: { Ссылка: `https://disk.saby.ru/${which === 'sender' && side === 'carrier' && (alias || sameIdRevision) ? 'carrier-source' : which}.sgn` } }] } : {}) });
+     const recipientStage = { Идентификатор: 'recipient-stage', Название: 'Приемка груза', Исполнитель: [{ Контрагент: party(snapshot.profile.recipient) }] };
+     const active = signedCarrier && receipt ? recipientStage : stage(side);
+     if (side === 'carrier' && carrierMismatch === 'stage') active.Идентификатор = 'changed-carrier-stage';
+     const replies = carrierPrepared && !(side === 'carrier' && carrierMismatch === 'missing-reply') ? [file('carrier')] : [];
+     if (side === 'carrier' && carrierMismatch === 'duplicate-reply') replies.push({ ...file('carrier'), Идентификатор: 'another-carrier-title' });
+-    return { Идентификатор: side === 'carrier' && alias ? incomingId : doc.id, Тип: 'ConsignmentNote', Номер: doc.number, Дата: '01.04.2025', Направление: side === 'sender' ? 'Исходящий' : 'Входящий', НашаОрганизация: party(own), Грузоотправитель: party(config.customer), ТранспортнаяКомпания: party(config.carrier), Грузополучатель: party(snapshot.profile.recipient), Стороны: { Отправитель: party(config.customer), Перевозчик: party(config.carrier), Получатель: party(alias === 'recipient' && side === 'carrier' ? config.carrier : snapshot.profile.recipient) }, Редакция: [{ Идентификатор: revision, Актуален: 'Да' }], Состояние: { Код: signedCarrier ? '7' : side === 'sender' && signedSender ? '4' : side === 'sender' ? '0' : '10' }, ...(nativeRecipientSummary && signedCarrier && side === 'sender' ? { Контрагент: party(snapshot.profile.recipient), ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор, Наименование: active.Название }] } : { Этап: [active], ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор }] }), Вложение: [file('sender'), ...replies] };
++    return { Идентификатор: side === 'carrier' && alias ? incomingId : doc.id, Тип: 'ConsignmentNote', Номер: doc.number, Дата: '01.04.2025', Направление: side === 'sender' ? 'Исходящий' : 'Входящий', НашаОрганизация: party(own), Грузоотправитель: party(config.customer), ТранспортнаяКомпания: party(config.carrier), Грузополучатель: party(snapshot.profile.recipient), Стороны: { Отправитель: party(config.customer), Перевозчик: party(config.carrier), Получатель: party(alias === 'recipient' && side === 'carrier' ? config.carrier : snapshot.profile.recipient) }, Редакция: [{ Идентификатор: revision, Актуален: 'Да' }], Состояние: { Код: side === 'carrier' && carrierStateOverride !== undefined ? carrierStateOverride : signedCarrier ? '7' : side === 'sender' && signedSender ? '4' : side === 'sender' ? '0' : '10' }, ...(nativeRecipientSummary && signedCarrier && side === 'sender' ? { Контрагент: party(snapshot.profile.recipient), ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор, Наименование: active.Название }] } : { Этап: [active], ТекущиеЭтапы: [{ Идентификатор: active.Идентификатор }] }), Вложение: [file('sender'), ...replies] };
+   };
+   const cert = (side: Side) => { const org = side === 'sender' ? config.customer : config.carrier; return { Certificate: { Type: 'Client', CertificateInfo: { Thumbprint: fps[side], IsValid: true, IsQualified: true, NotBefore: '2020-01-01T00:00:00Z', NotAfter: '2099-01-01T00:00:00Z', SubjectName: { '1.2.643.100.4': org.inn, '2.5.4.4': 'Тестовый', '2.5.4.42': 'Подписант' } } }, OurCompany: { Inn: org.inn, Kpp: org.kpp } }; };
+   const send: typeof fetch = async (url, init) => {
+@@ -182,6 +183,9 @@
+     completeExternalCarrier: () => { signedSender = true; signedCarrier = true; carrierPrepared = true; pending = false; },
+     nativeSummary: () => { nativeRecipientSummary = true; },
+     regenerateCarrier: () => { regenerateCarrierTitle = true; },
++    setCarrierState: (value: string) => { carrierStateOverride = value; },
++    changeCarrierSignature: () => { carrierSignatureThumbprint = 'ef'.repeat(20); },
++    reload: () => { state = JSON.parse(JSON.stringify(state)) as OperationsData; },
+     failAfterManifest: () => { crashAfterManifest = true; },
+     mutate: (fn: (value: OperationsData) => void) => { fn(state); },
+     setReceipt: (value: boolean) => { receipt = value; }, setPending: (value: boolean) => { pending = value; }, setLoss: (value: typeof loss) => { loss = value; },
+@@ -500,6 +504,80 @@
+     assert.equal(f.saved().dispatch?.carrier.prepared, undefined);
+     assert.equal(f.saved().dispatch?.carrierReconciliation, undefined);
+     assert.equal(f.saved().dispatch?.carrier.executeAttempted, undefined);
++    assert.equal(f.writes().length, writes);
++  } finally { await f.close(); }
++});
++
++for (const filled of [false, true]) test(`a signed regenerated T2 after interrupted Prepare preserves ${filled ? 'filled' : 'unfilled'} intent without repeating actions`, async () => {
++  const f = await fixture('electronic', 'valid');
++  try {
++    if (filled) f.removeCarrierAcceptance();
++    f.nativeSummary(); f.regenerateCarrier(); await f.run();
++    const before = structuredClone(f.saved());
++    assert.equal(before.dispatch?.carrierDraft?.state, 'ready');
++    assert.equal(!!before.dispatch?.carrierFill, filled);
++    assert.deepEqual(Object.keys(before.dispatch!.carrier).sort(), ['binding', 'state']);
++    f.completeExternalCarrier(); f.setCarrierState('4');
++    const writes = f.writes().length;
++    await f.run(); const d = f.saved();
++    assert.ok(d.dispatch?.completedAt, d.dispatch?.lastError);
++    assert.equal(d.dispatch?.carrier.observedSignature, true);
++    assert.equal(d.dispatch?.carrier.executeAttempted, undefined);
++    assert.equal(d.dispatch?.carrier.dispatchState, undefined);
++    assert.equal(d.dispatch?.carrier.binding?.stageId, 'observed-signed');
++    assert.equal(d.dispatch?.carrier.binding?.attachmentId, '99999999-9999-4999-8999-999999999999');
++    assert.deepEqual(d.dispatch?.carrierObservedCompletion?.previousStep, before.dispatch?.carrier);
++    assert.deepEqual(d.dispatch?.carrierDraft, before.dispatch?.carrierDraft);
++    assert.deepEqual(d.dispatch?.carrierFill, before.dispatch?.carrierFill);
++    assert.deepEqual(d.dispatch?.sender, before.dispatch?.sender);
++    assert.deepEqual(d.snapshot, before.snapshot);
++    assert.equal(f.writes().length, writes);
++    assert.throws(() => signingActionRequest(d.dispatch!.carrier.binding!), /повторное действие запрещено/);
++    const saved = JSON.stringify(d.dispatch);
++    f.reload(); validateEtrnDispatch(f.saved().dispatch, d.id); await f.run();
++    assert.equal(JSON.stringify(f.saved().dispatch), saved);
++    assert.equal(f.writes().length, writes);
++    for (const variant of ['missing-evidence', 'previous-state', 'previous-certificate', 'previous-revision', 'manifest', 'draft', 'fill', 'execute', 'dispatch'] as const) {
++      const changed = structuredClone(d.dispatch!);
++      if (variant === 'missing-evidence') delete changed.carrierObservedCompletion;
++      else if (variant === 'previous-state') changed.carrierObservedCompletion!.previousStep.state = 'confirmed' as never;
++      else if (variant === 'previous-certificate') changed.carrierObservedCompletion!.previousStep.binding.certificateThumbprint = 'ef'.repeat(20);
++      else if (variant === 'previous-revision') changed.carrierObservedCompletion!.previousStep.binding.revision = 'changed-revision';
++      else if (variant === 'manifest') changed.carrierObservedCompletion!.preparedHash = 'a'.repeat(64);
++      else if (variant === 'draft') changed.carrierDraft!.state = 'unknown';
++      else if (variant === 'fill') changed.carrierFill = { id: 'changed', revision: 'changed', name: 'changed', beforeHash: 'a'.repeat(64), afterHash: 'b'.repeat(64), attempted: true };
++      else if (variant === 'execute') changed.carrier.executeAttempted = true;
++      else changed.carrier.dispatchState = 'acknowledged';
++      assert.throws(() => validateEtrnDispatch(changed, d.id), variant);
++    }
++  } finally { await f.close(); }
++});
++
++for (const mismatch of ['unsigned-processing', 'signed-pending', 'revision', 'selected-signature', 'saved-selection', 'business', 'source-signature', 'uncertain-draft', 'prior-manifest'] as const) test(`signed replacement reconciliation rejects ${mismatch} without provider writes or intent reset`, async () => {
++  const f = await fixture('electronic', 'valid');
++  try {
++    f.regenerateCarrier(); await f.run();
++    if (mismatch !== 'unsigned-processing') f.completeExternalCarrier();
++    if (mismatch === 'unsigned-processing' || mismatch === 'signed-pending') f.setCarrierState('23');
++    if (mismatch === 'revision') f.setCarrierMismatch('revision');
++    if (mismatch === 'selected-signature') f.changeCarrierSignature();
++    if (mismatch === 'saved-selection') f.mutate(() => { f.saved().dispatch!.carrier.binding!.certificateThumbprint = 'ef'.repeat(20); f.saved().dispatch!.carrierDraft!.binding.certificateThumbprint = 'ef'.repeat(20); });
++    if (mismatch === 'business') f.removeCarrierAcceptance();
++    if (mismatch === 'source-signature') f.setCarrierMismatch('signature');
++    if (mismatch === 'uncertain-draft') f.mutate(() => { f.saved().dispatch!.carrierDraft!.state = 'unknown'; });
++    // A malformed prior manifest is not eligible for replacement and fails before any action.
++    if (mismatch === 'prior-manifest') f.mutate(() => { f.saved().dispatch!.carrier.prepared = structuredClone(f.saved().dispatch!.sender.prepared!); });
++    const before = structuredClone(f.saved().dispatch!), writes = f.writes().length;
++    if (mismatch === 'prior-manifest') await assert.rejects(f.run()); else await f.run();
++    const after = f.saved().dispatch!;
++    assert.equal(after.completedAt, undefined);
++    assert.equal(after.carrier.observedSignature, undefined);
++    assert.equal(after.carrierObservedCompletion, undefined);
++    assert.equal(after.carrier.executeAttempted, undefined);
++    assert.deepEqual(after.carrier.binding, before.carrier.binding);
++    assert.deepEqual(after.carrier.prepared, before.carrier.prepared);
++    assert.deepEqual(after.carrierDraft, before.carrierDraft);
++    assert.deepEqual(after.carrierFill, before.carrierFill);
+     assert.equal(f.writes().length, writes);
+   } finally { await f.close(); }
+ });
