@@ -1,0 +1,152 @@
+{
+  "synthetic": true,
+  "mode": "built",
+  "artifacts": {
+    "serverBundleSha256": "f115da76db4135463af5f73eef91bc72be1c0dd11835d856f16d5c5164812654",
+    "frontend": {
+      "app-dist/apple-touch-icon.png": "cc2f8f324a3b8a882cca72490a7ee38f94e4d7cdabd66b207c9e9ad1464c6a46",
+      "app-dist/assets/AccountManagement-Cnr4pmKZ.js": "9cbf2e8f77f8f43caf6cf7ef7c92571500a3377775ec26f67c454ff35b60ebae",
+      "app-dist/assets/BankingPage-CL-gct7d.js": "ccaa5c4ba38d01ad9b2d31197d08f2a34bd1ecfb5a9618062c30f8c044d25429",
+      "app-dist/assets/CabinetBalances-e70JHo84.js": "578cb1b356fc733911528ff4f0782563dee1f6b8abbfb02d63ae64827c5ad04b",
+      "app-dist/assets/ChinaPage-ODpTw5v_.js": "6c50849a321133948b82b2b77b3681fef23aa4169dc82a1253ed9307dd280288",
+      "app-dist/assets/DeliveryPointPicker-oPmRuI_P.js": "ecc5b4cdbc3a9042393c9414862be191ab5ec1eb72c945f495e595b6553cc4de",
+      "app-dist/assets/DirectoriesPage-DmOAXTNq.js": "d953cd2ff7c3ef289b1ca40a51b07b042ad75cfb85331075cf6fdd3de2079dd8",
+      "app-dist/assets/DirectorySelect-Bq_zjelF.js": "17df5e21ddd48d7d94ffdb8bf8df8ebc3fff55db3c6368c06f85a1bcc9721073",
+      "app-dist/assets/DriverWorkspace-C74M3t4r.js": "68b54f31b1be36ffbffc638ca86ac7e808eb3c2e625b885bed4286fe3f60965e",
+      "app-dist/assets/InvoicePage-BPWxtXHo.js": "435e6a5322f350c72bdc113d25db296a6f2259293e49cd02be208095c174998d",
+      "app-dist/assets/OperatorPage-DnKdzJ83.js": "3318e88f84b3c078d2a55964be842674485e8dd4f5732c1fb7ac93771a625a75",
+      "app-dist/assets/OverviewPage-E6_oi9Q4.js": "320de0c1f4010173f7e2e7063bad4a217435090277542e31de54acf0155a8004",
+      "app-dist/assets/RoleFilter-XgzYj_Bl.js": "0065c09735df5afcbda907ad0ae976132a13bfb267841c61cd0ae3cea7149075",
+      "app-dist/assets/ShipmentTripEditor-CEHRQx1q.js": "43d31e6d3248c2a896b7f9235d1ab230dd03e2bcf663a408918e0f8109028121",
+      "app-dist/assets/ShipmentsPage-FoETYxp0.js": "6567589698a163870cf823ac383ddfcfc88ff0d57fbd51dbd91bd1e600e0728b",
+      "app-dist/assets/TripsPage-CPC-rJ3E.js": "3ec693af54dbb677db6dc940ad65d4f38868bc154718321f218176a12113c600",
+      "app-dist/assets/WorkPage-D1P273jz.js": "a69016abf789e623718dab04a04401688e3a72fbcf0c42f7aad4c2f755b093ff",
+      "app-dist/assets/crm-WvjiY6yY.js": "60528fd1b3a53401f724b9fe508b6321eb78d953ba92518a10e28cc1c2153fa9",
+      "app-dist/assets/crm-shared-OhX99nUm.js": "907e8adee1444f3a7193f2755eee4a7d303423745139480c0057a3a3d6af2ccf",
+      "app-dist/assets/map-link-C7xs8Hf-.js": "2915a458ae278902c37618555f395227aac9635bc8897b8fb96c3da15267ac9c",
+      "app-dist/assets/overview-model-w8zBn-JH.js": "20f5bf619287cbc96da6d9c0a2565e443ebc249e7e2f89aa674f42e100e34e49",
+      "app-dist/assets/shipment-calculations-Dszf6w9W.js": "a00f498070c2dc51bb18a7ad3096ac32b5d0ab707daa13819a58abe719610dc5",
+      "app-dist/assets/style-B4r5NGpd.css": "65df64cdfa6dd3c0741d536a8c071f8b843fbefdc46b0541f0a84cc37162bcf3",
+      "app-dist/assets/trip-order-Dw3D4rEg.js": "8d774049c7b72b9dd60decdfe13eb5d98b803bd0592bef7c164b92792e385d30",
+      "app-dist/assets/trip-request-map-coordinates-DCZn5Mmt.js": "16befada1374174af146adf19b54c28c60d8b4e8554d338dbf318cd19416329f",
+      "app-dist/assets/vendor-DDZNJ3Hy.js": "60c42ef3e848cdc452275611d935df5341d8b3139e11d5612744223fe753a45f",
+      "app-dist/favicon.svg": "cc8f489314e35fec89095c6cf334f57aa826e3245a312b6c87452c70d2137f7f",
+      "app-dist/icons/apple-touch-icon.png": "cc2f8f324a3b8a882cca72490a7ee38f94e4d7cdabd66b207c9e9ad1464c6a46",
+      "app-dist/icons/favicon-32.png": "40e581abcd4e64591b16121d109014a6e4e2c02bd3a4673623e7a6731c326f95",
+      "app-dist/icons/favicon-64.png": "a6112ea14dc4e33551e1fefed18d6d585b6f46ab90796a39fabe5dec70e866ea",
+      "app-dist/icons/icon-1024.png": "917b406e95b45ba3304f5e56b6c3734a0f01b896329550909727934ff38b2167",
+      "app-dist/icons/icon-192.png": "18510242d2962b3033888472f001f787b7c815e0d1f24f00b38de47769809227",
+      "app-dist/icons/icon-512.png": "a8c7881205cea2f767fe04efe23f53882c8a573aa29e4974ad950e9fff310636",
+      "app-dist/icons/icon-maskable-512.png": "a8c7881205cea2f767fe04efe23f53882c8a573aa29e4974ad950e9fff310636",
+      "app-dist/index.html": "b9f2207556e7824307fd08d8d38d5454c9accbeb19062c8b854d92f306e6e50e",
+      "app-dist/manifest.webmanifest": "10deb61c9c59760afe794fd1c8de7c88470f7ffb5bd75572ed918be080090d2c",
+      "app-dist/sw.js": "da7fb11ad8c1f853ce08905a7ee7d2cb13ea222ed1cdbb3de3bbe2d834ec70cc"
+    }
+  },
+  "checks": [
+    {
+      "engine": "chromium",
+      "width": 1100,
+      "heights": [
+        35.5,
+        35,
+        34.5
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "heights": [
+        35.5,
+        35,
+        34.5
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "chromium",
+      "width": 1920,
+      "heights": [
+        35.5,
+        35,
+        34.5
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "chromium",
+      "directoryEditFromOtherTab": true,
+      "newOperationFresh": true,
+      "draftRefreshPreservesInput": true,
+      "persistedNewTerms": true,
+      "oldOperationExact": true,
+      "groupsRemoved": true,
+      "refreshErrorDoesNotUseStaleCatalog": true
+    },
+    {
+      "engine": "webkit",
+      "width": 1100,
+      "heights": [
+        35,
+        35,
+        36
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "heights": [
+        35,
+        35,
+        36
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "webkit",
+      "width": 1920,
+      "heights": [
+        35,
+        35,
+        36
+      ],
+      "padding": "8px"
+    },
+    {
+      "engine": "webkit",
+      "directoryEditFromOtherTab": true,
+      "newOperationFresh": true,
+      "draftRefreshPreservesInput": true,
+      "persistedNewTerms": true,
+      "oldOperationExact": true,
+      "groupsRemoved": true,
+      "refreshErrorDoesNotUseStaleCatalog": true
+    }
+  ],
+  "axe": [
+    {
+      "engine": "chromium",
+      "width": 390,
+      "violations": []
+    },
+    {
+      "engine": "chromium",
+      "width": 1470,
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 390,
+      "violations": []
+    },
+    {
+      "engine": "webkit",
+      "width": 1470,
+      "violations": []
+    }
+  ],
+  "errors": [],
+  "passed": true
+}
