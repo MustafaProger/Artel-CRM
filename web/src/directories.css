@@ -12,3 +12,5 @@
 .directory-conflict fieldset{min-width:0;margin:14px 0;padding:12px;border:1px solid #d9b77b;border-radius:8px}
 .directory-conflict label{display:flex;align-items:flex-start;gap:8px;margin:10px 0}
 .directory-conflict input{flex:0 0 auto;margin-top:3px}
+.directory-depot-distances{min-width:0;margin:4px 0 0;padding:14px;border:1px solid #dce5df;border-radius:8px}.directory-depot-distances legend{padding:0 6px;font-size:13px;font-weight:600;color:#52665b}.directory-depot-distance-list{display:grid;gap:10px}.directory-depot-distance.shipment-field{display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:12px;align-items:center}.directory-depot-distance>span{overflow-wrap:anywhere}.directory-depot-distance input{min-width:0;width:100%}.company-address-row>.shipment-field-grid{min-width:0;flex:1}
+@media(max-width:480px){.directory-depot-distances{padding:10px}.directory-depot-distance.shipment-field{grid-template-columns:minmax(0,1fr) 102px;gap:8px}}

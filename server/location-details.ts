@@ -1,3 +1,4 @@
+import { tripRequestExplicitCoordinates } from '../web/src/trip-request-map-coordinates';
 import { ApiError } from './api-error';
 import { validPhone } from './fleet-directory';
 import type { Company, ShipmentAddress } from '../web/src/model';
@@ -22,6 +23,16 @@ export function locationDetails(input: Record<string, unknown>, selection?: { co
     if (result[key] && (!/^[+-]?\d+(?:\.\d+)?$/.test(result[key]!) || Math.abs(Number(result[key])) > limit)) throw new ApiError(400, 'Проверьте координаты площадки.');
   }
   if (!!result.latitude !== !!result.longitude) throw new ApiError(400, 'Укажите обе координаты площадки.');
+  const effectiveAddress = (result.address || (typeof input.name === 'string' ? input.name : '')).trim().replace(/\s+/g, ' ');
+  if (input.pointAddress !== undefined && (typeof input.pointAddress !== 'string' || input.pointAddress.length > 500 || input.pointAddress.trim().replace(/\s+/g, ' ') !== effectiveAddress)) throw new ApiError(400, 'Точка должна соответствовать текущему адресу площадки.');
+  const previous = selection?.previous;
+  if (previous && effectiveAddress !== (previous.address || previous.name).trim().replace(/\s+/g, ' ')) {
+    const oldPoint = tripRequestExplicitCoordinates(previous), newPoint = tripRequestExplicitCoordinates(result);
+    const samePoint = oldPoint?.status === 'found' && newPoint?.status === 'found' && oldPoint.latitude === newPoint.latitude && oldPoint.longitude === newPoint.longitude;
+    if (input.pointAddress === undefined && (samePoint || !newPoint)) {
+      delete result.latitude; delete result.longitude; delete result.mapUrl;
+    }
+  }
   if (result.receiverPhone && !validPhone(result.receiverPhone)) throw new ApiError(400, 'Проверьте телефон приёмщика площадки.');
   if (selection) for (const key of loadingRoleKeys) {
     const id = result[key]; if (!id) continue;

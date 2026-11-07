@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { applicationKey, pushRequest, pushSupported, registerPushWorker, subscribePushDevice, waitForPush } from './push-client';
 
 interface Config { enabled: boolean; publicKey: string; lastRunAt: number | null; intervalSeconds: number }
-export default function PushSettings({ userId, kind: audience = 'work', onEnabledChange, onEnabled }: { userId: string; kind?: 'work' | 'driver'; onEnabledChange?: (enabled: boolean) => void; onEnabled?: () => void }) {
+export default function PushSettings({ userId, kind: audience = 'work', onEnabledChange, onEnabled }: { userId: string; kind?: 'work' | 'driver' | 'invoices'; onEnabledChange?: (enabled: boolean) => void; onEnabled?: () => void }) {
   const [config, setConfig] = useState<Config | null>(null);
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [probeId, setProbeId] = useState<string | null>(null);
@@ -16,7 +16,7 @@ export default function PushSettings({ userId, kind: audience = 'work', onEnable
     let cancelled = false;
     async function load() {
       try {
-        const result: Config = await pushRequest('config');
+        const result: Config = await pushRequest('config', 'GET', undefined, userId);
         if (cancelled) return;
         setConfig(result);
         if (!supported) return;
@@ -25,9 +25,14 @@ export default function PushSettings({ userId, kind: audience = 'work', onEnable
         if (cancelled) return;
         // A VAPID key change invalidates existing subscriptions.
         if (current && result.publicKey && current.options.applicationServerKey && new Uint8Array(current.options.applicationServerKey).toString() !== applicationKey(result.publicKey).toString()) { await current.unsubscribe(); current = null; }
-        if (current && Notification.permission === 'granted' && result.enabled) await pushRequest('subscription', 'POST', { subscription: current.toJSON() });
+        if (current && Notification.permission === 'granted' && result.enabled) await pushRequest('subscription', 'POST', { subscription: current.toJSON(), explicit: false }, userId);
         if (!cancelled) setSubscription(current);
-      } catch (reason) { if (!cancelled) setError((reason as Error).message); }
+      } catch (reason) {
+        if (!cancelled && (reason as Error & { status?: number }).status === 409) {
+          setSubscription(null);
+          setNotice('Подтвердите включение уведомлений для текущего пользователя.');
+        } else if (!cancelled) setError((reason as Error).message);
+      }
     }
     void load();
     return () => { cancelled = true; };
@@ -39,7 +44,7 @@ export default function PushSettings({ userId, kind: audience = 'work', onEnable
       if (document.visibilityState !== 'visible' || inFlight) return;
       inFlight = true;
       try {
-        const response = await fetch('/api/push/config', { cache: 'no-store', signal: controller.signal });
+        const response = await fetch('/api/push/config', { cache: 'no-store', signal: controller.signal, headers: { 'X-Artel-Account': userId } });
         if (response.ok) {
           const result: Config = await response.json();
           if (!controller.signal.aborted) setConfig(result);
@@ -64,7 +69,7 @@ export default function PushSettings({ userId, kind: audience = 'work', onEnable
     const deadline = window.setTimeout(() => { controller.abort(); unconfirmed(); }, 60000);
     async function check() {
       try {
-        const response = await fetch(`/api/push/test-status?probeId=${encodeURIComponent(probeId!)}`, { cache: 'no-store', signal: controller.signal });
+        const response = await fetch(`/api/push/test-status?probeId=${encodeURIComponent(probeId!)}`, { cache: 'no-store', signal: controller.signal, headers: { 'X-Artel-Account': userId } });
         const result = await response.json();
         if (controller.signal.aborted) return;
         if (!response.ok) {
@@ -104,16 +109,16 @@ export default function PushSettings({ userId, kind: audience = 'work', onEnable
         setNotice('Браузер подключает устройство к уведомлениям…');
         const current = await subscribePushDevice(worker, config!.publicKey);
         setNotice('Сохраняем подключение устройства…');
-        await pushRequest('subscription', 'POST', { subscription: current.toJSON() });
+        await pushRequest('subscription', 'POST', { subscription: current.toJSON(), explicit: true }, userId);
         setSubscription(current);
-        setNotice(audience === 'driver' ? 'Уведомления о новых рейсах включены на этом устройстве.' : 'Уведомления включены для ваших задач и работы с компаниями.');
+        setNotice(audience === 'driver' ? 'Уведомления о новых рейсах включены на этом устройстве.' : audience === 'invoices' ? 'Уведомления о готовности ваших счетов включены на этом устройстве.' : 'Уведомления включены для ваших задач и работы с компаниями.');
         onEnabled?.();
       } else if (kind === 'disable' && subscription) {
-        await pushRequest('subscription', 'DELETE', { endpoint: subscription.endpoint });
+        await pushRequest('subscription', 'DELETE', { endpoint: subscription.endpoint }, userId);
         await waitForPush(subscription.unsubscribe(), 15000, 'Сервер отключил уведомления, но браузер пока не завершил отключение. Повторите проверку позже.');
         setSubscription(null); setNotice('Уведомления на этом устройстве выключены.');
       } else if (subscription) {
-        const result = await pushRequest('test', 'POST', { endpoint: subscription.endpoint });
+        const result = await pushRequest('test', 'POST', { endpoint: subscription.endpoint }, userId);
         if (typeof result.probeId === 'string' && result.probeId) {
           setProbeId(result.probeId);
           setNotice('Сервис принял проверку. Ожидаем подтверждение браузера…');

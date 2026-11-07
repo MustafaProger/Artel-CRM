@@ -1,3 +1,4 @@
+import type { TripRequestLocationResult } from './trip-request-map-coordinates';
 import type { CompanyDetails, DriverDetails, VehicleDetails, VehicleTransportDetails, ProductTransportDetails } from './directory-fields';
 /** Money and quantities retain the exported decimal precision. Null is never zero. */
 export type DecimalValue = string | null;
@@ -194,10 +195,11 @@ export interface Snapshot {
 }
 
 export interface NamedEntry { id: string; name: string; version?: number }
+export interface OperatorService extends NamedEntry { discountPercent: string }
 export interface Product extends NamedEntry, ProductTransportDetails {}
 export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
 export interface Driver extends NamedEntry, DriverDetails { carrierId?: string; vehicleId: string; phone?: string }
-export interface ShipmentAddress extends NamedEntry { companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string }
+export interface ShipmentAddress extends NamedEntry { location?: TripRequestLocationResult; companyId: string; kind: 'loading' | 'delivery'; address?: string; mapUrl?: string; latitude?: string; longitude?: string; receiverName?: string; receiverPhone?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string; oilDepotDistancesKm?: Record<string, string> }
 export interface OilDepot extends NamedEntry { address?: string; mapUrl?: string; latitude?: string; longitude?: string; ownerCompanyId?: string; loadingActorCompanyId?: string; infrastructureOwnerCompanyId?: string }
 export type ProfitRule = 'azs-payment-form' | 'template-payment-form' | 'simple' | 'excel-rounded' | 'excel-exact' | 'excel-legacy';
 export interface CalculationRules {
@@ -219,6 +221,8 @@ export interface Directories {
   managers: NamedEntry[]; products: Product[]; paymentForms: NamedEntry[];
   vehicles: Vehicle[]; drivers: Driver[]; addresses: ShipmentAddress[];
   oilDepots?: OilDepot[];
+  operatorGroups?: NamedEntry[];
+  operatorServices?: OperatorService[];
   defaults: { profit: ProfitRule | null };
   duplicates: DuplicateCandidate[];
   customerManagers?: { companyId: string; managerId: string }[];
@@ -227,6 +231,9 @@ export interface Directories {
 /** A whole truck, represented by one accounting row per customer. */
 export interface ShipmentTrip {
   id: string;
+  number?: number;
+  /** Earliest retained delivery creation time; absent on historical imports. */
+  createdAt?: string | null;
   fields: Record<string, string | null>;
   customers: { id: string; version: number; paidAmount: DecimalValue; fields: Record<string, string | null> }[];
 }

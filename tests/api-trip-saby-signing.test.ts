@@ -1,3 +1,4 @@
+import { prepareTripRequestFixture } from './helpers/trip-request-fixture';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
@@ -6,12 +7,12 @@ import type { AddressInfo } from 'node:net';
 import { createSnapshotMiddleware } from '../server/local-api';
 import { ApiError } from '../server/api-error';
 import { OperationsStore, type OperationsStorage } from '../server/operations-store';
-import { SabyClient, type SabyConfig, type SabyObject } from '../server/saby-client';
-import { parseXml, type XmlNode } from '../server/saby-order-evidence';
+import { SabyClient, SabyError, type SabyConfig, type SabyObject } from '../server/saby-client';
+import { SABY_SENDER_COORDINATE_MISMATCH, parseXml, type XmlNode } from '../server/saby-order-evidence';
 import { serializeXml } from '../server/saby-carrier-details';
-import { encodeWindows1251 } from '../server/saby-transport-order';
-import { getTripSigningPreview, validateTripSigning } from '../server/trip-saby-signing';
-import { enqueueAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow, validateTripSabyData } from '../server/trip-saby-workflow';
+import { encodeWindows1251, serializeSabyTransportOrder } from '../server/saby-transport-order';
+import { advanceTripSigning, getTripSigningPreview, publicTripSigning, validateTripSigning, type TripSigningStep } from '../server/trip-saby-signing';
+import { enqueueAutomaticTripSaby, getTripSabyWorkflow, runTripSabyWorkflow, validateTripSabyData, type CreateTripSabyDelivery } from '../server/trip-saby-workflow';
 import { dispatchTripSaby } from '../server/trip-saby-scheduler';
 import { integrationApi, integrationConfig, integrationRuntime, integrationSettings, type IntegrationRpc } from './helpers/trip-saby-integration';
 
@@ -29,7 +30,7 @@ async function fixture(options: { automatic?: boolean; createOrder?: boolean; pr
   const rt = await integrationRuntime(); const baseApi = integrationApi();
   const config: SabyConfig = { ...integrationConfig(), login: 'synthetic', password: 'synthetic', accountNumber: 'sender-account', carrierAccountNumber: 'carrier-account', carrierResponsible: { surname: 'Тестовый', name: 'Тест', patronymic: 'Тестович', phone: '+79990000000' } };
   if (options.automatic) config.automaticSigning = { id: 'synthetic-auto-policy', enabled: true, approvedAt: '2025-01-01T00:00:00.000Z', mode: 'deferred', sender: { inn: config.customer.inn, kpp: config.customer.kpp, thumbprint: fingerprints.sender }, carrier: { inn: config.carrier.inn, kpp: config.carrier.kpp, thumbprint: fingerprints.carrier } };
-  const calls: Array<{ side: Side; method: string; keyType?: string }> = []; let carrierBytes = Buffer.alloc(0);
+  const calls: Array<{ side: Side; method: string; keyType?: string }> = []; let carrierBytes = Buffer.alloc(0); let senderBytesOverride: Buffer | undefined;
   let carrierDoc: SabyObject | undefined;
   const senderDoc = () => [...baseApi.docs.values()].find(d => d.Тип === 'TransportOrder')!;
   let lose: 'prepare' | 'execute' | null = null; let pending = false; let wrongCertificate = false; let missingReply = false; let serviceAttachment = false;
@@ -49,12 +50,13 @@ async function fixture(options: { automatic?: boolean; createOrder?: boolean; pr
   async function addReply() {
     const doc = senderDoc();
     const source = await baseApi.send(`https://disk.saby.ru/${String(doc.Идентификатор)}.xml`, { method: 'GET' });
-    const xml = parseXml(new Uint8Array(await source.arrayBuffer())); const content = xml.children.find(n => typeof n !== 'string' && n.name === 'Документ')!; assert.notEqual(typeof content, 'string'); if (typeof content === 'string') return;
+    const xml = parseXml(senderBytesOverride ?? new Uint8Array(await source.arrayBuffer())); const content = xml.children.find(n => typeof n !== 'string' && n.name === 'Документ')!; assert.notEqual(typeof content, 'string'); if (typeof content === 'string') return;
     carrierBytes = Buffer.from(`<?xml version="1.0" encoding="utf-8"?><Файл ВерсПрог="synthetic" ВерсФорм="5.01" ИдФайл="ON_ZAKZVPR_SYNTHETIC"><Документ КНД="1110362" ДатИнфПрв="01.04.2025" ВрИнфПрв="12:01:00" НаимЭкСубСост="Синтетический перевозчик"><ИдИнфГО ИдФайлИнфГО="${xml.attributes.ИдФайл}" ДатФайлИнфГО="${content.attributes.ДатИнфГО}" ВрФайлИнфГО="${content.attributes.ВрИнфГО}" ЭП="c3ludGhldGlj"/><СодИнфПрв УИД_Зак="${(content.children.find(n => typeof n !== 'string' && n.name === 'СодИнфГО') as import('../server/saby-order-evidence').XmlNode).attributes.УИД_Зак}" СодОпер="1"/><ПодпИнфПрв Должн="Директор" СпосПодтПолном="1"><ФИО Фамилия="Тестовый" Имя="Подписант"/></ПодпИнфПрв></Документ></Файл>`);
     (carrierDoc!.Вложение as SabyObject[]).push({ Идентификатор: 'carrier-title', Подтип: '1110362', ВерсияФормата: '5.01', Направление: 'Исходящий', Файл: { Имя: 'carrier.xml', Ссылка: 'https://disk.saby.ru/carrier.xml' } });
   }
   const send: typeof fetch = async (url, init) => {
     if (init?.method === 'GET' && String(url).includes('service.xml')) return new Response('synthetic-service-file');
+    if (init?.method === 'GET' && senderBytesOverride && String(url) === `https://disk.saby.ru/${String(senderDoc().Идентификатор)}.xml`) return new Response(senderBytesOverride);
     if (init?.method === 'GET') return String(url).includes('carrier.xml') ? new Response(carrierBytes) : baseApi.send(url, init);
     const req = JSON.parse(String(init?.body)) as IntegrationRpc;
     const side: Side = new Headers(init?.headers).get('X-SBISSessionID') === 'carrier-session' ? 'carrier' : 'sender';
@@ -102,7 +104,7 @@ async function fixture(options: { automatic?: boolean; createOrder?: boolean; pr
   if (options.createOrder !== false) await run();
   const preview = () => getTripSigningPreview({ ...rt, client: client() });
   const request = async () => { const p = await preview(); assert.equal(p.ready, true, p.blockers.join(' ')); return { requestId: randomUUID(), previewToken: p.previewToken!, senderSignatureId: fingerprints.sender, carrierSignatureId: fingerprints.carrier, confirmed: true as const }; };
-  return { ...rt, config, send, run, preview, request, calls, senderDoc, carrierDoc: () => carrierDoc!, exposeCarrier, changeCarrier, changeSource: baseApi.prepareSender, setCarrierPreparation: (change: typeof carrierPreparation) => { carrierPreparation = change; }, setLose: (value: typeof lose) => { lose = value; }, setPending: (v: boolean) => { pending = v; }, setWrongCertificate: (v: boolean) => { wrongCertificate = v; }, setServiceAttachment: (v: boolean) => { serviceAttachment = v; }, setMissingReply: (v: boolean) => { missingReply = v; }, setHook: (fn: typeof hook) => { hook = fn; }, record: async () => (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId], writes: () => calls.filter(c => ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(c.method)), deliveries: () => deliveries };
+  return { ...rt, config, send, run, preview, request, calls, senderDoc, carrierDoc: () => carrierDoc!, exposeCarrier, changeCarrier, changeSource: baseApi.prepareSender, setSourceBytes: (bytes: Buffer) => { senderBytesOverride = Buffer.from(bytes); }, setCarrierPreparation: (change: typeof carrierPreparation) => { carrierPreparation = change; }, setLose: (value: typeof lose) => { lose = value; }, setPending: (v: boolean) => { pending = v; }, setWrongCertificate: (v: boolean) => { wrongCertificate = v; }, setServiceAttachment: (v: boolean) => { serviceAttachment = v; }, setMissingReply: (v: boolean) => { missingReply = v; }, setHook: (fn: typeof hook) => { hook = fn; }, record: async () => (await rt.store.read(rt.source)).tripSaby!.trips[rt.tripId], writes: () => calls.filter(c => ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие'].includes(c.method)), deliveries: () => deliveries };
 }
 
 /** Reconstruct the old persisted shape from an actual synthetic preparation with no execution. */
@@ -342,6 +344,212 @@ test('a failed semantic check retains an unverified complete manifest and can ne
     const corrupt = structuredClone((await f.record()).signing)!; corrupt.carrier.state = 'confirmed';
     assert.throws(() => validateTripSigning(corrupt));
     assert.equal(f.deliveries(), 0);
+  } finally { await f.close(); }
+});
+
+test('unverified prepared sender reports that no signing request was sent and keeps the original manifest', async () => {
+  const f = await fixture(); try {
+    f.setHook(async (side, req) => { if (side === 'sender' && req.method === 'СБИС.ПодготовитьДействие') f.changeSource(true); });
+    const response = await f.run({ signingStart: { request: await f.request(), requestedBy: 'actor' } });
+    const original = structuredClone((await f.record()).signing!.sender);
+    assert.equal(original.state, 'unknown'); assert.ok(original.prepared); assert.equal(original.preparedVerified, false);
+    assert.equal(original.dispatchState, 'not_sent'); assert.equal(original.executeAttempted, undefined);
+    assert.match(original.message!, /сведения Saby не прошли проверку/);
+    assert.match(original.message!, /Запрос на подпись ещё не отправлялся/);
+    assert.doesNotMatch(original.message!, /Результат действия.*неизвестен/);
+    assert.deepEqual(original.diagnostic, { method: 'СБИС.ПодготовитьДействие', phase: 'preflight', category: 'unknown' });
+    assert.equal(response.signing?.sender.message, original.message);
+    const legacy = structuredClone((await f.record()).signing)!;
+    const oldMessage = 'Результат действия в Saby пока неизвестен. CRM проверяет его и не отправляет повторно.';
+    legacy.sender.message = oldMessage;
+    const historical = structuredClone(legacy);
+    assert.equal(publicTripSigning(legacy)?.sender.message, original.message);
+    assert.deepEqual(legacy, historical, 'projection must not change persisted history');
+    for (const change of [{ state: 'preparing' }, { dispatchState: undefined }, { preparedVerified: undefined }, { prepared: undefined }, { executeAttempted: true }, { message: 'Specific verification failure' }] satisfies Partial<TripSigningStep>[]) {
+      const different = structuredClone(legacy); Object.assign(different.sender, change);
+      assert.equal(publicTripSigning(different)?.sender.message, different.sender.message);
+    }
+    const writes = f.writes().length;
+    await f.run(); await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    const after = (await f.record()).signing!.sender;
+    assert.deepEqual(after.prepared, original.prepared); assert.deepEqual(after.binding, original.binding);
+    assert.equal(after.state, 'unknown'); assert.equal(after.dispatchState, 'not_sent'); assert.equal(after.preparedVerified, false); assert.equal(after.executeAttempted, undefined);
+    assert.equal(after.message, original.message); assert.deepEqual(after.diagnostic, original.diagnostic);
+    assert.equal(f.writes().length, writes); assert.equal(f.writes().filter(row => row.method === 'СБИС.ВыполнитьДействие').length, 0);
+    assert.equal(f.deliveries(), 0);
+    for (const kind of ['permission', 'authorization', 'configuration'] as const) {
+      const record = structuredClone(await f.record());
+      const message = `Synthetic precise ${kind} failure`;
+      await advanceTripSigning({ client: new SabyClient(f.config, async () => { throw new Error('No HTTP expected'); }), record: () => record, update: async mutate => { mutate(record); }, checkAccess: async () => { throw new SabyError(kind, message); } }, 'sender');
+      assert.equal(record.signing!.sender.state, 'blocked'); assert.equal(record.signing!.sender.message, message);
+      assert.equal(record.signing!.sender.dispatchState, 'not_sent'); assert.equal(record.signing!.sender.executeAttempted, undefined);
+    }
+  } finally { await f.close(); }
+});
+
+test('single-delivery not_sent preparation resumes with its exact saved manifest and never prepares again', async () => {
+  for (const changedBytes of [false, true]) {
+    const f = await fixture(); try {
+      // Synthetic ready driver record, representing the persisted state before Saby preparation.
+      const generated = await f.store.mutate(f.source, data => {
+        const record = data.tripSaby!.trips[f.tripId];
+        delete record.senderVerificationPolicy; // Historical fixture keeps its original XML and comparison.
+        record.snapshot.deliveries = record.snapshot.deliveries!.slice(0, 1);
+        const delivery = record.snapshot.deliveries[0];
+        Object.assign(delivery.fields, { quantity_tonnes: '0.835', quantity_gross_tonnes: '0.835' });
+        record.snapshot.customer = structuredClone(delivery.customer);
+        Object.assign(record.snapshot.fields, { trip_flow_version: 'driver-v1', quantity_litres: delivery.fields.quantity_litres, quantity_tonnes: delivery.fields.quantity_tonnes, quantity_gross_tonnes: delivery.fields.quantity_gross_tonnes, unloading_planned_at: null });
+        delivery.fields.unloading_planned_at = null; delete record.snapshot.allowedOperationTime;
+        record.deliveries = record.deliveries.slice(0, 1);
+        // The single external delivery is a valid subset of the local driver trip.
+        for (const row of Object.values(data.shipments)) if (row.fields.trip_id === f.tripId && !record.deliveries.some(delivery => data.shipments[delivery.shipmentId] === row)) row.fields.etrn_not_required = 'true';
+        record.payloadHash = createHash('sha256').update(JSON.stringify(record.snapshot)).digest('hex');
+        const result = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
+        const file = (f.senderDoc().Вложение as SabyObject[])[0];
+        record.driverFlow = { state: 'ready', processingAllowanceHours: 10, draftSnapshot: structuredClone(record.snapshot), draftAttachment: { id: String(file.Идентификатор), revision: record.order.revision!, name: result.name, sha256: createHash('sha256').update(result.xml).digest('hex') } };
+        return { changed: true, result };
+      });
+      f.setSourceBytes(generated.xml);
+      const preparedXml = parseXml(generated.xml); const cargo = xmlNode(preparedXml, 'ОпГруз');
+      cargo.children = cargo.children.filter(node => typeof node === 'string' || node.name !== 'ИнфПол');
+      const content = xmlNode(preparedXml, 'СодИнфГО');
+      const unloading = content.children.find((node): node is XmlNode => typeof node !== 'string' && node.name === 'АдрПункт' && node.attributes.Опер === 'Выгрузка')!;
+      unloading.attributes.НалКоорТочВрОпер = '1';
+      const preparedBytes = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(preparedXml));
+      f.setHook(async (side, req) => {
+        if (side === 'sender' && req.method === 'СБИС.ПодготовитьДействие') f.setSourceBytes(preparedBytes);
+        if (side === 'sender' && req.method === 'sabyCertificate.List' && (await f.record()).signing?.sender.dispatchState === 'not_sent') throw new Error('Synthetic read-only preflight outage');
+      });
+      await f.run({ signingStart: { request: await f.request(), requestedBy: 'actor' } });
+      assert.equal((await f.record()).signing!.sender.dispatchState, 'not_sent');
+      // Model the pre-fix persisted unverified manifest; its exact hashes and binding are retained.
+      await f.store.mutate(f.source, data => { const step = data.tripSaby!.trips[f.tripId].signing!.sender; step.preparedVerified = false; step.state = 'unknown'; return { changed: true, result: null }; });
+      const stopped = structuredClone((await f.record()).signing!.sender);
+      assert.equal(stopped.executeAttempted, undefined); assert.ok(stopped.prepared);
+      assert.equal(f.writes().filter(call => call.method === 'СБИС.ПодготовитьДействие').length, 1);
+      assert.equal(f.writes().filter(call => call.method === 'СБИС.ВыполнитьДействие').length, 0);
+      f.setHook(undefined); f.setPending(true);
+      if (changedBytes) f.setSourceBytes(Buffer.concat([preparedBytes, Buffer.from(' ')]));
+      await f.run({ store: new OperationsStore(`${f.directory}/store`) }); await f.run();
+      const after = (await f.record()).signing!.sender;
+      assert.deepEqual(after.prepared, stopped.prepared); assert.deepEqual(after.binding, stopped.binding);
+      assert.equal(f.writes().filter(call => call.method === 'СБИС.ПодготовитьДействие').length, 1);
+      assert.equal(f.writes().filter(call => call.method === 'СБИС.ВыполнитьДействие').length, changedBytes ? 0 : 1);
+      assert.equal(after.preparedVerified, !changedBytes); assert.equal(after.executeAttempted, changedBytes ? undefined : true);
+      assert.equal(after.dispatchState, changedBytes ? 'not_sent' : 'acknowledged'); assert.equal(f.deliveries(), 0);
+    } finally { await f.close(); }
+  }
+});
+
+/** Existing pre-fix block: Saby removed coordinates during its one completed preparation. */
+async function coordinateBlockedSenderFixture(automatic = true, changedAddress = false) {
+  const f = await fixture({ automatic, createOrder: false });
+  if (automatic) await enqueue(f); else await f.run();
+  await f.store.mutate(f.source, data => {
+    const record = data.tripSaby!.trips[f.tripId];
+    delete record.senderVerificationPolicy; // Saved before the multidelivery policy existed.
+    Object.assign(record.snapshot.deliveries![0].fields, { unloading_latitude: '55.75', unloading_longitude: '37.62' });
+    record.payloadHash = createHash('sha256').update(JSON.stringify(record.snapshot)).digest('hex');
+    if (record.order.number) f.setSourceBytes(serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number).xml);
+    return { changed: true, result: null };
+  });
+  let preparedBytes = Buffer.alloc(0);
+  f.setHook(async (side, request) => {
+    if (side === 'sender' && request.method === 'СБИС.ПодготовитьДействие') {
+      const record = await f.record();
+      const xml = parseXml(serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!).xml);
+      const unloading = xmlNode(xml, 'СодИнфГО').children.find((node): node is XmlNode => typeof node !== 'string' && node.name === 'АдрПункт' && node.attributes.Опер === 'Выгрузка')!;
+      const address = xmlNode(unloading, 'АдресПункт');
+      assert.equal(address.children.filter(node => typeof node !== 'string' && node.name === 'Коорд').length, 1);
+      address.children = address.children.filter(node => typeof node === 'string' || node.name !== 'Коорд');
+      if (changedAddress) xmlNode(address, 'АдрИнф').attributes.АдрТекст = 'Другой синтетический адрес';
+      preparedBytes = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(xml));
+      f.setSourceBytes(preparedBytes);
+    }
+    if (side === 'sender' && request.method === 'sabyCertificate.List' && (await f.record()).signing?.sender.dispatchState === 'not_sent') throw new Error('Synthetic read-only outage before Execute');
+  });
+  await f.run(automatic ? {} : { signingStart: { request: await f.request(), requestedBy: 'actor' } });
+  await f.store.mutate(f.source, data => {
+    const step = data.tripSaby!.trips[f.tripId].signing!.sender;
+    assert.ok(step.binding && step.prepared); assert.equal(step.dispatchState, 'not_sent'); assert.equal(step.executeAttempted, undefined);
+    step.preparedVerified = false; step.state = 'blocked'; step.message = SABY_SENDER_COORDINATE_MISMATCH;
+    step.diagnostic = { method: 'СБИС.ПодготовитьДействие', phase: 'preflight', category: 'validation' };
+    return { changed: true, result: null };
+  });
+  f.setHook(undefined); f.setPending(true);
+  assert.equal(f.writes().filter(call => call.method === 'СБИС.ПодготовитьДействие').length, 1);
+  assert.equal(f.writes().filter(call => call.method === 'СБИС.ВыполнитьДействие').length, 0);
+  return { ...f, preparedBytes };
+}
+
+test('approved coordinate-only automatic block resumes the exact unsent files once without another Prepare or CRM data changes', async () => {
+  const f = await coordinateBlockedSenderFixture(); try {
+    const stopped = structuredClone(await f.record());
+    const result = await dispatchTripSaby({ ...f, store: new OperationsStore(`${f.directory}/store`), config: f.config, enabled: true, send: f.send, tripId: f.tripId });
+    assert.equal(result.denied, 0); assert.equal(result.continued, 1);
+    const resumed = await f.record(); const step = resumed.signing!.sender;
+    assert.equal(step.state, 'waiting'); assert.equal(step.preparedVerified, true); assert.equal(step.dispatchState, 'acknowledged'); assert.equal(step.executeAttempted, true);
+    assert.deepEqual(step.prepared, stopped.signing!.sender.prepared); assert.deepEqual(step.binding, stopped.signing!.sender.binding);
+    assert.deepEqual(resumed.snapshot, stopped.snapshot); assert.deepEqual(resumed.deliveries, stopped.deliveries); assert.deepEqual(resumed.autoAuthorization, stopped.autoAuthorization);
+    assert.deepEqual(resumed.signing!.carrier, stopped.signing!.carrier);
+    assert.equal(resumed.signing!.requestId, stopped.signing!.requestId); assert.equal(resumed.signing!.requestedBy, stopped.signing!.requestedBy);
+    assert.deepEqual(resumed.history?.slice(0, stopped.history?.length), stopped.history);
+    await f.run(); await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.deepEqual(f.writes().map(call => call.method), ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие']); assert.equal(f.deliveries(), 0);
+  } finally { await f.close(); }
+});
+
+test('coordinate-only manual signing remains blocked until explicit authenticated reconciliation', async () => {
+  const f = await coordinateBlockedSenderFixture(false); try {
+    const stopped = structuredClone((await f.record()).signing!.sender);
+    await f.run(); await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send });
+    assert.deepEqual((await f.record()).signing!.sender, stopped); assert.equal(f.writes().length, 1);
+    await f.run({ allowSigningRecovery: true }); await f.run({ allowSigningRecovery: true });
+    assert.equal((await f.record()).signing!.sender.dispatchState, 'acknowledged');
+    assert.deepEqual(f.writes().map(call => call.method), ['СБИС.ПодготовитьДействие', 'СБИС.ВыполнитьДействие']);
+  } finally { await f.close(); }
+});
+
+test('coordinate recovery rejects changed address, prepared bytes, stage, certificate and revoked access before any Execute', async () => {
+  for (const change of ['address', 'bytes', 'stage', 'certificate', 'access'] as const) {
+    const f = await coordinateBlockedSenderFixture(true, change === 'address'); try {
+      const stopped = structuredClone((await f.record()).signing!.sender);
+      if (change === 'bytes') f.setSourceBytes(Buffer.concat([f.preparedBytes, Buffer.from(' ')]));
+      if (change === 'stage') f.senderDoc().ТекущиеЭтапы = [{ Идентификатор: 'different-stage' }];
+      if (change === 'certificate') f.setWrongCertificate(true);
+      if (change === 'access') await f.store.mutate(f.source, data => { data.accounts!.users.find(user => user.id === 'actor')!.active = false; return { result: null, changed: true }; });
+      const result = await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send, tripId: f.tripId });
+      assert.equal(result.denied, change === 'access' ? 1 : 0, change);
+      const after = (await f.record()).signing!.sender;
+      assert.equal(after.state, 'blocked', change); assert.equal(after.dispatchState, 'not_sent', change); assert.equal(after.executeAttempted, undefined, change);
+      assert.deepEqual(after.prepared, stopped.prepared); assert.deepEqual(after.binding, stopped.binding); assert.equal(f.writes().length, 1, change);
+    } finally { await f.close(); }
+  }
+});
+
+test('coordinate recovery never broadens other blocks, dispatch evidence, or mismatched original automatic authorization', async () => {
+  const f = await coordinateBlockedSenderFixture(); try {
+    const original = structuredClone(await f.record());
+    for (const change of [
+      (record: typeof original) => { record.signing!.sender.message = 'Другой блокирующий результат'; },
+      (record: typeof original) => { delete record.signing!.sender.dispatchState; },
+      (record: typeof original) => { record.signing!.sender.dispatchState = 'attempted'; record.signing!.sender.executeAttempted = true; },
+      (record: typeof original) => { record.signing!.sender.dispatchState = 'acknowledged'; record.signing!.sender.executeAttempted = true; },
+      (record: typeof original) => { record.signing!.sender.dispatchState = 'rejected'; record.signing!.sender.executeAttempted = true; },
+      (record: typeof original) => { delete record.signing!.sender.preparedVerified; },
+      (record: typeof original) => { delete record.autoAuthorization; },
+      (record: typeof original) => { record.autoAuthorization!.requestId = randomUUID(); },
+      (record: typeof original) => { record.autoAuthorization!.requestedBy = 'owner'; },
+      (record: typeof original) => { record.autoAuthorization!.selection.sender = 'a'.repeat(40); },
+      (record: typeof original) => { record.signing!.workflowAttemptId = randomUUID(); },
+      (record: typeof original) => { record.signing!.payloadHash = '0'.repeat(64); },
+      (record: typeof original) => { record.signing!.carrier.state = 'waiting'; },
+    ]) {
+      const record = structuredClone(original); change(record); const before = structuredClone(record);
+      await advanceTripSigning({ client: new SabyClient(f.config, async () => { throw new Error('No HTTP permitted for ineligible recovery'); }), record: () => record, update: async mutate => { mutate(record); }, checkAccess: async () => { throw new Error('No recovery access should be requested'); }, allowSigningRecovery: true, recoveryRequestedBy: 'owner' }, 'sender');
+      assert.deepEqual(record, before);
+    }
+    assert.equal(f.writes().length, 1);
   } finally { await f.close(); }
 });
 
@@ -717,7 +925,9 @@ async function automaticHttpFixture() {
   const headers = { 'Content-Type': 'application/json', Cookie: `artel_session=${token}` };
   const fields = Object.fromEntries(Object.entries(f.trip.fields).filter(([key]) => !['loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude'].includes(key)));
   const customers = f.trip.customers.map(row => ({ fields: Object.fromEntries(Object.entries(row.fields).filter(([key]) => !['unloading_address', 'unloading_map_url', 'unloading_latitude', 'unloading_longitude'].includes(key))) }));
-  return { ...f, input: { idempotencyKey: randomUUID(), fields, customers }, http: (path: string, method: string, body?: unknown) => fetch(url + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), close: async () => {
+  const input = { idempotencyKey: randomUUID(), fields, customers };
+  await prepareTripRequestFixture(f.store, f.base, input);
+  return { ...f, input, http: (path: string, method: string, body?: unknown) => fetch(url + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), close: async () => {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousSettings === undefined) delete process.env.SABY_AUTOFILL_PROFILE_JSON; else process.env.SABY_AUTOFILL_PROFILE_JSON = previousSettings;
     await f.close();
@@ -816,4 +1026,128 @@ test('only an untouched automatic sender preflight failure can resume after the 
       if (mode !== 'resume' && mode !== 'prepare_evidence') assert.equal(f.writes().length, before, mode);
     } finally { await f.close(); }
   }
+});
+
+/** A ready synthetic driver title with two different clients, as saved before sender Prepare. */
+async function multiDeliveryReadySenderFixture(legacy = false) {
+  const f = await fixture({ automatic: legacy, createOrder: !legacy });
+  if (legacy) {
+    await enqueue(f);
+    f.setHook(async (_side, request) => { if (request.method === 'sabyCertificate.List') throw new Error('Synthetic preview outage before signing intent'); });
+    await f.run(); f.setHook(undefined);
+    assert.equal((await f.record()).signing, undefined);
+  }
+  const generated = await f.store.mutate(f.source, data => {
+    const record = data.tripSaby!.trips[f.tripId];
+    if (legacy) delete record.senderVerificationPolicy;
+    const masses = legacy ? ['0.835', '0.866'] : ['6.745', '7.985'];
+    const total = legacy ? '1.701' : '14.73';
+    Object.assign(record.snapshot.fields, { trip_flow_version: 'driver-v1', quantity_litres: '17500', quantity_tonnes: total, quantity_gross_tonnes: total, unloading_planned_at: null, loading_latitude: '55.601', loading_longitude: '37.601', loading_map_url: 'https://yandex.ru/maps/?ll=37.601%2C55.601', loading_site_owner_name: 'Синтетический владелец нефтебазы', loading_site_owner_inn: '7707083893', loading_site_owner_address: 'Полный синтетический адрес собственника' });
+    delete record.snapshot.allowedOperationTime;
+    record.snapshot.deliveries!.forEach((delivery, index) => {
+      delivery.customer = { ...delivery.customer, name: `Синтетический получатель ${index + 1}`, inn: index ? '7707083893' : '010000000102' };
+      Object.assign(delivery.fields, { quantity_litres: index ? '9500' : '8000', quantity_tonnes: masses[index], quantity_gross_tonnes: masses[index], unloading_planned_at: null, unloading_address: `Полный синтетический адрес доставки ${index + 1}`, unloading_latitude: index ? '55.905' : '55.705', unloading_longitude: index ? '37.905' : '37.705' });
+      const etrn = record.deliveries[index];
+      Object.assign(etrn.snapshot.fields, { quantity_litres: delivery.fields.quantity_litres, quantity_tonnes: masses[index], quantity_gross_tonnes: masses[index] });
+      etrn.snapshot.profile.deliveryMassTonnes = masses[index]; etrn.snapshot.profile.plannedGrossMassTonnes = masses[index];
+      etrn.payloadHash = createHash('sha256').update(JSON.stringify(etrn.snapshot)).digest('hex');
+    });
+    record.snapshot.customer = structuredClone(record.snapshot.deliveries![0].customer);
+    record.payloadHash = createHash('sha256').update(JSON.stringify(record.snapshot)).digest('hex');
+    const result = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!, record.senderVerificationPolicy);
+    const file = (f.senderDoc().Вложение as SabyObject[])[0];
+    record.driverFlow = { state: 'ready', processingAllowanceHours: 10, draftSnapshot: structuredClone(record.snapshot), draftAttachment: { id: String(file.Идентификатор), revision: record.order.revision!, name: result.name, sha256: createHash('sha256').update(result.xml).digest('hex') } };
+    return { changed: true, result };
+  });
+  f.setSourceBytes(generated.xml);
+  const xml = parseXml(generated.xml); const content = xmlNode(xml, 'СодИнфГО');
+  for (const cargo of content.children.filter((node): node is XmlNode => typeof node !== 'string' && node.name === 'ОпГруз')) cargo.children = cargo.children.filter(node => typeof node === 'string' || node.name !== 'ИнфПол');
+  const coordinates = (node: XmlNode) => { if (node.name === 'Коорд') { node.attributes.Широта = String(Number(node.attributes.Широта) + 0.004); node.attributes.Долгота = String(Number(node.attributes.Долгота) + 0.0001); } node.children.forEach(child => { if (typeof child !== 'string') coordinates(child); }); };
+  coordinates(xml);
+  const preparedBytes = encodeWindows1251('<?xml version="1.0" encoding="windows-1251"?>' + serializeXml(xml));
+  f.setHook(async (side, request) => { if (side === 'sender' && request.method === 'СБИС.ПодготовитьДействие') f.setSourceBytes(preparedBytes); });
+  return { ...f, generated, preparedBytes };
+}
+
+test('new two-client driver title tolerates Saby cargo metadata removal and changed coordinates through both signatures and ETRN handoff', async () => {
+  const f = await multiDeliveryReadySenderFixture();
+  try {
+    const before = structuredClone(await f.record());
+    const xml = new TextDecoder('windows-1251').decode(f.generated.xml);
+    assert.match(xml, /ИНН получателя доставки 1" Значение="010000000102"/);
+    assert.match(xml, /ИНН получателя доставки 2" Значение="7707083893"/);
+    assert.match(xml, /МасНетЗнач="6745"/); assert.match(xml, /МасНетЗнач="7985"/);
+    const seen: CreateTripSabyDelivery[] = [];
+    const result = await f.run({ signingStart: { request: await f.request(), requestedBy: 'actor' }, createDelivery: async input => { seen.push(input); return seen.length === 1 ? { id: `synthetic-etrn-${input.shipmentId}`, status: 'draft', lastError: null } : { id: null, status: 'pending', lastError: null, waitingForLoading: true }; } });
+    assert.equal(result.signing?.state, 'completed', JSON.stringify(result.signing));
+    assert.deepEqual(f.writes().map(call => `${call.side}:${call.method}`), ['sender:СБИС.ПодготовитьДействие', 'sender:СБИС.ВыполнитьДействие', 'carrier:СБИС.ПодготовитьДействие', 'carrier:СБИС.ВыполнитьДействие']);
+    // The handoff is synthetic; no live ETRN is issued. Both per-delivery callbacks prove the final source comparison passed.
+    assert.equal(seen.length, 2);
+    const after = await f.record();
+    assert.equal(after.senderVerificationPolicy, 'address-multidelivery-v1');
+    assert.deepEqual(after.snapshot, before.snapshot); assert.equal(after.payloadHash, before.payloadHash);
+    assert.deepEqual(after.snapshot.deliveries!.map(row => row.fields.quantity_tonnes), ['6.745', '7.985']);
+    assert.deepEqual(after.snapshot.customerOrganization, before.snapshot.customerOrganization); assert.deepEqual(after.snapshot.carrierOrganization, before.snapshot.carrierOrganization);
+    assert.deepEqual(after.snapshot.supplier, before.snapshot.supplier); assert.deepEqual(after.snapshot.driver, before.snapshot.driver); assert.deepEqual(after.snapshot.vehicle, before.snapshot.vehicle);
+    for (const key of ['loading_site_owner_name', 'loading_site_owner_inn', 'loading_site_owner_address', 'loading_map_url', 'loading_latitude', 'loading_longitude']) assert.equal(after.snapshot.fields[key], before.snapshot.fields[key]);
+    await f.run({ store: new OperationsStore(`${f.directory}/store`), createDelivery: async () => ({ id: null, status: 'pending', lastError: null, waitingForLoading: true }) }); assert.equal(f.writes().length, 4);
+  } finally { await f.close(); }
+});
+
+test('historical two-client not_sent unverified title never adopts the new rules or rewrites wrong masses after restart', async () => {
+  const f = await multiDeliveryReadySenderFixture(true);
+  try {
+    await f.run();
+    const before = structuredClone(await f.record()); const step = before.signing!.sender;
+    assert.equal(before.signing!.mode, 'automatic');
+    assert.equal(step.preparedVerified, false); assert.equal(step.dispatchState, 'not_sent'); assert.equal(step.executeAttempted, undefined);
+    assert.equal(f.writes().length, 1); assert.ok(step.prepared);
+    const beforeBytes = serializeSabyTransportOrder(before.snapshot, before.attemptId, before.createdAt, before.order.number!).xml;
+    f.setHook(undefined);
+    await f.run({ store: new OperationsStore(`${f.directory}/store`) });
+    await dispatchTripSaby({ ...f, config: f.config, enabled: true, send: f.send, tripId: f.tripId });
+    const after = await f.record();
+    assert.equal(after.senderVerificationPolicy, undefined); assert.equal(after.signing!.sender.executeAttempted, undefined); assert.equal(after.signing!.sender.dispatchState, 'not_sent');
+    assert.deepEqual(after.signing!.sender.prepared, step.prepared); assert.deepEqual(after.signing!.sender.binding, step.binding);
+    assert.deepEqual(after.snapshot, before.snapshot); assert.deepEqual(after.deliveries, before.deliveries); assert.equal(after.payloadHash, before.payloadHash);
+    assert.deepEqual(after.history, before.history); assert.deepEqual(after.signing!.carrier, before.signing!.carrier);
+    assert.deepEqual(after.snapshot.deliveries!.map(row => row.fields.quantity_tonnes), ['0.835', '0.866']);
+    assert.deepEqual(serializeSabyTransportOrder(after.snapshot, after.attemptId, after.createdAt, after.order.number!).xml, beforeBytes);
+    assert.equal(f.writes().length, 1); assert.equal(f.deliveries(), 0);
+  } finally { await f.close(); }
+});
+
+test('sender verification policy is strict, durable and never inferred when reading historical workflows', async () => {
+  const f = await fixture();
+  try {
+    const record = await f.record(); assert.equal(record.senderVerificationPolicy, 'address-multidelivery-v1');
+    const restarted = await new OperationsStore(`${f.directory}/store`).read(f.source); assert.equal(restarted.tripSaby!.trips[f.tripId].senderVerificationPolicy, record.senderVerificationPolicy);
+    for (const invalid of [null, '', 'address-multidelivery-v2', true, {}, []]) {
+      const corrupt = structuredClone(record) as unknown as SabyObject; corrupt.senderVerificationPolicy = invalid;
+      assert.throws(() => validateTripSabyData({ trips: { [f.tripId]: corrupt } }), /sender verification policy/);
+    }
+    const historical = structuredClone(record); delete historical.senderVerificationPolicy; const original = structuredClone(historical);
+    validateTripSabyData({ trips: { [f.tripId]: historical } }); assert.deepEqual(historical, original);
+  } finally { await f.close(); }
+});
+
+test('manual signing preview binds the verification policy even when the source XML is identical', async () => {
+  const f = await fixture();
+  try {
+    await f.store.mutate(f.source, data => {
+      const record = data.tripSaby!.trips[f.tripId], first = record.snapshot.deliveries![0];
+      Object.assign(record.snapshot.fields, { unloading_address: first.fields.unloading_address, unloading_planned_at: first.fields.unloading_planned_at });
+      delete record.snapshot.deliveries; delete record.snapshot.intermediateStops;
+      record.payloadHash = createHash('sha256').update(JSON.stringify(record.snapshot)).digest('hex');
+      f.setSourceBytes(serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!, record.senderVerificationPolicy).xml);
+      return { changed: true, result: null };
+    });
+    const request = await f.request(), before = await f.record();
+    const withPolicy = serializeSabyTransportOrder(before.snapshot, before.attemptId, before.createdAt, before.order.number!, before.senderVerificationPolicy).xml;
+    assert.deepEqual(withPolicy, serializeSabyTransportOrder(before.snapshot, before.attemptId, before.createdAt, before.order.number!).xml);
+    await f.store.mutate(f.source, data => { delete data.tripSaby!.trips[f.tripId].senderVerificationPolicy; return { changed: true, result: null }; });
+    const after = await f.preview(); assert.equal(after.ready, true); assert.notEqual(after.previewToken, request.previewToken);
+    await assert.rejects(f.run({ signingStart: { request, requestedBy: 'actor' } }), error => error instanceof ApiError && error.status === 409);
+    assert.equal(f.writes().length, 0);
+  } finally { await f.close(); }
 });

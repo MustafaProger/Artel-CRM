@@ -48,7 +48,8 @@
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "ol": "10.11.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
