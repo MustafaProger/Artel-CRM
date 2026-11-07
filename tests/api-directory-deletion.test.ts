@@ -129,7 +129,7 @@ test('source operation dependencies block deletion including source records rena
   } finally { await runtime.close(); }
 });
 
-test('HTTP deletion requires a real session and director/admin role; dependencies and versions are checked on the server', async () => {
+test('HTTP deletion requires a real session and directory access; dependencies and versions are checked on the server', async () => {
   const runtime = await setup();
   const middleware = createSnapshotMiddleware(resolve('data/local-xlsx-final'), { operationsStore: runtime.store });
   const server = createServer((request, response) => middleware(request, response, () => { response.writeHead(404); response.end(); }));
@@ -144,7 +144,7 @@ test('HTTP deletion requires a real session and director/admin role; dependencie
     const director = await request('/api/auth/setup', 'POST', { name: 'Тестовый директор удаления', login: 'delete-director', password });
     assert.equal(director.status, 200); assert.ok(director.cookie);
     const managerId = (await runtime.snapshot()).directories!.managers[0].id;
-    assert.equal((await request('/api/auth/users', 'POST', { name: 'Тестовый менеджер удаления', login: 'delete-manager', password, role: 'manager', managerId }, director.cookie)).status, 201);
+    assert.equal((await request('/api/auth/users', 'POST', { name: 'Тестовый менеджер удаления', login: 'delete-manager', password, role: 'manager', managerId, sections: ['shipments'] }, director.cookie)).status, 201);
     const manager = await request('/api/auth/login', 'POST', { login: 'delete-manager', password });
     assert.equal(manager.status, 200);
     const created = await request('/api/directories', 'POST', { kind: 'products', name: 'HTTP удаляемый товар' }, director.cookie);

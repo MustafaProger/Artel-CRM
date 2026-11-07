@@ -40,6 +40,43 @@ test('sender evidence allows Saby service header/signatory preparation and exact
   assert.deepEqual(verifyConsignmentSenderBusiness(prepared, sender), { fileId: 'ON_TRNACLGROT_PREPARED', date: '02.04.2025', time: '13:00:00' });
 });
 
+test('v2 requires a provider UID after Prepare, freezes it, and preserves historical UID checks', () => {
+  const { snapshot, sender } = setup();
+  const unsigned = serializeSabyConsignmentNote(snapshot, id, created, '041', { senderTitleVersion: 2 }).xml;
+  const uid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const prepared = change(unsigned, '<СодИнфГО ', `<СодИнфГО УИД_ТрН="${uid}" `);
+  assert.doesNotThrow(() => verifyConsignmentSenderBusiness(unsigned, unsigned, undefined, { senderTitleVersion: 2, phase: 'unprepared' }));
+  assert.throws(() => verifyConsignmentSenderBusiness(unsigned, unsigned, undefined, { senderTitleVersion: 2 }));
+  assert.equal(verifyConsignmentSenderBusiness(prepared, unsigned, undefined, { senderTitleVersion: 2 }).operatorUid, uid);
+  assert.equal(verifyConsignmentSenderBusiness(prepared, unsigned, undefined, { senderTitleVersion: 2, operatorUid: uid }).operatorUid, uid);
+  assert.throws(() => verifyConsignmentSenderBusiness(prepared, unsigned, undefined, { senderTitleVersion: 2, operatorUid: id }));
+  for (const invalid of ['', 'provider-assigned-uid', '00000000-0000-0000-0000-000000000000', `${uid} `]) {
+    const malformed = change(prepared, uid, invalid);
+    assert.throws(() => verifyConsignmentSenderBusiness(malformed, unsigned, undefined, { senderTitleVersion: 2 }));
+  }
+  // The old comparison deliberately permits Saby's service UID replacement.
+  assert.doesNotThrow(() => verifyConsignmentSenderBusiness(change(sender, `УИД_ТрН="${id}"`, 'УИД_ТрН="historical-service-uid"'), sender));
+});
+
+test('v2 carrier must retain the exact verified operator UID and signed sender linkage', () => {
+  const { snapshot, carrier } = setup();
+  const uid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const sender = serializeSabyConsignmentNote(snapshot, id, created, '041', { senderTitleVersion: 2 }).xml;
+  const prepared = change(sender, '<СодИнфГО ', `<СодИнфГО УИД_ТрН="${uid}" `);
+  const reply = change(carrier, `УИД_ТрН="${id}"`, `УИД_ТрН="${uid}"`);
+  const options = { senderTitleVersion: 2 as const, operatorUid: uid };
+  verifyConsignmentCarrierBusiness(reply, prepared, snapshot, options);
+  assert.throws(() => verifyConsignmentCarrierBusiness(carrier, prepared, snapshot, options));
+  assert.throws(() => verifyConsignmentCarrierBusiness(reply, prepared, snapshot, { ...options, operatorUid: id }));
+  assert.throws(() => verifyConsignmentCarrierBusiness(reply, change(prepared, ` УИД_ТрН="${uid}"`, ''), snapshot, options));
+  const missing = change(reply, ` УИД_ТрН="${uid}"`, '');
+  assert.throws(() => verifyConsignmentCarrierBusiness(missing, prepared, snapshot, options));
+  const filled = fillConsignmentCarrier(missing, prepared, snapshot, options);
+  assert.equal(filled.changed, true);
+  verifyConsignmentCarrierBusiness(filled.bytes, prepared, snapshot, options);
+  assert.throws(() => fillConsignmentCarrier(missing, prepared, snapshot, { ...options, operatorUid: id }));
+});
+
 for (const [label, from, to] of [
   ['mass', 'МасБрутЗнач="5123.125"', 'МасБрутЗнач="5123.124"'],
   ['events', 'ФДатВрПриб="01.04.2025T08:20:30+03:00"', 'ФДатВрПриб="01.04.2025T08:20:31+03:00"'],

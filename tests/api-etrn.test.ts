@@ -134,6 +134,52 @@ test('ETRN checks revoked authorization again after organization verification be
   try { await saveEtrnProfile(options, rt.shipmentId, rt.profile); await assert.rejects(exchangeEtrn(options, rt.shipmentId), error => error instanceof ApiError && error.status === 403); assert.equal(api.count('СБИС.ЗаписатьДокумент'), 0); assert.equal(hasEtrnDocuments(await rt.store.read(source), rt.tripId), false); }
   finally { await rt.close(); }
 });
+test('ETRN queued manual write rechecks revoked access, expired and replaced leases before dispatch', async t => {
+  for (const invalidation of ['access', 'expired', 'replaced'] as const) await t.test(invalidation, async () => {
+    const rt = await runtime(); const api = fakeApi(); let allowed = true; let requests = 0;
+    let release!: () => void; let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }); const barrier = new Promise<void>(resolve => { release = resolve; });
+    const client = new SabyClient(config(), api.send).withRequestBudget(async action => {
+      if (++requests === 3) { entered(); await barrier; }
+      return action();
+    });
+    const options = { ...rt, client, authorize: () => { if (!allowed) throw new ApiError(403, 'Синтетическое право отозвано'); } };
+    try {
+      await saveEtrnProfile(options, rt.shipmentId, rt.profile);
+      const sending = exchangeEtrn(options, rt.shipmentId); await started;
+      if (invalidation === 'access') allowed = false;
+      else await rt.store.mutate(source, data => {
+        const document = data.etrn!.trips[rt.tripId].deliveries[rt.shipmentId].document!;
+        if (invalidation === 'expired') document.leaseUntil = '2020-01-01T00:00:00.000Z';
+        else document.leaseId = 'replacement-lease';
+        return { result: undefined, changed: true };
+      });
+      release();
+      await assert.rejects(sending, error => error instanceof ApiError && error.status === (invalidation === 'access' ? 403 : 409));
+      assert.equal(api.count('СБИС.СписокНашихОрганизаций'), 2);
+      assert.equal(api.count('СБИС.ЗаписатьДокумент'), 0);
+      assert.equal(api.count('СБИС.ПрочитатьДокумент'), 0);
+      if (invalidation === 'replaced') assert.equal((await rt.store.read(source)).etrn!.trips[rt.tripId].deliveries[rt.shipmentId].document!.leaseId, 'replacement-lease');
+    } finally { release(); await rt.close(); }
+  });
+});
+test('ETRN queued attachment download rechecks current authorization before sending', async () => {
+  const rt = await runtime(); const api = fakeApi(); const options = { ...rt, client: new SabyClient(config(), api.send) };
+  let release!: () => void; let entered!: () => void; let allowed = true; let requests = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }); const barrier = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await saveEtrnProfile(options, rt.shipmentId, rt.profile); const response = await exchangeEtrn(options, rt.shipmentId);
+    const client = options.client.withRequestBudget(async action => {
+      if (++requests === 3) { entered(); await barrier; }
+      return action();
+    });
+    const downloading = downloadEtrnFile({ ...options, client, authorize: () => { if (!allowed) throw new ApiError(403, 'Синтетическое право отозвано'); } }, rt.shipmentId, response.deliveries[0].document!.files[0].id);
+    await started; allowed = false; release();
+    await assert.rejects(downloading, error => error instanceof ApiError && error.status === 403);
+    assert.equal(api.downloads(), 0);
+    assert.equal((await rt.store.read(source)).etrn!.trips[rt.tripId].deliveries[rt.shipmentId].document!.artifacts[0].content, undefined);
+  } finally { release(); await rt.close(); }
+});
 test('ETRN XML after submission is byte-identical to the uploaded snapshot despite later directory drift', async () => {
   const rt = await runtime(); const api = fakeApi(); const options = { ...rt, client: new SabyClient(config(), api.send) };
   try {
