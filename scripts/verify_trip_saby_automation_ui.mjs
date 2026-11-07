@@ -118,13 +118,13 @@ try {
 
   advanceOnReconcile = true;
   await main.getByRole('button', { name: 'Обновить из Saby', exact: true }).click();
-  await expect(main.locator('.workflow-current strong')).toContainText('НК АРТЕЛЬ · ожидаем подпись');
+  await expect(main.locator('.workflow-current strong')).toContainText('НК АРТЭЛЬ · ожидаем подпись');
   assert.equal(workflowPosts, 1); assert.equal(signingPosts, 0);
   check('The single explicit refresh reconciles an enrolled chain and displays fresh carrier progress');
 
   state.automation.enrolled = false; state.signing.mode = 'with_confirmation'; state.signing.state = 'unknown'; state.signing.carrier.state = 'unknown'; state.order.number = '11';
   await refresh();
-  await expect(main.locator('.workflow-current strong')).toContainText('НК АРТЕЛЬ · результат подписания не подтверждён');
+  await expect(main.locator('.workflow-current strong')).toContainText('НК АРТЭЛЬ · результат подписания не подтверждён');
   await expect(signing).toContainText('Продолжение приостановлено');
   await expect(signing).toContainText('Подпись подтверждена в Saby');
   await expect(signing).not.toContainText('подтверждение владельца');

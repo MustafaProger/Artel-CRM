@@ -1,3 +1,5 @@
+import { ApiError } from './api-error';
+import { etrnTrip, ETRN_NOT_REQUIRED } from './trip-etrn-scope';
 import { isUnpackagedDiesel } from '../web/src/trip-input-rules';
 import Decimal from 'decimal.js';
 import type { Company, ShipmentTrip, Snapshot } from '../web/src/model';
@@ -6,8 +8,8 @@ import { allocateTrip } from '../web/src/trip-calculations';
 import { readIntermediateStops } from '../web/src/trip-route';
 import type { OperationsData } from './operations-store';
 import { buildSabyConsignmentSnapshot, readSabyConsignmentProfile, sabyConsignmentBlockers } from './saby-consignment-note';
-import { sabyConfigurationBlockers, sabyObject, type SabyConfig } from './saby-client';
-import { sabyTransportBlockers, sabyTransportDraftBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
+import { SabyClient, sabyConfigurationBlockers, sabyObject, type SabyConfig } from './saby-client';
+import { sabyAllowedPickupAt, sabyTransportBlockers, sabyTransportDraftBlockers, type SabyCargoProfile, type SabyTransportProfile, type SabyTransportSnapshot } from './saby-transport-order';
 import type { TripSabyPreparation } from './trip-saby-workflow';
 
 /** Server-only confirmed recurring facts. No credentials or historical document payloads. */
@@ -36,9 +38,17 @@ const loadingRole = (source: Snapshot, companyId?: string): EtrnLoadingParty => 
 const profileConfigCargo = (config: SabyConfig, productId: string | null) => config.transportProfile?.cargoByProductId[productId || ''];
 const exact = (value: string | undefined, divisor: number) => value && /^\d+(?:\.\d+)?$/.test(value) ? new Decimal(value).div(divisor).toFixed() : '';
 
-/** Pure preflight: never reserves numbers or creates external counterparty cards. */
-export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): TripSabyPreparation {
+export interface NkDirectEtrnPreparation { deliveries: TripSabyPreparation['deliveries']; blockers: string[] }
+function prepare(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings: TripSabyAutofillSettings, direct: false): TripSabyPreparation;
+function prepare(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings: TripSabyAutofillSettings, direct: true): NkDirectEtrnPreparation;
+/** Pure common delivery preflight. The direct branch never constructs or validates a TransportOrder. */
+function prepare(source: Snapshot, _data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings: TripSabyAutofillSettings, direct: boolean): TripSabyPreparation | NkDirectEtrnPreparation {
+  const originalCount = trip.customers.length;
+  trip = etrnTrip(source, trip);
+  if (!trip.customers.length) throw new ApiError(409, ETRN_NOT_REQUIRED);
+  const partial = trip.customers.length !== originalCount;
   const blockers = [...sabyConfigurationBlockers(config)];
+  if (partial && trip.fields.trip_flow_version !== 'driver-v1' && !trip.fields.quantity_tonnes) blockers.push('Для выбранных доставок нет сохранённых масс. Общую массу машины нельзя перераспределить между клиентами с ЭТрН.');
   const driverFlow = trip.fields.trip_flow_version === 'driver-v1';
   const directories = source.directories;
   const product = directories?.products.find(row => row.id === trip.fields.product_id);
@@ -51,8 +61,7 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   if (!product?.documentName) blockers.push('В справочнике товара заполните полное наименование для документов.');
   if (!product?.dangerousGoodsSource) blockers.push('В справочнике товара укажите источник подтверждения характеристик опасного груза.');
   if (product?.cargoPackaging === 'packaged') blockers.push('Автоматическая подготовка Saby поддерживает дизельное топливо наливом; для груза в упаковке требуется отдельный профиль перевозки.');
-  // Both confirmed scenarios ship third-party fuel from Artel with NK as carrier;
-  // the CRM accounting organization does not change the document's consignor.
+  // Direct callers explicitly scope the sender to NK; historical order callers retain Artel.
   const sender = config.customer;
   const selectedCarrier = source.companies.find(company => company.id === trip.fields.carrier_id);
   // The ordinary trip selects a driver and vehicle. Its legal Saby carrier comes
@@ -65,13 +74,16 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     if (!linkedCarrier?.inn || linkedCarrier.inn !== config.carrier.inn) blockers.push(`В карточке ${label} указан перевозчик, не соответствующий настроенному юридическому лицу Saby. Сверьте сохранённую связь перед отправкой.`);
   }
   const transportCarrier = { ...config.carrier, phone: driver?.phone || '' };
-  const allocation = driverFlow ? {
+  const allocation = driverFlow || partial ? {
     totalLitres: trip.customers.every(row => /^\d+(?:\.\d+)?$/.test(row.fields.quantity_litres || '')) ? trip.customers.reduce((sum, row) => sum.plus(row.fields.quantity_litres!), new Decimal(0)).toFixed() : '',
-    tonnes: trip.customers.map(row => row.fields.quantity_tonnes || ''),
+    tonnes: trip.customers.map(row => driverFlow ? row.fields.quantity_tonnes || '' : source.shipments.find(saved => saved.id === row.id)?.fields.quantity_tonnes || ''),
   } : allocateTrip(trip.fields.quantity_tonnes || '', trip.customers.map(row => row.fields.quantity_litres || ''));
   const bulkDiesel = isUnpackagedDiesel(product);
+  if (partial && !driverFlow && !bulkDiesel) blockers.push('Для частичной отправки исторического рейса нет отдельной подтверждённой массы брутто каждой доставки. Требуется сверка масс.');
   const plannedGross = bulkDiesel ? trip.fields.quantity_tonnes : trip.fields.quantity_gross_tonnes;
-  const grossAllocation = driverFlow ? { tonnes: trip.customers.map(row => row.fields.quantity_tonnes || '') } : plannedGross ? allocateTrip(plannedGross, trip.customers.map(row => row.fields.quantity_litres || '')) : null;
+  const grossAllocation = driverFlow ? { tonnes: trip.customers.map(row => row.fields.quantity_tonnes || '') }
+    : partial ? { tonnes: trip.customers.map(row => { const saved = source.shipments.find(saved => saved.id === row.id); return (bulkDiesel ? saved?.fields.quantity_tonnes : saved?.fields.quantity_gross_tonnes) || ''; }) }
+      : plannedGross ? allocateTrip(plannedGross, trip.customers.map(row => row.fields.quantity_litres || '')) : null;
   if (!driverFlow && !grossAllocation) blockers.push(bulkDiesel ? 'В рейсе укажите плановую массу груза, т.' : 'В рейсе укажите плановую массу брутто груза.');
   const cargo: SabyCargoProfile = {
     name: product?.documentName || '', condition: 'Жидкий', packagingCode: 'TY', packageCount: '1',
@@ -82,7 +94,9 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
   };
   const profileConfig = config.transportProfile;
   const contract = profileConfig?.contract ? { ...profileConfig.contract, ...(settings.contractDateFromTrip ? { date: trip.fields.date || '' } : {}) } : undefined;
-  const regulatory = settings.instructions?.regulatory || (contract?.name && contract.number && contract.date ? `Согласно ${contract.name} № ${contract.number} от ${contract.date.split('-').reverse().join('.')}` : '');
+  const regulatory = direct ? config.nkRegulatoryInstructions || '' : settings.instructions?.regulatory || (contract?.name && contract.number && contract.date ? `Согласно ${contract.name} № ${contract.number} от ${contract.date.split('-').reverse().join('.')}` : '');
+  if (direct && !config.consignmentSigner) blockers.push('Подтвердите ФИО и должность подписанта НК для прямой ЭТрН в серверных настройках.');
+  if (direct && !regulatory) blockers.push('Подтвердите обязательные указания НК по выполнению норм перевозки для прямой ЭТрН; договор АРТЭЛЬ с перевозчиком не используется.');
   const depot = directories?.oilDepots?.find(row => row.id === trip.fields.oil_depot_id);
   const owner = source.companies.find(row => row.id === depot?.ownerCompanyId);
   if (!depot) blockers.push('В рейсе выберите нефтебазу из отдельного справочника.');
@@ -96,10 +110,12 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
       loading_map_url: trip.fields.loading_map_url || depot.mapUrl || null, loading_latitude: trip.fields.loading_latitude || depot.latitude || null, loading_longitude: trip.fields.loading_longitude || depot.longitude || null } : {}) } };
   const deliveries = trip.customers.map((delivery, index) => {
     const snapshot = buildSabyConsignmentSnapshot(source, normalizedTrip, delivery.id, sender, transportCarrier, null);
+    if (direct) snapshot.documentMode = 'nk-direct-v1';
     const p = snapshot.profile;
     const address = directories?.addresses.find(row => row.id === delivery.fields.unloading_address_id);
     p.confirmed = true;
-    p.order = { number: '', date: trip.fields.date || '' };
+    // FNS 5.01 requires both attributes even without a separate order. No IdZak/link is generated.
+    p.order = { number: direct ? 'Без номера' : '', date: trip.fields.date || '' };
     p.consignorIsForwarder = '0';
     // The recipient is the customer company. A site receiver is a different contact.
     if (!driverFlow) {
@@ -135,6 +151,7 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     blockers.push(...sabyConsignmentBlockers(snapshot, { stage: driverFlow ? 'driver_draft' : 'preparation' }).map(message => `Доставка ${index + 1}: ${message}`));
     return { shipmentId: delivery.id, snapshot };
   });
+  if (direct) return { deliveries, blockers: [...new Set(blockers)] };
   const first = deliveries[0].snapshot;
   const productId = trip.fields.product_id || '', vehicleId = trip.fields.vehicle_id || '';
   const profile: SabyTransportProfile = { function: 'Заявка', ...(contract ? { contract } : {}), regulatoryInstructions: regulatory, foodInstructions: 'Отсутствуют', signatory: profileConfig?.signatory || { surname: '', name: '', position: '', authorityMethod: '1' }, cargoByProductId: { [productId]: cargo }, vehicleById: { [vehicleId]: { type: first.profile.vehicle.type, payloadTonnes: first.profile.vehicle.payloadTonnes, capacityCubicMetres: first.profile.vehicle.capacityCubicMetres } } };
@@ -149,8 +166,19 @@ export function prepareTripSaby(source: Snapshot, _data: OperationsData, trip: S
     deliveries: deliveries.map(row => ({ shipmentId: row.shipmentId, fields: row.snapshot.fields, customer: row.snapshot.profile.recipient })),
     ...(trip.fields.intermediate_stops_in_order === 'true' ? { intermediateStops: stops } : {}),
     loadingInfrastructureOwner: { name: infrastructureOwner.name, inn: infrastructureOwner.inn },
-    ...(driverFlow ? { processingDurationMinutes: 600 } : { allowedOperationTime: '19:00:00+03:00' }),
+    ...(driverFlow ? { allowedPickupAt: sabyAllowedPickupAt(trip.fields.loading_planned_at) ?? '' } : { allowedOperationTime: '19:00:00+03:00' }),
   };
   blockers.push(...(driverFlow ? sabyTransportDraftBlockers(order) : sabyTransportBlockers(order)));
   return { scenario, order, deliveries, blockers: [...new Set(blockers)] };
+}
+
+/** Ordinary order-based flow keeps the original account and preparation rules. */
+export function prepareTripSaby(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): TripSabyPreparation {
+  return prepare(source, data, trip, config, settings, false);
+}
+
+/** NK's direct consignment. Loading actor and site owner remain the depot's independently confirmed parties. */
+export function prepareNkDirectEtrn(source: Snapshot, data: OperationsData, trip: ShipmentTrip, config: SabyConfig, settings = tripSabyAutofillSettings()): NkDirectEtrnPreparation {
+  const scoped = new SabyClient(config).forNkDirectEtrn().config;
+  return prepare(source, data, trip, scoped, settings, true);
 }

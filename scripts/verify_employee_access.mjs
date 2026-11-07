@@ -1,39 +1,41 @@
 import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
-import { randomUUID, createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { bootstrapQaAuth, authenticateContext } from './qa-auth.mjs';
+import { startTripsQaServer, writeTripsQaSnapshot } from './qa-trips-runtime.mjs';
+import { enabledPages } from '../web/src/page-catalog.ts';
+import { emptyDirectories } from '../server/directory-operations.ts';
 import { loadSnapshot } from '../server/local-api.ts';
 import { OperationsStore } from '../server/operations-store.ts';
-const root = resolve(import.meta.dirname, '..'), port = 5198, base = `http://127.0.0.1:${port}`;
+const root = resolve(import.meta.dirname, '..');
 const temporary = await mkdtemp(resolve(tmpdir(), 'artel-employee-ui-'));
-const output = resolve(root, 'qa/employee-access'); await mkdir(output, { recursive: true });
-const workingSnapshot = async () => {
-  const { data } = JSON.parse(await readFile(resolve(root, 'data/local-operations/operations.json'), 'utf8'));
-  // Ignore the separately running scheduler's timestamp; keep every record and account in the guard.
-  delete data.revision; if (data.push) delete data.push.lastRunAt;
-  return data;
-};
-const checksum = data => createHash('sha256').update(JSON.stringify(data)).digest('hex');
-const before = await workingSnapshot(), report = { checks: [], errors: [], overflows: [], screenshots: [], workingStoreContentUnchangedIgnoringHeartbeat: false, changedWorkingStoreKeys: [] };
+const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'operations');
+const output = resolve(process.env.ARTEL_EMPLOYEE_QA_OUTPUT || resolve(root, 'qa/employee-access')); await mkdir(output, { recursive: true });
+const report = { synthetic: true, workingStoreAccessed: false, checks: [], errors: [], overflows: [], screenshots: [] };
+let base;
 const check = text => { report.checks.push(text); console.log('PASS', text); };
 let server, browser, testPage;
 try {
-  await assert.rejects(fetch(base, { signal: AbortSignal.timeout(500) }));
-  const source = await loadSnapshot();
-  await new OperationsStore(temporary).mutate(source.provenance.sourceSha256, data => { data.sourceOperationsCleared = true; return { result: null, changed: true }; });
-  server = spawn(process.execPath, [resolve(root, 'node_modules/vite/bin/vite.js'), 'preview', '--port', String(port), '--strictPort'], { cwd: root, env: { ...process.env, ARTEL_STORE_DIR: temporary, CHECKO_API_KEY: '', VAPID_PUBLIC_KEY: '', VAPID_PRIVATE_KEY: '' }, stdio: 'ignore' });
-  for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(base + '/api/auth/session')).ok) break; } catch {} await new Promise(done => setTimeout(done, 100)); }
+  await writeTripsQaSnapshot(snapshotDirectory);
+  const source = await loadSnapshot(snapshotDirectory);
+  await new OperationsStore(operationsDirectory).mutate(source.provenance.sourceSha256, data => {
+    data.sourceOperationsCleared = true;
+    const company = (id, name, role) => ({ id, name, roles: [role], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] });
+    data.companies = [company('qa-customer', 'Учебный покупатель', 'customer'), company('qa-supplier', 'Учебный поставщик', 'supplier')];
+    data.directories = { ...emptyDirectories(), fleetSeedApplied: true, products: [{ id: 'qa-product', name: 'Учебный ДТ', transportProductKind: 'diesel', cargoPackaging: 'bulk' }], paymentForms: [{ id: 'qa-payment', name: 'б/нал' }] };
+    return { result: null, changed: true };
+  });
+  server = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory }); base = server.base;
   const { cookie } = await bootstrapQaAuth(base);
   browser = await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
   const admin = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
   await authenticateContext(admin, base, cookie);
   const page = await admin.newPage(); testPage = page; page.on('pageerror', e => report.errors.push(e.message));
   await page.goto(base + '/#accounts');
-  await expect(page.getByRole('heading', { name: 'Учётные записи', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Сотрудники и доступ', exact: true })).toBeVisible();
   const credentials = [];
   for (const [index, employeeName] of ['Айдар Browser QA', 'Зуфар Browser QA'].entries()) {
     let existingId;
@@ -48,8 +50,10 @@ try {
     const login = `browser-employee-${index}`, password = randomUUID(); credentials.push({ login, password });
     await page.getByLabel('Логин', { exact: true }).fill(login);
     await page.getByLabel('Пароль', { exact: true }).fill(password);
-    for (const title of ['Обзор', 'Работа', 'Склад', 'Операторская', 'ЗП', 'Справочники']) await page.getByRole('checkbox', { name: title, exact: true }).uncheck();
-    await expect(page.locator('.account-section-grid input')).toHaveCount(10);
+    for (const section of enabledPages.filter(item => item.id !== 'shipments')) await page.getByRole('checkbox', { name: section.title, exact: true }).uncheck();
+    await expect(page.locator('.account-section-grid input')).toHaveCount(enabledPages.length);
+    const invoices = page.getByRole('checkbox', { name: 'Счета', exact: true });
+    await expect(invoices).not.toBeChecked(); await expect(invoices).toBeEnabled(); await invoices.check(); await invoices.uncheck();
     if (!index) for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       const dimensions = await page.evaluate(() => ({ width: innerWidth, content: document.documentElement.scrollWidth }));
@@ -60,14 +64,14 @@ try {
     await expect(page.locator('.account-form')).toHaveCount(0);
     await expect(page.locator('.account-row').filter({ hasText: login })).toContainText('Отгрузки: только свои');
   }
-  check('Administrator creates an employee and links an existing employee through the UI; all ten permissions are individually configurable; desktop and mobile forms save');
+  check('Administrator creates an employee and links an existing employee through the UI; all catalog permissions include an explicit, editable invoices checkbox; desktop and mobile forms save');
   const users = (await (await admin.request.get(base + '/api/auth/users')).json()).users.filter(user => user.role === 'manager');
   const snap = await (await admin.request.get(base + '/api/snapshot')).json();
   const directory = snap.directories;
   assert.equal(directory.managers.filter(row => row.name === 'Зуфар Browser QA').length, 1);
   const shipments = [];
   for (const [index, user] of users.entries()) {
-    const response = await admin.request.post(base + '/api/shipments', { data: { fields: { shipment_type: 'azs', document_number: index ? 'ZUFAR-ONLY' : 'AIDAR-ONLY', date: '2026-09-01', customer_id: snap.companies[0].id, supplier_id: snap.companies[1].id, manager_id: user.managerId, product_id: directory.products[0].id, payment_form_id: directory.paymentForms.find(p => p.name === 'б/нал').id, quantity_litres: '1000', customer_amount: index ? '777777' : '100000', purchase_amount: '80000' } } });
+    const response = await admin.request.post(base + '/api/shipments', { data: { fields: { shipment_type: 'azs', document_number: index ? 'ZUFAR-ONLY' : 'AIDAR-ONLY', date: '2026-09-01', customer_id: 'qa-customer', supplier_id: 'qa-supplier', manager_id: user.managerId, product_id: directory.products[0].id, payment_form_id: directory.paymentForms.find(p => p.name === 'б/нал').id, quantity_litres: '1000', customer_amount: index ? '777777' : '100000', purchase_amount: '80000' } } });
     assert.equal(response.status(), 201); shipments.push((await response.json()).shipment);
   }
   const contexts = [];
@@ -89,7 +93,7 @@ try {
     const download = await downloadPromise;
     const csv = await readFile(await download.path(), 'utf8');
     assert.ok(csv.includes(index ? 'ZUFAR-ONLY' : 'AIDAR-ONLY')); assert.ok(!csv.includes(index ? 'AIDAR-ONLY' : 'ZUFAR-ONLY'));
-    for (const id of ['overview', 'work', 'china', 'stock', 'payments', 'operator', 'payroll', 'directories', 'accounts']) {
+    for (const id of ['overview', 'work', 'china', 'stock', 'payments', 'operator', 'payroll', 'directories', 'accounts', 'invoices']) {
       await employee.goto(`${base}/#${id}`);
       await expect(employee.getByRole('alert')).toContainText('Раздел недоступен');
       await expect(employee.locator('.account-panel,.directories-page,.work-page,.china-page')).toHaveCount(0);
@@ -122,11 +126,7 @@ try {
   throw error;
 } finally {
   await browser?.close();
-  if (server && server.exitCode === null) { server.kill('SIGTERM'); await new Promise(done => server.once('exit', done)); }
+  await server?.server.close();
   await rm(temporary, { recursive: true, force: true });
-  const after = await workingSnapshot();
-  report.workingStoreContentUnchangedIgnoringHeartbeat = checksum(before) === checksum(after);
-  report.changedWorkingStoreKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
   await writeFile(resolve(output, 'browser.json'), JSON.stringify(report, null, 2));
-  assert.equal(report.workingStoreContentUnchangedIgnoringHeartbeat, true, `Working store changed during isolated QA: ${report.changedWorkingStoreKeys.join(', ')}`);
 }

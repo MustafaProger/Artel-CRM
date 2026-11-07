@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js';
+import type { SabySenderVerificationPolicy } from './saby-order-evidence';
 import { SabyError, type SabyObject, type SabyOrganization, sabyObject } from './saby-client';
 
 /** Only confirmed data may be configured. These are not defaults for diesel or for a vehicle. */
@@ -29,7 +30,10 @@ export interface SabyTransportSnapshot {
   loadingInfrastructureOwner?: { name: string; inn: string };
   /** Confirmed limit in civil time representation required by 1110361, not actual operation time. */
   allowedOperationTime?: string;
-  /** Requested document processing interval; no route time or cancellation is inferred. */
+  /** Pickup deadline in Moscow civil time, including the date after midnight.
+   * Only newly prepared snapshots opt in; old signed/draft XML must stay unchanged. */
+  allowedPickupAt?: string;
+  /** Historical metadata only. Kept readable for frozen snapshots; never a processing timer. */
   processingDurationMinutes?: number;
 }
 export function readSabyTransportProfile(raw?: string): SabyTransportProfile | undefined {
@@ -67,6 +71,15 @@ function plannedTime(value: unknown): string | null {
   if (!dateOnly(day) || !/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(time)) return null;
   return `${day.split('-').reverse().join('.')}T${time.length === 5 ? `${time}:00` : time}+03:00`;
 }
+/** Add the agreed ten hours to a Moscow civil time, independently of host timezone. */
+export function sabyAllowedPickupAt(value: unknown): string | null {
+  if (!plannedTime(value)) return null;
+  // UTC is used for civil calendar arithmetic, not conversion to an event timestamp.
+  const date = new Date(`${value as string}Z`);
+  date.setUTCHours(date.getUTCHours() + 10);
+  const result = date.toISOString().slice(0, 19);
+  return plannedTime(result) ? result : null;
+}
 function profileParts(snapshot: SabyTransportSnapshot) {
   const profile = sabyObject(snapshot.profile) ? snapshot.profile : null;
   const cargo = profile && sabyObject(profile.cargoByProductId) ? profile.cargoByProductId[snapshot.fields.product_id ?? ''] : undefined;
@@ -84,6 +97,7 @@ function transportBlockers(snapshot: SabyTransportSnapshot, draft = false): stri
   if (!nonempty(snapshot.fields.loading_address)) errors.push('Укажите фактический адрес площадки погрузки.');
   if (!snapshot.deliveries && !nonempty(snapshot.fields.unloading_address)) errors.push('Укажите фактический адрес каждой площадки доставки.');
   if (!plannedTime(snapshot.fields.loading_planned_at)) errors.push('Для заказа Saby укажите плановые дату и время подачи машины (московское время).');
+  if (snapshot.allowedPickupAt !== undefined && (!driverFlow || !plannedTime(snapshot.allowedPickupAt) || snapshot.allowedPickupAt !== sabyAllowedPickupAt(snapshot.fields.loading_planned_at))) errors.push('Допустимое время подачи ТС должно быть на 10 часов позже плановой подачи с учётом перехода даты.');
   if (snapshot.fields.unloading_planned_at && !plannedTime(snapshot.fields.unloading_planned_at)) errors.push('Проверьте плановые дату и время доставки.');
   if (!snapshot.driver.name || !snapshot.vehicle.plate) errors.push('Выберите водителя и фактическую машину рейса.');
   if (!snapshot.deliveries && !snapshot.customer.name) errors.push('Выберите клиента доставки.');
@@ -132,7 +146,7 @@ function transportBlockers(snapshot: SabyTransportSnapshot, draft = false): stri
     if (snapshot.deliveries.every(row => decimal(row.fields.quantity_litres, 17, 3, true)) && decimal(snapshot.fields.quantity_litres, 17, 3, true) && !snapshot.deliveries.reduce((total, row) => total.plus(row.fields.quantity_litres!), new Decimal(0)).eq(snapshot.fields.quantity_litres!)) errors.push('Общий объём заявки должен совпадать с суммой доставок.');
     if (!snapshot.loadingInfrastructureOwner?.name || !/^\d{10}(?:\d{2})?$/.test(snapshot.loadingInfrastructureOwner.inn)) errors.push('Для общей заявки нужен подтверждённый владелец инфраструктуры погрузки.');
     if ((!driverFlow || snapshot.allowedOperationTime) && (!snapshot.allowedOperationTime || !/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d[+-]\d{2}:\d{2}$/.test(snapshot.allowedOperationTime))) errors.push('Для общей заявки нужно подтверждённое допустимое время операции.');
-    if (driverFlow && snapshot.allowedOperationTime) errors.push('В новом сценарии не согласовано предельное время маршрута; интервал обработки документов не является временем суток.');
+    if (driverFlow && snapshot.allowedOperationTime) errors.push('Допустимое время подачи ТС задаётся отдельно; общий предел всех операций маршрута не согласован.');
     if (driverFlow && !massPending && snapshot.deliveries.every(row => decimal(row.fields.quantity_tonnes, 20, 6, true)) && decimal(snapshot.fields.quantity_tonnes, 20, 6, true) && !snapshot.deliveries.reduce((sum, row) => sum.plus(row.fields.quantity_tonnes!), new Decimal(0)).eq(snapshot.fields.quantity_tonnes!)) errors.push('Масса общей заявки должна точно совпадать с суммой масс доставок.');
     if (driverFlow && cargo && (cargo.massMethod !== '03' || cargo.packageCount !== '1')) errors.push('Для согласованного наливного топлива нужны расчётная масса и одно грузовое место на доставку.');
   }
@@ -163,7 +177,7 @@ export function encodeWindows1251(value: string): Buffer {
   const codes = new Map(Array.from({ length: 256 }, (_, byte) => [decoder.decode(Uint8Array.of(byte)), byte] as const));
   return Buffer.from([...value].map(char => { const byte = codes.get(char); if (byte === undefined) throw new SabyError('validation', 'Текст заказа содержит символы, не представимые в Windows-1251. Уберите эмодзи и неподдерживаемые символы.'); return byte; }));
 }
-function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, draft = false): { xml: Buffer; name: string; number: string } {
+function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, draft = false, policy?: SabySenderVerificationPolicy): { xml: Buffer; name: string; number: string } {
   const errors = transportBlockers(snapshot, draft); if (errors.length) throw new SabyError('validation', errors.join(' '));
   const profile = snapshot.profile!; const cargo = profile.cargoByProductId[snapshot.fields.product_id!]; const vehicle = profile.vehicleById[snapshot.fields.vehicle_id!];
   const number = explicitNumber ?? `CRM-${attemptId}`;
@@ -172,7 +186,10 @@ function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, 
   const stamp = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'medium' }).format(created);
   const [createdDate, createdTime] = stamp.split(' ');
   const name = `ON_ZAKZVGO_${snapshot.carrierOrganization.edoId}_${snapshot.customerOrganization.edoId}_0_${createdDate.replaceAll('-', '')}_${attemptId}`;
-  const pickup = tag('ПунктПод', { ДатВрПод: plannedTime(snapshot.fields.loading_planned_at), НалКоорТочВрПод: '1', ПредВрПод: snapshot.allowedOperationTime, НалКоорТочПредВрПод: snapshot.allowedOperationTime ? '1' : null }, tag('АдрПунктПод', {}, pointAddress(snapshot, 'loading')));
+  // 1110361 has a clock-only pickup limit; keep its full date in the frozen snapshot.
+  // Do not derive this for historical snapshots, or copy it to unloading operations.
+  const pickupLimit = snapshot.allowedPickupAt ? `${snapshot.allowedPickupAt.slice(11)}+03:00` : snapshot.allowedOperationTime;
+  const pickup = tag('ПунктПод', { ДатВрПод: plannedTime(snapshot.fields.loading_planned_at), НалКоорТочВрПод: '1', ПредВрПод: pickupLimit, НалКоорТочПредВрПод: pickupLimit ? '1' : null }, tag('АдрПунктПод', {}, pointAddress(snapshot, 'loading')));
   const points = [{ kind: 'loading' as const, point: snapshot }, ...(snapshot.deliveries ? snapshot.deliveries.map(row => ({ kind: 'unloading' as const, point: { ...snapshot, fields: row.fields } })) : [{ kind: 'unloading' as const, point: snapshot }])];
   const route = points.map(({ kind, point }, index) => tag('АдрПункт', { Опер: kind === 'loading' ? 'Погрузка' : 'Выгрузка', ПорНомПункт: String(index + 1), ДатВрОпер: plannedTime(point.fields[`${kind}_planned_at`]), НалКоорТочВрОпер: plannedTime(point.fields[`${kind}_planned_at`]) ? '1' : null, ПредВрОпер: snapshot.allowedOperationTime, НалКоорТочПредВрОпер: snapshot.allowedOperationTime ? '1' : null }, tag('АдресПункт', {}, pointAddress(point, kind)) + (kind === 'loading' && snapshot.loadingInfrastructureOwner ? tag('ОргВладИнфр', { НаимВладИнфр: snapshot.loadingInfrastructureOwner.name, ИННВладИнфр: snapshot.loadingInfrastructureOwner.inn }) : ''))).join('');
   const dangerous = cargo.dangerousGoods ? tag('ИнфОпасн', { НомООН: cargo.dangerousGoods.unNumber, НадОтгНаим: cargo.dangerousGoods.shippingName, Клас: cargo.dangerousGoods.class, КласКод: cargo.dangerousGoods.classificationCode, ГрУп: cargo.dangerousGoods.packingGroup, ЗнОп: cargo.dangerousGoods.hazardSign, КодОгрЧерТун: cargo.dangerousGoods.tunnelCode }) : '';
@@ -187,27 +204,27 @@ function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, 
     return tag('ОпГруз', { НаимГруз: cargo.name, СостГруз: cargo.condition, ВидТар: cargo.packagingCode, КолГрМест: cargo.packageCount, МетОпрМасс: cargo.massMethod, Объем: quantity(row.fields.quantity_litres, 1000), РаспрГр: cargo.distributable, ДелГр: cargo.divisible }, mass + tag('РазмерГрМест', { ВысЗнач: cargo.heightMetres, ДлЗнач: cargo.lengthMetres, ШирЗнач: cargo.widthMetres }) + dangerous + (driverFlow ? tag('Пункт', { Погр: '1', Выгр: String(index + 2), КолГрМест: '1' }) + info({ 'Доставка CRM': row.shipmentId, 'Получатель доставки': row.customer.name, 'ИНН получателя': row.customer.inn, 'Адрес доставки': row.fields.unloading_address }) : ''));
   }).join('');
   const signer = profile.signatory;
-  const content = tag('СодИнфГО', { УИД_Зак: attemptId, СодОпер: 'Предоставление заказа и заявки на перевозку груза автомобильным транспортом', НомЗак: number, ДатаЗак: snapshot.fields.date!.split('-').reverse().join('.'), УкНормПрвз: profile.regulatoryInstructions, ПрвзПищПрод: profile.foodInstructions }, (snapshot.intermediateStops ?? []).map(row => tag('ПромПунктМрш', {}, escape(`После ${row.afterShipmentId}: ${row.name}; ${row.address}`))).join('') + organization('СвГО', snapshot.customerOrganization) + organization('СвПрв', snapshot.carrierOrganization) + pickup + route + freight + tag('ПарТСПрвз', { Тип: vehicle.type, Грузопод: vehicle.payloadTonnes, Вместим: vehicle.capacityCubicMetres }) + info({ 'Рейс CRM': snapshot.tripId, 'Доставка CRM': snapshot.shipmentId, 'Получатель доставки': snapshot.customer.name, 'ИНН получателя': snapshot.customer.inn, 'Поставщик': snapshot.supplier.name, 'Владелец нефтебазы': snapshot.fields.loading_site_owner_name, 'ИНН владельца нефтебазы': snapshot.fields.loading_site_owner_inn, 'Юридический адрес владельца нефтебазы': snapshot.fields.loading_site_owner_address, 'Водитель (план)': snapshot.driver.name, 'Телефон водителя': snapshot.driver.phone, 'Машина (план)': snapshot.vehicle.plate, 'Карта погрузки': snapshot.fields.loading_map_url, 'Карта доставки': snapshot.fields.unloading_map_url, ...(snapshot.deliveries ? Object.fromEntries(snapshot.deliveries.map((row, index) => [`Доставка ${index + 1}`, `${row.shipmentId}: ${row.customer.name}; ${row.fields.quantity_litres} л; ${row.fields.unloading_address}`])) : {}), ...(snapshot.intermediateStops ? Object.fromEntries(snapshot.intermediateStops.map((row, index) => [`Промежуточная точка ${index + 1}`, `После ${row.afterShipmentId}: ${row.name}; ${row.address}`])) : {}) }));
+  const content = tag('СодИнфГО', { УИД_Зак: attemptId, СодОпер: 'Предоставление заказа и заявки на перевозку груза автомобильным транспортом', НомЗак: number, ДатаЗак: snapshot.fields.date!.split('-').reverse().join('.'), УкНормПрвз: profile.regulatoryInstructions, ПрвзПищПрод: profile.foodInstructions }, (snapshot.intermediateStops ?? []).map(row => tag('ПромПунктМрш', {}, escape(`После ${row.afterShipmentId}: ${row.name}; ${row.address}`))).join('') + organization('СвГО', snapshot.customerOrganization) + organization('СвПрв', snapshot.carrierOrganization) + pickup + route + freight + tag('ПарТСПрвз', { Тип: vehicle.type, Грузопод: vehicle.payloadTonnes, Вместим: vehicle.capacityCubicMetres }) + info({ 'Рейс CRM': snapshot.tripId, 'Доставка CRM': snapshot.shipmentId, 'Получатель доставки': snapshot.customer.name, 'ИНН получателя': snapshot.customer.inn, 'Поставщик': snapshot.supplier.name, 'Владелец нефтебазы': snapshot.fields.loading_site_owner_name, 'ИНН владельца нефтебазы': snapshot.fields.loading_site_owner_inn, 'Юридический адрес владельца нефтебазы': snapshot.fields.loading_site_owner_address, 'Водитель (план)': snapshot.driver.name, 'Телефон водителя': snapshot.driver.phone, 'Машина (план)': snapshot.vehicle.plate, 'Карта погрузки': snapshot.fields.loading_map_url, 'Карта доставки': snapshot.fields.unloading_map_url, ...(snapshot.deliveries ? Object.fromEntries(snapshot.deliveries.map((row, index) => [`Доставка ${index + 1}`, `${row.shipmentId}: ${row.customer.name}; ${row.fields.quantity_litres} л; ${row.fields.unloading_address}`])) : {}), ...(policy === 'address-multidelivery-v1' && snapshot.deliveries ? Object.fromEntries(snapshot.deliveries.map((row, index) => [`ИНН получателя доставки ${index + 1}`, row.customer.inn])) : {}), ...(snapshot.intermediateStops ? Object.fromEntries(snapshot.intermediateStops.map((row, index) => [`Промежуточная точка ${index + 1}`, `После ${row.afterShipmentId}: ${row.name}; ${row.address}`])) : {}) }));
   const contractXml = profile.function === 'Заявка' && profile.contract ? tag('ДогОргПрвз', { НаимДок: profile.contract.name, НомерДок: profile.contract.number, ДатаДок: profile.contract.date.split('-').reverse().join('.') }, profile.contract.issuerInns.map(inn => tag('ИдРекСост', {}, tag('ИННЮЛ', {}, inn))).join('')) : '';
   const signatureInfo = tag('ПодпИнфГО', { Должн: signer.position, СпосПодтПолном: signer.authorityMethod }, tag('ФИО', { Фамилия: signer.surname, Имя: signer.name, Отчество: signer.patronymic }));
   const xml = '<?xml version="1.0" encoding="windows-1251"?>' + tag('Файл', { ИдФайл: name, ВерсПрог: 'Artel-CRM', ВерсФорм: '5.01' }, tag('Документ', { КНД: '1110361', Функция: profile.function, ДатИнфГО: createdDate.split('-').reverse().join('.'), ВрИнфГО: createdTime, НаимЭкСубСост: snapshot.customerOrganization.name }, contractXml + content + signatureInfo));
   return { xml: encodeWindows1251(xml), name: `${name}.xml`, number };
 }
-export function serializeSabyTransportOrder(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string) {
-  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber);
+export function serializeSabyTransportOrder(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy) {
+  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber, false, policy);
 }
 /** Incomplete unsigned XML for Write only; never evidence of acceptance or a valid signing title. */
-export function serializeSabyTransportDraft(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string) {
-  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber, true);
+export function serializeSabyTransportDraft(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy) {
+  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber, true, policy);
 }
-function transportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, draft = false): SabyObject {
-  const { xml, name, number } = serializeTransport(snapshot, attemptId, createdAt, explicitNumber, draft);
+function transportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, draft = false, policy?: SabySenderVerificationPolicy): SabyObject {
+  const { xml, name, number } = serializeTransport(snapshot, attemptId, createdAt, explicitNumber, draft, policy);
   return { Тип: 'TransportOrder', Регламент: { Название: 'Заказ на перевозку' }, Номер: number, Дата: snapshot.fields.date!.split('-').reverse().join('.'), Примечание: marker, НашаОрганизация: { СвЮЛ: { ИНН: snapshot.customerOrganization.inn, КПП: snapshot.customerOrganization.kpp, Название: snapshot.customerOrganization.name } }, Контрагент: { Идентификатор: snapshot.carrierOrganization.edoId, СвЮЛ: { ИНН: snapshot.carrierOrganization.inn, КПП: snapshot.carrierOrganization.kpp, Название: snapshot.carrierOrganization.name } }, Вложение: [{ Файл: { Имя: name, ДвоичныеДанные: xml.toString('base64') } }] };
 }
 
-export function buildSabyTransportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string): SabyObject {
-  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber);
+export function buildSabyTransportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy): SabyObject {
+  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber, false, policy);
 }
-export function buildSabyTransportDraftDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string): SabyObject {
-  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber, true);
+export function buildSabyTransportDraftDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy): SabyObject {
+  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber, true, policy);
 }

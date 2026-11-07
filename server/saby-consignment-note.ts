@@ -1,3 +1,4 @@
+import { etrnTrip, requireEtrnDelivery } from './trip-etrn-scope';
 import Decimal from 'decimal.js';
 import type { ShipmentTrip, Snapshot } from '../web/src/model';
 import type { EtrnDocumentBasis, EtrnLoadingParty, EtrnName, EtrnParty, SabyConsignmentProfile } from '../web/src/etrn-model';
@@ -6,6 +7,8 @@ import { encodeWindows1251 } from './saby-transport-order';
 
 export type { SabyConsignmentProfile } from '../web/src/etrn-model';
 export interface SabyConsignmentSnapshot {
+  /** Explicit direct title without an order relationship. Historical snapshots keep their original semantics. */
+  documentMode?: 'nk-direct-v1';
   documentType: 'ConsignmentNote'; formatVersion: '5.01';
   tripId: string; shipmentId: string; version: number;
   fields: Record<string, string | null>;
@@ -70,6 +73,8 @@ export function readSabyConsignmentProfile(raw: unknown): SabyConsignmentProfile
 const copyFields = ['organization_id', 'date', 'supplier_id', 'product_id', 'driver_id', 'vehicle_id', 'customer_id', 'quantity_litres', 'loading_address', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'unloading_address', 'unloading_latitude', 'unloading_longitude', 'unloading_planned_at', 'unloading_actual_at'] as const;
 /** Capture actual trip/delivery and only the directory details needed by the sender title. */
 export function buildSabyConsignmentSnapshot(source: Snapshot, trip: ShipmentTrip, shipmentId: string, customerOrganization: SabyOrganization, carrierOrganization: SabyOrganization, input: unknown): SabyConsignmentSnapshot {
+  requireEtrnDelivery(trip, shipmentId);
+  trip = etrnTrip(source, trip);
   const delivery = trip.customers.find(row => row.id === shipmentId);
   if (!delivery) throw new SabyError('validation', 'Выбранная доставка не принадлежит рейсу.');
   const row = source.shipments.find(item => item.id === shipmentId);
@@ -139,11 +144,15 @@ export function sabyConsignmentBlockers(snapshot: SabyConsignmentSnapshot, optio
   if (p.consignorIsForwarder === '1' && (!p.transportCustomer || !validParty(p.transportCustomer))) result.push('Для экспедитора укажите подтверждённого заказчика перевозки.');
   if (p.consignorIsForwarder === '1' && !validBasis(p.transportCustomerContract)) result.push('Для экспедитора укажите реквизиты договора оказания услуг по перевозке с заказчиком.');
   if ((!preparing && !text(p.order.number)) || !day(p.order.date)) result.push('Укажите номер и дату заказа (заявки), являющегося основанием этой перевозки.');
+  if (snapshot.documentMode === 'nk-direct-v1') {
+    if (snapshot.customerOrganization.inn !== snapshot.carrierOrganization.inn || snapshot.customerOrganization.kpp !== snapshot.carrierOrganization.kpp || snapshot.fields.organization_id !== 'nk-artel') result.push('Прямая ЭТрН должна содержать НК АРТЭЛЬ в ролях грузоотправителя и перевозчика.');
+    if (p.order.number !== 'Без номера' || p.order.date !== snapshot.fields.date) result.push('Для прямой ЭТрН без заявки укажите «Без номера» и дату транспортной накладной.');
+  }
   if (day(p.order.date) && day(snapshot.fields.date) && p.order.date > snapshot.fields.date) result.push('Дата заказа не может быть позже даты перевозки.');
   if (!text(snapshot.fields.loading_address) || !text(snapshot.fields.unloading_address)) result.push('Укажите фактические площадки погрузки и доставки в рейсе; юридические адреса их не заменяют.');
   if (!moscowTime(snapshot.fields.loading_planned_at)) result.push('Укажите плановые дату и время подачи машины в рейсе (Москва).');
   if (snapshot.fields.unloading_planned_at && !moscowTime(snapshot.fields.unloading_planned_at)) result.push('Проверьте плановые дату и время доставки.');
-  if (!preparing && (!moscowTime(p.loading.arrivedAt) || !moscowTime(p.loading.departedAt)) || preparing && ((p.loading.arrivedAt && !moscowTime(p.loading.arrivedAt)) || (p.loading.departedAt && !moscowTime(p.loading.departedAt)))) result.push('Укажите отдельные фактические время прибытия и время убытия с погрузки (Москва); подтверждение заявки перевозчиком эти события не устанавливает.');
+  if (!preparing && (!moscowTime(p.loading.arrivedAt) || !moscowTime(p.loading.departedAt)) || preparing && ((p.loading.arrivedAt && !moscowTime(p.loading.arrivedAt)) || (p.loading.departedAt && !moscowTime(p.loading.departedAt)))) result.push(snapshot.documentMode === 'nk-direct-v1' ? 'Для прямой ЭТрН требуются сохранённые водителем фактические время прибытия и время убытия с погрузки (Москва).' : 'Укажите отдельные фактические время прибытия и время убытия с погрузки (Москва); подтверждение заявки перевозчиком эти события не устанавливает.');
   if (moscowTime(p.loading.arrivedAt) && moscowTime(p.loading.departedAt) && p.loading.departedAt < p.loading.arrivedAt) result.push('Убытие с погрузки не может предшествовать прибытию.');
   for (const kind of ['loading', 'unloading']) {
     const lat = snapshot.fields[`${kind}_latitude`]; const lon = snapshot.fields[`${kind}_longitude`];
