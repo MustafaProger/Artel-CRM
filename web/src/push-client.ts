@@ -23,13 +23,13 @@ export function subscribePushDevice(worker: ServiceWorkerRegistration, publicKey
   }
   return waitForPush(subscriptionRequest.promise, 25000, 'Браузер не завершил подключение за 25 секунд. Повторите проверку подключения позже.');
 }
-export async function pushRequest(path: string, method = 'GET', body?: unknown) {
+export async function pushRequest(path: string, method = 'GET', body?: unknown, accountId?: string) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(`/api/push/${path}`, { method, cache: 'no-store', signal: controller.signal, ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
+    const response = await fetch(`/api/push/${path}`, { method, cache: 'no-store', signal: controller.signal, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(accountId ? { 'X-Artel-Account': accountId } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Не удалось настроить уведомления.');
+    if (!response.ok) throw Object.assign(new Error(result.error || 'Не удалось настроить уведомления.'), { status: response.status });
     return result;
   } catch (error) {
     if (controller.signal.aborted) throw new Error('Сервер не ответил за 15 секунд. Результат действия пока не подтверждён; повторите проверку.', { cause: error });

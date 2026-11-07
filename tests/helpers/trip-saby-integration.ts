@@ -49,8 +49,26 @@ export function integrationApi() {
     if (req.method === 'СБИС.ЗаписатьДокумент') {
       const input = req.params.Документ; const id = String(input.Идентификатор ?? `remote-${docs.size + 1}`); const type = String(input.Тип);
       const doc: SabyObject = { ...docs.get(id), ...input, Идентификатор: id, Номер: input.Номер ?? String(type === 'TransportOrder' ? 41 : 100 + [...docs.values()].filter(row => row.Тип === type).length), Редакция: [{ Идентификатор: `${id}-revision`, Актуален: 'Да' }], Состояние: { Название: 'Черновик' }, Код: { Состояние: '0' }, СсылкаДляНашаОрганизация: `https://online.saby.ru/document/${id}`, Вложение: input.Вложение ? [{ Идентификатор: `${id}-title`, Редакция: { Номер: '1', ДатаВремя: '01.04.2025 10:00:00' }, Тип: type === 'TransportOrder' ? 'ЗаказЗаявка' : 'ЭТрН', Подтип: type === 'TransportOrder' ? '1110361' : '1110339', ВерсияФормата: '5.01', Файл: { Имя: `${id}.xml`, Ссылка: `https://disk.saby.ru/${id}.xml` } }] : [], ...(type === 'ConsignmentNote' ? { Стороны: { Отправитель: input.Грузоотправитель, Перевозчик: input.ТранспортнаяКомпания, Получатель: input.Грузополучатель } } : {}) };
-      if (input.Вложение) contents.set(`https://disk.saby.ru/${id}.xml`, Buffer.from(String(((input.Вложение as SabyObject[])[0].Файл as SabyObject).ДвоичныеДанные), 'base64'));
+      if (input.Вложение) {
+        const file = (input.Вложение as SabyObject[])[0].Файл as SabyObject;
+        ((doc.Вложение as SabyObject[])[0].Файл as SabyObject).Имя = file.Имя;
+        contents.set(`https://disk.saby.ru/${id}.xml`, Buffer.from(String(file.ДвоичныеДанные), 'base64'));
+      }
       docs.set(id, doc); return json(req, doc);
+    }
+    if (req.method === 'СБИС.ЗаписатьВложение') {
+      const input = req.params.Документ;
+      if (input.Идентификатор || Object.keys(input).some(key => !['Редакция', 'Вложение'].includes(key))) throw new Error('Synthetic attachment write requires revision only');
+      const revision = (input.Редакция as SabyObject).Идентификатор;
+      const doc = [...docs.values()].find(row => (row.Редакция as SabyObject[]).some(item => item.Идентификатор === revision));
+      const files = input.Вложение as SabyObject[];
+      if (!doc || files.length !== 1) throw new Error('Synthetic attachment identity mismatch');
+      const attachment = (doc.Вложение as SabyObject[]).find(row => row.Идентификатор === files[0].Идентификатор);
+      if (!attachment) throw new Error('Synthetic existing attachment missing');
+      const incoming = files[0].Файл as SabyObject; const file = attachment.Файл as SabyObject;
+      file.Имя = incoming.Имя;
+      contents.set(String(file.Ссылка), Buffer.from(String(incoming.ДвоичныеДанные), 'base64'));
+      return json(req, doc);
     }
     if (req.method === 'СБИС.ПрочитатьДокумент') return json(req, docs.get(String(req.params.Документ.Идентификатор)));
     if (req.method === 'СБИС.СписокДокументов') return json(req, { Документ: [...docs.values()].filter(row => row.Тип === req.params.Фильтр.Тип), Навигация: { ЕстьЕще: 'Нет' } });

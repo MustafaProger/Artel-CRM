@@ -110,6 +110,41 @@ test('custom driver passwords support issue and reset through both audiences wit
   } finally { await f.close(); }
 });
 
+test('driver login rename preserves identity and password, checks collisions and versions, and invalidates sessions', async () => {
+  const f = await fixture();
+  try {
+    const driver = await f.issue();
+    const endpoint = '/api/drivers/driver/access';
+    const before = (await f.store.read(f.source)).accounts!;
+    for (const login of ['', 'xx', 'водитель', 'x'.repeat(65), null, 123]) {
+      assert.equal((await f.request(endpoint, 'PATCH', { version: 1, login }, f.adminCookie)).status, 400);
+    }
+    assert.equal((await f.request(endpoint, 'PATCH', { version: 1, login: 'DRIVER-OWNER' }, f.adminCookie)).status, 409);
+    assert.equal((await f.request(endpoint, 'PATCH', { version: 1, login: 'driver.new' }, driver.cookie)).status, 403);
+    assert.deepEqual((await f.store.read(f.source)).accounts, before);
+    const renamed = await f.request('/api/logistics/drivers/driver/access', 'PATCH', { version: 1, login: ' Driver.New ' }, f.logisticsCookie);
+    assert.equal(renamed.status, 200); assert.equal(renamed.body.access.login, 'driver.new');
+    assert.equal(renamed.body.access.userId, driver.access.userId); assert.equal(renamed.body.access.version, 2);
+    assert.equal(renamed.body.temporaryPassword, undefined);
+    const after = (await f.store.read(f.source)).accounts!;
+    const oldUser = before.users.find(user => user.id === driver.access.userId)!;
+    assert.deepEqual(after.users.find(user => user.id === driver.access.userId), { ...oldUser, login: 'driver.new', version: 2 });
+    assert.equal((await f.request('/api/driver/trips', 'GET', undefined, driver.cookie)).status, 401);
+    assert.equal((await f.request('/api/auth/login', 'POST', { login: driver.access.login, password: driver.temporaryPassword })).status, 401);
+    const signed = await f.request('/api/auth/login', 'POST', { login: 'driver.new', password: driver.temporaryPassword });
+    assert.equal(signed.status, 200);
+    const trips = await f.request('/api/driver/trips', 'GET', undefined, signed.cookie);
+    assert.deepEqual(trips.body.trips.map((trip: {id: string}) => trip.id), [f.trip.id]);
+    const staff = await f.request(`/api/shipment-trips/${f.trip.id}`, 'GET', undefined, f.adminCookie);
+    assert.ok(staff.body.trip.number > 0); assert.equal(trips.body.trips[0].number, staff.body.trip.number);
+    assert.equal((await f.request(endpoint, 'PATCH', { version: 1, login: 'stale.name' }, f.adminCookie)).status, 409);
+    assert.equal((await f.request(endpoint, 'PATCH', { version: 2, active: false }, f.adminCookie)).status, 200);
+    const revokedRename = await f.request(endpoint, 'PATCH', { version: 3, login: 'driver.revoked' }, f.adminCookie);
+    assert.equal(revokedRename.status, 200); assert.equal(revokedRename.body.access.active, false);
+    assert.equal((await f.request('/api/auth/login', 'POST', { login: 'driver.revoked', password: driver.temporaryPassword })).status, 401);
+  } finally { await f.close(); }
+});
+
 test('invalid explicit driver passwords never generate a replacement or mutate accounts and sessions', async () => {
   const f = await fixture();
   try {

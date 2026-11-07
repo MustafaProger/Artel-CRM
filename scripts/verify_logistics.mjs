@@ -327,7 +327,7 @@ try {
   const send = panel.getByRole('button', { name: 'Создать заявку в Saby', exact: true });
   await expect(send).toBeEnabled(); await send.evaluate(button => { button.click(); button.click(); });
   await reservationStarted; await expect(send).toBeDisabled(); releaseReservation();
-  await expect(panel).toContainText('АРТЕЛЬ · подпись и отправка');
+  await expect(panel).toContainText('АРТЭЛЬ · подпись и отправка');
   assert.equal(transport.reserves('TransportOrder').length, 1); assert.equal(transport.writes('TransportOrder').length, 2); assert.equal(transport.writes('ConsignmentNote').length, 0);
   assert.equal((await api(logistics, workflowPath)).phase, 'awaiting_carrier');
   await expect(panel.getByRole('heading', { name: 'Фактическая погрузка', exact: true })).toHaveCount(0);

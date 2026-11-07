@@ -1,0 +1,62 @@
+/* Shared motion is available to touch, keyboard and mouse users alike.
+ * Keep page motion opacity-only: dialogs and fixed panels live inside pages. */
+:root {
+  --motion-feedback: 160ms;
+  --motion-enter: 220ms;
+  --motion-ease: cubic-bezier(.2, .8, .2, 1);
+}
+
+.app-shell .page-content,
+.driver-shell .driver-route-content {
+  animation: surface-appear var(--motion-enter) ease-out;
+}
+
+/* Touch feedback starts on press, without depending on hover support.
+ * Transform only small standalone actions, never table cells or tab geometry. */
+:is(.app-shell, .driver-shell, .auth-shell, dialog) :is(button.button, button.icon-button, a.button):not(:where(.shipment-grid *, .scrollable-segments *, .directory-record *)) {
+  touch-action: manipulation;
+  transition: background-color var(--motion-feedback) ease,
+    color var(--motion-feedback) ease, border-color var(--motion-feedback) ease,
+    opacity var(--motion-feedback) ease, transform var(--motion-feedback) var(--motion-ease),
+    box-shadow var(--motion-feedback) ease;
+}
+:is(.app-shell, .driver-shell, .auth-shell, dialog) :is(button.button, button.icon-button, a.button):not(:disabled, [aria-disabled="true"]):not(:where(.shipment-grid *, .scrollable-segments *, .directory-record *)):active {
+  transform: scale(.97);
+  transition-duration: 80ms;
+}
+
+.sidebar .nav-item,
+.driver-trip-card,
+.driver-sections > button {
+  touch-action: manipulation;
+  transition: background-color var(--motion-feedback) ease,
+    border-color var(--motion-feedback) ease, color var(--motion-feedback) ease,
+    box-shadow var(--motion-feedback) ease;
+}
+.sidebar .nav-item:active,
+.driver-trip-card:active,
+.driver-sections > button:active { background-color: var(--accent-soft, #edf4ee); }
+
+/* New surfaces reveal briefly; no delays accumulate on long operational lists. */
+.trips-list > .trip-card,
+.driver-trip-list > .driver-trip-card,
+.driver-trip-detail > .driver-stop,
+.work-page :is(.work-companies, .work-calendar),
+.company-options {
+  animation: surface-appear var(--motion-enter) ease-out;
+}
+.trips-list > .trip-card:nth-child(n+7),
+.driver-trip-list > .driver-trip-card:nth-child(n+7) { animation: none; }
+
+@keyframes surface-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .page-content, .driver-shell .driver-route-content,
+  .trips-list > .trip-card, .driver-trip-list > .driver-trip-card,
+  .driver-trip-detail > .driver-stop, .work-page :is(.work-companies, .work-calendar),
+  .company-options { animation: none; }
+  :is(.app-shell, .driver-shell, .auth-shell, dialog) :is(button.button, button.icon-button, a.button):active { transform: none; }
+}

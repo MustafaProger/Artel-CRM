@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useDialogMotion } from './useDialogMotion'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { LoaderCircle, Save, X } from 'lucide-react'
 import type { ShipmentEditorProps } from './ShipmentEditor'
 import DirectorySelect from './DirectorySelect'
@@ -9,12 +10,12 @@ import { formatDate, monthName, number } from './utils'
 import { isOurOrganizationId, ourOrganizations } from './our-organizations'
 
 const manualKeys = ['organization_id','document_number','date','customer_id','supplier_id','manager_id','product_id','payment_form_id','quantity_litres','customer_amount','purchase_amount']
-export default function ShipmentAzsEditor({shipment,companies,directories,defaultPaymentForm='б/нал',onClose,onSaved}:ShipmentEditorProps) {
+export default function ShipmentAzsEditor({shipment,companies,directories,defaultPaymentForm='б/нал',onClose: onDismiss,onSaved}:ShipmentEditorProps) {
   const dialog=useRef<HTMLDialogElement>(null), savingRef=useRef(false)
   const initial=useMemo<Record<string,string>>(()=>({...Object.fromEntries(manualKeys.map(key=>[key,shipment?.fields[key]??''])),date:shipment?.date??today(),payment_form_id:shipment?.fields.payment_form_id??directories.paymentForms.find(entry=>entry.name===defaultPaymentForm&&['cash','cashless'].includes(settlementKind(entry.name)))?.id??''}),[shipment,directories,defaultPaymentForm])
   const [fields,setFields]=useState<Record<string,string>>(initial),[saving,setSaving]=useState(false),[error,setError]=useState(''),[confirmClose,setConfirmClose]=useState(false)
   const dirty=manualKeys.some(key=>fields[key]!==initial[key])
-  useEffect(()=>{const element=dialog.current,focused=document.activeElement as HTMLElement|null,overflow=document.body.style.overflow;element?.showModal();document.body.style.overflow='hidden';return()=>{element?.close();document.body.style.overflow=overflow;focused?.focus()}},[])
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   const update=(key:string,value:string)=>{setFields(previous=>({...previous,[key]:value,...(key==='customer_id'?{manager_id:customerManagerId(directories,value)}:{})}));setConfirmClose(false)}
   const close=()=>{if(savingRef.current)return;if(dirty)setConfirmClose(true);else onClose()}
   const paymentForm=directories.paymentForms.find(entry=>entry.id===fields.payment_form_id)?.name??null
@@ -23,12 +24,12 @@ export default function ShipmentAzsEditor({shipment,companies,directories,defaul
   const customer=companies.find(entry=>entry.id===fields.customer_id),supplier=companies.find(entry=>entry.id===fields.supplier_id)
   const save=async(event:FormEvent)=>{
     event.preventDefault();if(savingRef.current)return
-    if(!shipment&&!isOurOrganizationId(fields.organization_id)){setError('Выберите нашу организацию: НК АРТЕЛЬ или АРТЕЛЬ.');return}
+    if(!shipment&&!isOurOrganizationId(fields.organization_id)){setError('Выберите нашу организацию: НК АРТЭЛЬ или АРТЭЛЬ.');return}
     savingRef.current=true;setSaving(true);setError('')
     const changed=Object.fromEntries(manualKeys.filter(key=>!shipment||fields[key]!==initial[key]).map(key=>[key,fields[key].trim()||null]))
     try {
       const response=await fetch(shipment?`/api/shipments/${encodeURIComponent(shipment.id)}`:'/api/shipments',{method:shipment?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields:{...changed,shipment_type:'azs'},...(shipment?{version:shipment.version??0}:{})})})
-      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить отгрузку АЗС');onSaved(result.shipment)
+      const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось сохранить отгрузку АЗС');await complete(() => onSaved(result.shipment))
     }catch(reason){setError(reason instanceof Error?reason.message:'Нет связи с сервером')}finally{savingRef.current=false;setSaving(false)}
   }
   const select=(label:string,key:string,entries:{id:string;name:string;detail?:string}[])=><DirectorySelect key={key} label={label} value={fields[key]} entries={entries} onChange={id=>update(key,id)} required disabled={saving}/>

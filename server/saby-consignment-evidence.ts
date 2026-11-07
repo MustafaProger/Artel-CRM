@@ -54,9 +54,29 @@ function canonical(node: XmlNode, path = ''): unknown {
   flush(); return [node.name, attributes, result];
 }
 
-/** Compare every cargo/party/route/event field; allow only service headers and equivalent scalars. */
-export function verifyConsignmentSenderBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array): SabySenderTitleIdentity {
+function verifyAndNormalizeDirectCoordinates(current: XmlNode, frozen: XmlNode): void {
+  const at = (root: XmlNode, path: string[]) => path.reduce((node, name) => only(node, name), root);
+  for (const path of [['Документ', 'СодИнфГО', 'СвГП', 'АдресДостГр'], ['Документ', 'СодИнфГО', 'СвПогруз', 'ФАдресПогр']]) {
+    const a = at(current, path), b = at(frozen, path);
+    const aa = only(a, 'АдресИнф'), ba = only(b, 'АдресИнф');
+    if (!aa.attributes.АдрТекст?.trim() || JSON.stringify(canonical(aa)) !== JSON.stringify(canonical(ba))) fail();
+    for (const location of [a, b]) {
+      const coordinates = children(location).filter(child => child.name === 'Коорд');
+      if (coordinates.length > 1) fail();
+      for (const node of coordinates) {
+        if (Object.keys(node.attributes).sort().join('|') !== 'Долгота|Широта' || node.children.length ||
+          ![node.attributes.Широта, node.attributes.Долгота].every(value => /^-?\d{1,3}(?:\.\d{1,13})?$/.test(value)) ||
+          Math.abs(Number(node.attributes.Широта)) > 90 || Math.abs(Number(node.attributes.Долгота)) > 180) fail();
+      }
+      location.children = location.children.filter(child => typeof child === 'string' || child.name !== 'Коорд');
+    }
+  }
+}
+
+/** Compare every cargo/party/route/event field; historical callers retain strict coordinate matching. */
+export function verifyConsignmentSenderBusiness(currentBytes: Uint8Array, frozenBytes: Uint8Array, policy?: 'address-direct-v1'): SabySenderTitleIdentity {
   const current = title(currentBytes, '1110339'); const frozen = title(frozenBytes, '1110339');
+  if (policy === 'address-direct-v1') verifyAndNormalizeDirectCoordinates(current.root, frozen.root);
   if (JSON.stringify(canonical(current.root)) !== JSON.stringify(canonical(frozen.root))) fail();
   return current.identity;
 }
@@ -69,7 +89,7 @@ function carrierContext(currentBytes: Uint8Array, senderBytes: Uint8Array, snaps
   // The external document number is assigned by Saby; all remaining data comes from the frozen delivery.
   // The orchestration also compares senderBytes to its saved exact-number artifact before this call.
   const expected = serializeSabyConsignmentNote(snapshot, '00000000-0000-4000-8000-000000000000', '2025-01-01T00:00:00.000Z', sender.content.attributes.НомерТрН);
-  verifyConsignmentSenderBusiness(senderBytes, expected.xml);
+  verifyConsignmentSenderBusiness(senderBytes, expected.xml, snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : undefined);
   const link = only(current.doc, 'ИдИнфГО');
   if (link.attributes.ИдФайлИнфГО !== sender.identity.fileId || link.attributes.ДатФайлИнфГО !== sender.identity.date || link.attributes.ВрФайлИнфГО !== sender.identity.time || !/^[A-Za-z0-9+/]+={0,2}$/.test(link.attributes.ЭП || '')) fail('Ответ перевозчика не связан с актуальным подписанным титулом отправителя ЭТрН.');
   if (Object.keys(link.attributes).some(key => !['ИдФайлИнфГО', 'ДатФайлИнфГО', 'ВрФайлИнфГО', 'ЭП'].includes(key)) || children(link).length || link.children.some(child => typeof child === 'string' && child.trim())) fail();
