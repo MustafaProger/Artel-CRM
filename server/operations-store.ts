@@ -1,4 +1,5 @@
 import { validateOperator } from './operator';
+import { operatorDiscount } from './operator-directories';
 import type { OperatorData } from '../web/src/operator-model';
 import { validateDriverTripProgress, type DriverTripProgress } from './driver-trip-progress';
 import { validateCabinets } from './cabinet-connections';
@@ -111,6 +112,20 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
       for (const row of directories.customerManagers) {
         if (!object(row) || typeof row.companyId !== 'string' || !row.companyId || typeof row.managerId !== 'string' || !row.managerId || customers.has(row.companyId)) throw new StoreError('Invalid customer manager');
         customers.add(row.companyId);
+      }
+    }
+    for (const key of ['operatorGroups', 'operatorServices']) {
+      const rows = directories[key];
+      if (rows === undefined) continue;
+      if (!Array.isArray(rows)) throw new StoreError('Invalid operator directory');
+      const seen = new Set<string>();
+      for (const row of rows) {
+        if (!object(row) || typeof row.id !== 'string' || !row.id || seen.has(row.id) || typeof row.name !== 'string' || !row.name.trim() || row.name.length > 500 || row.version !== undefined && (!Number.isSafeInteger(row.version) || Number(row.version) < 0)) throw new StoreError('Invalid operator directory entry');
+        if (key === 'operatorServices') {
+          if (typeof row.discountPercent !== 'string' || !/^\d+(?:\.\d+)?$/.test(row.discountPercent)) throw new StoreError('Invalid operator discount');
+          try { operatorDiscount(row.discountPercent); } catch { throw new StoreError('Invalid operator discount'); }
+        }
+        seen.add(row.id);
       }
     }
     if (directories.oilDepots !== undefined) {

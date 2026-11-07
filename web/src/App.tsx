@@ -84,7 +84,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const navigate = (id: Page) => {location.hash = id;setPage(id);setMenu(false);window.scrollTo({top:0,behavior:'instant'})}
   const active = pages.find(p => p.id === page)!
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
-  return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
+  return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : page === 'operator' ? 'operator-shell' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={event => {event.preventDefault();document.getElementById('main-content')?.focus()}}>К содержимому</a>
     <button className={`sidebar-scrim ${menu ? 'is-open' : ''}`} aria-label="Закрыть меню" aria-hidden={!menu} tabIndex={-1} onClick={() => setMenu(false)}/>
     <aside id="app-navigation" ref={sidebarRef} inert={(mobile || page === 'shipments') && !menu} role={menu ? 'dialog' : undefined} aria-modal={menu ? true : undefined} aria-label={menu ? 'Меню разделов' : undefined} className={`sidebar ${menu ? 'is-open' : ''}`}>
@@ -107,13 +107,13 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
-      {page === 'operator' && <OperatorPage/>}
+      {page === 'operator' && <OperatorPage creatorName={user.name}/>}
       {page === 'accounts' && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'work' && <WorkPage/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
-      {page === 'directories' && <DirectoriesPage canManage={canManage} data={data} onChanged={fetchData}/>}
+      {page === 'directories' && <DirectoriesPage canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
       {page === 'trips' && <TripsPage data={data} canManagePlaces={canManage && hasSection(user, 'directories')} onChanged={fetchData}/>}
       {page === 'payments' && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div></Suspense></PageLoadBoundary>}

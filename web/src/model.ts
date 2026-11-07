@@ -195,6 +195,7 @@ export interface Snapshot {
 }
 
 export interface NamedEntry { id: string; name: string; version?: number }
+export interface OperatorService extends NamedEntry { discountPercent: string }
 export interface Product extends NamedEntry, ProductTransportDetails {}
 export interface Vehicle extends VehicleDetails, VehicleTransportDetails { carrierId?: string; id: string; version?: number; plate: string; brand?: string; model?: string; trailer?: string; name?: string; capacityLitres?: string; compartmentsLitres?: string[] }
 export interface Driver extends NamedEntry, DriverDetails { carrierId?: string; vehicleId: string; phone?: string }
@@ -220,6 +221,8 @@ export interface Directories {
   managers: NamedEntry[]; products: Product[]; paymentForms: NamedEntry[];
   vehicles: Vehicle[]; drivers: Driver[]; addresses: ShipmentAddress[];
   oilDepots?: OilDepot[];
+  operatorGroups?: NamedEntry[];
+  operatorServices?: OperatorService[];
   defaults: { profit: ProfitRule | null };
   duplicates: DuplicateCandidate[];
   customerManagers?: { companyId: string; managerId: string }[];
