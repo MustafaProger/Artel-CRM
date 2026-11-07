@@ -1,3 +1,4 @@
+import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ArrowDownToLine, ArrowUp, ArrowDown, Filter, Check, ChevronDown, LoaderCircle, Pencil, Plus, Menu, Search, Trash2, Truck, X } from 'lucide-react'
 import type { Company, Metric, Shipment, ShipmentTrip, ShipmentType, Snapshot } from './model'
@@ -157,11 +158,11 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
   </div>
 }
 
-function DeleteShipmentDialog({shipment,companies,onClose,onDeleted}:{shipment:Shipment;companies:Company[];onClose:()=>void;onDeleted:()=>void}) {
+function DeleteShipmentDialog({shipment,companies,onClose: onDismiss,onDeleted}:{shipment:Shipment;companies:Company[];onClose:()=>void;onDeleted:()=>void}) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [saving,setSaving] = useState(false), [error,setError] = useState('')
   const [trip,setTrip] = useState<ShipmentTrip|null>(null), [loading,setLoading] = useState(!!shipment.fields.trip_id), [reload,setReload] = useState(0)
-  useEffect(() => {const element = dialog.current;const previous = document.activeElement as HTMLElement|null;element?.showModal();return () => {element?.close();previous?.focus()}},[])
+  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   useEffect(() => {
     if (!shipment.fields.trip_id) return
     const controller = new AbortController()
@@ -184,7 +185,7 @@ function DeleteShipmentDialog({shipment,companies,onClose,onDeleted}:{shipment:S
     try {
       const response = await fetch(trip ? `/api/shipment-trips/${encodeURIComponent(trip.id)}` : `/api/shipments/${encodeURIComponent(shipment.id)}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(trip ? {versions:Object.fromEntries(trip.customers.map(customer=>[customer.id,customer.version]))} : {version:shipment.version ?? 0})})
       if(!response.ok) throw await apiError(response)
-      onDeleted()
+      await complete(onDeleted)
     } catch(e) {setError(e instanceof Error ? e.message : 'Не удалось удалить операцию')}
     finally {setSaving(false)}
   }

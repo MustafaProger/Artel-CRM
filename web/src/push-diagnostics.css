@@ -1,0 +1,5 @@
+.push-diagnostics { margin-top: 16px; min-width: 0; }
+.push-diagnostics summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+.push-diagnostics summary:focus-visible { outline: 2px solid var(--accent, #236b50); outline-offset: 3px; border-radius: 4px; }
+.push-diagnostics textarea { display: block; box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--border, #d9dfdc); border-radius: 12px; background: var(--surface, #fff); color: inherit; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; overflow-wrap: anywhere; }
+.push-diagnostics .button { max-width: 100%; white-space: normal; }
