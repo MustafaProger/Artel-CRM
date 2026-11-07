@@ -11,6 +11,9 @@ import { prepareTripSaby } from './trip-saby-preparation';
 import { authorizeAutomaticTripSaby, runTripSabyWorkflow, type PrepareTripSaby } from './trip-saby-workflow';
 import { authorizeSigningActor } from './trip-saby-signing';
 import { carrierFastPolling } from './trip-saby-carrier';
+import { getShipmentTrip } from './shipment-trips';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
+import { runNkDirectEtrn } from './nk-direct-etrn';
 
 export const SABY_WORKFLOW_TICK_MS = 60_000;
 export const SABY_CARRIER_WAIT_TICK_MS = 15_000;
@@ -54,11 +57,22 @@ export async function refreshTripSabyDelivery(context: EtrnOptions, shipmentId: 
 /** Only explicit saved attempts are eligible; no account/session or browser is impersonated. */
 export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promise<TripSabyDispatchResult> {
   const result: TripSabyDispatchResult = { continued: 0, refreshed: 0, denied: 0, failed: 0 };
-  if (!options.enabled || sabyCredentialBlockers(options.config).length) return result;
+  if (!options.enabled) return result;
   const { base, store, config } = options;
   const source = base.provenance.sourceSha256;
   const initial = await store.read(source);
-  for (const [tripId, record] of Object.entries(initial.tripSaby?.trips ?? {})) {
+  for (const [tripId, saved] of Object.entries(initial.etrn?.trips ?? {})) {
+    if (!saved.direct || options.carrierWaitingOnly || options.tripId && options.tripId !== tripId) continue;
+    if (saved.direct.phase === 'completed' && (options.now ?? Date.now()) - Date.parse(saved.direct.lastCheckedAt ?? saved.direct.updatedAt) < SABY_COMPLETED_REFRESH_MS) continue;
+    try {
+      await runNkDirectEtrn({ base, store, tripId, authorize: () => {}, client: options.client ?? new SabyClient(config, options.send ?? fetch, undefined, options.runNetwork) });
+      result.continued++;
+    } catch (error) {
+      if (error instanceof ApiError && [401, 403, 404].includes(error.status)) result.denied++;
+      else if (!(error instanceof ApiError && error.status === 409)) result.failed++;
+    }
+  }
+  for (const [tripId, record] of Object.entries(sabyCredentialBlockers(config).length ? {} : initial.tripSaby?.trips ?? {})) {
     if (options.tripId && options.tripId !== tripId) continue;
     if (options.carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
     const authorityId = record.signing?.requestedBy ?? record.initiatorId;
@@ -77,6 +91,7 @@ export async function dispatchTripSaby(options: TripSabySchedulerOptions): Promi
       authorizeAutomaticTripSaby(snapshot, data, tripId, current, config);
       const actor = publicUser(user);
       requireTripSection(actor, true); requireWholeTrip(actor, snapshot, tripId);
+      assertTripTransportDocumentsAllowed(getShipmentTrip(snapshot, tripId), data);
     };
     const checkAccess = async () => { const data = await store.read(source); authorize(currentSnapshot(base, data), data); };
     // Every fetch, including authentication, organization lookups and attachment GETs,
@@ -128,7 +143,7 @@ export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 
   };
   const client = (options.client ?? new SabyClient(options.config, options.send ?? fetch)).withRequestBudget(runNetwork);
   const launch = (tripId: string, carrierWaitingOnly = false, immediate = false) => {
-    if (stopped || !options.enabled || sabyCredentialBlockers(options.config).length) return;
+    if (stopped || !options.enabled) return;
     const current = active.get(tripId);
     if (current) {
       // Timer ticks do not accumulate work. A newly saved departure needs at most
@@ -152,9 +167,10 @@ export function createTripSabyScheduler(options: Omit<TripSabySchedulerOptions, 
     client,
     /** Resolves when the scan has dispatched work, without awaiting provider calls. */
     tick(carrierWaitingOnly = false): Promise<void> {
-      if (stopped || !options.enabled || sabyCredentialBlockers(options.config).length) return Promise.resolve();
+      if (stopped || !options.enabled) return Promise.resolve();
       const scan = (async () => {
         const data = await options.store.read(options.base.provenance.sourceSha256);
+        if (!carrierWaitingOnly) for (const [tripId, saved] of Object.entries(data.etrn?.trips ?? {})) if (saved.direct) launch(tripId);
         for (const [tripId, record] of Object.entries(data.tripSaby?.trips ?? {})) {
           if (carrierWaitingOnly && (!carrierFastPolling(record, options.now ?? Date.now()) || (options.now ?? Date.now()) - Date.parse(record.lastCheckAttemptAt ?? record.createdAt) < SABY_CARRIER_WAIT_TICK_MS)) continue;
           launch(tripId, carrierWaitingOnly);

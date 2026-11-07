@@ -1,4 +1,6 @@
 import { requiresEtrn } from './trip-etrn-scope';
+import { getShipmentTrip } from './shipment-trips';
+import { assertTripTransportDocumentsAllowed } from './trip-document-mode';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Snapshot } from '../web/src/model';
 import type { TripSabySigning, TripSabySigningPreview, TripSabySigningStartRequest, TripSabySigningStep } from '../web/src/trip-saby-model';
@@ -138,8 +140,8 @@ async function readBusiness(client: SabyClient, record: TripSabyRecord, remote: 
   const revision = identity(remote, record, side); const source = title(remote, '1110361');
   if (!source || !sabyText(source.Идентификатор)) throw new SabyError('validation', 'Исходный титул заявки ещё не готов. Обновите состояние Saby.');
   const sourceFile = await client.downloadSigningAttachment(side, record.order.id!, String(source.Идентификатор), revision);
-  const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
-  const sourceIdentity = verifySabySenderBusiness(sourceFile.bytes, frozen.xml);
+  const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!, record.senderVerificationPolicy);
+  const sourceIdentity = verifySabySenderBusiness(sourceFile.bytes, frozen.xml, record.senderVerificationPolicy);
   return { revision, source, sourceFile, sourceIdentity };
 }
 interface SigningContext { base: Snapshot; store: OperationsStorage; tripId: string; authorize: (snapshot: Snapshot, data: OperationsData) => void; client?: SabyClient }
@@ -167,7 +169,7 @@ async function previewFor(client: SabyClient, record: TripSabyRecord): Promise<T
     const replyFile = reply ? await client.downloadSigningAttachment('carrier', record.order.id!, String(reply.Идентификатор), incomingBusiness.revision) : null;
     carrierPreview = { revision: incomingBusiness.revision, state: sabyOrderStateCode(incoming), stages: incoming.ТекущиеЭтапы ?? incoming.Этап ?? null, titleId: reply?.Идентификатор ?? null, hash: replyFile ? bytesHash(replyFile.bytes) : null, signed: thumbprints(reply) };
   }
-  const token = hash({ carrierPreview, attempt: record.attemptId, payload: record.payloadHash, document: record.order.id, number: record.order.number, revision: business.revision, sourceHash: bytesHash(business.sourceFile.bytes), state: sabyOrderStateCode(senderRemote), stages: senderRemote.ТекущиеЭтапы ?? senderRemote.Этап ?? null, signed, certificates: { sender: certificates.sender.map(c => c.thumbprint), carrier: certificates.carrier.map(c => c.thumbprint) } });
+  const token = hash({ senderVerificationPolicy: record.senderVerificationPolicy, carrierPreview, attempt: record.attemptId, payload: record.payloadHash, document: record.order.id, number: record.order.number, revision: business.revision, sourceHash: bytesHash(business.sourceFile.bytes), state: sabyOrderStateCode(senderRemote), stages: senderRemote.ТекущиеЭтапы ?? senderRemote.Этап ?? null, signed, certificates: { sender: certificates.sender.map(c => c.thumbprint), carrier: certificates.carrier.map(c => c.thumbprint) } });
   return { order: { id: record.order.id, number: record.order.number, date: record.order.date, revision: business.revision }, checkedAt: stamp(), previewToken: blockers.length ? null : token, ready: !blockers.length, blockers, sender: { organization: record.snapshot.customerOrganization.name, signatures: certificates.sender.map(c => ({ id: c.thumbprint, owner: c.ownerName, expiresAt: c.notAfter })), message: signed.length ? 'Подпись отправителя уже подтверждена в Saby; повторная отправка не нужна.' : 'Saby может запросить подтверждение владельца подписи.' }, carrier: { organization: record.snapshot.carrierOrganization.name, signatures: certificates.carrier.map(c => ({ id: c.thumbprint, owner: c.ownerName, expiresAt: c.notAfter })), message: 'Ответ НК будет подписан после проверки заполненных сведений. Подтверждение владельца сохраняется.' }, ...(record.signing ? { signing: publicTripSigning(record.signing) } : {}) };
 }
 /** Read-only capability check: does not prepare an action, create a request or touch a lease. */
@@ -175,6 +177,7 @@ export async function getTripSigningPreview(context: SigningContext): Promise<Tr
   const { base, store, tripId, authorize } = context; const source = base.provenance.sourceSha256;
   const check = async () => {
     const data = await store.read(source), snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+    assertTripTransportDocumentsAllowed(getShipmentTrip(snapshot, tripId), data);
     const record = data.tripSaby?.trips[tripId];
     const eligible = snapshot.shipments.filter(row => row.fields.trip_id === tripId && requiresEtrn(row));
     if (!eligible.length || record && (record.deliveries.length !== eligible.length || record.deliveries.some(row => !eligible.some(delivery => delivery.id === row.shipmentId)))) throw new ApiError(409, 'Состав доставок с ЭТрН изменился или ЭТрН не нужна. Обмен остановлен для сверки.');
@@ -280,8 +283,8 @@ async function restoreAndVerifyUnsentSigning(context: AdvanceContext, side: Saby
   const primary = prepared.attachments.find(file => file.id === prepared.binding.attachmentId);
   if (!primary) throw new SabyError('validation', 'В сохранённых файлах отсутствует выбранный титул.');
   if (side === 'sender') {
-    const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
-    try { verifySabySenderBusiness(primary.bytes, frozen.xml); }
+    const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!, record.senderVerificationPolicy);
+    try { verifySabySenderBusiness(primary.bytes, frozen.xml, record.senderVerificationPolicy); }
     catch (error) {
       // This comparison is local and precedes any Execute. A remaining business
       // difference must preserve the existing block, not become an unknown action.
@@ -481,8 +484,8 @@ export async function advanceTripSigning(context: AdvanceContext, side: SabySign
       const primary = prepared.attachments.find(a => a.id === binding.attachmentId);
       if (!primary) throw new SabyError('validation', 'Saby не подтвердил подготовленный титул.');
       if (side === 'sender') {
-        const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!);
-        verifySabySenderBusiness(primary.bytes, frozen.xml);
+        const frozen = serializeSabyTransportOrder(record.snapshot, record.attemptId, record.createdAt, record.order.number!, record.senderVerificationPolicy);
+        verifySabySenderBusiness(primary.bytes, frozen.xml, record.senderVerificationPolicy);
       } else {
         verifySabyCarrierLink(primary.bytes, business.sourceIdentity);
         verifySabyCarrierBusiness(primary.bytes, carrierBefore!, signingVehicleIdentity(record));

@@ -1,5 +1,7 @@
 import Decimal from 'decimal.js';
+import type { SabySenderVerificationPolicy } from './saby-order-evidence';
 import { SabyError, type SabyObject, type SabyOrganization, sabyObject } from './saby-client';
+import { exactSabyVolume, formatSabyVolume, sabyVolumeRoundedToZero, SABY_VOLUME_ROUNDING_INFO, SABY_VOLUME_ROUNDING_VERSION, type SabyVolumeRoundingVersion } from './saby-volume';
 
 /** Only confirmed data may be configured. These are not defaults for diesel or for a vehicle. */
 export interface SabyCargoProfile {
@@ -17,6 +19,7 @@ export interface SabyTransportProfile {
   vehicleById: Record<string, { type: string; payloadTonnes: string; capacityCubicMetres: string }>;
 }
 export interface SabyTransportSnapshot {
+  volumeRoundingVersion?: SabyVolumeRoundingVersion;
   tripId: string; shipmentId: string; version: number;
   fields: Record<string, string | null>;
   customer: SabyOrganization; supplier: SabyOrganization;
@@ -100,7 +103,12 @@ function transportBlockers(snapshot: SabyTransportSnapshot, draft = false): stri
   if (snapshot.fields.unloading_planned_at && !plannedTime(snapshot.fields.unloading_planned_at)) errors.push('Проверьте плановые дату и время доставки.');
   if (!snapshot.driver.name || !snapshot.vehicle.plate) errors.push('Выберите водителя и фактическую машину рейса.');
   if (!snapshot.deliveries && !snapshot.customer.name) errors.push('Выберите клиента доставки.');
-  if (!decimal(quantity(snapshot.fields.quantity_litres, 1000), 5, 2, true)) errors.push('Объём заказа Saby должен быть положительным и точно представляться в м³ с 2 знаками, без округления литров.');
+  const volume = formatSabyVolume(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion);
+  const capacity = snapshot.volumeRoundingVersion === SABY_VOLUME_ROUNDING_VERSION
+    ? formatSabyVolume(vehicle?.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion) : vehicle?.capacityCubicMetres;
+  if (!quantity(snapshot.fields.quantity_litres, 1000) || !decimal(volume, 5, 2, true)) errors.push(sabyVolumeRoundedToZero(snapshot.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion)
+    ? 'Объём заказа после округления до 2 знаков м³ равен нулю. Проверьте исходные литры: такой объём нельзя передать в Saby.'
+    : 'Укажите положительный объём заказа в литрах; передаваемый объём Saby должен соответствовать формату м³ (до 2 знаков, не более 5 цифр).');
   if (!massPending && !decimal(quantity(snapshot.fields.quantity_tonnes, 0.001), 17, 3, true)) errors.push('Масса груза Saby должна быть положительной и точно представляться в кг с 3 знаками.');
   for (const [name, org] of [['заказчика', snapshot.customerOrganization], ['перевозчика', snapshot.carrierOrganization]] as const) {
     if (!/^\d{10}$/.test(org.inn) || !/^\d{9}$/.test(org.kpp) || !nonempty(org.name) || !nonempty(org.address)) errors.push(`Проверьте ИНН, КПП, название и адрес ${name} для формата Saby.`);
@@ -113,11 +121,17 @@ function transportBlockers(snapshot: SabyTransportSnapshot, draft = false): stri
   if (!profile || !nonempty(profile.regulatoryInstructions, 2000) || !nonempty(profile.foodInstructions)) errors.push('Подтвердите указания о нормативных требованиях и пищевой продукции для заказа Saby.');
   const signatory = profile && sabyObject(profile.signatory) ? profile.signatory : null;
   if (!signatory || !nonempty(signatory.surname, 60) || !nonempty(signatory.name, 60) || signatory.patronymic !== undefined && !nonempty(signatory.patronymic, 60) || !nonempty(signatory.position, 255) || !['1', '2', '4', '6'].includes(String(signatory.authorityMethod))) errors.push('Для XML заказа нужны подтверждённые ФИО, должность и основание полномочий подписанта; подпись в CRM не выполняется.');
-  if (!cargo || !nonempty(cargo.name, 2000) || !nonempty(cargo.condition) || (!nonempty(cargo.packagingCode, 2) || cargo.packagingCode.length !== 2) || !/^\d{1,4}$/.test(String(cargo.packageCount)) || !['01', '02', '03'].includes(String(cargo.massMethod)) || !['0', '1'].includes(String(cargo.distributable)) || !['0', '1'].includes(String(cargo.divisible))) errors.push('Для выбранного продукта не подтверждены транспортное наименование, состояние, упаковка, число мест, метод массы и признаки груза Saby.');
+  if (!cargo || !nonempty(cargo.name, 2000) || !nonempty(cargo.condition) || (!nonempty(cargo.packagingCode, 2) || cargo.packagingCode.length !== 2) || !/^\d{1,4}$/.test(String(cargo.packageCount)) || !['01', '02', '03'].includes(String(cargo.massMethod)) || !['0', '1'].includes(String(cargo.divisible))) errors.push('Для выбранного продукта не подтверждены транспортное наименование, состояние, упаковка, число мест, метод массы и признаки груза Saby.');
+  if (!cargo || !['0', '1'].includes(String(cargo.distributable))) errors.push('В карточке выбранной машины укажите распределение груза по платформе: возможно или невозможно.');
   if (!cargo || ![cargo.heightMetres, cargo.lengthMetres, cargo.widthMetres].every(value => decimal(value, 5, 3))) errors.push('Для выбранного продукта подтвердите габариты грузового места; неизвестные значения не заменяются нулями.');
   if (!cargo || !Object.hasOwn(cargo, 'dangerousGoods') || cargo.dangerousGoods !== null && (!sabyObject(cargo.dangerousGoods) || !['unNumber', 'shippingName', 'class', 'classificationCode', 'packingGroup', 'hazardSign', 'tunnelCode'].every(key => nonempty((cargo.dangerousGoods as SabyObject)[key], key === 'shippingName' ? 2000 : key === 'class' ? 3 : 50)))) errors.push('Подтвердите классификацию опасного груза по документам именно этого продукта (или явно отсутствие опасного груза).');
-  if (!vehicle || !nonempty(vehicle.type) || !decimal(vehicle.payloadTonnes, 5, 2, true) || !decimal(vehicle.capacityCubicMetres, 5, 2, true)) errors.push('Для выбранной машины подтвердите тип, грузоподъёмность в т и вместимость в м³.');
-  if (vehicle && decimal(vehicle.capacityCubicMetres, 5, 2, true) && quantity(snapshot.fields.quantity_litres, 1000) && new Decimal(snapshot.fields.quantity_litres!).div(1000).gt(String(vehicle.capacityCubicMetres))) errors.push('Объём доставки превышает подтверждённую вместимость машины.');
+  if (!vehicle || !nonempty(vehicle.type)) errors.push('В карточке выбранной машины заполните тип транспортного средства.');
+  if (!vehicle || !decimal(vehicle.payloadTonnes, 5, 2, true)) errors.push('В карточке выбранной машины заполните грузоподъёмность в тоннах (до 2 знаков, не более 5 цифр).');
+  if (!decimal(capacity, 5, 2, true)) errors.push(sabyVolumeRoundedToZero(vehicle?.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion)
+    ? 'Вместимость выбранной машины после округления до 2 знаков м³ равна нулю. Проверьте общую вместимость цистерны в литрах.'
+    : 'В карточке выбранной машины проверьте общую вместимость цистерны в литрах; формат Saby — м³ до 2 знаков, не более 5 цифр. Секции необязательны.');
+  // Physical limits always use the exact stored capacity, never its rounded XML representation.
+  if (vehicle && decimal(capacity, 5, 2, true) && quantity(snapshot.fields.quantity_litres, 1000) && new Decimal(snapshot.fields.quantity_litres!).div(1000).gt(exactSabyVolume(vehicle.capacityCubicMetres, 'cubic-metres')!)) errors.push('Объём доставки превышает подтверждённую вместимость машины.');
   if (snapshot.intermediateStops?.some(row => !nonempty(row.name) || !nonempty(row.address) || `После ${row.afterShipmentId}: ${row.name}; ${row.address}`.length > 1000 || !snapshot.deliveries?.some(delivery => delivery.shipmentId === row.afterShipmentId))) errors.push('Проверьте адреса и порядок промежуточных точек общей заявки.');
   if (snapshot.deliveries) {
     const net = quantity(snapshot.fields.quantity_tonnes, 0.001);
@@ -134,7 +148,9 @@ function transportBlockers(snapshot: SabyTransportSnapshot, draft = false): stri
       if ((!driverFlow || row.fields.unloading_planned_at) && !plannedTime(row.fields.unloading_planned_at)) errors.push('Проверьте плановое время каждой доставки.');
       if (!decimal(row.fields.quantity_litres, 17, 3, true)) errors.push('Для каждой доставки общей заявки нужны положительные литры.');
       if (driverFlow) {
-        if (!decimal(quantity(row.fields.quantity_litres, 1000), 5, 2, true)) errors.push('Объём каждой позиции груза должен точно представляться в м³ с 2 знаками, без округления литров.');
+        if (!decimal(formatSabyVolume(row.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion), 5, 2, true)) errors.push(sabyVolumeRoundedToZero(row.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion)
+          ? 'Объём позиции груза после округления до 2 знаков м³ равен нулю. Проверьте исходные литры доставки.'
+          : 'Проверьте литры каждой доставки: передаваемый объём позиции Saby должен соответствовать формату м³ (до 2 знаков, не более 5 цифр).');
         if (massPending && (row.fields.quantity_tonnes || row.fields.quantity_gross_tonnes || snapshot.fields.quantity_gross_tonnes)) errors.push('Черновик до водителя не должен содержать частичный набор масс.');
         if (!massPending && (!decimal(quantity(row.fields.quantity_tonnes, 0.001), 17, 3, true) || !decimal(quantity(row.fields.quantity_gross_tonnes, 0.001), 17, 3, true))) errors.push('Для каждой доставки нужна положительная масса нетто и брутто из принятого действия водителя.');
         if (!massPending && row.fields.quantity_tonnes && row.fields.quantity_gross_tonnes && decimal(row.fields.quantity_tonnes, 20, 6, true) && decimal(row.fields.quantity_gross_tonnes, 20, 6, true) && !new Decimal(row.fields.quantity_tonnes).eq(row.fields.quantity_gross_tonnes)) errors.push('Для согласованного наливного топлива брутто должно совпадать с нетто доставки.');
@@ -176,7 +192,7 @@ export function encodeWindows1251(value: string): Buffer {
   const codes = new Map(Array.from({ length: 256 }, (_, byte) => [decoder.decode(Uint8Array.of(byte)), byte] as const));
   return Buffer.from([...value].map(char => { const byte = codes.get(char); if (byte === undefined) throw new SabyError('validation', 'Текст заказа содержит символы, не представимые в Windows-1251. Уберите эмодзи и неподдерживаемые символы.'); return byte; }));
 }
-function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, draft = false): { xml: Buffer; name: string; number: string } {
+function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, draft = false, policy?: SabySenderVerificationPolicy): { xml: Buffer; name: string; number: string } {
   const errors = transportBlockers(snapshot, draft); if (errors.length) throw new SabyError('validation', errors.join(' '));
   const profile = snapshot.profile!; const cargo = profile.cargoByProductId[snapshot.fields.product_id!]; const vehicle = profile.vehicleById[snapshot.fields.vehicle_id!];
   const number = explicitNumber ?? `CRM-${attemptId}`;
@@ -200,30 +216,30 @@ function serializeTransport(snapshot: SabyTransportSnapshot, attemptId: string, 
     // A pre-driver upload is deliberately incomplete and cannot pass Prepare/Execute.
     // Write/readback must prove Saby retained these exact cargo positions before calling it a draft.
     const mass = draft && !net && !gross ? '' : tag('МасГруз', { МасБрутЗнач: gross, МасНетЗнач: driverFlow || snapshot.deliveries ? net : null });
-    return tag('ОпГруз', { НаимГруз: cargo.name, СостГруз: cargo.condition, ВидТар: cargo.packagingCode, КолГрМест: cargo.packageCount, МетОпрМасс: cargo.massMethod, Объем: quantity(row.fields.quantity_litres, 1000), РаспрГр: cargo.distributable, ДелГр: cargo.divisible }, mass + tag('РазмерГрМест', { ВысЗнач: cargo.heightMetres, ДлЗнач: cargo.lengthMetres, ШирЗнач: cargo.widthMetres }) + dangerous + (driverFlow ? tag('Пункт', { Погр: '1', Выгр: String(index + 2), КолГрМест: '1' }) + info({ 'Доставка CRM': row.shipmentId, 'Получатель доставки': row.customer.name, 'ИНН получателя': row.customer.inn, 'Адрес доставки': row.fields.unloading_address }) : ''));
+    return tag('ОпГруз', { НаимГруз: cargo.name, СостГруз: cargo.condition, ВидТар: cargo.packagingCode, КолГрМест: cargo.packageCount, МетОпрМасс: cargo.massMethod, Объем: formatSabyVolume(row.fields.quantity_litres, 'litres', 2, snapshot.volumeRoundingVersion), РаспрГр: cargo.distributable, ДелГр: cargo.divisible }, mass + tag('РазмерГрМест', { ВысЗнач: cargo.heightMetres, ДлЗнач: cargo.lengthMetres, ШирЗнач: cargo.widthMetres }) + dangerous + (driverFlow ? tag('Пункт', { Погр: '1', Выгр: String(index + 2), КолГрМест: '1' }) + info({ 'Доставка CRM': row.shipmentId, 'Получатель доставки': row.customer.name, 'ИНН получателя': row.customer.inn, 'Адрес доставки': row.fields.unloading_address }) : ''));
   }).join('');
   const signer = profile.signatory;
-  const content = tag('СодИнфГО', { УИД_Зак: attemptId, СодОпер: 'Предоставление заказа и заявки на перевозку груза автомобильным транспортом', НомЗак: number, ДатаЗак: snapshot.fields.date!.split('-').reverse().join('.'), УкНормПрвз: profile.regulatoryInstructions, ПрвзПищПрод: profile.foodInstructions }, (snapshot.intermediateStops ?? []).map(row => tag('ПромПунктМрш', {}, escape(`После ${row.afterShipmentId}: ${row.name}; ${row.address}`))).join('') + organization('СвГО', snapshot.customerOrganization) + organization('СвПрв', snapshot.carrierOrganization) + pickup + route + freight + tag('ПарТСПрвз', { Тип: vehicle.type, Грузопод: vehicle.payloadTonnes, Вместим: vehicle.capacityCubicMetres }) + info({ 'Рейс CRM': snapshot.tripId, 'Доставка CRM': snapshot.shipmentId, 'Получатель доставки': snapshot.customer.name, 'ИНН получателя': snapshot.customer.inn, 'Поставщик': snapshot.supplier.name, 'Владелец нефтебазы': snapshot.fields.loading_site_owner_name, 'ИНН владельца нефтебазы': snapshot.fields.loading_site_owner_inn, 'Юридический адрес владельца нефтебазы': snapshot.fields.loading_site_owner_address, 'Водитель (план)': snapshot.driver.name, 'Телефон водителя': snapshot.driver.phone, 'Машина (план)': snapshot.vehicle.plate, 'Карта погрузки': snapshot.fields.loading_map_url, 'Карта доставки': snapshot.fields.unloading_map_url, ...(snapshot.deliveries ? Object.fromEntries(snapshot.deliveries.map((row, index) => [`Доставка ${index + 1}`, `${row.shipmentId}: ${row.customer.name}; ${row.fields.quantity_litres} л; ${row.fields.unloading_address}`])) : {}), ...(snapshot.intermediateStops ? Object.fromEntries(snapshot.intermediateStops.map((row, index) => [`Промежуточная точка ${index + 1}`, `После ${row.afterShipmentId}: ${row.name}; ${row.address}`])) : {}) }));
+  const content = tag('СодИнфГО', { УИД_Зак: attemptId, СодОпер: 'Предоставление заказа и заявки на перевозку груза автомобильным транспортом', НомЗак: number, ДатаЗак: snapshot.fields.date!.split('-').reverse().join('.'), УкНормПрвз: profile.regulatoryInstructions, ПрвзПищПрод: profile.foodInstructions }, (snapshot.intermediateStops ?? []).map(row => tag('ПромПунктМрш', {}, escape(`После ${row.afterShipmentId}: ${row.name}; ${row.address}`))).join('') + organization('СвГО', snapshot.customerOrganization) + organization('СвПрв', snapshot.carrierOrganization) + pickup + route + freight + tag('ПарТСПрвз', { Тип: vehicle.type, Грузопод: vehicle.payloadTonnes, Вместим: snapshot.volumeRoundingVersion === SABY_VOLUME_ROUNDING_VERSION ? formatSabyVolume(vehicle.capacityCubicMetres, 'cubic-metres', 2, snapshot.volumeRoundingVersion) : vehicle.capacityCubicMetres }) + info({ ...(snapshot.volumeRoundingVersion === SABY_VOLUME_ROUNDING_VERSION ? { [SABY_VOLUME_ROUNDING_INFO]: SABY_VOLUME_ROUNDING_VERSION } : {}), 'Рейс CRM': snapshot.tripId, 'Доставка CRM': snapshot.shipmentId, 'Получатель доставки': snapshot.customer.name, 'ИНН получателя': snapshot.customer.inn, 'Поставщик': snapshot.supplier.name, 'Владелец нефтебазы': snapshot.fields.loading_site_owner_name, 'ИНН владельца нефтебазы': snapshot.fields.loading_site_owner_inn, 'Юридический адрес владельца нефтебазы': snapshot.fields.loading_site_owner_address, 'Водитель (план)': snapshot.driver.name, 'Телефон водителя': snapshot.driver.phone, 'Машина (план)': snapshot.vehicle.plate, 'Карта погрузки': snapshot.fields.loading_map_url, 'Карта доставки': snapshot.fields.unloading_map_url, ...(snapshot.deliveries ? Object.fromEntries(snapshot.deliveries.map((row, index) => [`Доставка ${index + 1}`, `${row.shipmentId}: ${row.customer.name}; ${row.fields.quantity_litres} л; ${row.fields.unloading_address}`])) : {}), ...(policy === 'address-multidelivery-v1' && snapshot.deliveries ? Object.fromEntries(snapshot.deliveries.map((row, index) => [`ИНН получателя доставки ${index + 1}`, row.customer.inn])) : {}), ...(snapshot.intermediateStops ? Object.fromEntries(snapshot.intermediateStops.map((row, index) => [`Промежуточная точка ${index + 1}`, `После ${row.afterShipmentId}: ${row.name}; ${row.address}`])) : {}) }));
   const contractXml = profile.function === 'Заявка' && profile.contract ? tag('ДогОргПрвз', { НаимДок: profile.contract.name, НомерДок: profile.contract.number, ДатаДок: profile.contract.date.split('-').reverse().join('.') }, profile.contract.issuerInns.map(inn => tag('ИдРекСост', {}, tag('ИННЮЛ', {}, inn))).join('')) : '';
   const signatureInfo = tag('ПодпИнфГО', { Должн: signer.position, СпосПодтПолном: signer.authorityMethod }, tag('ФИО', { Фамилия: signer.surname, Имя: signer.name, Отчество: signer.patronymic }));
   const xml = '<?xml version="1.0" encoding="windows-1251"?>' + tag('Файл', { ИдФайл: name, ВерсПрог: 'Artel-CRM', ВерсФорм: '5.01' }, tag('Документ', { КНД: '1110361', Функция: profile.function, ДатИнфГО: createdDate.split('-').reverse().join('.'), ВрИнфГО: createdTime, НаимЭкСубСост: snapshot.customerOrganization.name }, contractXml + content + signatureInfo));
   return { xml: encodeWindows1251(xml), name: `${name}.xml`, number };
 }
-export function serializeSabyTransportOrder(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string) {
-  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber);
+export function serializeSabyTransportOrder(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy) {
+  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber, false, policy);
 }
 /** Incomplete unsigned XML for Write only; never evidence of acceptance or a valid signing title. */
-export function serializeSabyTransportDraft(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string) {
-  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber, true);
+export function serializeSabyTransportDraft(snapshot: SabyTransportSnapshot, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy) {
+  return serializeTransport(snapshot, attemptId, createdAt, explicitNumber, true, policy);
 }
-function transportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, draft = false): SabyObject {
-  const { xml, name, number } = serializeTransport(snapshot, attemptId, createdAt, explicitNumber, draft);
+function transportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, draft = false, policy?: SabySenderVerificationPolicy): SabyObject {
+  const { xml, name, number } = serializeTransport(snapshot, attemptId, createdAt, explicitNumber, draft, policy);
   return { Тип: 'TransportOrder', Регламент: { Название: 'Заказ на перевозку' }, Номер: number, Дата: snapshot.fields.date!.split('-').reverse().join('.'), Примечание: marker, НашаОрганизация: { СвЮЛ: { ИНН: snapshot.customerOrganization.inn, КПП: snapshot.customerOrganization.kpp, Название: snapshot.customerOrganization.name } }, Контрагент: { Идентификатор: snapshot.carrierOrganization.edoId, СвЮЛ: { ИНН: snapshot.carrierOrganization.inn, КПП: snapshot.carrierOrganization.kpp, Название: snapshot.carrierOrganization.name } }, Вложение: [{ Файл: { Имя: name, ДвоичныеДанные: xml.toString('base64') } }] };
 }
 
-export function buildSabyTransportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string): SabyObject {
-  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber);
+export function buildSabyTransportDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy): SabyObject {
+  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber, false, policy);
 }
-export function buildSabyTransportDraftDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string): SabyObject {
-  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber, true);
+export function buildSabyTransportDraftDocument(snapshot: SabyTransportSnapshot, marker: string, attemptId: string, createdAt: string, explicitNumber?: string, policy?: SabySenderVerificationPolicy): SabyObject {
+  return transportDocument(snapshot, marker, attemptId, createdAt, explicitNumber, true, policy);
 }

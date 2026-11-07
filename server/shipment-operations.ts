@@ -14,6 +14,7 @@ import { StoreError, type OperationsData } from './operations-store';
 import { shipmentSettlementAllocations } from './organization-settlements';
 import { isOurOrganizationId, organizationName, shipmentOrganizationId } from '../web/src/our-organizations';
 import { readIntermediateStops } from '../web/src/trip-route';
+import { validTripDocumentPolicy } from './trip-document-mode';
 
 const Exact = Decimal.clone({ precision: SHIPMENT_DECIMAL_PRECISION });
 export const SHIPMENT_FIELDS = [
@@ -28,7 +29,7 @@ export const SHIPMENT_FIELDS = [
   'trip_notes', 'delivery_notes', 'invoice_not_required', 'etrn_not_required', 'intermediate_stops_after', 'intermediate_stops_in_order', 'trip_delivery_order', 'quantity_gross_tonnes',
   'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude',
   'loading_planned_at', 'loading_actual_at', 'unloading_planned_at', 'unloading_actual_at',
-  'trip_flow_version', 'trip_id', 'source_request_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
+  'trip_flow_version', 'trip_document_policy', 'trip_id', 'source_request_id', 'trip_total_tonnes', 'trip_additional_costs', 'days_since_shipment',
   'opening_payment_date', 'opening_paid_amount', 'loading_address_id', 'unloading_address_id', 'purchase_unit', 'payment_due_date', 'overdue_days', 'calculation_mode', 'profit_rule',
 ] as const;
 const allowedFields = new Set<string>(SHIPMENT_FIELDS);
@@ -73,7 +74,7 @@ function findCompany(value: string | null, companies: Company[], inn?: string | 
 
 export function validateShipmentFields(input: unknown, previous: Shipment | undefined, companies: Company[]): Record<string, string | null> {
   if (!object(input) || !Object.keys(input).length) throw new ApiError(400, 'Укажите поля операции.');
-  const fields: Record<string, string | null> = previous ? { ...previous.fields } : Object.fromEntries(SHIPMENT_FIELDS.map(key => [key, null]));
+  const fields: Record<string, string | null> = previous ? { ...previous.fields } : Object.fromEntries(SHIPMENT_FIELDS.filter(key => key !== 'trip_document_policy').map(key => [key, null]));
   for (const [key, raw] of Object.entries(input)) {
     if (!allowedFields.has(key)) throw new ApiError(400, `Неизвестное поле: ${key}.`);
     if (raw !== null && typeof raw !== 'string') throw new ApiError(400, `Поле ${key} должно быть строкой или null.`);
@@ -137,7 +138,7 @@ function validateStoredTrips(shipments: Shipment[]) {
   const groups = new Map<string, Shipment[]>();
   for (const row of shipments) {
     if (!row.fields.trip_id) {
-      if (row.fields.trip_total_tonnes || row.fields.trip_additional_costs) throw new StoreError('Orphan trip metadata');
+      if (row.fields.trip_total_tonnes || row.fields.trip_additional_costs || row.fields.trip_document_policy != null) throw new StoreError('Orphan trip metadata');
       continue;
     }
     if (!/^shipment-trip-[a-f0-9-]+$/.test(row.fields.trip_id)) throw new StoreError('Invalid trip identity');
@@ -145,11 +146,12 @@ function validateStoredTrips(shipments: Shipment[]) {
     const members = groups.get(row.fields.trip_id) ?? [];
     members.push(row); groups.set(row.fields.trip_id, members);
   }
-  const shared = ['trip_flow_version', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order'];
+  const shared = ['trip_flow_version', 'trip_document_policy', 'organization_id', 'date', 'supplier_id', 'oil_depot_id', 'carrier_id', 'purchase_price_unspecified_unit', 'product_id', 'driver_id', 'vehicle_id', 'loading_address_id', 'loading_address', 'loading_map_url', 'loading_latitude', 'loading_longitude', 'loading_planned_at', 'loading_actual_at', 'trip_notes', 'trip_total_tonnes', 'trip_additional_costs', 'intermediate_stops_in_order'];
   for (const rows of groups.values()) {
     const first = rows[0].fields;
     const driverFlow = first.trip_flow_version === 'driver-v1';
     if (first.trip_flow_version != null && !driverFlow) throw new StoreError('Invalid trip flow version');
+    if (first.trip_document_policy != null && (!driverFlow || !validTripDocumentPolicy(first.trip_document_policy))) throw new StoreError('Invalid trip document policy');
     const awaitingMass = driverFlow && rows.every(row => row.fields.quantity_tonnes == null && row.fields.quantity_gross_tonnes == null && row.fields.trip_total_tonnes == null);
     if (!driverFlow && rows.some(row => (row.fields.quantity_gross_tonnes ?? null) !== (first.quantity_gross_tonnes ?? null))) throw new StoreError('Inconsistent gross mass');
     if (driverFlow && rows.some(row => row.fields.quantity_gross_tonnes !== row.fields.quantity_tonnes)) throw new StoreError('Invalid driver gross mass');
@@ -390,7 +392,7 @@ export function prepareShipmentFields(input: unknown, previous: Shipment | undef
   }
   data.shipment_type = type;
   const automatic = ['days_since_shipment','opening_payment_date', 'opening_paid_amount','document_number','month','customer_inn','supplier_inn','customer_amount','sale_price_per_tonne','purchase_amount','profit_source','paid_amount_source','payment_date','debt_overpayment_source','term_source','overdue_days','kvp_source','unlabelled_note','calculation_mode','profit_rule','vehicle_plate','driver_name','trip_id','trip_total_tonnes','trip_additional_costs'];
-  automatic.push('trip_flow_version', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
+  automatic.push('trip_flow_version', 'trip_document_policy', 'trip_delivery_order', 'loading_map_url', 'unloading_map_url', 'loading_latitude', 'loading_longitude', 'unloading_latitude', 'unloading_longitude');
   for (const key of automatic) if (!(azs && ['document_number','customer_amount','purchase_amount'].includes(key)) && Object.hasOwn(data,key)) throw new ApiError(400,`Поле ${key} рассчитывается автоматически или сохранено только для истории.`);
   if (typeof data.customer_id === 'string' && !data.manager_id) {
     const managerId = customerManagerId(catalog, data.customer_id);
