@@ -6,6 +6,7 @@ import { effectiveSections, hasSection, isAdministrator, isScopedEmployee, secti
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
+import { queueInvoiceRevocations } from './invoice-bridge';
 
 const scrypt = promisify(derive);
 export interface StoredUser extends AccountUser { passwordHash: string; salt: string; deletedBy?: string }
@@ -90,7 +91,9 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   const permissions = input.sections === undefined ? previous && isScopedEmployee(previous) ? effectiveSections(previous) : undefined
     : [...new Set((input.sections as SectionId[]).map(id => id === 'settlements' ? 'overview' : id))];
   const user:StoredUser={...(previous??await passwordFields(input.password)),...(previous && input.password?await passwordFields(input.password):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
-  user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : effectiveSections(user)))] : sections.map(section => section.id);
+  user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : effectiveSections(user)))]
+    : sections.map(section => section.id);
+  if (previous && hasSection(previous, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);
   if (previous && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
@@ -114,6 +117,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   const tasks = data.work?.tasks.filter(row => row.assigneeId === id && !row.archivedAt && row.status !== 'done').length ?? 0;
   const companies = data.work?.companyRecords.filter(row => row.assigneeId === id && !row.archivedAt).length ?? 0;
   if (tasks || companies) throw new ApiError(409, `У сотрудника есть незавершённые записи: задачи — ${tasks}, работа с компаниями — ${companies}. В разделе «Работа» передайте их другому сотруднику или завершите и архивируйте, затем повторите удаление.`);
+  if (hasSection(user, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
   user.active = false;
   user.deletedAt = new Date().toISOString();
   user.deletedBy = actor.id;
@@ -149,4 +153,12 @@ export async function login(data:OperationsData,input:Record<string,unknown>,aud
   accounts.sessions.push({hash:hash(token),userId:user.id,expiresAt:now+28800000,...(audience ? { audience } : {})});
   return {token,user:publicUser(user),status:200};
 }
-export function logout(data:OperationsData,request:IncomingMessage){const token=sessionToken(request);if(data.accounts && token)data.accounts.sessions=data.accounts.sessions.filter(s=>s.hash!==hash(token));}
+export function logout(data:OperationsData,request:IncomingMessage){
+  const token=sessionToken(request);
+  if(data.accounts && token) {
+    const session = data.accounts.sessions.find(row => row.hash === hash(token));
+    const user = session && data.accounts.users.find(row => row.id === session.userId);
+    if (session && !session.audience && user && hasSection(user, 'invoices')) queueInvoiceRevocations(data, [session.hash]);
+    data.accounts.sessions=data.accounts.sessions.filter(s=>s.hash!==hash(token));
+  }
+}

@@ -5,6 +5,8 @@ export type DriverDelivery = {
   address: string | null; mapUrl: string | null; actualAt: string | null; notes: string | null; netTonnes: string | null
 }
 export type DriverTrip = {
+  documentMode?: 'nk_direct_etrn'
+  documentAutomation?: 'after_driver_departure'
   etrnRequired?: boolean
   number?: number
   id: string; date: string | null; driverName: string; vehiclePlate: string | null; supplier: string | null

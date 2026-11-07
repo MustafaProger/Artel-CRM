@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabySenderBusiness, verifySabyCarrierVehicleAddition } from '../server/saby-order-evidence';
+import { carrierBusinessHash, verifySabyCarrierBusiness, verifySabySenderBusiness, verifySabyCarrierVehicleAddition, type SabySenderVerificationPolicy } from '../server/saby-order-evidence';
 import { encodeWindows1251 } from '../server/saby-transport-order';
 
 // Deliberately synthetic: no real IDs, personal details, signature files or keys.
@@ -244,4 +244,204 @@ test('only an added UTC indicator 1 on an unchanged numbered unloading point wit
     singleDeliverySender.replace(unloadingPoint, flag('1')).replace('ПорНомПункт="2"', 'ПорНомПункт="3"'),
     singleDeliverySender.replace(unloadingPoint, flag('1')).replace('ПорНомПункт="2"', 'ПорНомПункт="1"'),
   ]) assert.throws(() => verifySabySenderBusiness(bytes(bad), bytes(singleDeliverySender)));
+});
+
+const addressPolicy: SabySenderVerificationPolicy = 'address-multidelivery-v1';
+interface SyntheticDelivery { id: string; customer: string; inn: string; address: string; litres: number; massKg: number }
+const syntheticDeliveries: SyntheticDelivery[] = [
+  { id: 'delivery-a', customer: 'Получатель Первый Тест', inn: '010000000102', address: 'Адрес доставки Первый Тест', litres: 8000, massKg: 6745 },
+  { id: 'delivery-b', customer: 'Получатель Второй Тест', inn: '020000000203', address: 'Адрес доставки Второй Тест', litres: 9500, massKg: 7985 },
+  { id: 'delivery-c', customer: 'Получатель Третий Тест', inn: '030000000304', address: 'Адрес доставки Третий Тест', litres: 4000, massKg: 3340 },
+];
+const syntheticInfo = (values: Record<string, string>) => `<ИнфПол>${Object.entries(values).map(([key, value]) => `<ТекстИнф Идентиф="${key}" Значение="${value}"/>`).join('')}</ИнфПол>`;
+function multipleDeliverySender(deliveries = syntheticDeliveries.slice(0, 2)): string {
+  const routes = ['Адрес погрузки Тест', ...deliveries.map(row => row.address)].map((address, index) =>
+    `<АдрПункт Опер="${index ? 'Выгрузка' : 'Погрузка'}" ПорНомПункт="${index + 1}"><АдресПункт><Адрес><АдрИнф КодСтр="643" АдрТекст="${address}"/></Адрес></АдресПункт></АдрПункт>`).join('');
+  const cargos = deliveries.map((row, index) => `<ОпГруз Объем="${row.litres / 1000}"><МасГруз МасБрутЗнач="${row.massKg}" МасНетЗнач="${row.massKg}"/><Пункт Погр="1" Выгр="${index + 2}" КолГрМест="1"/>${syntheticInfo({
+    'Доставка CRM': row.id, 'Получатель доставки': row.customer, 'ИНН получателя': row.inn, 'Адрес доставки': row.address,
+  })}</ОпГруз>`).join('');
+  const information = syntheticInfo({
+    'Рейс CRM': 'trip-synthetic', 'Доставка CRM': 'trip-synthetic', 'Получатель доставки': deliveries[0].customer, 'ИНН получателя': deliveries[0].inn,
+    'Владелец нефтебазы': 'Владелец Тест', 'ИНН владельца нефтебазы': '040000000405', 'Поставщик': 'Поставщик Тест',
+    ...Object.fromEntries(deliveries.flatMap((row, index) => [
+      [`Доставка ${index + 1}`, `${row.id}: ${row.customer}; ${row.litres} л; ${row.address}`],
+      [`ИНН получателя доставки ${index + 1}`, row.inn],
+    ])),
+  });
+  return sender.replace('<АдрРФ>Синтетический адрес</АдрРФ>', '<АдрИнф КодСтр="643" АдрТекст="Адрес подачи Тест"/>')
+    .replace('<ОпГруз><МасГруз МасБрутЗнач="14740" МасНетЗнач="14740"/></ОпГруз>', routes + cargos + information);
+}
+const omitCargoInformation = (value: string, replacement = '') => value.replace(/(<ОпГруз(?=\s|>)[^>]*>[\s\S]*?)<ИнфПол>[\s\S]*?<\/ИнфПол>(<\/ОпГруз>)/g, `$1${replacement}$2`);
+const verifyNewSender = (actual: string, frozen: string) => verifySabySenderBusiness(bytes(actual), bytes(frozen), addressPolicy);
+
+test('new policy proves two independent recipients when Saby omits cargo information; raw bytes stay intact', () => {
+  const frozen = multipleDeliverySender();
+  for (const replacement of ['', '<ИнфПол/>', '<ИнфПол> \n </ИнфПол>']) {
+    const actual = omitCargoInformation(frozen, replacement).replace('ИдФайл="SYNTHETIC-SENDER"', 'ИдФайл="SYNTHETIC-PREPARED"');
+    const actualBytes = bytes(actual); const frozenBytes = bytes(frozen);
+    const actualBefore = Buffer.from(actualBytes); const frozenBefore = Buffer.from(frozenBytes);
+    assert.equal(verifySabySenderBusiness(actualBytes, frozenBytes, addressPolicy).fileId, 'SYNTHETIC-PREPARED');
+    assert.deepEqual(actualBytes, actualBefore); assert.deepEqual(frozenBytes, frozenBefore);
+  }
+  // Keeping either delivery's metadata does not prevent proof of the other omitted block.
+  const blocks = frozen.match(/<ОпГруз(?=\s|>)[\s\S]*?<\/ОпГруз>/g)!;
+  for (const block of blocks) assert.doesNotThrow(() => verifyNewSender(frozen.replace(block, omitCargoInformation(block)), frozen));
+  const padded = omitCargoInformation(frozen).replaceAll('="6745"', '="6745.000"').replaceAll('="7985"', '="7985.000"');
+  assert.doesNotThrow(() => verifyNewSender(padded, frozen));
+});
+
+test('rounded delivery volumes remain provable only with the frozen rounding rule and unchanged original litres', () => {
+  const deliveries = syntheticDeliveries.slice(0, 2).map((row, index) => ({ ...row, litres: index ? 9930 : 5118 }));
+  const unrounded = multipleDeliverySender(deliveries);
+  const roundedWithoutRule = unrounded.replace('Объем="5.118"', 'Объем="5.12"');
+  const marker = '<ТекстИнф Идентиф="Точность объёмов CRM" Значение="fns-5.01-v1"/>';
+  const frozen = roundedWithoutRule.replace('<ТекстИнф Идентиф="Рейс CRM"', marker + '<ТекстИнф Идентиф="Рейс CRM"');
+  const actual = omitCargoInformation(frozen);
+  assert.doesNotThrow(() => verifyNewSender(actual, frozen));
+  assert.throws(() => verifyNewSender(omitCargoInformation(roundedWithoutRule), roundedWithoutRule));
+  assert.throws(() => verifyNewSender(actual.replace(marker, ''), frozen));
+  assert.throws(() => verifyNewSender(actual.replace('5118 л;', '5119 л;'), frozen), 'same rounded value does not authorize a source litre edit');
+  assert.throws(() => verifyNewSender(actual.replace('Объем="5.12"', 'Объем="5.11"'), frozen));
+  assert.throws(() => verifyNewSender(actual.replace('9930 л;', '9929 л;'), frozen));
+  const zero = frozen.replace('5118 л;', '4 л;').replace('Объем="5.12"', 'Объем="0"');
+  assert.throws(() => verifyNewSender(omitCargoInformation(zero), zero));
+});
+
+test('new policy keeps delivery identity across three cargos, repeated customers and repeated physical addresses', () => {
+  const cases = [
+    syntheticDeliveries,
+    syntheticDeliveries.map(row => ({ ...row, customer: syntheticDeliveries[0].customer, inn: syntheticDeliveries[0].inn })),
+    syntheticDeliveries.map(row => ({ ...row, address: syntheticDeliveries[0].address })),
+    syntheticDeliveries.map(row => ({ ...row, customer: syntheticDeliveries[0].customer, inn: syntheticDeliveries[0].inn, address: syntheticDeliveries[0].address })),
+  ];
+  for (const deliveries of cases) {
+    const frozen = multipleDeliverySender(deliveries);
+    assert.doesNotThrow(() => verifyNewSender(omitCargoInformation(frozen), frozen));
+    const cargos = omitCargoInformation(frozen).match(/<ОпГруз(?=\s|>)[\s\S]*?<\/ОпГруз>/g)!;
+    const reordered = omitCargoInformation(frozen).replace(cargos.join(''), [cargos[1], cargos[0], cargos[2]].join(''));
+    assert.throws(() => verifyNewSender(reordered, frozen));
+  }
+});
+
+test('the new omission rule requires its persisted policy and per-delivery INN even for one delivery', () => {
+  for (const deliveries of [syntheticDeliveries.slice(0, 2), syntheticDeliveries]) {
+    const frozen = multipleDeliverySender(deliveries);
+    assert.throws(() => verifySabySenderBusiness(bytes(omitCargoInformation(frozen)), bytes(frozen)));
+  }
+  const one = multipleDeliverySender(syntheticDeliveries.slice(0, 1));
+  assert.doesNotThrow(() => verifyNewSender(omitCargoInformation(one), one));
+  assert.throws(() => verifyNewSender(omitDeliveryInformation(singleDeliverySender), singleDeliverySender));
+  for (const count of [1, 2]) {
+    const frozen = multipleDeliverySender().replace(new RegExp(`<ТекстИнф Идентиф="ИНН получателя доставки ${count}"[^>]*\\/>`), '');
+    assert.throws(() => verifyNewSender(omitCargoInformation(frozen), frozen));
+  }
+});
+
+test('new omission rule cannot hide changed recipient identity, summary, cargo mass, volume or route', () => {
+  const frozen = multipleDeliverySender(); const actual = omitCargoInformation(frozen);
+  for (const [before, after] of [
+    ['0148372956', '0199999999'], ['0392816475', '0399999999'],
+    ['Владелец Тест', 'Другой владелец'], ['040000000405', '0499999999'], ['Поставщик Тест', 'Другой поставщик'],
+    ['Получатель Второй Тест', 'Другой получатель'], ['020000000203', '020000000204'],
+    ['delivery-b:', 'delivery-other:'], ['9500 л;', '9501 л;'], ['Объем="9.5"', 'Объем="9.6"'],
+    ['МасНетЗнач="7985"', 'МасНетЗнач="7986"'], ['МасБрутЗнач="7985"', 'МасБрутЗнач="7986"'],
+    ['АдрТекст="Адрес доставки Второй Тест"', 'АдрТекст="Другой адрес"'],
+    ['л; Адрес доставки Второй Тест', 'л; Другой адрес'],
+    ['Выгр="3"', 'Выгр="2"'], ['Погр="1"', 'Погр="2"'], ['КолГрМест="1"', 'КолГрМест="2"'],
+    ['ПорНомПункт="3"', 'ПорНомПункт="2"'], ['ПорНомПункт="3"', 'ПорНомПункт="4"'],
+    ['Опер="Выгрузка"', 'Опер="Погрузка"'],
+    ['Идентиф="Доставка 2"', 'Идентиф="Доставка 3"'],
+    ['Идентиф="ИНН получателя доставки 2"', 'Идентиф="ИНН получателя доставки 3"'],
+  ]) assert.throws(() => verifyNewSender(actual.replace(before, after), frozen), undefined, before);
+  const cargos = actual.match(/<ОпГруз(?=\s|>)[\s\S]*?<\/ОпГруз>/g)!;
+  const routes = actual.match(/<АдрПункт(?=\s|>)[\s\S]*?<\/АдрПункт>/g)!;
+  for (const changed of [
+    actual.replace(cargos.join(''), [...cargos].reverse().join('')),
+    actual.replace(routes.join(''), [routes[0], routes[2], routes[1]].join('')),
+    actual.replace(cargos[1], ''), actual.replace(cargos[1], cargos[0]), actual.replace(cargos[1], cargos[1] + cargos[1]),
+    actual.replace(routes[2], ''), actual.replace(routes[2], routes[1]), actual.replace(routes[2], routes[2] + routes[2]),
+    actual.replace('<МасГруз МасБрутЗнач="7985" МасНетЗнач="7985"/>', ''),
+    actual.replace('МасБрутЗнач="7985" МасНетЗнач="7985"', 'МасБрутЗнач="6745" МасНетЗнач="6745"'),
+  ]) assert.throws(() => verifyNewSender(changed, frozen));
+});
+
+test('new omission proof rejects duplicate, missing, partial or malformed evidence even if retained identically on both sides', () => {
+  const source = multipleDeliverySender();
+  const cargoBlocks = source.match(/<ОпГруз(?=\s|>)[\s\S]*?<\/ОпГруз>/g)!;
+  for (const frozen of [
+    source.replaceAll('delivery-b', 'delivery-a'),
+    source.replace('Идентиф="Доставка 2"', 'Идентиф="Доставка 02"'),
+    source.replace('Идентиф="ИНН получателя доставки 2"', 'Идентиф="ИНН получателя доставки 02"'),
+    source.replace('Идентиф="Рейс CRM"', 'Идентиф="Другое"'),
+    source.replaceAll('020000000203', 'wrong-inn'),
+    source.replace('Объем="9.5"', 'Объем="8"'),
+    source.replaceAll('9500 л;', '0 л;').replace('Объем="9.5"', 'Объем="0"'),
+    source.replace('Выгр="3"', 'Выгр="2"'),
+    source.replace('ПорНомПункт="3"', 'ПорНомПункт="2"'),
+    source.replace(cargoBlocks[1], cargoBlocks[1].replace('Значение="delivery-b"', 'Значение="unlinked-id"')),
+    source.replace(cargoBlocks[1], cargoBlocks[1].replace('</ИнфПол>', '<ТекстИнф Идентиф="Доставка CRM" Значение="delivery-b"/></ИнфПол>')),
+    source.replace(cargoBlocks[1], cargoBlocks[1].replace('</ИнфПол>', '<ТекстИнф Идентиф="Условие" Значение="Не терять"/></ИнфПол>')),
+    source.replace('Идентиф="ИНН получателя доставки 2" Значение="020000000203"', 'Идентиф="ИНН получателя доставки 2" Значение="010000000102"'),
+    source.replace('</СодИнфГО>', '<ИнфПол/></СодИнфГО>'),
+  ]) {
+    assert.notEqual(frozen, source);
+    assert.throws(() => verifyNewSender(omitCargoInformation(frozen), frozen));
+  }
+  const omitted = omitCargoInformation(source);
+  for (const information of [
+    '<ИнфПол ИдФайлИнфПол="unknown-file"/>', '<ИнфПол>unknown text</ИнфПол>', '<ИнфПол/><ИнфПол/>',
+    syntheticInfo({ 'Доставка CRM': 'delivery-a' }), syntheticInfo({ 'Неизвестное': 'Не терять' }),
+  ]) assert.throws(() => verifyNewSender(omitted.replace('</ОпГруз>', `${information}</ОпГруз>`), source));
+  const originalInformation = cargoBlocks[1].match(/<ИнфПол>[\s\S]*?<\/ИнфПол>/)![0];
+  for (const malformed of [
+    originalInformation.replace('<ИнфПол>', '<ИнфПол ИдФайлИнфПол="external-information">'),
+    originalInformation.replace('</ИнфПол>', '<Неизвестное/></ИнфПол>'),
+    originalInformation.replace('Значение="delivery-b"', 'Значение=" "'),
+    originalInformation.replace('Идентиф="ИНН получателя"', 'Идентиф="Доставка CRM"'),
+    originalInformation + '<ИнфПол/>',
+  ]) {
+    const frozen = source.replace(originalInformation, malformed);
+    assert.throws(() => verifyNewSender(frozen.replace(malformed, ''), frozen));
+  }
+  for (const frozen of [
+    source.replace('<Пункт Погр="1" Выгр="3" КолГрМест="1"/>', '<Пункт Погр="1" Выгр="3" КолГрМест="1"/><Пункт Погр="1" Выгр="3" КолГрМест="1"/>'),
+    source.replace('Идентиф="ИНН получателя доставки 2" Значение="020000000203"/>', 'Идентиф="ИНН получателя доставки 2" Значение="020000000203"/><ТекстИнф Идентиф="ИНН получателя доставки 2" Значение="020000000203"/>'),
+  ]) assert.throws(() => verifyNewSender(omitCargoInformation(frozen), frozen));
+});
+
+test('new policy accepts changed valid coordinates only at exact complete addresses, alongside multiple cargo omissions', () => {
+  const source = multipleDeliverySender(syntheticDeliveries);
+  const frozen = source.replaceAll('<Адрес>', `${routeCoordinates}<Адрес>`);
+  const changed = omitCargoInformation(frozen).replaceAll('55.643825', '55.648001').replaceAll('37.85126', '37.856789');
+  assert.doesNotThrow(() => verifyNewSender(changed, frozen));
+  assert.throws(() => verifySabySenderBusiness(bytes(changed), bytes(frozen)));
+  for (const actual of [omitCargoInformation(source), omitCargoInformation(frozen), changed]) assert.doesNotThrow(() => verifyNewSender(actual, frozen));
+  assert.doesNotThrow(() => verifyNewSender(changed, source));
+  // New address policy does not mutate signing bytes or their hash input.
+  const preparedBytes = bytes(changed); const originalBytes = bytes(frozen);
+  verifySabySenderBusiness(preparedBytes, originalBytes, addressPolicy);
+  assert.equal(preparedBytes.toString(), changed); assert.equal(originalBytes.toString(), frozen);
+});
+
+test('new coordinate rule rejects invalid coordinates and any full address mismatch or ambiguity', () => {
+  const frozen = multipleDeliverySender().replaceAll('<Адрес>', `${routeCoordinates}<Адрес>`);
+  const changed = omitCargoInformation(frozen).replaceAll('55.643825', '55.648001');
+  for (const invalid of [
+    changed.replace('55.648001', '95.648001'), changed.replace('55.648001', '90.000000000000001'),
+    changed.replace('37.85126', '180.000000000000001'), changed.replace('55.648001', 'NaN'),
+    changed.replace(' Долгота="37.85126"', ''), changed.replace('<Коорд ', '<Коорд Лишнее="1" '),
+    changed.replace('<Коорд ', `${routeCoordinates}<Коорд `),
+    changed.replace('АдрТекст="Адрес подачи Тест"', 'АдрТекст="Адрес  подачи Тест"'),
+    changed.replace('АдрТекст="Адрес подачи Тест"', 'АдрТекст="Другой адрес"'),
+    changed.replace('АдрТекст="Адрес подачи Тест"', 'АдрТекст=""'),
+    changed.replace('КодСтр="643"', 'КодСтр="398"'),
+    changed.replace('<Адрес><АдрИнф КодСтр="643" АдрТекст="Адрес подачи Тест"/></Адрес>', ''),
+    changed.replace('</Адрес>', '</Адрес><Адрес><АдрИнф КодСтр="643" АдрТекст="Адрес подачи Тест"/></Адрес>'),
+    changed.replace('<АдрИнф ', '<АдрИнф Лишнее="1" '),
+    changed.replace('<СвГО>', `<СвГО>${routeCoordinates}`),
+  ]) assert.throws(() => verifyNewSender(invalid, frozen));
+  for (const invalid of [
+    frozen.replace('55.643825', 'NaN'), frozen.replace('<Коорд ', `${routeCoordinates}<Коорд `),
+    frozen.replace('АдрТекст="Адрес подачи Тест"', 'АдрТекст=""'),
+  ]) assert.throws(() => verifyNewSender(invalid, invalid));
 });

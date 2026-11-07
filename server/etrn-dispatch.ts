@@ -1,14 +1,17 @@
 import { requireEtrnDelivery } from './trip-etrn-scope';
 import { getShipmentTrip } from './shipment-trips';
+import { assertTripTransportDocumentsAllowed, isNkDirectEtrn } from './trip-document-mode';
+import { authorizeNkDirectEtrn, type NkDirectEtrnRecord } from './nk-direct-etrn';
+import { verifyNkRecipientAcceptance } from './nk-direct-recipient-evidence';
 import { createHash, randomUUID } from 'node:crypto';
 import { ApiError } from './api-error';
-import type { EtrnDocument, EtrnOptions } from './etrn-service';
+import { nativeSenderAmendmentOptions, validateNativeSenderAmendment, type EtrnDocument, type EtrnOptions } from './etrn-service';
 import { currentSnapshot } from './shipment-operations';
 import { authorizeAutomaticTripSaby } from './trip-saby-workflow';
 import { SabyClient, SabyError, sabyConfigFromEnv, sabyDocumentWorkflow, sabyObject, sabyText, type SabyObject } from './saby-client';
-import { assertSigningBinding, assertSigningManifest, createCarrierDraftBinding, createSigningBinding, prepareBoundSigning, prepareCarrierDraft, readSigningEvidence, restorePreparedSigning, signingCertificateForOrganization, type SabySigningBinding, type SabySigningManifest, type SabySigningSide } from './saby-signing';
+import { assertSigningBinding, assertSigningManifest, createCarrierDraftBinding, createSigningBinding, prepareBoundSigning, prepareCarrierDraft, readPreparedCarrierDraft, readSigningEvidence, restorePreparedSigning, verifyPreparedSigning, signingCertificateForOrganization, type SabySigningBinding, type SabySigningManifest, type SabySigningSide } from './saby-signing';
 import { serializeSabyConsignmentNote } from './saby-consignment-note';
-import { verifyConsignmentSenderBusiness, verifyConsignmentCarrierBusiness, verifyConsignmentCarrierSourceSignature, fillConsignmentCarrier } from './saby-consignment-evidence';
+import { verifyConsignmentSenderBusiness, verifyConsignmentCarrierBusiness, verifyConsignmentCarrierSourceSignature, fillConsignmentCarrier, validConsignmentOperatorUid } from './saby-consignment-evidence';
 
 export interface EtrnDispatchStep {
   state: 'not_started' | 'preparing' | 'waiting' | 'unknown' | 'blocked' | 'confirmed';
@@ -18,9 +21,11 @@ export interface EtrnDispatchStep {
 }
 export interface EtrnDispatch {
   version: 1; sender: EtrnDispatchStep; carrier: EtrnDispatchStep;
+  /** Operator-issued UID read from the verified prepared v2 sender title. Never a CRM attempt id. */
+  operatorUid?: string;
   carrierDraft?: { binding: SabySigningBinding; state: 'preparing' | 'ready' | 'unknown' };
   carrierFill?: { id: string; revision: string; name: string; beforeHash: string; afterHash: string; attempted: true };
-  completedAt?: string; lastError?: string;
+  completedAt?: string; recipientAcceptedAt?: string; lastError?: string;
 }
 const rows = (value: unknown): SabyObject[] => Array.isArray(value) ? value.filter(sabyObject) : sabyObject(value) ? [value] : [];
 const bytesHash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -28,7 +33,8 @@ const stamp = () => new Date().toISOString();
 const fail = (message: string): never => { throw new SabyError('validation', message); };
 export function validateEtrnDispatch(value: unknown, documentId: string | null): void {
   if (value === undefined) return;
-  if (!sabyObject(value) || value.version !== 1 || !documentId || Object.keys(value).some(key => !['version', 'sender', 'carrier', 'carrierDraft', 'carrierFill', 'completedAt', 'lastError'].includes(key))) throw new Error('Invalid ETRN dispatch');
+  if (!sabyObject(value) || value.version !== 1 || !documentId || Object.keys(value).some(key => !['version', 'sender', 'carrier', 'operatorUid', 'carrierDraft', 'carrierFill', 'completedAt', 'recipientAcceptedAt', 'lastError'].includes(key))) throw new Error('Invalid ETRN dispatch');
+  if (value.operatorUid !== undefined && (!validConsignmentOperatorUid(value.operatorUid) || !sabyObject(value.sender) || !value.sender.prepared)) throw new Error('Invalid ETRN operator UID evidence');
   for (const side of ['sender', 'carrier'] as const) {
     const step = value[side];
     if (!sabyObject(step) || Object.keys(step).some(key => !['state', 'binding', 'prepared', 'verified', 'executeAttempted', 'dispatchState'].includes(key)) || !['not_started', 'preparing', 'waiting', 'unknown', 'blocked', 'confirmed'].includes(String(step.state))) throw new Error('Invalid ETRN dispatch step');
@@ -53,6 +59,7 @@ export function validateEtrnDispatch(value: unknown, documentId: string | null):
     if (binding.documentType !== 'ConsignmentNote' || binding.documentId !== documentId || binding.side !== 'carrier' || binding.attachmentId !== 'unprepared-carrier-title') throw new Error('Invalid ETRN carrier draft binding');
   }
   if (value.carrierFill !== undefined && (!sabyObject(value.carrierFill) || value.carrierFill.attempted !== true || !['id', 'revision', 'name'].every(key => sabyText((value.carrierFill as SabyObject)[key])) || !['beforeHash', 'afterHash'].every(key => /^[a-f0-9]{64}$/.test(String((value.carrierFill as SabyObject)[key]))))) throw new Error('Invalid ETRN carrier fill');
+  if (value.recipientAcceptedAt !== undefined && (typeof value.recipientAcceptedAt !== 'string' || !Number.isFinite(Date.parse(value.recipientAcceptedAt)) || !value.completedAt)) throw new Error('Unconfirmed ETRN recipient acceptance');
   if (value.completedAt !== undefined && (typeof value.completedAt !== 'string' || !Number.isFinite(Date.parse(value.completedAt)) || (value.sender as EtrnDispatchStep).state !== 'confirmed' || (value.carrier as EtrnDispatchStep).state !== 'confirmed')) throw new Error('Unconfirmed ETRN completion');
 }
 function partyMatches(value: unknown, expected: { inn: string; kpp: string }): boolean {
@@ -67,7 +74,7 @@ function verifyIdentity(remote: SabyObject, doc: EtrnDocument, side: SabySigning
 }
 function title(remote: SabyObject, subtype: string) {
   const revision = sabyDocumentWorkflow(remote).revision;
-  const titles = rows(remote.Вложение).filter(row => row.Подтип === subtype && row.ВерсияФормата === '5.01' && row.Удален !== 'Да' && row.Актуален !== 'Нет' && (!sabyObject(row.Редакция) || !row.Редакция.Идентификатор || row.Редакция.Идентификатор === revision));
+  const titles = rows(remote.Вложение).filter(row => row.Подтип === subtype && row.ВерсияФормата === '5.01' && row.Удален !== 'Да' && row.Актуален !== 'Нет' && (!row.Редакция || (sabyObject(row.Редакция) ? !row.Редакция.Идентификатор || row.Редакция.Идентификатор === revision : row.Редакция === revision)));
   if (!revision || titles.length !== 1 || !sabyText(titles[0].Идентификатор)) fail('Не подтверждён единственный актуальный титул ЭТрН.');
   return { id: String(titles[0].Идентификатор), revision: revision! };
 }
@@ -84,13 +91,50 @@ export function consignmentClientDispatchConfirmed(remote: SabyObject, recipient
   });
 }
 
+/** Metadata candidate only; the caller must additionally verify positive T3 content and its exact signed T2 link. */
+export function consignmentClientAcceptanceCandidate(remote: SabyObject, recipient: { inn: string; kpp: string }): boolean {
+  const hasErrors = (value: SabyObject) => !!value.Ошибка || Number(value.КоличествоОшибок ?? 0) !== 0 || Array.isArray(value.Ошибки) && value.Ошибки.length > 0;
+  if (remote.ЧастичныеДанные === 'Да' || remote.Удален === 'Да' || hasErrors(remote) || sabyObject(remote.Состояние) && (hasErrors(remote.Состояние) || ['6', '9', '22'].includes(String(remote.Состояние.Код)))) return false;
+  const revision = sabyDocumentWorkflow(remote).revision;
+  if (!revision) return false;
+  const titles = rows(remote.Вложение).filter(row => row.Подтип === '1110341' && row.ВерсияФормата === '5.01' && row.Удален !== 'Да' && row.Актуален !== 'Нет'
+    && (!row.Редакция || (sabyObject(row.Редакция) ? !row.Редакция.Идентификатор || row.Редакция.Идентификатор === revision : row.Редакция === revision)));
+  if (titles.length !== 1 || !sabyText(titles[0].Идентификатор) || hasErrors(titles[0])) return false;
+  const title = titles[0];
+  const signatures = rows(title.Подпись);
+  if (!signatures.length || signatures.some(signature => {
+    const cert = sabyObject(signature.Сертификат) ? signature.Сертификат : {}, file = sabyObject(signature.Файл) ? signature.Файл : {};
+    return hasErrors(signature) || signature.Удален === 'Да' || signature.Актуален === 'Нет' || cert.ИНН !== recipient.inn
+      || (cert.КПП !== undefined && recipient.inn.length === 10 && cert.КПП !== recipient.kpp) || !/^[a-f0-9]{40,128}$/.test(String(cert.Отпечаток ?? '').replace(/[\s:]/g, '').toLowerCase()) || !(sabyText(file.Ссылка) || sabyText(file.ДвоичныеДанные));
+  })) return false;
+  const stages = rows(remote.Этап).filter(stage => stage.Название === 'Приемка груза' && stage.Служебный !== 'Да' && stage.Завершен === 'Да' && stage.Актуален !== 'Нет' && !hasErrors(stage));
+  return stages.length === 1 && rows(stages[0].Исполнитель).some(executor => partyMatches(executor.Контрагент, recipient))
+    && rows(stages[0].Вложение).some(file => file.Идентификатор === title.Идентификатор);
+}
+
 /** Automatic stage six exists only for new driver-v1 attempts carrying the saved server policy. */
 export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: string): Promise<{ completedAt: string | null; lastError: string | null }> {
   const { base, store, tripId, authorize } = options, source = base.provenance.sourceSha256;
   let client = options.client ?? new SabyClient(sabyConfigFromEnv());
   const leaseId = randomUUID();
+  let directRecord: NkDirectEtrnRecord | undefined;
+  const amendmentClaim: { hash?: string } = {};
+  const amendmentHash = (row: EtrnDocument) => bytesHash(Buffer.from(JSON.stringify(row.nativeSenderAmendment ?? null)));
   const authority = (data: import('./operations-store').OperationsData) => {
     const snapshot = currentSnapshot(base, data); authorize(snapshot, data);
+    const trip = getShipmentTrip(snapshot, tripId);
+    if (isNkDirectEtrn(trip, data)) {
+      if (client.config.documentMode !== 'nk-direct-v1') throw new ApiError(403, 'Для прямой ЭТрН требуется кабинет НК.');
+      requireEtrnDelivery(trip, shipmentId);
+      const direct = authorizeNkDirectEtrn(base, data, tripId, client.config);
+      const doc = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
+      if (!direct.deliveries.some(row => row.shipmentId === shipmentId) || doc?.snapshot.documentMode !== 'nk-direct-v1') throw new ApiError(403, 'Документ не входит в разрешение прямой ЭТрН.');
+      validateNativeSenderAmendment(doc, tripId, direct);
+      if (amendmentClaim.hash !== undefined && amendmentHash(doc) !== amendmentClaim.hash) throw new ApiError(409, 'Согласование сведений ЭТрН изменилось во время проверки.');
+      directRecord = direct;
+      return direct;
+    }
+    assertTripTransportDocumentsAllowed(trip, data);
     requireEtrnDelivery(getShipmentTrip(snapshot, tripId), shipmentId);
     const workflow = data.tripSaby?.trips[tripId];
     if (!workflow?.driverFlow || workflow.driverFlow.state !== 'ready' || !workflow.autoAuthorization || !workflow.carrierEvidence || workflow.signing?.sender.state !== 'confirmed' || workflow.signing.carrier.state !== 'confirmed' || !data.driverTripProgress?.[tripId]?.departedAt) throw new ApiError(403, 'Не подтверждено основание автоматической отправки ЭТрН.');
@@ -106,6 +150,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     current.leaseId = leaseId; current.leaseUntil = new Date(Date.now() + 300_000).toISOString();
     return { result: structuredClone(current), changed: true };
   });
+  amendmentClaim.hash = amendmentHash(doc);
   const update = async (change: (row: EtrnDocument) => void) => {
     doc = await store.mutate(source, data => {
       authority(data); const current = data.etrn?.trips[tripId]?.deliveries[shipmentId]?.document;
@@ -120,21 +165,27 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     if (!latest || latest.leaseId !== leaseId || Date.parse(latest.leaseUntil ?? '') <= Date.now()) throw new ApiError(409, 'Сеанс отправки ЭТрН истёк.');
   };
   client = client.withRequestGuard(checkAccess);
-  const business = async (remote: SabyObject, side: SabySigningSide) => {
+  const titleOptions = () => ({ senderTitleVersion: doc.senderTitleVersion });
+  const evidenceOptions = (remote: SabyObject, phase: 'unprepared' | 'prepared' = 'prepared') => ({
+    ...(doc.nativeSenderAmendment ? nativeSenderAmendmentOptions(doc, directRecord!, remote) : { ...titleOptions(), operatorUid: doc.dispatch?.operatorUid }), phase,
+  });
+  const business = async (remote: SabyObject, side: SabySigningSide, phase: 'unprepared' | 'prepared' = 'prepared') => {
     verifyIdentity(remote, doc, side);
     const sender = title(remote, '1110339');
     const bytes = (await client.downloadSigningAttachment(side, doc.id!, sender.id, sender.revision, 'ConsignmentNote')).bytes;
-    const expected = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number);
-    verifyConsignmentSenderBusiness(bytes, expected.xml);
+    const expected = serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions());
+    const evidence = verifyConsignmentSenderBusiness(bytes, expected.xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : undefined, evidenceOptions(remote, phase));
     if (side === 'carrier') {
       const carrier = title(remote, '1110340');
       const reply = await client.downloadSigningAttachment(side, doc.id!, carrier.id, carrier.revision, 'ConsignmentNote');
-      verifyConsignmentCarrierBusiness(reply.bytes, bytes, doc.snapshot);
+      verifyConsignmentCarrierBusiness(reply.bytes, bytes, doc.snapshot, evidenceOptions(remote));
       const signature = await client.downloadSigningSignature(side, doc.id!, sender.id, sender.revision, doc.dispatch!.sender.prepared!.binding.certificateThumbprint, 'ConsignmentNote');
       verifyConsignmentCarrierSourceSignature(reply.bytes, signature);
     }
+    return evidence;
   };
   try {
+    if (doc.senderTitleVersion === 2 && doc.dispatch?.sender.verified && !validConsignmentOperatorUid(doc.dispatch.operatorUid)) fail('Не сохранено подтверждение операторского УИД подготовленной ЭТрН. Подписание остановлено.');
     if (doc.dispatch?.completedAt) return { completedAt: doc.dispatch.completedAt, lastError: null };
     for (const side of ['sender', 'carrier'] as const) {
       let step = doc.dispatch![side];
@@ -148,14 +199,29 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         }
         if (step.executeAttempted) { await update(row => { row.dispatch![side].state = 'waiting'; row.dispatch!.lastError = evidence.reason; }); break; }
       }
-      if (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent')) {
+      // Only an explicit amendment pinned to this already durable native manifest
+      // can reopen its business verification. It never authorizes another Prepare.
+      const recoverApprovedPrepared = side === 'sender' && doc.senderTitleVersion === 2 &&
+        doc.snapshot.documentMode === 'nk-direct-v1' && (!!doc.nativeAdoptionEvidence || doc.nativeSenderAmendment?.version === 'direct-redirection-approval-v2') &&
+        !!step.prepared && doc.nativeSenderAmendment?.originalPreparedHash === step.prepared.preparedHash &&
+        step.verified !== true && step.executeAttempted !== true && step.dispatchState === undefined;
+      const reconcileCarrierDraft = side === 'carrier' && doc.nativeSenderAmendment?.version === 'direct-redirection-approval-v2' &&
+        doc.dispatch!.sender.state === 'confirmed' && doc.dispatch!.carrierDraft?.state === 'preparing' &&
+        !step.binding && !step.prepared && !step.executeAttempted && step.dispatchState === undefined;
+      if (!recoverApprovedPrepared && !reconcileCarrierDraft && (step.state === 'blocked' || step.binding && !step.prepared || step.prepared && (step.verified !== true || step.dispatchState !== 'not_sent'))) {
         await update(row => { row.dispatch![side].state = 'unknown'; row.dispatch!.lastError = 'Результат подготовки ЭТрН неизвестен. Повторное действие не выполняется.'; }); break;
       }
       let remote = await client.readSigningDocument(side, doc.id!, 'ConsignmentNote'); verifyIdentity(remote, doc, side);
-      const selection = (await store.read(source)).tripSaby!.trips[tripId].autoAuthorization!.selection[side];
+      const currentData = await store.read(source); authority(currentData);
+      const selection = client.config.documentMode === 'nk-direct-v1' ? currentData.etrn!.trips[tripId].direct!.authorization.selection[side] : currentData.tripSaby!.trips[tripId].autoAuthorization!.selection[side];
       const org = side === 'sender' ? doc.snapshot.customerOrganization : doc.snapshot.carrierOrganization;
       const certificate = signingCertificateForOrganization(await client.readSigningCertificate(side, selection), org);
       if (!certificate || certificate.thumbprint !== selection) fail('Выбранная подпись ЭТрН недоступна для организации.');
+      if (reconcileCarrierDraft) {
+        remote = await readPreparedCarrierDraft(client, doc.dispatch!.carrierDraft!.binding);
+        verifyIdentity(remote, doc, side);
+        await update(row => { row.dispatch!.carrierDraft!.state = 'ready'; });
+      }
       if (side === 'carrier' && !rows(remote.Вложение).some(row => row.Подтип === '1110340' && row.Удален !== 'Да')) {
         if (doc.dispatch!.carrierDraft) { await update(row => { row.dispatch!.lastError = 'Ответ перевозчика ещё не подтверждён; повторная подготовка не выполняется.'; }); break; }
         const binding = createCarrierDraftBinding(remote, certificate!, client.config, 'Отложенный', 'ConsignmentNote');
@@ -166,7 +232,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
       if (side === 'carrier' && !step.binding) {
         const sender = title(remote, '1110339'), carrier = title(remote, '1110340');
         const sourceFile = await client.downloadSigningAttachment(side, doc.id!, sender.id, sender.revision, 'ConsignmentNote');
-        verifyConsignmentSenderBusiness(sourceFile.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number).xml);
+        verifyConsignmentSenderBusiness(sourceFile.bytes, serializeSabyConsignmentNote(doc.snapshot, doc.attemptId, doc.createdAt, doc.number, titleOptions()).xml, doc.snapshot.documentMode === 'nk-direct-v1' ? 'address-direct-v1' : undefined, evidenceOptions(remote));
         const reply = await client.downloadSigningAttachment(side, doc.id!, carrier.id, carrier.revision, 'ConsignmentNote');
         const sourceSignature = await client.downloadSigningSignature(side, doc.id!, sender.id, sender.revision, doc.dispatch!.sender.prepared!.binding.certificateThumbprint, 'ConsignmentNote');
         verifyConsignmentCarrierSourceSignature(reply.bytes, sourceSignature);
@@ -174,7 +240,7 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
         if (previous) {
           if (previous.id !== carrier.id || previous.revision !== carrier.revision || previous.name !== reply.name || previous.afterHash !== bytesHash(reply.bytes)) fail('Результат заполнения ответа перевозчика ЭТрН неизвестен или изменён. Повторная запись не выполняется.');
         } else {
-          const filled = fillConsignmentCarrier(reply.bytes, sourceFile.bytes, doc.snapshot);
+          const filled = fillConsignmentCarrier(reply.bytes, sourceFile.bytes, doc.snapshot, evidenceOptions(remote));
           if (filled.changed) {
             const before = bytesHash(reply.bytes), after = bytesHash(filled.bytes);
             const fresh = await client.downloadSigningAttachment(side, doc.id!, carrier.id, carrier.revision, 'ConsignmentNote');
@@ -187,20 +253,45 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
           }
         }
       }
-      await business(remote, side);
+      await business(remote, side, side === 'sender' && !step.prepared ? 'unprepared' : 'prepared');
       let prepared;
-      if (step.prepared && step.verified && step.dispatchState === 'not_sent') prepared = await restorePreparedSigning(client, step.prepared);
+      if (recoverApprovedPrepared) {
+        const manifest = step.prepared!, savedManifest = JSON.stringify(manifest), approval = amendmentClaim.hash;
+        prepared = await restorePreparedSigning(client, manifest);
+        await verifyPreparedSigning(client, prepared);
+        const evidence = await business(await client.readSigningDocument(side, doc.id!, 'ConsignmentNote'), side);
+        if (!validConsignmentOperatorUid(evidence.operatorUid)) fail('Saby не подтвердил операторский УИД подготовленной ЭТрН.');
+        await update(row => {
+          const current = row.dispatch!.sender;
+          if (amendmentHash(row) !== approval || JSON.stringify(current.prepared) !== savedManifest ||
+              current.executeAttempted === true || current.dispatchState !== undefined || current.verified === true ||
+              row.nativeSenderAmendment?.originalPreparedHash !== manifest.preparedHash) {
+            throw new ApiError(409, 'Сохранённое задание на подпись или его согласование изменилось.');
+          }
+          row.dispatch!.operatorUid = evidence.operatorUid;
+          current.verified = true; current.dispatchState = 'not_sent'; current.state = 'preparing';
+        });
+      } else if (step.prepared && step.verified && step.dispatchState === 'not_sent') prepared = await restorePreparedSigning(client, step.prepared);
       else {
         const binding = createSigningBinding(remote, side, certificate!, client.config, 'Отложенный', 'ConsignmentNote');
         await update(row => { row.dispatch![side] = { state: 'preparing', binding }; });
         prepared = await prepareBoundSigning(client, binding);
         const manifest: SabySigningManifest = { binding: prepared.binding, attachments: prepared.attachments.map(({ bytes: _bytes, ...file }) => file), preparedHash: prepared.preparedHash };
         await update(row => { row.dispatch![side].prepared = manifest; });
-        await business(await client.readSigningDocument(side, doc.id!, 'ConsignmentNote'), side);
-        await update(row => { row.dispatch![side].verified = true; row.dispatch![side].dispatchState = 'not_sent'; });
+        const evidence = await business(await client.readSigningDocument(side, doc.id!, 'ConsignmentNote'), side);
+        await update(row => {
+          if (row.senderTitleVersion === 2) {
+            if (!evidence.operatorUid) fail('Saby не подтвердил операторский УИД подготовленной ЭТрН.');
+            row.dispatch!.operatorUid = evidence.operatorUid;
+          }
+          row.dispatch![side].verified = true; row.dispatch![side].dispatchState = 'not_sent';
+        });
       }
       await client.executeDeferredSigning(prepared, async () => {
-        await update(row => { row.dispatch![side].executeAttempted = true; row.dispatch![side].dispatchState = 'attempted'; row.dispatch![side].state = 'waiting'; });
+        await update(row => {
+          if (row.senderTitleVersion === 2 && !validConsignmentOperatorUid(row.dispatch!.operatorUid)) fail('Не сохранено подтверждение операторского УИД ЭТрН. Подписание остановлено.');
+          row.dispatch![side].executeAttempted = true; row.dispatch![side].dispatchState = 'attempted'; row.dispatch![side].state = 'waiting';
+        });
       });
       await update(row => { row.dispatch![side].dispatchState = 'acknowledged'; });
       step = doc.dispatch![side];
@@ -212,12 +303,28 @@ export async function continueEtrnDispatch(options: EtrnOptions, shipmentId: str
     if (doc.dispatch!.sender.state === 'confirmed' && doc.dispatch!.carrier.state === 'confirmed') {
       const remote = await client.readSigningDocument('sender', doc.id!, 'ConsignmentNote');
       await business(remote, 'sender');
-      const delivered = consignmentClientDispatchConfirmed(remote, doc.snapshot.profile.recipient);
-      await update(row => { if (delivered) { row.dispatch!.completedAt ??= stamp(); row.dispatch!.lastError = undefined; } else { delete row.dispatch!.completedAt; row.dispatch!.lastError = 'Подписи получены. Saby ещё не подтвердил передачу на этап приёмки именно этому клиенту.'; } });
+      let accepted = false;
+      if (doc.snapshot.documentMode === 'nk-direct-v1' && consignmentClientAcceptanceCandidate(remote, doc.snapshot.profile.recipient)) {
+        const receiptTitle = title(remote, '1110341'), carrierTitle = title(remote, '1110340');
+        const receiptBytes = await client.downloadSigningAttachment('sender', doc.id!, receiptTitle.id, receiptTitle.revision, 'ConsignmentNote');
+        const carrierBytes = await client.downloadSigningAttachment('sender', doc.id!, carrierTitle.id, carrierTitle.revision, 'ConsignmentNote');
+        const carrierManifest = doc.dispatch!.carrier.prepared!.attachments.find(file => file.id === carrierTitle.id);
+        if (!carrierManifest || carrierManifest.name !== carrierBytes.name || carrierManifest.sha256 !== bytesHash(carrierBytes.bytes)) fail('Исходный подписанный титул перевозчика изменился перед проверкой приёмки клиента.');
+        const signature = await client.downloadSigningSignature('sender', doc.id!, carrierTitle.id, carrierTitle.revision, doc.dispatch!.carrier.prepared!.binding.certificateThumbprint, 'ConsignmentNote', '1110340');
+        verifyNkRecipientAcceptance(receiptBytes.bytes, carrierBytes.bytes, signature);
+        const fingerprints = (value: SabyObject) => rows(rows(value.Вложение).find(file => file.Идентификатор === receiptTitle.id)?.Подпись).map(row => row.Сертификат);
+        const fresh = await client.readSigningDocument('sender', doc.id!, 'ConsignmentNote');
+        verifyIdentity(fresh, doc, 'sender');
+        const freshTitle = title(fresh, '1110341');
+        if (!consignmentClientAcceptanceCandidate(fresh, doc.snapshot.profile.recipient) || freshTitle.id !== receiptTitle.id || freshTitle.revision !== receiptTitle.revision || JSON.stringify(fingerprints(fresh)) !== JSON.stringify(fingerprints(remote))) fail('Приёмка клиента изменилась во время сверки. Требуется обновить состояние.');
+        accepted = true;
+      }
+      const delivered = accepted || consignmentClientDispatchConfirmed(remote, doc.snapshot.profile.recipient);
+      await update(row => { if (delivered) { row.dispatch!.completedAt ??= stamp(); if (accepted) row.dispatch!.recipientAcceptedAt ??= stamp(); row.dispatch!.lastError = undefined; } else { delete row.dispatch!.completedAt; delete row.dispatch!.recipientAcceptedAt; row.dispatch!.lastError = 'Подписи получены. Saby ещё не подтвердил передачу на этап приёмки именно этому клиенту.'; } });
     }
   } catch (error) {
     await update(row => {
-      delete row.dispatch!.completedAt;
+      delete row.dispatch!.completedAt; delete row.dispatch!.recipientAcceptedAt;
       const step = row.dispatch!.sender.state !== 'confirmed' ? row.dispatch!.sender : row.dispatch!.carrier;
       step.state = error instanceof SabyError && !error.uncertain && error.kind === 'validation' ? 'blocked' : 'unknown';
       row.dispatch!.lastError = error instanceof SabyError || error instanceof ApiError ? error.message : 'Отправка ЭТрН не подтверждена. Нужна сверка.';

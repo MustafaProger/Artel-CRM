@@ -1,10 +1,12 @@
 import type { Company, ShipmentAddress, DirectoryData, Vehicle } from './model'
 import { companyFields, driverFields, allVehicleFields, productTransportFields, vehicleTransportFields } from './directory-fields'
 import { customerManagerId } from './customer-manager'
+import { readOperatorCatalog } from './operator-catalog'
 
-export type EditorTab = 'customers'|'suppliers'|'loadingParty'|'oilDepots'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses'|'customerManagers'
+export type EditorTab = 'customers'|'suppliers'|'loadingParty'|'oilDepots'|'managers'|'products'|'paymentForms'|'vehicles'|'drivers'|'addresses'|'customerManagers'|'operatorServices'
 const companyTab = (tab: EditorTab) => ['customers','suppliers','loadingParty'].includes(tab)
 export function directoryEntry(data: DirectoryData, tab: EditorTab, id?: string) {
+  if(tab==='operatorServices')return readOperatorCatalog(data.directories!).services.find(row=>row.id===id)
   return companyTab(tab) ? data.companies.find(row=>row.id===id) : tab==='customerManagers' ? undefined : (data.directories![tab as Exclude<EditorTab,'customers'|'suppliers'|'loadingParty'|'customerManagers'>]??[]).find(row=>row.id===id)
 }
 export function directoryDraft(data: DirectoryData, tab: EditorTab, id?: string) {
@@ -23,6 +25,7 @@ export function directoryPayload(tab: EditorTab, {fields,sections,roles,companyI
   const payload:Record<string,unknown> = companyTab(tab) ? {...Object.fromEntries(companyFields.map(([key])=>[key,fields[key]??''])),name:fields.name,inn:fields.inn??'',roles,defaultDriverId:fields.defaultDriverId??'',defaultVehicleId:fields.defaultVehicleId??'',managerId:managerId||null,addresses:addresses.map(({id,...address})=>({...(id?{id}:{}),...address}))}
         : tab === 'vehicles' ? Object.fromEntries(['plate','name','brand','model','trailer','capacityLitres','carrierId',...allVehicleFields.map(([key])=>key),...vehicleTransportFields.map(([key])=>key)].map(key=>[key,fields[key]??'']))
         : tab === 'products' ? {name:fields.name,...Object.fromEntries(productTransportFields.map(([key])=>[key,fields[key]??'']))}
+        : tab === 'operatorServices' ? {name:fields.name,discountPercent:fields.discountPercent??'',...(fields.backgroundColor?{backgroundColor:fields.backgroundColor}:{})}
         : tab === 'drivers' ? {...Object.fromEntries(driverFields.map(([key])=>[key,fields[key]??''])),name:fields.name,phone:fields.phone??'',vehicleId:fields.vehicleId??'',carrierId:fields.carrierId??''} : tab === 'oilDepots' ? Object.fromEntries(['name','address','mapUrl','latitude','longitude','ownerCompanyId','loadingActorCompanyId','infrastructureOwnerCompanyId'].map(key=>[key,fields[key]??''])) : tab === 'addresses' ? {name:fields.name,companyId:fields.companyId,addressKind:fields.addressKind??fields.kind??'delivery',...(fields.pointAddress?{pointAddress:fields.pointAddress}:{}),address:fields.address??'',mapUrl:fields.mapUrl??'',latitude:fields.latitude??'',longitude:fields.longitude??'',receiverName:fields.receiverName??'',receiverPhone:fields.receiverPhone??'',loadingActorCompanyId:fields.loadingActorCompanyId??'',infrastructureOwnerCompanyId:fields.infrastructureOwnerCompanyId??''} : tab === 'customerManagers' ? {companyId,managerId:managerId||null} : {name:fields.name}
   if(tab==='vehicles')payload.compartmentsLitres=sections.trim()?sections.split(/[+;]/).map(value=>value.trim()):undefined
   if(tab==='addresses'&&oilDepotDistancesKm!==undefined)payload.oilDepotDistancesKm=oilDepotDistancesKm
@@ -47,6 +50,7 @@ export function mergeDirectoryPayload(base:Record<string,unknown>, local:Record<
 }
 export const directoryFieldLabel = (key:string) => Object.fromEntries([
   ...companyFields,...driverFields,...allVehicleFields,...productTransportFields,...vehicleTransportFields,
+  ['discountPercent','Скидка, %'],['backgroundColor','Цвет фона'],
   ['name','Наименование'],['plate','Автомобиль / номер'],['brand','Марка'],['model','Модель'],['trailer','Прицеп'],['capacityLitres','Объём автомобиля, л'],['compartmentsLitres','Секции, л'],['roles','Тип компании'],['addresses','Адреса компании'],['oilDepotDistancesKm','Расстояния до нефтебаз, км'],['managerId','Менеджер'],['vehicleId','Автомобиль по умолчанию'],['carrierId','Организация транспорта'],['inn','ИНН'],['phone','Телефон'],['addressKind','Тип адреса'],['companyId','Компания адреса'],['ownerCompanyId','Владелец нефтебазы'],['loadingActorCompanyId','Погрузчик'],['infrastructureOwnerCompanyId','Владелец площадки'],['mapUrl','Ссылка на карту'],['latitude','Широта'],['longitude','Долгота'],['receiverName','Приёмщик'],['receiverPhone','Телефон приёмщика'],['defaultDriverId','Водитель по умолчанию'],['defaultVehicleId','Автомобиль по умолчанию'],
 ])[key]??key
 

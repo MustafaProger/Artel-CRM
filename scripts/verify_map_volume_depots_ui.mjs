@@ -15,7 +15,7 @@ const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = 
 await mkdir(output, { recursive: true }); await writeTripsQaSnapshot(snapshotDirectory);
 const snapshot = await loadSnapshot(snapshotDirectory), store = new OperationsStore(operationsDirectory);
 const positions = [[55.60, 37.35], [55.7, 37.6], [55.9, 38.1], [55.4, 38], [56.1, 37], [55.9, 36.9]];
-const quantities = ['1200', '2000', '6000', '9500', '14000', '5999.999999'];
+const quantities = ['1200', '2000', '6000', '11000', '14000', '5999.999999'];
 await store.mutate(snapshot.provenance.sourceSha256, data => {
   data.sourceOperationsCleared = true; data.shipments = {}; data.paymentAllocations = [];
   data.companies = positions.map((_, i) => ({ id: `customer-${i}`, name: `QA Компания ${i}`, roles: ['customer'], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] }));

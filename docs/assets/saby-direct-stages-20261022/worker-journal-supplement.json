@@ -1,0 +1,39 @@
+{
+  "at": "2026-10-22T08:33:38.050191+00:00",
+  "inputClassificationSha256": "c936fde30fa4beb93e8a9b0a23f0ed2a979d57b991e8e461b8c068171d768972",
+  "lifecycleProofSha256": "ab51d1ccaa62d50e6db96b0e82c5fde1aec6eae9158881878065af196d9e4cad",
+  "sourceCodeSha256": "1eb432e720878784b48e4db924d48d5c796cbb8a52fe9264f1519fb468e4e1c9",
+  "phases": {
+    "after": {
+      "rawClassificationPassed": false,
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 4,
+      "immutableCrmRecordsExact": true,
+      "cachedExternalBalanceChanged": false,
+      "persistentWorkerFilesExact": true,
+      "coordinationDatabaseEmptyAndExact": true,
+      "transientJournalRemoved": "one-c-browser-print/executor-coordination.sqlite-journal",
+      "initiatingWorkerOperationProven": false,
+      "businessAndPersistentFileInvariantsPassed": true,
+      "sourceCodeSha256": "1eb432e720878784b48e4db924d48d5c796cbb8a52fe9264f1519fb468e4e1c9"
+    },
+    "after-ui": {
+      "rawClassificationPassed": false,
+      "rawStrictDataEqual": false,
+      "rawUnexplainedChanges": 11,
+      "immutableCrmRecordsExact": true,
+      "cachedExternalBalanceChanged": true,
+      "persistentWorkerFilesExact": true,
+      "coordinationDatabaseEmptyAndExact": true,
+      "transientJournalRemoved": "one-c-browser-print/executor-coordination.sqlite-journal",
+      "initiatingWorkerOperationProven": false,
+      "businessAndPersistentFileInvariantsPassed": true,
+      "sourceCodeSha256": "1eb432e720878784b48e4db924d48d5c796cbb8a52fe9264f1519fb468e4e1c9"
+    }
+  },
+  "businessAndPersistentFileInvariantsPassed": true,
+  "cachedExternalBalanceChanged": true,
+  "providerBalanceChangeCauseProven": false,
+  "rawAuditsPreserved": true,
+  "fullByteEqualityClaimed": false
+}

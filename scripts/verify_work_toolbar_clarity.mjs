@@ -9,8 +9,9 @@ import { OperationsStore } from '../server/operations-store.ts';
 import { SabyClient, sabyConfigFromEnv } from '../server/saby-client.ts';
 import { sberConnections } from '../server/banking/sber-connections.ts';
 import { loadSnapshot } from '../server/local-api.ts';
-import { startTripsQaServer, writeTripsQaSnapshot } from './qa-trips-runtime.mjs';
-import { authenticateContext, bootstrapQaAuth } from './qa-auth.mjs';
+import { writeTripsQaSnapshot } from './qa-trips-runtime.mjs';
+import { startOperatorQaServer } from './qa-operator-runtime.mjs';
+import { authenticateContext } from './qa-auth.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const useWebKit = process.env.QA_WEBKIT === '1';
@@ -52,8 +53,9 @@ for (const [index, connection] of Object.values(sberConnections).entries()) {
 let runtime, browser, page;
 try {
   const sabyClient = new SabyClient(sabyConfigFromEnv({}), async () => { report.providerCalls++; throw new Error('External Saby requests are forbidden in interface QA'); });
-  runtime = await startTripsQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient });
-  const { cookie } = await bootstrapQaAuth(runtime.base);
+  runtime = await startOperatorQaServer({ root, snapshotDirectory, operationsDirectory, sabyClient });
+  report.frontend = runtime.mode; report.artifacts = runtime.artifacts;
+  const { cookie } = await runtime.bootstrap();
   const fixture = async (path, body) => {
     const response = await fetch(runtime.base + path, { method: 'POST', headers: { Cookie: cookie, Origin: runtime.base, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     assert.ok(response.ok, `Synthetic fixture ${path}: ${response.status} ${await response.clone().text()}`);
@@ -69,7 +71,7 @@ try {
   await fixture('/api/china/days', { date: day, fuels: [{ supplierId: 'qa-supplier', litres: '1200.25', amount: '85400.75' }] });
   await fixture('/api/china/payments', { date: day, amount: '90000' });
 
-  browser = useWebKit ? await webkit.launch({ headless: true }) : await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
+  browser = useWebKit ? await webkit.launch({ headless: true }) : await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce', timezoneId: 'Europe/Moscow', serviceWorkers: 'block' });
   await authenticateContext(context, runtime.base, cookie);
   await context.route('**/*', route => {
@@ -82,22 +84,24 @@ try {
   page.on('pageerror', error => report.errors.push({ page: page.url(), message: error.message }));
   page.on('console', message => { if (message.type() === 'error') report.consoleErrors.push({ page: page.url(), message: message.text() }); });
 
-  for (const width of [320, 390, 768, 987, 988, 989, 1100, 1440]) {
+  for (const width of [320, 390, 768, 1024, 1099, 1100, 1101, 1440, 1920]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const section of ['trips', 'accounts', 'work']) {
       await page.goto(`${runtime.base}/#${section}`);
-      const selector = section === 'work' ? '.work-action-toolbar' : '.search-add-toolbar';
+      const selector = section === 'work' ? '.work-view-toolbar' : '.search-add-toolbar';
       await expect(page.locator(selector)).toBeVisible();
       if (section === 'work') {
         const bell = page.getByRole('button', { name: /^Напоминания/ });
         await expect(bell).toBeVisible();
         await expect(page.locator('.work-reminders')).toHaveCount(0);
-        const views = await page.locator('.work-view-toolbar').boundingBox();
-        const actions = await page.locator(selector).boundingBox();
-        assert.ok(actions.y >= views.y + views.height + 8);
+        const views = await page.locator('.work-views').boundingBox();
+        const actions = await page.locator('.work-toolbar-actions').boundingBox();
+        assert.ok(Math.abs(actions.y + actions.height / 2 - views.y - views.height / 2) <= 2, JSON.stringify({ width, views, actions }));
+        assert.ok(actions.x >= views.x + views.width - 1, JSON.stringify({ width, views, actions }));
+        await expect(page.locator('.work-action-toolbar,.work-toolbar')).toHaveCount(0);
         const filter = await page.getByLabel('Фильтр исполнителя').boundingBox();
         const add = await page.getByRole('button', { name: 'Новая задача', exact: true }).boundingBox();
-        assert.ok(filter.width >= 90 && (width <= 988 || filter.width <= 281), JSON.stringify({width, filter}));
+        assert.ok(filter.width >= 90 && filter.width <= 281, JSON.stringify({width, filter}));
         const viewStyle = await page.locator('.work-view-toolbar').evaluate(el => ({background:getComputedStyle(el).backgroundColor, border:getComputedStyle(el).borderWidth, shadow:getComputedStyle(el).boxShadow}));
         assert.deepEqual(viewStyle, {background:'rgba(0, 0, 0, 0)',border:'0px',shadow:'none'});
         const buttons = page.locator('.work-toolbar-actions > button');
@@ -107,8 +111,8 @@ try {
         await expect(page.getByRole('heading', {name: 'Задачи', exact: true})).toBeVisible();
         assert.equal(await page.getByRole('button', {name: 'Новая задача', exact: true}).evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(23, 102, 71)');
         const boxes = await buttons.evaluateAll(nodes => nodes.map(el => { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height,label:getComputedStyle(el.querySelector('.mobile-action-label')).display}; }));
-        assert.ok(boxes.every(b => Math.abs(b.y - filter.y) < 1 && b.height >= 44));
-        assert.ok(boxes.every(b => width <= 988 ? b.label === 'none' && Math.abs(b.width-44)<1 : b.label !== 'none'), JSON.stringify({width,boxes}));
+        assert.ok(boxes.every(b => Math.abs(b.y + b.height / 2 - views.y - views.height / 2) <= 2 && b.height >= 44));
+        assert.ok(boxes.every(b => width <= 1100 ? b.label === 'none' && Math.abs(b.width-44)<1 : b.label !== 'none'), JSON.stringify({width,boxes}));
         assert.ok(add.y > filter.y + filter.height, JSON.stringify({width,add,filter}));
         await expect(page.locator('.work-assignee-label, .work-company-search > span')).toHaveCount(0);
         await page.getByRole('button', {name:'Новая задача',exact:true}).click();
