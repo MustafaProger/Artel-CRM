@@ -94,7 +94,7 @@ test('three concurrent bank publications share FIFO by INN, replay safely, survi
   let report = await f.report();
   let company = checkBalances(report, '70000', '100000', '70000', '0', '30000');
   assert.deepEqual(company.shipments.map(row => [row.id, row.paid, row.debt]), [[first.id, '40000', '0'], [second.id, '30000', '0']]);
-  assert.deepEqual(company.receipts.map(row => [row.connectionId, row.account, row.amount, row.company]), [['tbank-nk-artel', accountNumber, '40000', 'НК АРТЕЛЬ'], ['sber-nk-artel', SBER_ACCOUNT, '30000', 'НК АРТЕЛЬ'], ['sber-artel', THIRD_ACCOUNT, '30000', 'АРТЕЛЬ']]);
+  assert.deepEqual(company.receipts.map(row => [row.connectionId, row.account, row.amount, row.company]), [['tbank-nk-artel', accountNumber, '40000', 'НК АРТЭЛЬ'], ['sber-nk-artel', SBER_ACCOUNT, '30000', 'НК АРТЭЛЬ'], ['sber-artel', THIRD_ACCOUNT, '30000', 'АРТЭЛЬ']]);
   assert.deepEqual(report.sources.map(row => row.id).sort(), ['sber-artel', 'sber-nk-artel', 'tbank-nk-artel']);
   assert.ok(report.sources.every(row => row.status === 'ready'));
   let stored = await f.store.read(base.provenance.sourceSha256);

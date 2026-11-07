@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { syntheticEtrnFixture as fixture, sender, carrier } from './helpers/etrn-fixture';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -26,6 +27,43 @@ test('real-trip mapper creates a sender ConsignmentNote, preserving exact delive
   assert.equal(snapshot.calculatedMassTonnes, '9.987654321');
   assert.equal(serializeSabyConsignmentNote(snapshot, attemptId, createdAt).xml.equals(serializeSabyConsignmentNote(snapshot, attemptId, createdAt).xml), true);
   validateXsd(snapshot);
+});
+test('new consignment XML rounds tank capacity to 2 places and cargo to 3 without changing source litres', () => {
+  const { snapshot } = fixture();
+  snapshot.fields.quantity_litres = '7125.5';
+  snapshot.profile.vehicle.capacityCubicMetres = '12.341';
+  const before = structuredClone(snapshot);
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []);
+  assert.match(xmlOf(snapshot), /Объем="7.126"/);
+  assert.match(xmlOf(snapshot), /Вместим="12.34"/);
+  validateXsd(snapshot);
+  assert.deepEqual(snapshot, before);
+});
+test('consignment rejects zero after rounding, negative/zero values and excessive result digits before generating XML', () => {
+  for (const amount of ['0.499', '0', '-1', '100000000000000000000']) {
+    const { snapshot } = fixture(); snapshot.fields.quantity_litres = amount;
+    assert.ok(sabyConsignmentBlockers(snapshot).some(value => /Объём.*доставки/.test(value)));
+    assert.throws(() => xmlOf(snapshot));
+  }
+  const { snapshot } = fixture(); snapshot.fields.quantity_litres = '0.499';
+  assert.ok(sabyConsignmentBlockers(snapshot).some(value => /округления.*нулю/.test(value)));
+  snapshot.fields.quantity_litres = '0.5';
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []);
+  assert.match(xmlOf(snapshot), /Объем="0.001"/);
+});
+test('legacy consignment snapshot keeps pre-release bytes and never adopts rounding', () => {
+  const { snapshot } = fixture(); delete snapshot.volumeRoundingVersion;
+  assert.equal(createHash('sha256').update(serializeSabyConsignmentNote(snapshot, attemptId, createdAt).xml).digest('hex'), 'c3639fd3805af270e50c2d610fa4796ff12ab1a2655d223086f88c7b7f902ceb');
+  snapshot.profile.vehicle.capacityCubicMetres = '12.341';
+  assert.ok(sabyConsignmentBlockers(snapshot).some(value => /вместимость/.test(value)));
+  assert.throws(() => xmlOf(snapshot));
+});
+test('legacy consignment capacity spelling including trailing zeroes remains byte-for-byte unchanged', () => {
+  const { snapshot } = fixture(); delete snapshot.volumeRoundingVersion;
+  const original = xmlOf(snapshot);
+  snapshot.profile.vehicle.capacityCubicMetres = '012.3400';
+  assert.deepEqual(sabyConsignmentBlockers(snapshot), []);
+  assert.equal(xmlOf(snapshot), original.replace('Вместим="12.34"', 'Вместим="012.3400"'));
 });
 test('optional danger, cargo dimensions, explicit third-party loading and electronic authority pass XSD', () => {
   const { snapshot } = fixture(); const p = snapshot.profile;

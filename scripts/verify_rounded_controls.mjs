@@ -153,7 +153,7 @@ try {
     const price = shipment.getByLabel('Цена поставщика за тонну, ₽', { exact: false }); await price.fill('61234.50'); await expect(price).toHaveValue('61234.50');
     await focusRing(price, `shipment-price-${width}`);
     const organization = shipment.getByRole('combobox', { name: 'Наша организация', exact: false });
-    await organization.fill('АРТЕЛЬ'); await organization.press('Enter'); await expect(organization).not.toHaveValue('');
+    await organization.fill('АРТЭЛЬ'); await organization.press('Enter'); await expect(organization).not.toHaveValue('');
     await capture(`shipment-form-${width}`); await cancelDirty(shipment);
     await page.getByRole('button', { name: 'Добавить отгрузку', exact: true }).click();
     await expect(page.getByRole('dialog').getByLabel('Цена поставщика за тонну, ₽', { exact: false })).toHaveValue('');

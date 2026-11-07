@@ -6,6 +6,7 @@ import { parseXml, type XmlNode } from './saby-order-evidence';
 import { encodeWindows1251 } from './saby-transport-order';
 import { SabyError, type SabyCarrierResponsible } from './saby-client';
 import type { TripSabyRecord } from './trip-saby-workflow';
+import { formatSabyVolume, sabyVolumeRoundedToZero } from './saby-volume';
 
 const node = (name: string, attributes: Record<string, string> = {}, children: Array<XmlNode | string> = []): XmlNode => ({ name, attributes, children });
 export const xmlChildren = (parent: XmlNode, name: string) => parent.children.filter((value): value is XmlNode => typeof value !== 'string' && value.name === name);
@@ -38,8 +39,10 @@ export function carrierDetailsInput(snapshot: Snapshot, record: TripSabyRecord, 
   if (!text(type, 1000) || !text(vehicle?.brand, 1000)) vehicleErrors.push('Заполните марку и тип автомобиля.');
   if (!positive(vehicle?.payloadTonnes) || vehicle?.maxWeight && /^\d+(?:\.\d+)?$/.test(vehicle.maxWeight) && positive(vehicle.payloadTonnes) && new Decimal(vehicle.payloadTonnes!).mul(1000).gt(vehicle.maxWeight)) vehicleErrors.push('Укажите согласованное максимальное значение для Saby в тоннах. Проверьте единицы: килограммы нужно разделить на 1000.');
   const litres = vehicle?.capacityLitres;
-  const capacity = litres && /^\d+(?:\.\d+)?$/.test(litres) ? new Decimal(litres).div(1000).toFixed() : '';
-  if (!positive(capacity)) vehicleErrors.push('Вместимость цистерны должна точно выражаться в м³ с двумя знаками, без округления.');
+  const capacity = formatSabyVolume(litres, 'litres', 2, record.snapshot.volumeRoundingVersion) ?? '';
+  if (!positive(capacity)) vehicleErrors.push(sabyVolumeRoundedToZero(litres, 'litres', 2, record.snapshot.volumeRoundingVersion)
+    ? 'Вместимость цистерны после округления до 2 знаков м³ равна нулю. Проверьте общую вместимость в литрах.'
+    : 'Проверьте общую вместимость цистерны в литрах; формат ответа НК — м³ до 2 знаков, не более 5 цифр. Секции необязательны.');
   if (!['1', '2', '3', '4', '5'].includes(vehicle?.ownershipType ?? '')) vehicleErrors.push('Укажите тип владения автомобилем.');
   const issuerInns = (vehicle?.leaseDocumentIssuerInn || '').split(',').map(value => value.trim()).filter(Boolean);
   const needsLease = ['3', '4', '5'].includes(vehicle?.ownershipType ?? '');
