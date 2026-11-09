@@ -58,6 +58,6 @@ export default function TripProcessPanel({ trips, data, loading, loaded = trips.
         </AnimatedDetails><TripCopyButton trip={trip} data={data} kind="summary"/><TripCopyButton trip={trip} data={data} kind="driver"/></div>
       })}</div>
     </article>)}</div>
-    {!loading && !error && !groups.length && <div className="panel trips-empty"><Truck size={30}/><h2>Рейсы не найдены</h2><p>Измените поиск или фильтры.</p><button className="button" onClick={() => { setQuery(''); setVehicleId(''); changeFilter('all') }}>Сбросить фильтры</button></div>}
+    {!loading && !error && !groups.length && <div className="panel trips-empty"><Truck size={30}/><h2>Рейсы не найдены</h2><button className="button" onClick={() => { setQuery(''); setVehicleId(''); changeFilter('all') }}>Сбросить фильтры</button></div>}
   </section>
 }
