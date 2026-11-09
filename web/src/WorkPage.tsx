@@ -100,9 +100,7 @@ export default function WorkPage() {
   ].filter(item => {
     const row = item.entry as WorkTask | WorkCompanyRecord;
     if (!!row.archivedAt !== (view === 'archive')) return false;
-    if (view !== 'archive') return true;
-    const date = new Date(row.archivedAt!);
-    return date.getFullYear() === month.getFullYear() && date.getMonth() === month.getMonth();
+    return true;
   }).sort((a, b) => (view === 'archive' ? (b.entry as WorkTask).archivedAt! : b.entry!.createdAt).localeCompare(view === 'archive' ? (a.entry as WorkTask).archivedAt! : a.entry!.createdAt) || a.entry!.id.localeCompare(b.entry!.id));
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const start = new Date(first); start.setDate(1 - (first.getDay() + 6) % 7);
@@ -136,6 +134,7 @@ export default function WorkPage() {
                   <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
                   {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
                   {task?.description && <span className="work-task-description">{task.description}</span>}
+                  {task?.dueDate && <span className={task.dueDate < today && task.status !== 'done' ? 'work-overdue' : 'work-task-meta'}>{task.dueDate < today && task.status !== 'done' ? 'Просрочена · ' : 'Срок · '}{dateLabel(task.dueDate)}</span>}
                   <span className="work-task-meta"><span>{userName(row.assigneeId)}</span>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
                 </button>
                 {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
@@ -145,12 +144,9 @@ export default function WorkPage() {
           })}{!records.length && <p className="work-empty">{view === 'archive' ? 'В архиве пока нет задач.' : 'Задач пока нет.'}</p>}</div></section> : <section className="panel work-calendar"><header className="work-calendar-heading"><h2>{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</h2><div><button className="icon-button" aria-label="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={18}/></button><button className="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Сегодня</button><button className="icon-button" aria-label="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={18}/></button></div></header><div className="work-calendar-scroll"><div className="work-calendar-grid">{['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <strong className="work-weekday" key={day}>{day}</strong>)}{days.map(date => { const day = localDay(date); return <div className={`work-day ${date.getMonth() !== month.getMonth() ? 'outside' : ''} ${day === today ? 'today' : ''}`} key={day}><span>{date.getDate()}</span>{events.filter(event => event.day === day).map(event => <button key={event.id} className={event.reminder ? 'work-calendar-event reminder' : 'work-calendar-event'} title={`${event.reminder ? 'Напоминание' : 'Срок'}: ${event.title}`} onClick={() => setEditor(event.editor)}>{event.reminder && <Bell size={12}/>}<span>{event.title}</span></button>)}</div>; })}</div></div><p className="work-calendar-legend"><Bell size={14}/>Напоминание · время вашего устройства</p></section>}
 
         </section>
-        <aside className="work-side" aria-label="Выбор месяца">
-          <section className="panel work-month-picker"><header className="work-section-heading"><h2>Период</h2></header><div className="work-month-controls">
-            <div className="work-month-navigation"><button type="button" className="icon-button" aria-label="Предыдущий месяц архива" onClick={() => { setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1)); if (view === 'board') setView('archive'); }}><ChevronLeft size={18}/></button><strong aria-live="polite">{month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</strong><button type="button" className="icon-button" aria-label="Следующий месяц архива" onClick={() => { setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1)); if (view === 'board') setView('archive'); }}><ChevronRight size={18}/></button></div>
-            <label className="work-field"><span>Месяц</span><input type="month" value={`${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}`} onChange={event => { const match = /^(\d{4})-(\d{2})$/.exec(event.target.value); if (!match) return; setMonth(new Date(Number(match[1]), Number(match[2]) - 1, 1)); if (view === 'board') setView('archive'); }}/></label>
-            <button type="button" className="button" onClick={() => { const now = new Date(); setMonth(new Date(now.getFullYear(), now.getMonth(), 1)); if (view === 'board') setView('archive'); }}>Текущий месяц</button>
-          </div></section>
+        <aside className="work-side" aria-label="Заметки">
+
+          <section className="panel work-notes"><header className="work-section-heading"><h2>Заметки</h2><button className="icon-button" aria-label="Добавить заметку" onClick={() => setEditor({ kind: 'notes' })}><Plus size={18}/></button></header>{data.work.notes.length ? <div className="work-note-list">{data.work.notes.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(note => <button className="work-note" key={note.id} onClick={() => setEditor({ kind: 'notes', entry: note })} aria-label={`Заметка: ${note.title}`}><strong>{note.title}</strong><p>{note.content}</p><small>{userName(note.assigneeId)}</small></button>)}</div> : <p className="work-empty">Заметок пока нет.</p>}</section>
         </aside>
       </div>
       {editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }} onClose={() => setEditor(null)} onSaved={(action, entry) => {
