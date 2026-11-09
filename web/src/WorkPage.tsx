@@ -73,7 +73,7 @@ export default function WorkPage() {
     setPendingTasks(previous => ({ ...previous, [task.id]: status }));
     setTaskErrors(previous => { const next = { ...previous }; delete next[task.id]; return next; });
     try {
-      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status }), signal: AbortSignal.timeout(20000) });
+      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: status === 'done' }), signal: AbortSignal.timeout(20000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
       if (active.current) setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
@@ -97,7 +97,11 @@ export default function WorkPage() {
   const records: Editor[] = [
     ...(work?.tasks ?? []).map(entry => ({ kind: 'tasks' as const, entry })),
     ...(work?.companyRecords ?? []).map(entry => ({ kind: 'companies' as const, entry })),
-  ].filter(item => !!(item.entry as WorkTask).archivedAt === (view === 'archive')).sort((a, b) => b.entry!.createdAt.localeCompare(a.entry!.createdAt) || a.entry!.id.localeCompare(b.entry!.id));
+  ].filter(item => {
+    const row = item.entry as WorkTask | WorkCompanyRecord;
+    if (!!row.archivedAt !== (view === 'archive')) return false;
+    return true;
+  }).sort((a, b) => (view === 'archive' ? (b.entry as WorkTask).archivedAt! : b.entry!.createdAt).localeCompare(view === 'archive' ? (a.entry as WorkTask).archivedAt! : a.entry!.createdAt) || a.entry!.id.localeCompare(b.entry!.id));
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const start = new Date(first); start.setDate(1 - (first.getDay() + 6) % 7);
   const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
@@ -130,6 +134,7 @@ export default function WorkPage() {
                   <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
                   {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
                   {task?.description && <span className="work-task-description">{task.description}</span>}
+                  {task?.dueDate && <span className={task.dueDate < today && task.status !== 'done' ? 'work-overdue' : 'work-task-meta'}>{task.dueDate < today && task.status !== 'done' ? 'Просрочена · ' : 'Срок · '}{dateLabel(task.dueDate)}</span>}
                   <span className="work-task-meta"><span>{userName(row.assigneeId)}</span>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
                 </button>
                 {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
@@ -194,6 +199,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
         const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
         body = { ...(entry ? { version: entry.version } : { requestId }), assigneeId: fields.assigneeId, ...(editor.kind !== 'notes' ? { archived: nextArchived ?? archived, comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, companyId: fields.companyId || null, reminderAt } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
       }
+      if (editor.kind === 'tasks' && nextArchived === false) body.status = 'todo';
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || (method === 'DELETE' ? 'Не удалось удалить запись.' : 'Не удалось сохранить запись.'));

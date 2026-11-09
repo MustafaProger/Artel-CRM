@@ -51,3 +51,8 @@
   .work-editor .work-editor-footer > .button { flex: 1 1 auto; justify-content: center; }
   .work-editor .work-confirm .button { margin-top: 8px; }
 }
+.work-month-controls { padding: 16px; display: grid; gap: 16px; }
+.work-month-navigation { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.work-month-navigation strong { text-align: center; text-transform: capitalize; }
+.work-month-picker { min-width: 0; }
+.work-month-controls input { min-width: 0; width: 100%; box-sizing: border-box; }

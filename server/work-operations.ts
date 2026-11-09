@@ -161,6 +161,12 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (body.archived !== undefined && typeof body.archived !== 'boolean') throw new ApiError(400, 'Некорректное состояние архива.');
     record.archivedAt = body.archived === true ? previousRecord?.archivedAt ?? now : body.archived === false ? null : previousRecord?.archivedAt ?? null;
     if (kind === 'tasks') {
+      const task = entry as WorkTask;
+      if (body.archived === false && body.status === undefined) task.status = 'todo';
+      if (task.status === 'done' && (body.status === 'done' || !previous)) record.archivedAt = previousRecord?.archivedAt ?? now;
+      if (body.status !== undefined && task.status !== 'done' && body.archived !== true) record.archivedAt = null;
+    }
+    if (kind === 'tasks') {
       record.comments = [...(previousRecord?.comments ?? [])];
       const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
       if (comment) record.comments.push({ id: `work-comment-${randomUUID()}`, text: comment, authorId: actor.id, createdAt: now });
