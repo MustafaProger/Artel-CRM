@@ -66,6 +66,8 @@ div.scrollable-segments[class] > button {
   border-color: var(--border);
   box-shadow: var(--ui-card-shadow);
 }
+.work-page .work-notes.panel,
+.work-page .work-note-list .work-note { border-radius: 10px; }
 .bank-card:hover { box-shadow: 0 6px 24px rgb(29 29 31 / 8%); }
 .overview-organization-picker > button { border-radius: var(--ui-control-radius); }
 .sidebar .nav-item.active { box-shadow: none; }

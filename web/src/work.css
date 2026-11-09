@@ -413,25 +413,32 @@ dialog.work-editor:has(.work-task-toolbar){position:fixed;inset:0;margin:auto}
   font-size: 14px;
 }
 
-dialog.work-editor.work-new-note {
+dialog.work-editor.work-note-editor {
   position: fixed;
   inset: 0;
   margin: auto;
   width: min(440px, calc(100vw - 24px));
 }
-.work-editor.work-new-note .work-editor-heading {
+.work-editor.work-note-editor .work-editor-heading {
   padding: 12px 16px;
 }
-.work-editor.work-new-note .work-editor-body {
+.work-editor.work-note-editor .work-editor-body {
   padding: 16px 16px 12px;
 }
-.work-editor.work-new-note .work-editor-footer {
+.work-editor.work-note-editor .work-editor-footer {
   padding: 8px 16px;
 }
-.work-editor.work-new-note .work-editor-content {
+.work-editor.work-note-editor .work-editor-content {
   gap: 10px;
 }
-.work-editor.work-new-note .work-field textarea {
+.work-editor.work-note-editor .work-field textarea {
   height: 68px;
   min-height: 68px;
+}
+
+dialog.work-editor.work-note-editor {
+  border-radius: 12px;
+}
+.work-editor.work-note-editor .work-field :is(input, textarea) {
+  border-radius: 8px;
 }
