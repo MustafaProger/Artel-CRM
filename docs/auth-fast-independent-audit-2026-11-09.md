@@ -1,0 +1,60 @@
+# Независимая проверка ускорения входа/выхода — 09.11.2026
+
+Аудитор подключён после публикации, в реализации не участвовал. Продуктовый код и деловые данные не менял. Собственные записи ограничены 11 отдельными входами/выходами; чужие cookie не использовались. Скорость и функциональная проверка прошли. Независимые проверки скорости, входа/выхода и функций прошли. Общая проверка сохранности НЕ закрыта: остаются три неатрибутированные дельты Saby и исторические открытые аудиты. Пользователь отдельно подтвердил добавление/редактирование задач Work в 12:33–12:34 МСК. Пользователь подтвердил собственные ручные вход/выход в 12:32–12:34 МСК; это объясняет наблюдаемый отдельный отзыв прежней сессии, хотя связи конкретного HTTP-запроса с hash в журнале нет. `passed=false`, `otherSessionsPreserved=false`; это не переименовано в PASS. Исторические `globalReviewed=false` и `preservationReviewRequired=true` не закрываются.
+
+## Проверенный экземпляр
+
+`artel-crm:20261109-phase2-auth-fast-badc9ec9`, image ID `sha256:02af4416cfd38825ae75f3c9a4e03d6101951632c8a523e619bd8251bc56e49a`; старт 12:29:26.875 МСК. На снимках до/после измерений и отдельной функциональной серии образ неизменен, healthy, restart 0, OOM false. Memory/swap limits по 2147483648 bytes. Конфигурация проверена по SHA256 `33ecc6b9141aa2bf6736cb8a17fe51c74235807b14d68125cf680d4a1524f9c1`. Опубликованный commit по release manifest: `cc909b13dc0dec10f4b95596727a5775e0388756`.
+
+Текущий pointer — `artel-auth-partition-v2`, каталог `auth-storage-v2`. Снимки получены только через проверенный по release config `storage-snapshot.py`, согласованно с latch/WAL. Исторический `auth-storage` не использовался как текущая база.
+
+## Реальная скорость HTTPS
+
+После публикации самостоятельно выполнены 10 пар в Chromium: два изолированных context по пять пар, 1440×1000, без CPU/network throttling. Playwright routing отключает browser cache, как в свежем before. Сравнение взято из сохранённого fresh-before этой задачи, а не из выпуска первой фазы. Оба набора: 10 успешных login и 10 logout, 0 failed/incomplete.
+
+Начало интервала измерительного снимка 12:32:06.938, конец 12:32:41.452 МСК. Отсчёт DOM начинается click-handler. Оболочка — первый видимый `.app-shell`; готовый обзор — `.overview-freshness` + 2 rAF. Выход — enabled форма + 2 rAF, в этой проверке дополнительно явно разрешён только после HTTP logout 200. Это консервативное усиление before-методики. HTTP-время включает сеть и сервер; отдельным server-only временем его считать нельзя. p95 — nearest rank, при n=10 совпадает с максимумом.
+
+| Метрика | n после | Медиана, с: до → после | p95, с: до → после | Изменение медианы |
+|---|---:|---:|---:|---:|
+| Вход → видимая оболочка | 10 | 3.191 → 0.438 | 4.249 → 0.935 | −86.27% |
+| Вход → готовый обзор | 10 | 5.717 → 1.186 | 6.548 → 2.047 | −79.25% |
+| HTTP login | 10 | 3.161 → 0.407 | 4.232 → 0.911 | −87.13% |
+| Выход → доступная форма | 10 | 2.749 → 0.365 | 4.297 → 0.514 | −86.73% |
+| HTTP logout | 10 | 2.710 → 0.319 | 4.247 → 0.463 | −88.22% |
+| HTTP settlements | 10 | 2.291 → 0.776 | 2.666 → 1.081 | −66.14% |
+
+Первый вход каждого нового context (n=2): готовый обзор median 1.669 с, p95 1.754 с. Остальные входы (n=8): median 1.153 с, p95 2.047 с. Это сохранённое состояние SPA внутри context, browser cache всё равно отключён. Практический ориентир оболочки около 1 с и выхода 0.5–0.6 с выполнен в этой небольшой серии; гарантия SLA и поведение под длительной/пиковой нагрузкой не доказаны.
+
+Все 10 старых cookie получили 401 на GET `/api/navigation` после выхода, вне измеряемого времени. Неожиданных HTTP ошибок, page errors, failed/aborted requests, blocked writes и long tasks в серии — 0. Пароли/cookie только в памяти; HAR, скриншоты и приватные payload не записывались. Хеш собственных сессий фиксировался сразу после успешного auth response; finally имеет резервную очистку собственного context даже при ошибке разбора cookie.
+
+## Отдельная проверка функций
+
+Одна дополнительная сессия, исключённая из latency cohort: overview, work, shipments, trips, payments, cabinet-balances, china, invoices, operator, accounts, directories, documents — 12/12 открылись; login не появлялся, overflow/alerts/console/page errors/blocked writes/failed requests — 0. Два GET банковских карточек `/api/banking/sber/sber-artel/statements` и `/api/banking/sber/sber-nk-artel/statements` дождались HTTP 200 и полного завершения тела. Их отмены навигацией в этой серии нет; это проверка чтения сохранённых данных, а не свежей синхронизации с банками.
+
+Функциональный logout 200, старый cookie GET 401. Пять существовавших перед функциональной серией сессий exact, users exact, новых оставшихся сессий 0. Функциональный PASS записан в отдельном summary.
+
+## Независимый просмотр реализации и доказательств
+
+Самостоятельно просмотрены `auth.ts`, `local-api.ts`, `operations-store.ts`, `auth-partition.ts`, `work-partition.ts`, `json-snapshot.ts`, `document-archive.ts` точного release source.
+
+- Scrypt 64-byte derivation сохранён, выполняется до транзакции; commit повторно сверяет свежую identity (включая пароль, active/deleted, role/grants/version), throttles, audience и driver availability. Gate 4 сохранён. Ускорение не заменяет проверку пароля или свежую авторизацию кэшированным решением.
+- Кэш сверяет actual file bytes при каждом read; наружу возвращается новая mutable graph, в cache остаётся приватный snapshot и immutable strings. Metadata архива и ссылки проверяются при каждом validate; повторно используется только успешная проверка точной пары data-string/size.
+- Interactive admission не обходит активного владельца общей latch; FIFO внутри класса и максимум четыре interactive очереди перед ожидающей normal работой. File locks и recovery остаются общими.
+- Auth-only mutation запрещает изменение остальных доменов; logout durable удаляет свою сессию и ставит invoice revocation в той же auth commit. Single-part commit — fsync/rename/directory fsync; multi-part v2 commit — sealed WAL, проверка composed data перед recovery и запись всех изменённых частей.
+- V2 offline migration сначала пишет четыре части и проверяет полный logical state, pointer публикует последним. Старый backend возвращать нельзя.
+
+Дополнительно самостоятельно запущены существующие target suites `json-snapshot`, `partition-priority`, `document-archive-validation`: 5 PASS, 0 fail/skip. Это адресная проверка кодека/изоляции/очереди/валидации; полный pre-release набор здесь повторно не запускался.
+
+Независимо заново прочитаны immutable `before-operations.private.json` и `migrated-operations.private.json` на сервере: config hash и оба file hashes совпали с release proof; полное рекурсивное сравнение `data` по всем 27 top-level полям exact, включая revision/accounts/documentArchive. Raw files различаются порядком JSON ключей, их byte equality не заявляется. Это самостоятельный recompute, не только чтение флага `logicalDataExact`. Результат — `migration-recomputed.json`. Исторические v1 части и отказ старого backend подтверждены release proofs, отдельно здесь не переисполнялись.
+
+## Сохранность и ограничения
+
+Сырые результаты benchmark содержат `preexistingSessionsExact=false`: между 12:32:06 и 12:32:41 число прежних сессий изменилось с 6 до 5; остальные users exact, собственных остатков 0. Изменились также tripSaby/etrn/accounts/push/revision. Эти raw флаги не переписывались. Самостоятельное повторное чтение приватных before/after-audit и worker snapshots подтвердило: исчезнувшая сессия не принадлежит этим 11 тестам, её срок — 20:27:22.967 МСК, следовательно это не очистка expired-сессии. Её record exact до миграции, после миграции, после switch и перед аудитом; worker явно подтвердил отзыв ровно этого hash в 12:32:40.099 МСК. После проверки пользователь на точный вопрос о ручной проверке входа/выхода примерно в 12:32–12:34 МСК ответил: «да, скорость значительно лучше». Это подтверждение вместе с точным временем чужого worker revocation поддерживает объяснение ручным выходом пользователя. Прямой связи конкретного HTTP-запроса с session hash в журнале нет, поэтому криптографическая/полная request-to-hash атрибуция не заявляется. Остальные пять записей benchmark exact. Результат независимого пересчёта — `lost-session-recomputed.json`; подробная хронология ops — `ops/lost-session-investigation.json`. Миграция эту сессию сохранила. User-confirmed manual auth activity записана отдельным исключением; raw `preexistingSessionsExact=false` и `otherSessionsPreserved=false` сохранены, добавлены `userConfirmedManualAuthActivity=true` и `fiveOtherSessionsExact=true`.
+
+Поздний worker read 12:34:42.764 МСК: все 11 собственных hashes действительно присутствуют в revokedSessions, прежние worker revocations и identity exact; дополнительно две новые чужие revocations. Они не принадлежат 11 сессиям аудитора; подтверждённая пользователем ручная проверка относится к этому интервалу. Подтверждение не подменяет отсутствующую request-to-hash связь для каждого из двух hashes. Самостоятельно повторно сравнён интервал `before-auth-audit` 12:31:30 → `after-auth-audit` 12:34:44: все 31 protected file exact, из 41 worker file менялся только `crm-bridge/auth.json`; соседние контейнеры и Caddy PID exact. Из 15 fact-коллекций 13 exact; `accounts` изменился по активности сессий при exact account business, а `work` также изменился; позднее пользователь подтвердил соответствующие ручные изменения задач в этом интервале. DocumentArchive exact. Банковские записи по stable ID/date exact после исключения polling-полей; raw banking не exact. Дополнительно изменены tripSaby/etrn/cabinets/push/revision. Деловые сохранения аудитор не выполнял; без доказательств инициатор этих дельт не назначается. Результат — `interval-recomputed.json`, который сохраняет отдельные boolean без превращения неизвестных изменений в PASS.
+
+Отдельный ops classifier (`ops/independent-interval-review.json`) сохранил raw 7 / classified 6 requires-review изменений; `workflowDocumentsAndAuthorizationUnchanged=false`, `allReviewedInvariantsPassed=false`. Одно raw изменение банковского job признано служебным. Оставшиеся пути: `tripSaby/trips/#2d47168e975b/lastError`, две дельты `etrn/.../dispatch/sender/state` и `etrn/.../dispatch/lastError`, а также `work/tasks/1/version`, `work/tasks/1/updatedAt`, `work/tasks/2`. По `ops/work-delta-metadata.json` число задач выросло с 2 до 3: добавлена одна, удалённых нет. У существующей задачи с index 1 изменились только version 5→9 и updatedAt 11:21:12.032→12:33:52.706 МСК; все остальные поля exact. Новая задача имеет version 3, createdAt 12:34:13.125, updatedAt 12:34:16.963 МСК. Другие Work-домены exact. Позднее на точный вопрос о добавлении/редактировании задач в 12:33–12:34 МСК с указанием одной новой задачи и изменения версии существующей пользователь ответил: «да». Эти три Work-пути отдельно reviewed как подтверждённые пользователем действия; точная связь каждого HTTP-запроса с записью не установлена. Заголовки, ID и содержимое задач не публикуются. В итоговом supplement `userConfirmedWorkChanges=true`: три Work-пути reviewed по отдельному подтверждению пользователя. Оригинальные raw 7 / classified 6 и исходный workflow guard false сохранены без переписывания; после этого supplement остаются три неатрибутированных Saby-пути. Проверки latency/auth/functionality положительные; общий `passed=false`, `globalReviewed=false`, `preservationReviewRequired=true` сохраняются из-за Saby и исторического аудита.
+
+## Артефакты
+
+Основная папка: `.local/auth-speed-phase2-20261109/benchmark/independent-after/`. `measure.mjs`, `remote-snapshot.py`, `results.json`, `summary.json`, `comparison.json`, `worker-summary.json`, `migration-recomputed.json`, `lost-session-recomputed.json`, `interval-recomputed.json`, `independent-audit-summary.json`, `independent-code-tests.log`; отдельные `functional/verify.mjs`, `functional/results.private.json`, `functional/summary.json`. Raw session hashes и внутренние worker поля остаются в локальных приватных артефактах; в отчёт они не выведены. Before для сравнения — соседняя `benchmark/before/`.
