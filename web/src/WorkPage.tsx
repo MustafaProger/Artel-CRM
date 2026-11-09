@@ -241,7 +241,7 @@ export default function WorkPage() {
         </button>
         {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
       </div>
-      {task && <span className={`work-task-status status-${status}`} role="status">{pending ? <><LoaderCircle size={13} className="spin"/>Сохраняем…</> : workStatuses.find(option => option.id === status)?.name}</span>}
+      {task && pending && <span className="work-task-status" role="status"><LoaderCircle size={13} className="spin"/>Сохраняем…</span>}
     </div>;
   };
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
