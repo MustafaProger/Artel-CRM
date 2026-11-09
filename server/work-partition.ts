@@ -1,43 +1,66 @@
+import { performanceSpan } from './performance-trace';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, rename, unlink, stat } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { LegacyOperationsStore, StoreError, decodeOperations, encodeOperations, type OperationsData } from './operations-store';
 import { validateWorkData } from './work-operations';
 import { validatePush, type PushData } from './push';
 
 const format = 'artel-work-partition-v1';
-const queues = new Map<string, Promise<unknown>>();
+type LockQueue = { normal: (() => void)[]; interactive: (() => void)[]; burst: number; running: boolean };
+const queues = new Map<string, LockQueue>();
+function admission(path: string, priority?: 'interactive'): Promise<() => void> {
+  let queue = queues.get(path);
+  if (!queue) { queue = { normal: [], interactive: [], burst: 0, running: false }; queues.set(path, queue); }
+  const current = queue;
+  const release = () => {
+    const interactive = current.interactive.length > 0 && (current.burst < 4 || current.normal.length === 0);
+    const next = interactive ? current.interactive.shift() : current.normal.shift();
+    if (next) { current.burst = interactive ? current.burst + 1 : 0; next(); }
+    else queues.delete(path);
+  };
+  if (!current.running) {
+    current.running = true;
+    return Promise.resolve(release);
+  }
+  return new Promise(resolveTurn => current[priority === 'interactive' ? 'interactive' : 'normal'].push(() => resolveTurn(release)));
+}
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const json = (v: unknown) => JSON.stringify(v);
 export type Update<T> = (data: OperationsData) => { result: T; changed: boolean } | Promise<{ result: T; changed: boolean }>;
 interface WorkState { format: typeof format; sourceSha256: string; revision: number; work?: OperationsData['work']; taskAssignments?: PushData['taskAssignments']; pushPresent?: true }
 
-/** Separate FIFO admission queues, with one consistency latch for reads/commits.
+/** Separate admission queues, with one consistency latch for reads/commits.
+ * Interactive auth may pass queued background work, never the active holder;
+ * at most four consecutive interactive turns delay an already queued normal turn.
+ * Each class remains FIFO. All physical file exclusion/recovery rules are unchanged.
  * Lock files are deliberately not stolen after a timeout. Recovery after SIGKILL
  * requires stopped writers and explicit operator removal of abandoned locks. */
-export async function partitionLock<T>(path: string, action: () => Promise<T>): Promise<T> {
-  const previous = queues.get(path) ?? Promise.resolve();
-  const pending = previous.catch(() => undefined).then(async () => {
+export async function partitionLock<T>(path: string, action: () => Promise<T>, priority?: 'interactive'): Promise<T> {
+  const kind = ['transaction.lock', 'interactive-queue.lock', 'work-queue.lock', 'core-queue.lock'].includes(basename(path)) ? basename(path).replace('.lock', '') : 'other';
+  const release = await performanceSpan(`lock.${kind}.queue`, () => admission(path, priority));
+  try {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    const file = await performanceSpan(`lock.${kind}.acquire`, async () => {
     let file;
     for (let n = 0; n < 500; n++) {
       try { file = await open(path, 'wx', 0o600); break; }
       catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; await new Promise(r => setTimeout(r, 10)); }
     }
     if (!file) throw new StoreError('Work storage busy; check stopped-writer recovery');
-    try { await file.writeFile(json({ pid: process.pid })); return await action(); }
+    return file;
+    });
+    try { await file.writeFile(json({ pid: process.pid })); return await performanceSpan(`lock.${kind}.hold`, action); }
     finally { await file.close(); await unlink(path); }
-  });
-  queues.set(path, pending);
-  try { return await pending; } finally { if (queues.get(path) === pending) queues.delete(path); }
+  } finally { release(); }
 }
 export async function atomicFile(path: string, bytes: string) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, 'wx', 0o600);
-    try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, path); await syncDirectory(dirname(path));
+    try { await performanceSpan('file.write', () => file.writeFile(bytes)); await performanceSpan('file.fsync', () => file.sync()); } finally { await file.close(); }
+    await performanceSpan('file.rename', () => rename(temporary, path)); await performanceSpan('directory.fsync', () => syncDirectory(dirname(path)));
   }
   finally { await unlink(temporary).catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }); }
 }

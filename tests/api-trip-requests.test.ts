@@ -11,8 +11,9 @@ import { integrationRuntime } from './helpers/trip-saby-integration';
 import type { TripRequest } from '../web/src/trip-request-model';
 import type { ShipmentTrip } from '../web/src/model';
 import { mapLink } from '../web/src/map-link';
-import { AuthPartition, migrateAuthStorage, mergeAuthStorage } from '../server/auth-partition';
-const authLayout = process.env.ARTEL_TEST_AUTH_PARTITION === '1';
+import { AuthPartition, mergeAuthStorage } from '../server/auth-partition';
+import { authLayoutVersion, migrateTestAuthStorage } from './helpers/auth-layout';
+const authLayout = authLayoutVersion !== null;
 
 async function fixture(options: Pick<LocalApiOptions, 'tripRequestGeocoder'> = {}) {
   const rt = await integrationRuntime();
@@ -756,8 +757,8 @@ test('request projection and trips context preserve the existing catalog and per
 test('partitioned requests preserve Work, history, idempotency, trip consumption and restart/export', async () => {
   const { migrateWorkStorage, mergeWorkStorage, WorkPartition } = await import('../server/work-partition');
   const f = await fixture(); try {
-    await (authLayout ? migrateAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source);
-    const part = (authLayout ? new AuthPartition(f.store.path) : new WorkPartition(f.store.path)), before = await f.store.read(f.source), work = await readFile(part.workPath, 'utf8');
+    await (authLayout ? migrateTestAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source);
+    const part = (authLayout ? new AuthPartition(f.store.path, authLayoutVersion ?? 1) : new WorkPartition(f.store.path)), before = await f.store.read(f.source), work = await readFile(part.workPath, 'utf8');
     const input = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', salePricePerLitre: '61.25', executionDate: '2026-10-30', idempotencyKey: randomUUID() };
     const created = await f.request('/api/trip-requests', 'POST', input, f.one.cookie);
     assert.equal(created.status, 201); const request = created.body.request;
@@ -780,7 +781,7 @@ test('partitioned requests preserve Work, history, idempotency, trip consumption
 test('separate request admission reauthorizes revoked accounts inside the transaction', async () => {
   const { migrateWorkStorage } = await import('../server/work-partition');
   const f = await fixture(); try {
-    await (authLayout ? migrateAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source);
+    await (authLayout ? migrateTestAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source);
     const original = f.store.mutateTripRequests.bind(f.store);
     f.store.mutateTripRequests = async (source, update) => {
       await f.store.mutate(source, data => { const user = data.accounts!.users.find(row => row.id === f.one.user.id)!; user.active = false; user.version++; return { changed: true, result: null }; });
@@ -795,7 +796,7 @@ test('separate request admission reauthorizes revoked accounts inside the transa
 test('request cancellation racing trip consumption has a single atomic winner on the split store', async () => {
   const { migrateWorkStorage } = await import('../server/work-partition');
   const f = await fixture(); try {
-    await (authLayout ? migrateAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source); const row = await f.create();
+    await (authLayout ? migrateTestAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source); const row = await f.create();
     const [trip, cancelled] = await Promise.all([f.request('/api/shipment-trips', 'POST', f.tripBody([row]), f.one.cookie), f.request('/api/trip-requests/' + row.id, 'DELETE', { version: row.version }, f.two.cookie)]);
     assert.ok(trip.status === 201 && cancelled.status === 409 || trip.status === 409 && cancelled.status === 200, JSON.stringify([trip, cancelled]));
     const stored = await f.store.read(f.source), saved = stored.tripRequests![row.id];

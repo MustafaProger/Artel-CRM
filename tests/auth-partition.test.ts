@@ -121,3 +121,39 @@ test('validated cache still rejects changed core bytes and Work can initialize i
     await assert.rejects(f.store.read(source), /checksum/);
   } finally { await f.close(); }
 });
+
+test('parsed core cache isolates nested reads, failed mutations and returned commit references', async () => {
+  const f = await fixture(); try {
+    await migrateAuthStorage(f.directory, source);
+    const initial = await f.store.read(source), disk = await readFile(f.part.corePath);
+    initial.shipments.example.fields.note = 'read leak';
+    const unchanged = await f.store.read(source);
+    assert.equal(unchanged.shipments.example.fields.note, 'preserve business data');
+    await assert.rejects(f.store.mutate(source, d => { d.shipments.example.fields.note = 'failed leak'; throw Error('synthetic'); }));
+    assert.deepEqual(await readFile(f.part.corePath), disk);
+    assert.equal((await f.store.read(source)).shipments.example.fields.note, 'preserve business data');
+    const returned = await f.store.mutate(source, d => { d.shipments.example.fields.note = 'committed'; return { changed: true, result: d.shipments.example }; });
+    returned.fields.note = 'returned leak';
+    assert.equal((await f.store.read(source)).shipments.example.fields.note, 'committed');
+    assert.equal((await new OperationsStore(f.directory).read(source)).shipments.example.fields.note, 'committed');
+    await new OperationsStore(f.directory).mutate(source, d => { d.shipments.example.fields.note = 'external'; return { changed: true, result: null }; });
+    assert.equal((await f.store.read(source)).shipments.example.fields.note, 'external');
+  } finally { await f.close(); }
+});
+
+test('cached core commit preserves JSON omission and field order before and after restart', async () => {
+  const f = await fixture(); try {
+    await migrateAuthStorage(f.directory, source);
+    await f.store.read(source);
+    await f.store.mutate(source, d => {
+      d.shipments.example.fields = { second: 'new', ...d.shipments.example.fields };
+      d.shipments.example.deleted = undefined;
+      const shipment = d.shipments.example; delete d.shipments.example; d.shipments.example = shipment;
+      return { changed: true, result: null };
+    });
+    const raw = await readFile(f.part.corePath, 'utf8'), parsed = JSON.parse(raw).data;
+    assert.equal(raw, seal(parsed));
+    assert.equal(Object.hasOwn(parsed.shipments.example, 'deleted'), false);
+    assert.deepEqual(await f.store.read(source), await new OperationsStore(f.directory).read(source));
+  } finally { await f.close(); }
+});

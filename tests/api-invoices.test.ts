@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
-import { migrateAuthStorage } from '../server/auth-partition';
+import { authLayoutVersion, migrateTestAuthStorage } from './helpers/auth-layout';
 import { OperationsStore } from '../server/operations-store';
 import { InvoiceBridge, invoiceRouteAllowed, syncInvoiceEvents } from '../server/invoice-bridge';
 import { dispatchReminders, subscribe, type PushConfig } from '../server/push';
@@ -42,7 +42,7 @@ async function fixture(fetcher: typeof fetch) {
     ], sessions: [{ userId: 'invoice-user', hash: hash(token), expiresAt: Date.now() + 3600000 }, { userId: 'other-user', hash: hash(otherToken), expiresAt: Date.now() + 3600000 }], attempts: {} };
     return { changed: true, result: null };
   });
-  if (process.env.ARTEL_TEST_AUTH_PARTITION === '1') await migrateAuthStorage(resolve(directory, 'store'), source);
+  if (authLayoutVersion !== null) await migrateTestAuthStorage(resolve(directory, 'store'), source);
   const bridge = new InvoiceBridge('http://invoices:4318', key, fetcher);
   const middleware = createSnapshotMiddleware(snapshot, { operationsStore: store, invoiceBridge: bridge, pushConfig: push });
   const server = createServer((req, res) => middleware(req, res, () => { res.writeHead(404); res.end(); }));

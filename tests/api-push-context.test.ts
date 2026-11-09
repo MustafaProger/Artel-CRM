@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { createSnapshotMiddleware } from '../server/local-api';
 import { integrationRuntime } from './helpers/trip-saby-integration';
-import { migrateAuthStorage } from '../server/auth-partition';
+import { migrateAuthStorage, migrateArchiveStorage } from '../server/auth-partition';
 import { dirname } from 'node:path';
 
 async function fixture() {
@@ -85,10 +85,11 @@ test('push test context rejects invalid, inaccessible or missing task targets be
   } finally { await f.close(); }
 });
 
-test('push config uses the fresh narrow authority view and revocation still rejects the old cookie', async () => {
+for (const version of [1, 2]) test(`push config uses the fresh narrow authority view and revocation still rejects the old cookie (v${version})`, async () => {
   const f = await fixture();
   try {
     await migrateAuthStorage(dirname(f.store.path), f.source);
+    if (version === 2) await migrateArchiveStorage(dirname(f.store.path), f.source);
     const read = f.store.read.bind(f.store);
     let businessReads = 0;
     f.store.read = async source => { businessReads++; return read(source); };

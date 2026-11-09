@@ -3,15 +3,18 @@
 // synthetic identity BEFORE the temporary store starts. No real credentials.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile as execute } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { request } from 'node:http';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { OperationsStore, encodeOperations, type OperationsData } from '../server/operations-store';
-import { migrateAuthStorage } from '../server/auth-partition';
+import { migrateAuthStorage, migrateArchiveStorage } from '../server/auth-partition';
 import { passwordFields } from '../server/auth';
 const input = process.env.ARTEL_LARGE_COPY_INPUT;
+const archivePartitioned = process.argv.includes('--auth-partition-v2');
+const execFile = promisify(execute);
 assert.equal(input, '/compat/operations.json', 'Only the isolated read-only copy mount is accepted');
 const raw = await readFile(input);
 const before = JSON.parse(raw.toString()).data as OperationsData;
@@ -37,7 +40,10 @@ const call = (path:string,method:string,body?:unknown,cookie?:string):Promise<{s
   });req.once('error',reject);req.end(payload);
 });
 try {
-  await timed('migrationMs',()=>migrateAuthStorage(directory,source));
+  await timed('migrationMs',async()=>{await migrateAuthStorage(directory,source);if(archivePartitioned)await migrateArchiveStorage(directory,source);});
+  const archiveHash=async()=>archivePartitioned?createHash('sha256').update(await readFile(resolve(directory,'auth-storage-v2/archive.json'))).digest('hex'):null;
+  const archiveBefore=await archiveHash();
+  assert.equal(JSON.parse(await readFile(resolve(directory,'operations.json'),'utf8')).format,archivePartitioned?'artel-auth-partition-v2':'artel-auth-partition-v1');
   const store=new OperationsStore(directory);assert.ok(isDeepStrictEqual(await store.read(source),before), 'Private-copy migration changed logical values');
   runtime=await createProductionRuntime({ARTEL_PUBLIC_ORIGIN:origin,ARTEL_STORE_DIR:directory,ARTEL_SNAPSHOT_DIR:'/compat/snapshot',PORT:'0',ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false',ARTEL_CABINET_SYNC_ENABLED:'false',ARTEL_GEOCODER_ENABLED:'false',SABY_WORKFLOW_ENABLED:'false',PUSH_SCHEDULE_ENABLED:'false'});
   await runtime.start();
@@ -58,8 +64,14 @@ try {
   }));
   expected.accounts!.users[0].version++;expected.work ??= {tasks:[],companyRecords:[],notes:[]};expected.work.notes.push(note);
   const after=await timed('fullReadMs',()=>new OperationsStore(directory).read(source));expected.revision=after.revision;assert.ok(isDeepStrictEqual(after,expected), 'Private-copy mixed mutation changed unexpected logical values');
+  assert.equal(await archiveHash(),archiveBefore,'Unchanged document archive was rewritten during auth/Work transactions');
+  const exportPath=resolve(root,'current-export.json'),cli='/app/server-render/work-storage.mjs';
+  await timed('currentExportMs',()=>execFile(process.execPath,[cli,'export',directory,source,'--writers-stopped',exportPath]));
+  assert.ok(isDeepStrictEqual(JSON.parse(await readFile(exportPath,'utf8')).data,expected),'Current export changed logical data');
+  await timed('currentMergeMs',()=>execFile(process.execPath,[cli,'merge',directory,source,'--writers-stopped']));
+  assert.ok(isDeepStrictEqual(await new OperationsStore(directory).read(source),expected),'Current merge lost logical data');
   assert.equal(external,0);
   const cgroup:Record<string,string|null>={};for(const key of ['memory.current','memory.peak','memory.max','memory.events']){try{cgroup[key]=(await readFile('/sys/fs/cgroup/'+key,'utf8')).trim()}catch{cgroup[key]=null}}
   assert.ok(cgroup['memory.events']?.includes('oom_kill 0'));assert.ok(cgroup['memory.events']?.includes('oom 0'));
-  console.log(JSON.stringify({passed:true,modifiedPrivateCopy:true,productionMountsUsed:false,initialReplacement:'accounts only with synthetic identity',sourceBytes:raw.length,documentArchiveBytes:Buffer.byteLength(JSON.stringify(before.documentArchive??null)),fullDataExactExceptExplicitSyntheticChanges:true,mixedAuthWorkWalVerified:true,serverLogout401:true,externalRequests:external,durations,cgroup}));
+  console.log(JSON.stringify({passed:true,authPartitionVersion:archivePartitioned?2:1,currentExportExact:true,currentMergeExact:true,archiveBytesUnchanged:archivePartitioned?true:null,modifiedPrivateCopy:true,productionMountsUsed:false,initialReplacement:'accounts only with synthetic identity',sourceBytes:raw.length,documentArchiveBytes:Buffer.byteLength(JSON.stringify(before.documentArchive??null)),fullDataExactExceptExplicitSyntheticChanges:true,mixedAuthWorkWalVerified:true,serverLogout401:true,externalRequests:external,durations,cgroup}));
 }finally{await runtime?.stop();globalThis.fetch=originalFetch;await rm(root,{recursive:true,force:true});}

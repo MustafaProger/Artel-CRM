@@ -21,3 +21,9 @@ test('HTTP login keeps all 19 stale-proof and admission checks with separate dur
   const result = JSON.parse(stdout.trim());
   assert.equal(result.passed, true); assert.equal(result.storage, 'auth-partitioned'); assert.equal(result.checks.length, 19);
 });
+
+test('HTTP login keeps all 19 stale-proof and admission checks with archive-separated auth v2 storage', async () => {
+  const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', resolve('scripts/profile_backend_login_interleaving.mjs'), '--auth-partition-v2'], { timeout: 45000, maxBuffer: 1024 * 1024 });
+  const result = JSON.parse(stdout.trim());
+  assert.equal(result.passed, true); assert.equal(result.storage, 'auth-archive-partitioned'); assert.equal(result.checks.length, 19);
+});

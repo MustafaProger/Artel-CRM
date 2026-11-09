@@ -3,6 +3,10 @@ import { ApiError } from './api-error';
 import type { OperationsData } from './operations-store';
 import { documentMaxBytes, type DocumentArchive, type DocumentArchiveView } from '../web/src/documents-model';
 const fail = (message: string): never => { throw new ApiError(400, message); };
+// Reuse only successful checks of the exact immutable payload string and size.
+// Metadata, membership and limits are still validated on every invocation.
+// Keep at most one archive's bounded payload references, never mutable records.
+let verifiedFiles: { data: string; size: number }[] = [];
 function text(value: unknown, label: string, max = 200): string {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > max || Array.from(value).some(char => char.charCodeAt(0) < 32)) return fail(`Проверьте поле «${label}» (до ${max} символов).`);
   return value.trim();
@@ -37,8 +41,14 @@ export function validateDocumentArchive(value: unknown): asserts value is Docume
   for (const d of a.documents) {
     if (d.itemId !== undefined && !a.items?.some(i => i.id === d.itemId && i.categoryId === d.categoryId)) throw new Error('Invalid document item');
     text(d.title, 'Название'); text(d.fileName, 'Файл'); expiry(d.expiresOn);
-    if (!a.categories.some(c => c.id === d.categoryId) || typeof d.data !== 'string' || d.size <= 0 || d.size > documentMaxBytes || Buffer.from(d.data, 'base64').length !== d.size || Buffer.from(d.data, 'base64').toString('base64') !== d.data) throw new Error('Invalid document file');
+    if (!a.categories.some(c => c.id === d.categoryId) || typeof d.data !== 'string' || d.size <= 0 || d.size > documentMaxBytes) throw new Error('Invalid document file');
+    if (!verifiedFiles.some(file => file.size === d.size && file.data === d.data)) {
+      const bytes = Buffer.from(d.data, 'base64');
+      if (bytes.length !== d.size || bytes.toString('base64') !== d.data) throw new Error('Invalid document file');
+    }
   }
+  verifiedFiles = a.documents.reduce((size, d) => size + d.data.length, 0) <= 32 * 1024 * 1024
+    ? a.documents.map(({ data, size }) => ({ data, size })) : [];
 }
 export function createArchiveEntry(data: OperationsData, kind: string, input: unknown, actorId: string) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('Некорректный запрос.');

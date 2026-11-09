@@ -85,3 +85,30 @@ A pointer-only copy is never a backup. Deployment/audit snapshots must verify a
 stable complete generation; do not independently read three parts around a commit.
 Migration, merge and restore are performed only with all writers stopped and
 through the same lifetime-lock entrypoint. Keep the permanent lease inode intact.
+
+
+## Auth/archive partition v2, 2026-11-09
+
+Offline `split-archive` installs a new `artel-auth-partition-v2` pointer only
+AFTER the complete new directory has been durably written and its composed
+logical state verified exact. The authoritative directory is `auth-storage-v2`
+with sealed `core.json`, `auth.json`, `work.json` and `archive.json` parts. Archive
+owns `documentArchive`; its revision joins the other three revisions in the
+logical export. Auth retains accounts/directories/push and durable revocation.
+The previous `auth-storage` directory remains historical evidence; it must never
+be used as an alternate current source after the v2 pointer commits.
+
+All four parts share one transaction latch. `artel-auth-redo-v2` commit.json
+stores ONLY changed sealed parts. Recovery combines those parts with the current
+unchanged parts under the latch, validates the full composed state, applies the
+redo, and durably removes the journal. Interrupted migration is safe to resume
+only through the owning offline migration code, never by copying old data over
+current writes. Lifetime lease acquisition removes stale v2 queue/latch markers,
+not the journal. The permanent `.runtime.lock` inode remains unchanged.
+
+The v1-only backend rejects the v2 pointer. Once v2 is installed, recovery must
+use the same v2-capable candidate code or a verified offline merge of CURRENT
+state; do not restore the old image or a premigration snapshot. Scheduled backup
+exports one complete verified flat logical envelope from either auth layout.
+Release captures must read pointer plus all four parts consistently and reject
+live WAL/latch presence; audit tooling never replays a live journal independently.

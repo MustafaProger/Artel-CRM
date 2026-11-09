@@ -1,7 +1,7 @@
 import { readTransportPriceSnapshot, readTransportSectionIndexes, validTransportPricing } from '../web/src/transport-pricing';
 import { validateTripExchangeControls, type TripExchangeControl } from './trip-exchange-control';
 import { WorkPartition, isWorkPartition } from './work-partition';
-import { AuthPartition, isAuthPartition } from './auth-partition';
+import { AuthPartition, authPartitionVersion } from './auth-partition';
 import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
 import { validateDocumentArchive } from './document-archive';
 import { validateOperator } from './operator';
@@ -337,16 +337,23 @@ export class LegacyOperationsStore {
  * same logical snapshot. Physical partitioning is an explicit offline operation. */
 export class OperationsStore extends LegacyOperationsStore {
   private partition = new WorkPartition(this.path);
-  private authPartition = new AuthPartition(this.path);
+  private authPartitions = { 1: new AuthPartition(this.path, 1), 2: new AuthPartition(this.path, 2) };
+  private async authStore(source: string) {
+    const version = await authPartitionVersion(this.path, source);
+    return version ? this.authPartitions[version] : undefined;
+  }
   override async read(source: string): Promise<OperationsData> {
-    if (await isAuthPartition(this.path, source)) return this.authPartition.read(source);
+    const auth = await this.authStore(source);
+    if (auth) return auth.read(source);
     return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
   }
   async readAuth(source: string): Promise<OperationsData> {
-    return await isAuthPartition(this.path, source) ? this.authPartition.readAuth(source) : this.read(source);
+    const auth = await this.authStore(source);
+    return auth ? auth.readAuth(source) : this.read(source);
   }
   override async mutate<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
-    if (await isAuthPartition(this.path, source)) return this.authPartition.mutate(source, update);
+    const auth = await this.authStore(source);
+    if (auth) return auth.mutate(source, update);
     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update) : super.mutate(source, update);
   }
   /** Separate FIFO admission only; the same core file, latch, validation and WAL
@@ -359,9 +366,11 @@ export class OperationsStore extends LegacyOperationsStore {
     // differ from invocation order. Share this queue across facade instances,
     // while keeping the existing file admission and transaction locks intact.
     const previous = tripRequestQueues.get(this.path) ?? Promise.resolve();
-    const pending = previous.catch(() => undefined).then(async () =>
-      await isAuthPartition(this.path, source) ? (auth ? this.authPartition.mutateAuth(source, update) : this.authPartition.mutate(source, update, false, true)) :
-      await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, false, true) : super.mutate(source, update));
+    const pending = previous.catch(() => undefined).then(async () => {
+      const selected = await this.authStore(source);
+      return selected ? (auth ? selected.mutateAuth(source, update) : selected.mutate(source, update, false, true)) :
+        await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, false, true) : super.mutate(source, update);
+    });
     tripRequestQueues.set(this.path, pending);
     try { return await pending; } finally { if (tripRequestQueues.get(this.path) === pending) tripRequestQueues.delete(this.path); }
   }
@@ -372,7 +381,8 @@ export class OperationsStore extends LegacyOperationsStore {
     return this.mutateInteractive(source, update, true);
   }
   async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
-    if (await isAuthPartition(this.path, source)) return this.authPartition.mutate(source, update, true);
+    const auth = await this.authStore(source);
+    if (auth) return auth.mutate(source, update, true);
     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
   }
 }

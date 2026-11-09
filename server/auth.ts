@@ -1,3 +1,4 @@
+import { performanceSpan } from './performance-trace';
 import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
@@ -163,7 +164,7 @@ export async function prepareLogin(data: OperationsData, input: Record<string, u
   const salt = user?.salt ?? '00000000000000000000000000000000';
   const password = typeof input.password === 'string' && input.password.length <= 256 ? input.password : '';
   // Known, unknown and throttled users all perform the same password derivation.
-  const actual = await scrypt(password, salt, 64) as Buffer;
+  const actual = await performanceSpan('auth.kdf', () => scrypt(password, salt, 64)) as Buffer;
   const verified = expected !== undefined && timingSafeEqual(actual, Buffer.from(expected, 'hex'));
   return (fresh: OperationsData, onChanged: () => void = () => {}): LoginResult => {
     return finishLogin(fresh, name, identity, verified, audience, onChanged);

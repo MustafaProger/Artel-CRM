@@ -33,4 +33,8 @@ rm -f -- "$ARTEL_STORE_DIR/auth-storage/transaction.lock" \
   "$ARTEL_STORE_DIR/auth-storage/core-queue.lock" \
   "$ARTEL_STORE_DIR/auth-storage/work-queue.lock" \
   "$ARTEL_STORE_DIR/auth-storage/interactive-queue.lock"
+rm -f -- "$ARTEL_STORE_DIR/auth-storage-v2/transaction.lock" \
+  "$ARTEL_STORE_DIR/auth-storage-v2/core-queue.lock" \
+  "$ARTEL_STORE_DIR/auth-storage-v2/work-queue.lock" \
+  "$ARTEL_STORE_DIR/auth-storage-v2/interactive-queue.lock"
 exec "$@"

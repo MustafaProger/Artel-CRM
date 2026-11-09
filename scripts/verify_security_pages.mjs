@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createServer, request as httpRequest } from 'node:http';
 import { chromium, webkit, expect as baseExpect } from '@playwright/test';
 import { OperationsStore } from '../server/operations-store.ts';
-import { migrateAuthStorage } from '../server/auth-partition.ts';
+import { migrateAuthStorage, migrateArchiveStorage } from '../server/auth-partition.ts';
 import { emptyDirectories } from '../server/directory-operations.ts';
 import { SabyClient, sabyConfigFromEnv } from '../server/saby-client.ts';
 import { enabledPages } from '../web/src/page-catalog.ts';
@@ -17,7 +17,8 @@ import { authenticateContext, bootstrapQaAuth } from './qa-auth.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const built = process.argv.includes('--built');
-const authPartition = process.argv.includes('--auth-partition');
+const authPartitionVersion = process.argv.includes('--auth-partition-v2') ? 2 : process.argv.includes('--auth-partition') ? 1 : null;
+const authPartition = authPartitionVersion !== null;
 const output = resolve(process.env.ARTEL_SECURITY_QA_OUTPUT || resolve(root, '.local/security-pages'), built ? 'built' : 'source');
 const expect = baseExpect.configure({ timeout: 20000 });
 // Never inherit service credentials or background jobs from the invoking shell.
@@ -31,7 +32,7 @@ process.env.ARTEL_BANK_REQUESTS_ENABLED = 'false';
 process.env.PUSH_SCHEDULE_ENABLED = 'false';
 const temporary = await mkdtemp(resolve(tmpdir(), 'artel-security-pages-'));
 const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = resolve(temporary, 'store');
-const report = { passed: false, syntheticOnly: true, mode: built ? 'built' : 'source', authPartition, workingStoreAccessed: false, checks: [], pages: [], forms: [], errors: [], consoleErrors: [], failedAssets: [], deniedResponses: [], externalRequests: [], invoiceWorkerMocked: true, staticBankIdentifiersMasked: true };
+const report = { passed: false, syntheticOnly: true, mode: built ? 'built' : 'source', authPartition, authPartitionVersion, workingStoreAccessed: false, checks: [], pages: [], forms: [], errors: [], consoleErrors: [], failedAssets: [], deniedResponses: [], externalRequests: [], invoiceWorkerMocked: true, staticBankIdentifiersMasked: true };
 const check = name => { report.checks.push(name); console.log('PASS', name); };
 await mkdir(output, { recursive: true });
 const source = await writeTripsQaSnapshot(snapshotDirectory);
@@ -48,6 +49,7 @@ await store.mutate(source, data => {
 // The fixture has no running writers. Exercise the actual new storage path for
 // setup, account administration, all page reads and durable browser logout.
 if (authPartition) await migrateAuthStorage(operationsDirectory, source);
+if (authPartitionVersion === 2) await migrateArchiveStorage(operationsDirectory, source);
 // A second guard catches server-side fetches in addition to blocked browser egress.
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (input, init) => {

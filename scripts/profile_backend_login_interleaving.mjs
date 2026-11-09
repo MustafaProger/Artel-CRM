@@ -12,7 +12,7 @@ crypto.scrypt=(...args)=>{derivations++;if(!holding)return Reflect.apply(origina
 const {createSnapshotMiddleware,loadSnapshot}=await import('../server/local-api.ts');
 const {OperationsStore}=await import('../server/operations-store.ts');
 const {migrateWorkStorage}=await import('../server/work-partition.ts');
-const partitioned=process.argv.includes('--partitioned'),authPartitioned=process.argv.includes('--auth-partitioned');
+const partitioned=process.argv.includes('--partitioned'),authArchivePartitioned=process.argv.includes('--auth-partition-v2'),authPartitioned=authArchivePartitioned||process.argv.includes('--auth-partitioned');
 const {emptyDirectories}=await import('../server/directory-operations.ts');
 const {prepareLogin}=await import('../server/auth.ts');
 const {writeTripsQaSnapshot}=await import('./qa-trips-runtime.mjs');
@@ -33,7 +33,7 @@ const waitPending=async(count)=>{if(pending.length>=count)return;await new Promi
 const release=()=>{holding=false;const jobs=pending.splice(0);jobs.forEach(run=>run());};
 const checks=[];
 try{
- await reset();if(partitioned)await migrateWorkStorage(resolve(temporary,'store'),source);if(authPartitioned)await (await import('../server/auth-partition.ts')).migrateAuthStorage(resolve(temporary,'store'),source);holding=true;const pendingLogins=Array.from({length:4},()=>login('target.user','wrong'));await waitPending(4);
+ await reset();if(partitioned)await migrateWorkStorage(resolve(temporary,'store'),source);if(authPartitioned)await (await import('../server/auth-partition.ts')).migrateAuthStorage(resolve(temporary,'store'),source);if(authArchivePartitioned)await (await import('../server/auth-partition.ts')).migrateArchiveStorage(resolve(temporary,'store'),source);holding=true;const pendingLogins=Array.from({length:4},()=>login('target.user','wrong'));await waitPending(4);
  const before=performance.now();const work=await call('/api/work/tasks/task','PATCH',{version:1,status:'done'});assert.equal(work.status,200);const workMs=performance.now()-before;assert.equal(pending.length,4,'Work must finish while all KDFs remain held');
  assert.equal((await call('/api/auth/session')).status,200);assert.equal((await login('overflow.user')).status,429);assert.equal(pending.length,4);release();assert.deepEqual((await Promise.all(pendingLogins)).map(r=>r.status),[401,401,401,401]);
  let fresh=await store.read(source);assert.equal(fresh.accounts.attempts[digest('artel:auth:user:target.user')].count,4);assert.equal(fresh.work.tasks[0].status,'done');checks.push('held KDFs do not hold Work mutation; four-login gate retained');
@@ -46,5 +46,5 @@ try{
  await reset();await store.mutate(source,data=>{data.accounts.users[1].sections=[];return{changed:true,result:null};});assert.equal((await login('target.user',password,true)).status,403);checks.push('logistics audience access rechecked at completion');
  await reset();for(const name of ['target.user','unknown.user']){const count=derivations;await login(name,'wrong');assert.equal(derivations-count,1);}checks.push('known and unknown HTTP credentials each perform exactly one KDF');
  await reset();const data=await store.read(source),finish=await prepareLogin(data,{login:'target.user',password});const abandoned=structuredClone(data),retry=structuredClone(data);assert.equal(finish(abandoned).status,200);assert.equal(finish(retry).status,200);assert.equal(retry.accounts.sessions.length,2);const revokedRetry=structuredClone(data);revokedRetry.accounts.users[1].role='manager';assert.equal(finish(revokedRetry).status,401);assert.equal(revokedRetry.accounts.sessions.length,1);checks.push('CAS callback retry discards abandoned session and checks identity anew');
- console.log(JSON.stringify({passed:true,syntheticOnly:true,storage:authPartitioned?'auth-partitioned':partitioned?'partitioned':'legacy',workPatchWhileFourKdfsHeldMs:workMs,checks,derivations}));
+ console.log(JSON.stringify({passed:true,syntheticOnly:true,storage:authArchivePartitioned?'auth-archive-partitioned':authPartitioned?'auth-partitioned':partitioned?'partitioned':'legacy',workPatchWhileFourKdfsHeldMs:workMs,checks,derivations}));
 }finally{release();server.closeAllConnections();await new Promise(done=>server.close(done));crypto.scrypt=original;syncBuiltinESMExports();await rm(temporary,{recursive:true,force:true});}

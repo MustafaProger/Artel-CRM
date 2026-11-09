@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { emptyDirectories } from '../../server/directory-operations';
-import { migrateAuthStorage } from '../../server/auth-partition';
+import { authLayoutVersion, migrateTestAuthStorage } from './auth-layout';
 import { OperationsStore } from '../../server/operations-store';
 import { loadSnapshot } from '../../server/local-api';
 import { saveShipmentTrip } from '../../server/shipment-trips';
@@ -37,7 +37,7 @@ export async function integrationRuntime() {
   });
   const created = await store.mutate(source, data => ({ result: saveShipmentTrip(base, data, { fields: { organization_id: 'artel', date: '2025-04-01', supplier_id: 'supplier', carrier_id: 'carrier', oil_depot_id: 'depot', product_id: 'product', purchase_price_unspecified_unit: '50000', quantity_tonnes: '12', quantity_gross_tonnes: '12', driver_id: 'driver', vehicle_id: 'vehicle', loading_planned_at: '2025-04-01T09:00', additional_costs: '0', intermediate_stops_in_order: 'true' }, customers: [0, 1].map(index => ({ fields: { customer_id: 'customer', manager_id: 'manager', payment_form_id: 'payment', quantity_litres: index ? '6000' : '8000', sale_price_per_litre: '60', transport_amount: '1000', unloading_address_id: 'delivery', unloading_planned_at: '2025-04-01T09:00', intermediate_stops_after: index ? null : JSON.stringify([{ id: 'synthetic-stop', name: 'Собственная остановка', address: 'Точка только общей заявки' }]) } })) }), changed: true }));
   // Explicit test-only layout selection; production never auto-migrates.
-  if (process.env.ARTEL_TEST_AUTH_PARTITION === '1') await migrateAuthStorage(resolve(directory, 'store'), source);
+  if (authLayoutVersion !== null) await migrateTestAuthStorage(resolve(directory, 'store'), source);
   const facts = () => ({ arrivedAt: '2025-04-01T09:01', departedAt: '2025-04-01T10:03', deliveries: Object.fromEntries(created.trip.customers.map((row, index) => [row.id, { grossMassTonnes: index ? '5.2' : '7', massMethod: '02' }])) });
   return { directory, snapshotDirectory, source, base, store, tripId: created.trip.id, trip: created.trip, prepare: integrationPrepare, authorize: () => undefined, facts, close: () => rm(directory, { recursive: true, force: true }) };
 }

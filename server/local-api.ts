@@ -1,3 +1,4 @@
+import { performanceSpan, withPerformanceTrace, type PerformanceSink } from './performance-trace';
 import { readTransportPricing, validTransportPricing } from '../web/src/transport-pricing';
 import { readTripWorkflowIssues } from './trip-workflow-issues';
 import type { ShipmentAccessContext } from './shipment-operations';
@@ -320,6 +321,8 @@ export function isLocalRequest(request: Pick<IncomingMessage, 'headers' | 'socke
 }
 
 export interface LocalApiOptions {
+  /** Opt-in isolated diagnostics; receives timings only, never request/store values. */
+  performanceSink?: PerformanceSink;
   invoiceBridge?: InvoiceBridge;
   pushConfig?: PushConfig;
   pushSender?: PushSender;
@@ -401,7 +404,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
     if (!isLogin) return action();
     if (pendingLogins >= 4) throw new ApiError(429, 'Вход сейчас занят. Повторите попытку через несколько секунд.');
     pendingLogins++;
-    try { return await action(); }
+    try { return await performanceSpan('auth.admitted', action); }
     finally { pendingLogins--; }
   };
   let cache: { signature: string; snapshot: Promise<Snapshot> } | undefined;
@@ -434,12 +437,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       ? request.headers['sec-fetch-site'] !== 'cross-site'
       : (options.authorizeRequest ?? isLocalRequest)(request);
     if (!cronRequest && !bankCron && !bankWebhook && !originAllowed) return write(response, 403, '{"error":"Доступ к API запрещён."}');
-    void (async () => {
+    void withPerformanceTrace(['/api/auth/login', '/api/auth/logout', '/api/auth/session', '/api/settlements'].includes(pathname) ? pathname : 'other', async () => {
       if (logistics) requireLogisticsRoute(pathname, request.method ?? '');
       if (cronRequest && !validCron(request, options.cronSecret ?? process.env.CRON_SECRET) && !await validPushWorkflow(request)) throw new ApiError(403, 'Доступ к планировщику запрещён.');
       const url = new URL(request.url!, 'http://localhost');
       const authEnabled = logistics || options.requireAuthentication !== false;
-      const base = await baseSnapshot();
+      const base = await performanceSpan('request.base-snapshot', () => baseSnapshot());
       if (pathname === '/api/maps/yandex/tiles') {
         return serveYandexTile(request, response, url.searchParams, yandexTiles, async () => {
           const user = requireUser(await operations.read(base.provenance.sourceSha256), request);
@@ -451,7 +454,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       // One fresh view covers the synchronous routing/authorization chain. Reuse it
       // only before yielding; body/provider awaits and mutation callbacks read afresh.
       const authOnly = ['/api/auth/session', '/api/push/config'].includes(pathname) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST';
-      const requestData = await (authOnly && operations.readAuth ? operations.readAuth(base.provenance.sourceSha256) : operations.read(base.provenance.sourceSha256));
+      const requestData = await performanceSpan(authOnly ? 'request.read-auth' : 'request.read-full', () => authOnly && operations.readAuth ? operations.readAuth(base.provenance.sourceSha256) : operations.read(base.provenance.sourceSha256));
       const boundaryUser = authenticate(requestData, request);
       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
       if (pathname === '/api/cabinets' || pathname.startsWith('/api/cabinets/')) return cabinetRoutes(operations, base.provenance.sourceSha256, options.cabinetEnvironment ?? process.env, request, response, () => jsonBody(request, false, 16384));
@@ -532,7 +535,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const result = await gateLogin(pathname === '/api/auth/login', async () => {
           // requestData supplies credentials only; completion rechecks its exact
           // identity and all authority in the fresh transaction after derivation.
-          const completeLogin = pathname === '/api/auth/login' ? await prepareLogin(requestData, body, logistics ? 'logistics' : undefined) : undefined;
+          const completeLogin = pathname === '/api/auth/login' ? await performanceSpan('auth.prepare', () => prepareLogin(requestData, body, logistics ? 'logistics' : undefined)) : undefined;
           return mutateAuth<{status:number;token?:string;user?:AccountUser;error?:string}>(base.provenance.sourceSha256, async data => {
           if(pathname === '/api/auth/login'){
             let changed=false;
@@ -784,12 +787,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (pathname === '/api/settlements') {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const stored = requestData;
-        const snapshot = currentSnapshot(base, stored, false);
-        const report = buildSettlements(snapshot.shipments, snapshot.companies, stored).report;
+        const snapshot = performanceSpan('settlements.snapshot', () => currentSnapshot(base, stored, false));
+        const report = performanceSpan('settlements.report', () => buildSettlements(snapshot.shipments, snapshot.companies, stored).report);
         const currentActor = actor ? authorized(stored) : null;
         const scoped = currentActor ? scopeSettlements(report, snapshot, currentActor) : { ...includeIdleCustomers(report, snapshot), scope: 'all' };
-        const { organizations } = buildOrganizationSettlements(snapshot.shipments, snapshot.companies, stored);
-        return write(response, 200, JSON.stringify({ ...scoped, ...organizationSettlementsForActor(organizations, snapshot, currentActor) }));
+        const { organizations } = performanceSpan('settlements.organizations', () => buildOrganizationSettlements(snapshot.shipments, snapshot.companies, stored));
+        return write(response, 200, performanceSpan('settlements.serialize', () => JSON.stringify({ ...scoped, ...organizationSettlementsForActor(organizations, snapshot, currentActor) })));
       }
       if (pathname.startsWith('/api/push/')) {
         if (!actor) throw new ApiError(401, 'Войдите в приложение.');
@@ -1322,7 +1325,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return { result: { shipment }, changed: true };
       });
       write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
-    })().catch((error: unknown) => {
+    }, options.performanceSink).catch((error: unknown) => {
       if (error instanceof ApiError) return write(response, error.status, JSON.stringify({ error: error.message }));
       if (error instanceof StoreError) return write(response, 500, '{"error":"Не удалось прочитать данные или подтвердить сохранение. Обновите раздел перед повтором. Если ошибка повторяется, обратитесь к администратору."}');
       cache = undefined;

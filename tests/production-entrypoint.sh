@@ -22,7 +22,7 @@ mkdir "$ARTEL_STORE_DIR"
 
 # A stale transaction marker from an already dead process must be recovered.
 printf '%s' 'stale' > "$ARTEL_STORE_DIR/operations.json.lock"
-mkdir "$ARTEL_STORE_DIR/work-storage" "$ARTEL_STORE_DIR/auth-storage"
+mkdir "$ARTEL_STORE_DIR/work-storage" "$ARTEL_STORE_DIR/auth-storage" "$ARTEL_STORE_DIR/auth-storage-v2"
 for name in transaction core-queue work-queue trip-requests-queue; do
   printf '%s' 'stale' > "$ARTEL_STORE_DIR/work-storage/$name.lock"
 done
@@ -31,6 +31,10 @@ for name in transaction core-queue work-queue interactive-queue; do
   printf '%s' 'stale' > "$ARTEL_STORE_DIR/auth-storage/$name.lock"
 done
 printf '%s' 'durable-auth-redo' > "$ARTEL_STORE_DIR/auth-storage/commit.json"
+for name in transaction core-queue work-queue interactive-queue; do
+  printf '%s' 'stale' > "$ARTEL_STORE_DIR/auth-storage-v2/$name.lock"
+done
+printf '%s' 'durable-auth-v2-redo' > "$ARTEL_STORE_DIR/auth-storage-v2/commit.json"
 "$entrypoint" node -e '
   const fs = require("node:fs");
   const lock = process.env.ARTEL_STORE_DIR + "/operations.json.lock";
@@ -47,6 +51,12 @@ printf '%s' 'durable-auth-redo' > "$ARTEL_STORE_DIR/auth-storage/commit.json"
     fs.writeFileSync(path, "live-auth-transaction");
   }
   if (fs.readFileSync(process.env.ARTEL_STORE_DIR + "/auth-storage/commit.json", "utf8") !== "durable-auth-redo") throw new Error("auth redo journal was changed");
+  for (const name of ["transaction", "core-queue", "work-queue", "interactive-queue"]) {
+    const path = process.env.ARTEL_STORE_DIR + "/auth-storage-v2/" + name + ".lock";
+    if (fs.existsSync(path)) throw new Error("stale auth v2 partition lock was not recovered");
+    fs.writeFileSync(path, "live-auth-v2-transaction");
+  }
+  if (fs.readFileSync(process.env.ARTEL_STORE_DIR + "/auth-storage-v2/commit.json", "utf8") !== "durable-auth-v2-redo") throw new Error("auth v2 redo journal was changed");
   fs.fstatSync(9);
   fs.writeFileSync(lock, "live-transaction");
   fs.writeFileSync(process.env.ARTEL_TEST_MARKER, "");
@@ -74,6 +84,7 @@ done
 
 for name in transaction core-queue work-queue interactive-queue; do
   test "$(cat "$ARTEL_STORE_DIR/auth-storage/$name.lock")" = 'live-auth-transaction'
+  test "$(cat "$ARTEL_STORE_DIR/auth-storage-v2/$name.lock")" = 'live-auth-v2-transaction'
 done
 
 # Kernel locks vanish even on SIGKILL; the stable lockfile inode remains.
@@ -90,8 +101,10 @@ test -e "$ARTEL_STORE_DIR/operations.json.lock"
   test "$(cat "$ARTEL_STORE_DIR/work-storage/commit.json")" = durable-redo
   for name in transaction core-queue work-queue interactive-queue; do
     test ! -e "$ARTEL_STORE_DIR/auth-storage/$name.lock"
+    test ! -e "$ARTEL_STORE_DIR/auth-storage-v2/$name.lock"
   done
   test "$(cat "$ARTEL_STORE_DIR/auth-storage/commit.json")" = durable-auth-redo
+  test "$(cat "$ARTEL_STORE_DIR/auth-storage-v2/commit.json")" = durable-auth-v2-redo
   : > "$ARTEL_TEST_MARKER"
 '
 test -e "$ARTEL_TEST_MARKER"

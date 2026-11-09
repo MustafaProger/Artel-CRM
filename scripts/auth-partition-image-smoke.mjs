@@ -11,6 +11,8 @@ import { request as httpRequest } from 'node:http';
 const execFile = promisify(execute);
 const bundle = process.env.ARTEL_SYNTHETIC_BUNDLE || '/app/server-render/production.mjs';
 const cli = resolve(dirname(bundle), 'work-storage.mjs');
+const archivePartitioned = process.argv.includes('--auth-partition-v2');
+const partitionDirectory = archivePartitioned ? 'auth-storage-v2' : 'auth-storage';
 const { createProductionRuntime } = await import(bundle);
 const fixture = JSON.parse(await readFile(resolve(dirname(fileURLToPath(import.meta.url)), 'auth-partition-image-fixture.json'), 'utf8'));
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -39,12 +41,17 @@ const request = (path, method = 'GET', body, cookie) => new Promise((done, rejec
   }); req.on('error', reject); req.end(payload);
 });
 const call = async (path, method = 'GET', body, cookie, expected = 200) => { const response = await request(path, method, body, cookie); assert.equal(response.status, expected, `${method} ${path}: ${JSON.stringify(response.body)}`); return response; };
-const disk = async () => JSON.parse(await readFile(resolve(store, 'auth-storage/auth.json'), 'utf8')).data;
+const disk = async () => JSON.parse(await readFile(resolve(store, partitionDirectory, 'auth.json'), 'utf8')).data;
 const checks = [];
 try {
   await assert.rejects(execFile(process.execPath, [cli, 'split-auth', store, source]));
   await execFile(process.execPath, [cli, 'split-auth', store, source, '--writers-stopped']);
   assert.equal(JSON.parse(await readFile(resolve(store, 'operations.json'))).format, 'artel-auth-partition-v1');
+  if (archivePartitioned) {
+    await assert.rejects(execFile(process.execPath, [cli, 'split-archive', store, source]));
+    await execFile(process.execPath, [cli, 'split-archive', store, source, '--writers-stopped']);
+    assert.equal(JSON.parse(await readFile(resolve(store, 'operations.json'))).format, 'artel-auth-partition-v2');
+  }
   runtime = await createProductionRuntime(env); await runtime.start();
   const password = randomUUID(), login = 'auth-partition-qa';
   const admin = (await call('/api/auth/setup', 'POST', { name: 'Synthetic director', login, password, setupToken: env.ARTEL_SETUP_TOKEN })).cookie;
@@ -69,14 +76,16 @@ try {
   await call('/api/push/subscription', 'POST', { explicit: true, subscription: { endpoint, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } } }, other);
   const before = await disk(), otherHash = hash(other.split('=')[1]), adminHash = hash(admin.split('=')[1]);
   assert.ok(before.push.devices.some(device => device.sessionHash === otherHash));
-  const core = await readFile(resolve(store, 'auth-storage/core.json'));
+  const core = await readFile(resolve(store, partitionDirectory, 'core.json'));
+  const archive = archivePartitioned ? await readFile(resolve(store, partitionDirectory, 'archive.json')) : undefined;
   await call('/api/auth/logout', 'POST', { pushEndpoint: endpoint }, other);
   const after = await disk();
   assert.ok(!after.accounts.sessions.some(session => session.hash === otherHash));
   assert.ok(!after.push.devices.some(device => device.sessionHash === otherHash));
   assert.ok(after.push.invoiceRevocations[otherHash]);
   assert.deepEqual(after.accounts.sessions.find(session => session.hash === adminHash), before.accounts.sessions.find(session => session.hash === adminHash));
-  assert.deepEqual(await readFile(resolve(store, 'auth-storage/core.json')), core);
+  assert.deepEqual(await readFile(resolve(store, partitionDirectory, 'core.json')), core);
+  if (archive) assert.deepEqual(await readFile(resolve(store, partitionDirectory, 'archive.json')), archive);
   await call('/api/settlements', 'GET', undefined, other, 401);
   await call('/api/push/config', 'GET', undefined, other, 401);
   await call('/api/settlements', 'GET', undefined, admin);
@@ -91,5 +100,5 @@ try {
   assert.deepEqual(JSON.parse(await readFile(resolve(store, 'operations.json'))), JSON.parse(await readFile(output)));
   checks.push('restart preserves revocation and other session; durable export/merge keeps current complete state');
   assert.equal(externalRequests, 0);
-  console.log(JSON.stringify({ passed: true, syntheticOnly: true, externalRequests, checks }));
+  console.log(JSON.stringify({ passed: true, syntheticOnly: true, authPartitionVersion: archivePartitioned ? 2 : 1, externalRequests, checks }));
 } finally { await runtime?.stop(); globalThis.fetch = originalFetch; await rm(root, { recursive: true, force: true }); }
