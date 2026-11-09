@@ -96,6 +96,7 @@ test('work versions, server validation and idempotency prevent lost edits, inval
     assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), original);
     const result = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'done', dueDate: null, reminderAt: null }); assert.equal(result.status, 200);
     const changed = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
+    assert.ok(result.body.entry.archivedAt, 'Completing a task archives it atomically');
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'doing' })).status, 409);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 1 })).status, 409);
     assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), changed);
@@ -265,7 +266,13 @@ test('lean Work projection exactly preserves visible company choices, scope and 
         const evaluate = (snapshot: Snapshot) => {
           try {
             const result = mutateWork(structuredClone(data), snapshot, 'tasks', body, task.id, 'PATCH', actor, f.users);
-            if (result.entry) result.entry.updatedAt = 'ignored-clock';
+            if (result.entry) {
+              if ('archivedAt' in result.entry && result.entry.archivedAt) {
+                assert.equal(result.entry.archivedAt, result.entry.updatedAt);
+                result.entry.archivedAt = 'ignored-clock';
+              }
+              result.entry.updatedAt = 'ignored-clock';
+            }
             return result;
           } catch (e) { return { status: (e as {status:number}).status, message: (e as Error).message }; }
         };
