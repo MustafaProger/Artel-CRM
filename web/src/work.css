@@ -20,12 +20,31 @@
 .work-task-meta>span{display:inline-flex;gap:4px;align-items:center}
 .work-task-check{position:relative;display:flex;align-items:center;justify-content:center;width:44px;height:44px;cursor:pointer;border-radius:9px}
 .work-page .work-task-check input{position:absolute;inset:0;width:44px;height:44px;margin:0;opacity:0;cursor:inherit}
-.work-task-check-box{display:flex;align-items:center;justify-content:center;width:23px;height:23px;border:1.5px solid #87958e;border-radius:7px;background:white;color:white;pointer-events:none;transition:background .12s,border-color .12s,transform .12s}
-.work-task-check-box svg{opacity:0}
-.work-task-check input:checked+.work-task-check-box{background:var(--accent,#19694d);border-color:var(--accent,#19694d)}
-.work-task-check input:checked+.work-task-check-box svg{opacity:1}
+.work-task-check-box{display:flex;align-items:center;justify-content:center;width:23px;height:23px;border:1.5px solid var(--work-check-color);border-radius:7px;background:white;color:var(--work-check-color);pointer-events:none;transition:background .12s,border-color .12s,transform .12s}
+.work-task-check-box svg {
+  opacity: 0;
+  transform: scale(.8);
+  transition: opacity .15s ease, transform .15s ease;
+}
+.work-task-check input:checked + .work-task-check-box {
+  background: var(--work-check-color);
+  color: white;
+}
+.work-task-check input:checked + .work-task-check-box svg,
+.work-task-check input:not(:disabled):focus-visible + .work-task-check-box svg {
+  opacity: 1;
+  transform: scale(1);
+}
+@media (hover: hover) {
+  .work-task-check:hover input:not(:disabled):not(:checked) + .work-task-check-box {
+    background: color-mix(in srgb, var(--work-check-color) 10%, white);
+  }
+  .work-task-check:hover input:not(:disabled) + .work-task-check-box svg {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 .work-task-check input:focus-visible+.work-task-check-box{outline:3px solid #a3c8b9;outline-offset:3px}
-.work-task-check:has(input:not(:disabled)):hover .work-task-check-box{border-color:#19694d}
 .work-task-check:has(input:not(:disabled)):active .work-task-check-box{transform:scale(.92)}
 .work-task-check:has(input:disabled){cursor:wait}
 .work-task-status{display:inline-flex;align-items:center;gap:5px;justify-self:end;margin-top:12px;padding:4px 8px;border-radius:6px;background:#f1f3f2;color:#59635f;font-size:11px;line-height:16px;white-space:nowrap}
@@ -36,7 +55,7 @@
 .work-task-error button{border:0;background:none;color:inherit;font:inherit;text-decoration:underline;min-height:32px;cursor:pointer}
 .work-page .work-task-open:focus-visible{outline:2px solid #19694d;outline-offset:3px}
 @media(max-width:650px){.work-page .work-task-row{grid-template-columns:44px minmax(0,1fr);gap:0 6px;padding:8px}.work-task-status{grid-column:2;justify-self:start;margin:0 0 10px}.work-task-meta{gap:3px 10px}}
-@media(prefers-reduced-motion:reduce){.work-task-check-box{transition:none}.work-task-check:active .work-task-check-box{transform:none}}
+@media(prefers-reduced-motion:reduce){.work-task-check-box,.work-task-check-box svg{transition:none}.work-task-check:active .work-task-check-box{transform:none}}
 @media(forced-colors:active){.work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight;border-color:Highlight;color:HighlightText;forced-color-adjust:none}}
 
 /* Keep operation feedback and confirmations visible without crowding the form. */
@@ -308,14 +327,10 @@
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox{min-height:35px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-hint{flex:1 0 100%;font-size:11px;line-height:1.35;margin:0}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-footer{padding:9px 16px}
-.work-task-check.work-priority-1 .work-task-check-box{border-color:#f05b5b;color:#fff}
-.work-task-check.work-priority-2 .work-task-check-box{border-color:#f59e0b;color:#fff}
-.work-task-check.work-priority-3 .work-task-check-box{border-color:#438df5;color:#fff}
-.work-task-check.work-priority-4 .work-task-check-box{border-color:#87958e;color:#fff}
-.work-task-check.work-priority-1 input:checked+.work-task-check-box{background:#f05b5b;border-color:#f05b5b}
-.work-task-check.work-priority-2 input:checked+.work-task-check-box{background:#f59e0b;border-color:#f59e0b}
-.work-task-check.work-priority-3 input:checked+.work-task-check-box{background:#438df5;border-color:#438df5}
-.work-task-check.work-priority-4 input:checked+.work-task-check-box{background:var(--accent,#176647);border-color:var(--accent,#176647)}
+.work-task-check { --work-check-color: #87958e; }
+.work-task-check.work-priority-1 { --work-check-color: #f05b5b; }
+.work-task-check.work-priority-2 { --work-check-color: #f59e0b; }
+.work-task-check.work-priority-3 { --work-check-color: #438df5; }
 @media(max-width:520px){.work-editor:not(.work-compose):has(.work-task-toolbar){max-height:94dvh}.work-editor:not(.work-compose):has(.work-task-toolbar) form{max-height:94dvh}.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content{padding:12px}.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters>.directory-select{flex-basis:100%}}
 @media(forced-colors:active){.work-task-check.work-priority-1 .work-task-check-box,.work-task-check.work-priority-2 .work-task-check-box,.work-task-check.work-priority-3 .work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight!important;border-color:Highlight!important}}
 
@@ -339,10 +354,6 @@
 .work-priority-dot.work-priority-2{background:#f59e0b}
 .work-priority-dot.work-priority-3{background:#438df5}
 .work-task-check .work-task-check-box{border-radius:7px;width:23px;height:23px}
-.work-task-check.work-priority-1:hover .work-task-check-box{border-color:#f05b5b}
-.work-task-check.work-priority-2:hover .work-task-check-box{border-color:#f59e0b}
-.work-task-check.work-priority-3:hover .work-task-check-box{border-color:#438df5}
-.work-task-check.work-priority-4:hover .work-task-check-box{border-color:#87958e}
 @media(forced-colors:active){.work-priority-dot{background:ButtonText!important}.work-editor .work-choice-options>button:focus-visible{outline:2px solid Highlight}}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-choice-options{top:auto;bottom:calc(100% + 5px)}
 .work-editor .work-priority-field .work-choice-options{left:auto;right:0}
