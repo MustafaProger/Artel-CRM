@@ -298,6 +298,13 @@ export function deleteShipmentTrip(base: Snapshot, data: OperationsData, body: R
   const now = new Date().toISOString();
   reserveTripNumber(currentSnapshot(base, data, false), data, id);
   for (const row of rows) tombstone(data, row, now);
+  // Restore the original requests in the same transaction as the trip deletion.
+  // Include requests whose delivery was removed by an earlier trip edit.
+  for (const request of Object.values(data.tripRequests ?? {})) {
+    if (request.status === 'consumed' && request.tripId === id) {
+      Object.assign(request, { status: 'active', tripId: null, shipmentId: null, version: request.version + 1, updatedAt: now });
+    }
+  }
   if (data.push?.tripAssignments) delete data.push.tripAssignments[id];
   return { deleted: true, id, deletedCount: rows.length };
 }

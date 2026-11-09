@@ -195,7 +195,9 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
     if (row.fields.trip_document_policy != null && (!validTripDocumentPolicy(row.fields.trip_document_policy) || row.fields.trip_flow_version !== 'driver-v1' || !row.fields.trip_id)) throw new StoreError('Invalid trip document policy');
     if (row.fields.source_request_id) {
       const request = (data.tripRequests as Record<string, TripRequest> | undefined)?.[String(row.fields.source_request_id)];
-      if (!request || request.status !== 'consumed' || request.shipmentId !== id || request.tripId !== row.fields.trip_id || request.companyId !== row.fields.customer_id || request.addressId !== row.fields.unloading_address_id) throw new StoreError('Invalid shipment request source');
+      // Deleted deliveries retain their historical source after a request is
+      // returned to the queue or assigned to a new trip. Live links stay strict.
+      if (!request || request.companyId !== row.fields.customer_id || request.addressId !== row.fields.unloading_address_id || !row.deleted && (request.status !== 'consumed' || request.shipmentId !== id || request.tripId !== row.fields.trip_id)) throw new StoreError('Invalid shipment request source');
     }
   }
   const ids = new Set<string>();

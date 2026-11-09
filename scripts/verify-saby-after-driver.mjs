@@ -41,9 +41,22 @@ function afterMutationRefresh(page, method, tripId) {
 await mkdir(out, { recursive: true });
 const report = { passed: false, syntheticOnly: true, externalRequests: [], checks: [], errors: [], errorDetails: [] };
 for (const [name, launcher] of Object.entries({ chromium, webkit })) for (const width of [375, 1440]) {
-  const f = await afterDriverFixture(); let runtime, browser, phase = 'opening';
+  const f = await afterDriverFixture(true); let runtime, browser, phase = 'opening';
   try {
     await f.patch('100');
+    const originalRequests = [];
+    const trip = (await f.http('/' + f.tripId)).body.trip;
+    for (const customer of trip.customers) {
+      const made = await f.raw('/api/trip-requests', 'POST', { companyId: customer.fields.customer_id, addressId: customer.fields.unloading_address_id, quantityLitres: '100', comment: 'Возврат заявки ' + customer.fields.customer_id });
+      assert.equal(made.status, 201); originalRequests.push(made.body.request);
+    }
+    await f.store.mutate(f.source, data => {
+      originalRequests.forEach((request, i) => {
+        Object.assign(data.tripRequests[request.id], { status: 'consumed', tripId: f.tripId, shipmentId: trip.customers[i].id, version: request.version + 1 });
+        data.shipments[trip.customers[i].id].fields.source_request_id = request.id;
+      });
+      return { changed: true, result: null };
+    });
     const driver = { id: 'qa-driver', login: 'qa-driver', name: 'Водитель', role: 'driver', driverId: 'driver', managerId: null, active: true, version: 1, sections: [] };
     await f.store.mutate(f.source, data => {
       data.accounts.users.push({ ...driver, passwordHash: 'a'.repeat(128), salt: 'a'.repeat(32) });
@@ -92,9 +105,19 @@ for (const [name, launcher] of Object.entries({ chromium, webkit })) for (const 
     await page.locator('.trips-list').waitFor({ state: 'visible' });
     assert.equal(await card.count(), 0, 'deleted trip must remain absent after the lists finish refreshing');
     await page.waitForLoadState('networkidle');
+    phase = 'returned-requests';
+    await page.locator('.trips-section-tabs').getByRole('button', { name: 'Заявки', exact: true }).click();
+    for (const request of originalRequests) await page.getByText(request.comment, { exact: true }).waitFor();
+    await page.reload();
+    for (const request of originalRequests) await page.getByText(request.comment, { exact: true }).waitFor();
+    const returned = (await f.raw('/api/trip-requests')).body.requests;
+    for (const original of originalRequests) {
+      const request = returned.find(row => row.id === original.id);
+      assert.deepEqual(request, { ...original, version: original.version + 2, updatedAt: request.updatedAt });
+    }
     phase = 'closing';
     assert.equal(f.api.calls.length, 0);
-    report.checks.push({ engine: name, width, waiting: true, earlyStartAbsent: true, editAfterArrival: true, deleteAfterArrival: true, axeViolations: 0, providerCalls: 0 });
+    report.checks.push({ engine: name, width, waiting: true, earlyStartAbsent: true, editAfterArrival: true, deleteAfterArrival: true, returnedRequests: 2, returnedAfterReload: true, axeViolations: 0, providerCalls: 0 });
   } finally { await browser?.close(); await runtime?.server.close(); await f.close(); await writeFile(resolve(out, 'report.json'), JSON.stringify(report, null, 2)); }
 }
 assert.deepEqual(report.errors, []); assert.deepEqual(report.externalRequests, []);

@@ -794,3 +794,60 @@ test('request cancellation racing trip consumption has a single atomic winner on
     else assert.equal(Object.values(stored.shipments).filter(shipment => shipment.fields.source_request_id === row.id).length, 0);
   } finally { await f.close(); }
 });
+
+test('deleting a trip atomically returns every original request, preserves its content, and permits reuse', async () => {
+  const f = await fixture();
+  try {
+    const first = await f.create(), second = await f.create(1), unrelated = await f.create(2);
+    const originalRequests = (await f.store.read(f.source)).tripRequests!;
+    const createBody = f.tripBody([first, second]);
+    const saved = await f.request('/api/shipment-trips', 'POST', createBody, f.admin);
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    const trip = saved.body.trip as ShipmentTrip, versions = editing(trip).versions;
+    const before = await readFile(f.store.path, 'utf8');
+    assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions }, f.one.cookie)).status, 403);
+    assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions: {} }, f.admin)).status, 409);
+    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    const deleted = await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions }, f.admin);
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.equal(deleted.body.deletedCount, 2);
+    const stored = await f.store.read(f.source);
+    for (const original of [originalRequests[first.id], originalRequests[second.id]]) {
+      const returned = stored.tripRequests![original.id];
+      assert.deepEqual(returned, { ...original, version: original.version + 2, updatedAt: returned.updatedAt });
+      assert.equal(returned.updatedAt, stored.shipments[trip.customers[0].id].updatedAt);
+    }
+    assert.deepEqual(stored.tripRequests![unrelated.id], originalRequests[unrelated.id]);
+    assert.ok(trip.customers.every(row => stored.shipments[row.id].deleted));
+    const listed = await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie);
+    assert.deepEqual(listed.body.requests.map((r: TripRequest) => r.id).sort(), [first.id, second.id, unrelated.id].sort());
+    const after = await readFile(f.store.path, 'utf8');
+    assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions }, f.admin)).status, 404);
+    assert.equal((await f.request('/api/shipment-trips', 'POST', createBody, f.admin)).status, 409);
+    assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([first, second]), f.admin)).status, 409);
+    assert.equal(await readFile(f.store.path, 'utf8'), after);
+    const reused = await f.request('/api/shipment-trips', 'POST', f.tripBody([stored.tripRequests![first.id], stored.tripRequests![second.id]]), f.admin);
+    assert.equal(reused.status, 201, JSON.stringify(reused.body));
+    assert.notEqual(reused.body.trip.id, trip.id);
+    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.length, 1);
+  } finally { await f.close(); }
+});
+
+test('deletion restores requests from earlier removed deliveries and never releases another trip requests', async () => {
+  const f = await fixture();
+  try {
+    const first = await f.create(), second = await f.create(1), other = await f.create(2);
+    const created = await f.request('/api/shipment-trips', 'POST', f.tripBody([first, second]), f.admin);
+    const another = await f.request('/api/shipment-trips', 'POST', f.tripBody([other]), f.admin);
+    assert.equal(created.status, 201); assert.equal(another.status, 201);
+    const edit = editing(created.body.trip); edit.customers = edit.customers.slice(0, 1);
+    const changed = await f.request(`/api/shipment-trips/${created.body.trip.id}`, 'PATCH', edit, f.admin);
+    assert.equal(changed.status, 200, JSON.stringify(changed.body));
+    const otherBefore = (await f.store.read(f.source)).tripRequests![other.id];
+    const result = await f.request(`/api/shipment-trips/${created.body.trip.id}`, 'DELETE', { versions: editing(changed.body.trip).versions }, f.admin);
+    assert.equal(result.status, 200);
+    const data = await f.store.read(f.source);
+    assert.equal(data.tripRequests![first.id].status, 'active'); assert.equal(data.tripRequests![second.id].status, 'active');
+    assert.deepEqual(data.tripRequests![other.id], otherBefore);
+  } finally { await f.close(); }
+});
