@@ -69,3 +69,9 @@ Switch→final: CRM raw1/classified1 — `amountMinor` одного кабине
 Новая обязательная база: `/opt/artel-crm/releases/20261109-auth-speed-428d0ac8`; формат `artel-auth-partition-v1`. Перед следующим выпуском fresh drift. Старый backend поверх этого pointer не возвращать. Для аварийного восстановления — тот же совместимый candidate/recovery code либо проверенный offline merge **текущего** состояния, без возврата старой базы/токенов.
 
 Доказательства: `.local/auth-speed-release-20261109/{source,git,packages,checks,server-proofs,benchmark}`; final-summary.json, final-review-paths.json, health-observations.jsonl. На сервере raw CRM/worker snapshots остаются приватными. Дополнительная независимая проверка сохранена в `independent-evidence-supplement.json`. Основной checkout и чужие правки сохранены.
+
+## Сравнение с GloPro после выпуска
+
+[Измерения и разбор GloPro](glopro-auth-comparison-2026-11-09.md) учтены отдельно от CRM before/after: GloPro n3/обычныйHTTPcache/оболочка и первыйответсписка; CRM n10/cache-disabled/готовыйОбзор. Межсервисный процент не рассчитывается. GloPro показывает оболочку до AJAX-списка/сообщений; CRM уже разделяет эти этапы. Имена cookies не раскрывают серверную архитектуру, серверный отзыв GloPro отдельно не проверялся.
+
+Парный разбор CRM after показывает median24,128мс разницы между «клик→оболочка» иHTTPlogin,48,304мс между «клик→форма» иHTTPlogout; от оболочки до готовогоОбзора1376,350мс. Эти величины уточняют следующий участок: фазовый профиль readAuth/latch/KDF/interactive queue/commit/event loop и settlements. Инструментализация пока не реализована; подтверждённое ускорение43,52%/67,21% и текущие гарантии не подменяются предположениями о новом решении.
