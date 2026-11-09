@@ -442,3 +442,11 @@ dialog.work-editor.work-note-editor {
 .work-editor.work-note-editor .work-field :is(input, textarea) {
   border-radius: 8px;
 }
+
+.work-calendar-event:is(.work-priority-1, .work-priority-2, .work-priority-3, .work-priority-4) {
+  box-sizing: border-box;
+  border-inline-start: 3px solid var(--work-calendar-priority, #87958e);
+}
+.work-calendar-event.work-priority-1 { --work-calendar-priority: #f05b5b; }
+.work-calendar-event.work-priority-2 { --work-calendar-priority: #f59e0b; }
+.work-calendar-event.work-priority-3 { --work-calendar-priority: #438df5; }
