@@ -231,7 +231,7 @@ export function encodeOperations(data: OperationsData, sourceSha256 = data.sourc
   // instead of serializing the complete store a second time on every write.
   const payload = JSON.stringify(data);
   const encoded = `{"sha256":"${hash(payload)}","data":${payload}}`;
-  if (Buffer.byteLength(encoded) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
+  if (Buffer.byteLength(encoded) > 128 * 1024 * 1024) throw new StoreError('Operations store too large');
   return encoded;
 }
 
@@ -265,7 +265,7 @@ export class LegacyOperationsStore {
     try {
       const handle = await open(this.path, 'r');
       try {
-        if ((await handle.stat()).size > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
+        if ((await handle.stat()).size > 128 * 1024 * 1024) throw new StoreError('Operations store too large');
         bytes = await handle.readFile();
       } finally { await handle.close(); }
     } catch (error) {

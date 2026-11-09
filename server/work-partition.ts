@@ -72,7 +72,7 @@ function unseal(raw: string): unknown {
   if (!object(e) || e.sha256 !== hash(json(e.data))) throw new StoreError('Work storage checksum mismatch');
   return e.data;
 }
-async function boundedRead(path: string, limit = 64 * 1024 * 1024) {
+async function boundedRead(path: string, limit = 128 * 1024 * 1024) {
   const file = await open(path, 'r');
   try { if ((await file.stat()).size > limit) throw new StoreError('Work storage too large'); return await file.readFile('utf8'); }
   finally { await file.close(); }
@@ -175,7 +175,7 @@ export class WorkPartition {
       // Keep a flat backup/rollback export within the existing 64 MiB limit.
       // Separate envelopes overestimate the composed payload; reserve extra
       // headroom for framing/revision growth instead of serializing core again.
-      if ((coreBytes ? Buffer.byteLength(coreBytes) : before.coreSize) + (workBytes ? Buffer.byteLength(workBytes) : before.workSize) + 4096 > 64 * 1024 * 1024) throw new StoreError('Combined storage is too large for a safe backup/rollback');
+      if ((coreBytes ? Buffer.byteLength(coreBytes) : before.coreSize) + (workBytes ? Buffer.byteLength(workBytes) : before.workSize) + 4096 > 128 * 1024 * 1024) throw new StoreError('Combined storage is too large for a safe backup/rollback');
       if (coreBytes && workBytes) {
         // WAL contains complete validated redo images. Readers replay it under
         // the same latch; a failed HTTP response can mean committed/unknown.

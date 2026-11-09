@@ -154,11 +154,11 @@ test('Work refuses growth beyond the flat backup size bound before replacing eit
     await migrateWorkStorage(f.directory, source);
     const raw = await readFile(f.part.core.path, 'utf8');
     // Valid JSON whitespace creates a near-limit physical core without fake entities.
-    await writeFile(f.part.core.path, raw + ' '.repeat(64 * 1024 * 1024 - 4096 - Buffer.byteLength(raw)));
+    await writeFile(f.part.core.path, raw + ' '.repeat(128 * 1024 * 1024 - 4096 - Buffer.byteLength(raw)));
     const before = await readFile(f.part.workPath);
     await assert.rejects(f.store.mutateWork(source, d => { d.work!.tasks[0].description = 'x'.repeat(10000); return { result: null, changed: true }; }), /safe backup/);
     assert.deepEqual(await readFile(f.part.workPath), before);
-    assert.equal((await stat(f.part.core.path)).size, 64 * 1024 * 1024 - 4096);
+    assert.equal((await stat(f.part.core.path)).size, 128 * 1024 * 1024 - 4096);
   } finally { await f.close(); }
 });
 

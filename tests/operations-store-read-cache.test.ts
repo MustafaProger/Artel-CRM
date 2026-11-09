@@ -176,7 +176,7 @@ test('concurrent reads all return independent nested data', async t => {
 test('newly oversized and unreadable files cannot fall back to a previous snapshot', async t => {
   const f = await fixture(t);
   await f.store.read(source);
-  await truncate(f.store.path, 64 * 1024 * 1024 + 1);
+  await truncate(f.store.path, 128 * 1024 * 1024 + 1);
   await assert.rejects(f.store.read(source), StoreError);
   await writeFile(f.store.path, f.raw);
   assert.deepEqual(await f.store.read(source), f.expected);

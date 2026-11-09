@@ -3,6 +3,7 @@ import { ApiError } from './api-error';
 import type { OperationsData } from './operations-store';
 import { documentMaxBytes, type DocumentArchive, type DocumentArchiveView } from '../web/src/documents-model';
 const fail = (message: string): never => { throw new ApiError(400, message); };
+const archiveMaxBytes = 64 * 1024 * 1024;
 // Reuse only successful checks of the exact immutable payload string and size.
 // Metadata, membership and limits are still validated on every invocation.
 // Keep at most one archive's bounded payload references, never mutable records.
@@ -74,7 +75,7 @@ export function createArchiveEntry(data: OperationsData, kind: string, input: un
   if (typeof b.data !== 'string' || b.data.length > Math.ceil(documentMaxBytes / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(b.data)) return fail('Файл слишком большой или повреждён. Максимум 5 МБ.');
   const bytes = Buffer.from(b.data, 'base64');
   if (!bytes.length || bytes.length > documentMaxBytes || bytes.toString('base64') !== b.data) return fail('Выберите непустой файл до 5 МБ.');
-  if (archive.documents.reduce((sum, d) => sum + d.size, 0) + bytes.length > 24 * 1024 * 1024) throw new ApiError(413, 'Локальный архив заполнен (24 МБ).');
+  if (archive.documents.reduce((sum, d) => sum + d.size, 0) + bytes.length > archiveMaxBytes) throw new ApiError(413, 'Архив документов заполнен (64 МБ).');
   const entry = { ...metadata, categoryId: b.categoryId as string, itemId: b.itemId as string, title, fileName, expiresOn, size: bytes.length, data: b.data };
   archive.documents.push(entry);
   const item = archive.items.find(i => i.id === b.itemId)!; item.version = (item.version ?? 1) + 1;
@@ -113,7 +114,7 @@ export function saveArchiveCard(data: OperationsData, input: unknown, actorId: s
     return { id: old?.id ?? randomUUID(), categoryId: categoryId as string, itemId, title, expiresOn, fileName, data: encoded, size: bytes.length, createdAt: old?.createdAt ?? now, createdBy: old?.createdBy ?? actorId };
   });
   const otherFiles = archive.documents.filter(d => d.itemId !== itemId);
-  if ([...otherFiles, ...files].reduce((total, f) => total + f.size, 0) > 24 * 1024 * 1024) throw new ApiError(413, 'Локальный архив заполнен (24 МБ).');
+  if ([...otherFiles, ...files].reduce((total, f) => total + f.size, 0) > archiveMaxBytes) throw new ApiError(413, 'Архив документов заполнен (64 МБ).');
   const entry = { id: itemId, categoryId: categoryId as string, name, createdAt: previous?.createdAt ?? now, createdBy: previous?.createdBy ?? actorId, updatedAt: now, updatedBy: actorId, version: (previous?.version ?? (previous ? 1 : 0)) + 1 };
   archive.items = [...archive.items.filter(i => i.id !== itemId), entry];
   archive.documents = [...otherFiles, ...files];

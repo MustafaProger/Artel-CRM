@@ -14,7 +14,9 @@ type RawParts = { core: string; auth: string; work: string; archive?: string };
 const json = JSON.stringify;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
-const maxBytes = 64 * 1024 * 1024;
+// 64 MiB of binary documents use about 86 MiB after base64 encoding.
+// Keep room for the other partitions and a complete flat backup.
+const maxBytes = 128 * 1024 * 1024;
 type AuthState = Pick<OperationsData, 'schemaVersion' | 'sourceSha256' | 'revision' | 'accounts' | 'directories' | 'push'>;
 type WorkState = Pick<OperationsData, 'sourceSha256' | 'revision' | 'work'>;
 type ArchiveState = Pick<OperationsData, 'sourceSha256' | 'revision' | 'documentArchive'>;

@@ -13,7 +13,7 @@ export class BlobOperationsStore implements OperationsStorage {
     if (!result || result.statusCode !== 200 || !result.stream) throw new StoreError('Cloud operations store is missing');
     if (!result.blob.etag || result.blob.etag.startsWith('W/')) throw new StoreError('Cloud storage did not return a strong ETag');
     const raw = await new Response(result.stream).text();
-    if (Buffer.byteLength(raw) > 64 * 1024 * 1024) throw new StoreError('Operations store too large');
+    if (Buffer.byteLength(raw) > 128 * 1024 * 1024) throw new StoreError('Operations store too large');
     return { data: decodeOperations(raw, sourceSha256), etag: result.blob.etag };
   }
 
