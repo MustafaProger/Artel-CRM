@@ -169,17 +169,17 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const [files, setFiles] = useState<File[]>([]);
   const archived = !!task?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState(''), [dirty, setDirty] = useState(false), [confirmClose, setConfirmClose] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false), [pendingAction, setPendingAction] = useState<SavedAction | null>(null);
+  const [pendingAction, setPendingAction] = useState<SavedAction | null>(null);
   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
   useEffect(() => {
-    if (!confirmClose && !confirmDelete) return;
+    if (!confirmClose) return;
     confirmation.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
     confirmation.current?.scrollIntoView({ block: 'nearest' });
-  }, [confirmClose, confirmDelete]);
+  }, [confirmClose]);
   useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }); } }, [error]);
   useEffect(() => { if (!dirty) return; const prevent = (event: BeforeUnloadEvent) => event.preventDefault(); window.addEventListener('beforeunload', prevent); return () => window.removeEventListener('beforeunload', prevent); }, [dirty]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })); setDirty(true); };
-  const close = () => { if (inFlight.current) return; if (confirmDelete) { setConfirmDelete(false); return; } if (dirty) setConfirmClose(true); else onClose(); };
+  const close = () => { if (inFlight.current) return; if (dirty) setConfirmClose(true); else onClose(); };
   const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
     if (inFlight.current) return;
     if (method !== 'DELETE' && !dialog.current?.querySelector('form')?.reportValidity()) return;
@@ -203,7 +203,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   };
   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number } = {}) => <label className="work-field"><span>{label}{options.required ? ' *' : ''}</span>{options.multiline ? <textarea aria-label={label} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;
   const heading = editor.kind === 'tasks' ? entry ? 'Задача' : 'Новая задача' : editor.kind === 'companies' ? 'Работа с компанией' : entry ? 'Заметка' : 'Новая заметка';
-  return <dialog ref={dialog} className="detail-dialog work-editor" aria-labelledby="work-editor-title" onCancel={event => { event.preventDefault(); close(); }}><form aria-busy={saving} onSubmit={event => { event.preventDefault(); if (!confirmClose && !confirmDelete) void save(entry ? 'PATCH' : 'POST'); }}>
+  return <dialog ref={dialog} className="detail-dialog work-editor" aria-labelledby="work-editor-title" onCancel={event => { event.preventDefault(); close(); }}><form aria-busy={saving} onSubmit={event => { event.preventDefault(); if (!confirmClose) void save(entry ? 'PATCH' : 'POST'); }}>
     <header className="work-editor-heading"><h2 id="work-editor-title">{heading}</h2><button type="button" className="icon-button" aria-label="Закрыть рабочую запись" disabled={saving} onClick={close}><X size={20}/></button></header>
     <div className="work-editor-body">
       {editor.kind !== 'companies' && input('Название', 'title', { required: true })}
@@ -224,9 +224,8 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
     <footer className="work-editor-footer">
       {error && <p ref={errorMessage} tabIndex={-1} className="shipment-error work-action-error" role="alert">{error}</p>}
       {confirmClose ? <div ref={confirmation} className="work-confirm" role="alert"><p>Закрыть без сохранения изменений?</p><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить редактирование</button><button type="button" className="button" onClick={onClose}>Не сохранять</button></div>
-        : confirmDelete ? <div ref={confirmation} className="work-confirm work-delete-confirm" role="group" aria-label="Подтверждение удаления"><p>Удалить «<strong>{fields.title || fields.question || heading}</strong>»? Запись исчезнет из раздела «Работа».</p><button type="button" className="button" disabled={saving} onClick={() => setConfirmDelete(false)}>Оставить запись</button><button type="button" className="button work-delete" disabled={saving} onClick={() => void save('DELETE')}>{saving ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Trash2 size={16} aria-hidden="true"/>}{saving ? 'Удаляем…' : 'Удалить запись'}</button></div>
         : <>
-          {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => { setConfirmDelete(true); setError(''); }}><Trash2 size={16} aria-hidden="true"/>Удалить</button>}
+          {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => void save('DELETE')}>{saving && pendingAction === 'deleted' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Trash2 size={16} aria-hidden="true"/>}{saving && pendingAction === 'deleted' ? 'Удаляем…' : 'Удалить'}</button>}
           {entry && editor.kind !== 'notes' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', !archived)}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
           <button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button className="button primary" type="submit" disabled={saving}>{pendingAction === 'saved' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}{pendingAction === 'saved' ? 'Сохраняем…' : 'Сохранить'}</button>
         </>}
