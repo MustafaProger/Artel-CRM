@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { request } from 'node:http';
+import { isDeepStrictEqual } from 'node:util';
 import { OperationsStore, encodeOperations, type OperationsData } from '../server/operations-store';
 import { migrateAuthStorage } from '../server/auth-partition';
 import { passwordFields } from '../server/auth';
@@ -15,7 +16,9 @@ assert.equal(input, '/compat/operations.json', 'Only the isolated read-only copy
 const raw = await readFile(input);
 const before = JSON.parse(raw.toString()).data as OperationsData;
 const password = randomUUID(), id = 'synthetic-memory-director';
-before.accounts = { users: [{ id, name: 'Synthetic memory director', login: 'synthetic-memory', role: 'director', managerId: null, active: true, version: 1, ...await passwordFields(password, undefined) }], sessions: [], attempts: {} };
+const { salt, passwordHash } = await passwordFields(password, undefined);
+before.accounts = { users: [{ id, name: 'Synthetic memory director', login: 'synthetic-memory', role: 'director', managerId: null, active: true, version: 1, salt, passwordHash }], sessions: [], attempts: {} };
+assert.ok(isDeepStrictEqual(JSON.parse(JSON.stringify(before.accounts)), before.accounts), 'Synthetic accounts must survive JSON roundtrip exactly');
 const root = await mkdtemp(resolve(tmpdir(), 'artel-large-copy-'));
 const directory = resolve(root, 'operations');await mkdir(directory);
 await writeFile(resolve(directory, 'operations.json'), encodeOperations(before, before.sourceSha256));
@@ -35,7 +38,7 @@ const call = (path:string,method:string,body?:unknown,cookie?:string):Promise<{s
 });
 try {
   await timed('migrationMs',()=>migrateAuthStorage(directory,source));
-  const store=new OperationsStore(directory);assert.deepEqual(await store.read(source),before);
+  const store=new OperationsStore(directory);assert.ok(isDeepStrictEqual(await store.read(source),before), 'Private-copy migration changed logical values');
   runtime=await createProductionRuntime({ARTEL_PUBLIC_ORIGIN:origin,ARTEL_STORE_DIR:directory,ARTEL_SNAPSHOT_DIR:'/compat/snapshot',PORT:'0',ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false',ARTEL_CABINET_SYNC_ENABLED:'false',ARTEL_GEOCODER_ENABLED:'false',SABY_WORKFLOW_ENABLED:'false',PUSH_SCHEDULE_ENABLED:'false'});
   await runtime.start();
   const login=await timed('httpLoginMs',()=>call('/api/auth/login','POST',{login:'synthetic-memory',password}));assert.equal(login.status,200);assert.ok(login.cookie);
@@ -48,13 +51,13 @@ try {
   const expected=structuredClone(before);
   expected.push ??= {devices:[],deliveries:{}};expected.push.invoiceRevocations ??= {};
   expected.push.invoiceRevocations[ownHash]=afterLogout.push!.invoiceRevocations![ownHash];
-  expected.revision=afterLogout.revision;assert.deepEqual(afterLogout,expected);
+  expected.revision=afterLogout.revision;assert.ok(isDeepStrictEqual(afterLogout,expected), 'Private-copy auth changed unexpected logical values');
   const note={id:randomUUID(),title:'Synthetic memory exercise',content:'Synthetic private copy only',assigneeId:id,createdBy:id,updatedBy:id,createdAt:'2026-11-09T00:00:00Z',updatedAt:'2026-11-09T00:00:00Z',version:1};
   await timed('mixedAuthWorkWalMs',()=>store.mutate(source,data=>{
     data.accounts!.users[0].version++;data.work ??= {tasks:[],companyRecords:[],notes:[]};data.work.notes.push(note);return {changed:true,result:null};
   }));
   expected.accounts!.users[0].version++;expected.work ??= {tasks:[],companyRecords:[],notes:[]};expected.work.notes.push(note);
-  const after=await timed('fullReadMs',()=>new OperationsStore(directory).read(source));expected.revision=after.revision;assert.deepEqual(after,expected);
+  const after=await timed('fullReadMs',()=>new OperationsStore(directory).read(source));expected.revision=after.revision;assert.ok(isDeepStrictEqual(after,expected), 'Private-copy mixed mutation changed unexpected logical values');
   assert.equal(external,0);
   const cgroup:Record<string,string|null>={};for(const key of ['memory.current','memory.peak','memory.max','memory.events']){try{cgroup[key]=(await readFile('/sys/fs/cgroup/'+key,'utf8')).trim()}catch{cgroup[key]=null}}
   assert.ok(cgroup['memory.events']?.includes('oom_kill 0'));assert.ok(cgroup['memory.events']?.includes('oom 0'));
