@@ -1,3 +1,4 @@
+import { useViewEntrance } from './useViewEntrance'
 import LoadingSkeleton from './LoadingSkeleton'
 import { TripIssueLabel } from './TripWorkflowAlert'
 import { useState } from 'react'
@@ -17,6 +18,7 @@ export default function TripProcessPanel({ trips, data, loading, loaded = trips.
   trips: ShipmentTrip[]; data: DirectoryData; loading: boolean; loaded?: boolean; error: string; onReload: () => void
 }) {
   const [query, setQuery] = useState(''), [filter, setFilter] = useState<'active' | 'completed' | 'all'>('active')
+  const viewEntrance = useViewEntrance<HTMLElement>(filter, '.execution-context, .execution-fleet, .trips-empty')
   const [vehicleId, setVehicleId] = useState(''), [stage, setStage] = useState('')
   const name = (id: string | null) => data.companies.find(row => row.id === id)?.name || 'Клиент не указан'
   const driver = (id: string | null) => data.directories?.drivers.find(row => row.id === id)?.name || 'Водитель не указан'
@@ -31,7 +33,7 @@ export default function TripProcessPanel({ trips, data, loading, loaded = trips.
   })).filter(g => g.visible.length)
   const visibleCount = groups.reduce((n,g) => n + g.visible.length, 0)
   const changeFilter = (next: typeof filter) => { setFilter(next); setStage('') }
-  return <section className="trip-process" aria-label="Процесс рейсов" aria-busy={loading}>
+  return <section ref={viewEntrance} className="trip-process" aria-label="Процесс рейсов" aria-busy={loading}>
     <div className="execution-controls">
       <div className="execution-search-row"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск машины или рейса" placeholder="Рейс, водитель, клиент или адрес" value={query} onChange={e => setQuery(e.target.value)}/></label><button className="button execution-refresh" aria-label="Обновить" title="Обновить" onClick={onReload} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/><span>Обновить</span></button><select aria-label="Машина" value={vehicleId} onChange={e => setVehicleId(e.target.value)}><option value="">Все машины</option>{vehicles.filter(v => v.id).map(v => <option key={v.id} value={v.id}>{v.plate}</option>)}</select><select aria-label="Этап рейса" value={stage} onChange={e => setStage(e.target.value)}><option value="">Все этапы</option>{Object.entries(executionStageLabel).filter(([key]) => key !== 'delivered' && (filter !== 'active' || key !== 'completed') && (filter !== 'completed' || key === 'completed')).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></div>
       <div className="execution-toolbar"><ScrollableSegments className="execution-filters" label="Статус рейсов" value={filter}>{([{ id: 'active', label: 'В работе', count: active.length }, { id: 'completed', label: 'Завершённые', count: trips.length-active.length }, { id: 'all', label: 'Все', count: trips.length }] as const).map(f => <button type="button" className="button" key={f.id} aria-pressed={filter === f.id} onClick={() => changeFilter(f.id)}>{f.label}<small>{f.count}</small></button>)}</ScrollableSegments><div className="execution-totals"><span><strong>{active.length}</strong> в работе</span><span><strong>{active.reduce((n,t) => n + t.customers.filter(c => !t.execution?.deliveries[c.id]).length, 0)}</strong> доставок осталось</span></div></div>

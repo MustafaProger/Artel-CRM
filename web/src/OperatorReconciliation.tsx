@@ -1,3 +1,4 @@
+import { useViewEntrance } from './useViewEntrance'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
 import Decimal from 'decimal.js'
@@ -27,6 +28,7 @@ export default function OperatorReconciliation({workspace, busy, onRefresh, onDa
   const dailyRows = days.map(date => ({date, rows: reconciliationRows(workspace, date)}))
   const services = [...new Map(dailyRows.flatMap(day => day.rows.map(row => [row.id, {id: row.id, name: row.name}] as const))).values()]
   const activeService = services.some(service => service.id === serviceId) ? serviceId : services[0]?.id ?? ''
+  const viewEntrance = useViewEntrance<HTMLDivElement>(activeService)
   const rows = dailyRows.map(day => ({date: day.date, row: day.rows.find(row => row.id === activeService)})).filter((item): item is {date: string; row: ReconciliationRow} => !!item.row)
   const selected = rows.find(item => item.date === selectedDate)
   return <section className="operator-reconciliation" aria-label="Сверки">
@@ -38,7 +40,7 @@ export default function OperatorReconciliation({workspace, busy, onRefresh, onDa
       })}
     </ScrollableSegments>
     <p className="operator-reconciliation-summary" role="status">{notice}</p>
-    {rows.length ? <div className="operator-reconciliation-scroll"><table role="table" className="operator-reconciliation-table" aria-label={`Сверки: ${services.find(service => service.id === activeService)?.name}, ${month}`}>
+    {rows.length ? <div ref={viewEntrance} className="operator-reconciliation-scroll"><table role="table" className="operator-reconciliation-table" aria-label={`Сверки: ${services.find(service => service.id === activeService)?.name}, ${month}`}>
       <thead role="rowgroup"><tr role="row"><th rowSpan={2} scope="col" role="columnheader">Дата</th><th colSpan={2} scope="colgroup" role="columnheader">CRM</th><th colSpan={2} scope="colgroup" role="columnheader">Отчёт оператора</th><th colSpan={2} scope="colgroup" role="columnheader">Разница</th><th rowSpan={2} scope="col" role="columnheader">Отчёт</th></tr><tr role="row">{['CRM', 'Отчёт оператора', 'Разница'].map(group => <Fragment key={group}><th scope="col" role="columnheader">Литры</th><th scope="col" role="columnheader">Сумма, ₽</th></Fragment>)}</tr></thead>
       <tbody role="rowgroup">{rows.map(({date, row}) => <ReconciliationDay key={`${activeService}:${date}`} row={row} date={date} editing={editingDate === date} locked={!!editingDate && editingDate !== date} onEdit={() => {setEditingDate(date);setNotice('')}} onCancel={() => setEditingDate(null)} onDate={() => onDate(date, activeService)} onDetails={() => setSelectedDate(date)} onSaved={next => {onSaved(next);setEditingDate(null);setNotice(`Отчёт ${row.name} за ${dateLabel(date)} сохранён`)}}/>)}</tbody>
     </table></div> : <p>В справочнике пока нет сервисов.</p>}

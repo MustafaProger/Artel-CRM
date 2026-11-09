@@ -28,7 +28,7 @@ export default function OrganizationOverview({ organizations, unassignedShipment
   const [organizationId, setOrganizationId] = useState('nk-artel')
   const [side, setSide] = useState<Side>('suppliers')
   const organization = organizations.find(row => row.id === organizationId) ?? organizations[0]
-  return <section className="organization-overview" aria-label="Расчёты по нашим организациям">
+  return <section className="organization-overview view-entrance" aria-label="Расчёты по нашим организациям">
     {organization ? <>
       <div className="overview-organization-picker" role="group" aria-label="Наша организация">{organizations.map(row => <button type="button" key={row.id} aria-pressed={organization.id === row.id} onClick={() => setOrganizationId(row.id)} data-organization-id={row.id}><Building2 size={20}/><span>{row.name}</span></button>)}</div>
       <ScrollableSegments className="overview-ledger-tabs" label="Сторона взаиморасчётов" value={side}><button type="button" aria-pressed={side === 'suppliers'} onClick={() => setSide('suppliers')}>Поставщики</button><button type="button" aria-pressed={side === 'clients'} onClick={() => setSide('clients')}>Клиенты</button></ScrollableSegments>
@@ -56,7 +56,7 @@ function OrganizationLedger({ report, organization, organizationId, side }: { re
     setSelected(null)
     requestAnimationFrame(() => [...document.querySelectorAll<HTMLButtonElement>('.organization-company-button')].find(button => button.dataset.companyKey === previous)?.focus({ preventScroll: true }))
   }
-  return <section className="organization-ledger" data-testid="organization-ledger" data-organization-id={organizationId} data-side={side} aria-label={`${side === 'suppliers' ? 'Поставщики' : 'Клиенты'} · ${organization}`}>
+  return <section className="organization-ledger view-entrance" data-testid="organization-ledger" data-organization-id={organizationId} data-side={side} aria-label={`${side === 'suppliers' ? 'Поставщики' : 'Клиенты'} · ${organization}`}>
     {selected ? detail ? <LedgerDetails company={detail} organization={organization} side={side} supplierScope={supplierScope} headingRef={heading} onBack={onBack}/> : <div className="overview-empty overview-card"><h3>Контрагент больше не доступен</h3><button type="button" className="button" onClick={onBack}>Назад к списку</button></div> : <>
       <dl className="overview-org-totals overview-card" aria-label={`Итоги · ${organization}`}><div><dt>{supplierScope ? 'Долг по вашим закупкам' : side === 'suppliers' ? 'Наш долг поставщикам' : 'Долг клиентов'}</dt><dd data-tone="debt" data-total="debt">{signedMoney(new Exact(report.totals.debt).negated().toFixed(2))}</dd></div><div><dt>{side === 'suppliers' ? 'Наш аванс поставщикам' : 'Авансы клиентов'}</dt><dd data-tone={supplierScope ? 'zero' : 'advance'} data-total="advance" className={supplierScope ? 'overview-scoped-value' : ''}>{supplierScope ? 'Доступен руководителю' : signedMoney(report.totals.advance)}</dd></div></dl>
       {report.companies.some(hasUnknownAmounts) && <div className="overview-notice"><AlertCircle size={18}/><div><strong>Итог по известным суммам</strong></div></div>}

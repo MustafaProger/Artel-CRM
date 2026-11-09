@@ -1,3 +1,4 @@
+import { useViewEntrance } from './useViewEntrance'
 import TransportPricingSettings from './TransportPricingSettings'
 import { readTransportPricing } from './transport-pricing'
 import AddressReceiversEditor from './AddressReceiversEditor'
@@ -45,6 +46,7 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
   const [editor,setEditor] = useState<{id?:string;kind?:'managers'|'drivers'} | null>(null), [notice,setNotice] = useState(''), [deleting,setDeleting] = useState<DirectoryRow|null>(null)
   const [accessUsers,setAccessUsers] = useState<AccountUser[]|null>(null), [accessError,setAccessError] = useState(''), [accessRevision,setAccessRevision] = useState(0)
   const [roleFilter,setRoleFilter] = useState<RoleFilterValue>('all')
+  const viewEntrance = useViewEntrance<HTMLElement>(`${tab}:${roleFilter}`, '.directory-record-count, .directory-record, .directory-empty', 6)
   const personnel = tab === 'managers' && canViewAccounts && !isLogisticsWorkspace()
   useEffect(()=>{
     if(!personnel)return
@@ -81,7 +83,7 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
     {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setRoleFilter('all');setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {tab==='vehicles'&&<TransportPricingSettings value={catalog.transportPricing} canManage={canManage && !isLogisticsWorkspace()} onChanged={onChanged}/>}
-    <section className="panel directory-list">
+    <section ref={viewEntrance} className="panel directory-list">
       <div className="directory-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск в справочнике" onClick={()=>{setQuery('');setPage(0)}}><X size={16}/></button>}</label>
         {canManage&&<button className="button primary mobile-icon-action" aria-label="Добавить" title="Добавить" onClick={()=>setEditor(personnel&&roleFilter==='driver'?{kind:'drivers'}:{})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Добавить</span></button>}
       </div>

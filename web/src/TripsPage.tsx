@@ -1,3 +1,4 @@
+import { useViewEntrance } from './useViewEntrance'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { TripIssueLabel } from './TripWorkflowAlert'
 import TripProcessPanel from './TripProcessPanel'
@@ -42,6 +43,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   }, [])
   const [mapRequest, setMapRequest] = useState<TripRequest | null>(null)
   const [view, setView] = useState<'requests' | 'map' | 'trips' | 'process'>('requests')
+  const viewEntrance = useViewEntrance<HTMLDivElement>(view, '.trip-requests-panel, .trips-page-map > section, .trips-toolbar, .trips-list, .trips-empty, .trip-process')
   const [RequestsMap, setRequestsMap] = useState<RequestsMapComponent | null>(() => readyRequestsMap)
   const [mapLoadError, setMapLoadError] = useState(''), [mapLoadRevision, setMapLoadRevision] = useState(0)
   // Load the map module alongside its data. One outer placeholder remains mounted
@@ -145,7 +147,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   const driverName = (id: string | null) => (id ? driverNames.get(id) : undefined) ?? 'Не указан'
   const filtered = view !== 'trips' ? [] : trips.filter(trip => [tripLabel(trip), trip.fields.date, companyName(trip.fields.supplier_id), driverName(trip.fields.driver_id), trip.fields.trip_notes, ...trip.customers.map(customer => companyName(customer.fields.customer_id))].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'))).sort(compareTripsNewestFirst)
   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
-  return <div className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
+  return <div ref={viewEntrance} className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
     <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { if (item.id === view) return; setView(item.id); setNotice(''); reloadRequests() }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
     {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} loaded={tripsLoaded} error={error} onReload={() => setRefresh(value => value + 1)}/>}
     {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} loaded={requestsLoaded} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={reloadRequests} onSaved={requestSaved} onDeleted={requestDeleted}/>}

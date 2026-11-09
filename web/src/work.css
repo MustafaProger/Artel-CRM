@@ -56,3 +56,382 @@
 .work-month-navigation strong { text-align: center; text-transform: capitalize; }
 .work-month-picker { min-width: 0; }
 .work-month-controls input { min-width: 0; width: 100%; box-sizing: border-box; }
+
+/* Todo-style task navigation keeps the CRM's light palette and existing card controls. */
+.work-search{display:flex;align-items:center;gap:7px;min-width:150px;max-width:230px;padding:7px 10px;border:1px solid var(--border,#cedbd2);border-radius:8px;background:#fff;color:var(--muted,#586b60)}
+.work-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text,#28332f);font:inherit;font-size:12px}
+.work-search:focus-within{outline:2px solid #8ebaa5;outline-offset:2px}
+.work-list-controls{padding:12px 16px;border-bottom:1px solid var(--border,#cedbd2)}
+.work-page div.work-list-scopes.scrollable-segments {
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+}
+.work-page div.work-list-scopes.scrollable-segments > button {
+  min-height: 0;
+  padding: 7px 11px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: inherit;
+  line-height: inherit;
+}
+.work-page div.work-list-scopes.scrollable-segments > button[aria-pressed="true"] {
+  color: #176647;
+  font-weight: 650;
+}
+.work-list-scopes.scrollable-segments > .scrollable-segments-selection {
+  border-color: #c4dfce;
+  border-radius: 7px;
+  background: #e4f0e8;
+  box-shadow: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .work-page div.work-list-scopes.scrollable-segments > button[aria-pressed="false"]:hover {
+    background: #edf4ef;
+  }
+}
+.work-week{padding:14px 16px 8px;border-bottom:1px solid var(--border,#cedbd2)}
+.work-week-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.work-week-heading strong{text-transform:capitalize;font-size:13px}.work-week-heading>div{display:flex;align-items:center;gap:5px}.work-week-heading .button{font-size:11px;padding:6px 10px}
+.work-week-days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin-top:12px}.work-week-days button{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0;padding:7px 2px;border:0;border-radius:7px;background:transparent;color:var(--muted,#586b60);font:inherit;font-size:11px;text-transform:capitalize;cursor:pointer}.work-week-days button:hover{background:#edf4ef}.work-week-days button strong{font-size:13px;color:var(--text,#28332f)}.work-week-days button.is-today strong{background:#176647;color:white;border-radius:50%;width:24px;height:24px;display:grid;place-items:center}
+.work-date-group{scroll-margin-top:20px;padding-top:14px}.work-date-group+ .work-date-group{border-top:1px solid var(--border,#cedbd2)}.work-date-group h3{margin:0;padding:0 16px 10px;font-size:13px;font-weight:650;text-transform:capitalize;color:var(--text,#28332f)}
+.work-add-day{display:flex;align-items:center;gap:7px;width:100%;min-height:42px;padding:9px 17px;border:0;background:transparent;color:#176647;font:inherit;font-size:12px;text-align:left;cursor:pointer}.work-add-day:hover{background:#f0f6f2}.work-add-day:focus-visible,.work-week-days button:focus-visible{outline:2px solid #176647;outline-offset:2px}
+.work-lane-drop{outline:2px solid #176647;outline-offset:2px;background:#edf8f2}.work-kanban-card{background:#fff;border:1px solid #cedbd2;border-radius:8px;overflow:hidden}.work-kanban-card.is-moving{opacity:.55}.work-kanban-card .work-card{width:100%;border:0;box-shadow:none;border-radius:0;cursor:grab}.work-kanban-card .work-card:active{cursor:grabbing}.work-kanban-card select{width:calc(100% - 20px);margin:0 10px 10px;border:1px solid #cedbd2;border-radius:6px;background:#fff;color:#28332f;padding:7px;font:inherit;font-size:12px}.work-kanban-card .work-card-footer{display:flex;gap:4px;align-items:center}
+@media(max-width:650px){.work-search{max-width:none;flex:1 1 100%}.work-week-heading{flex-wrap:wrap}.work-week-days button{font-size:10px}.work-week-days button strong{font-size:12px}}
+.work-page .work-view-toolbar{grid-template-columns:max-content minmax(150px,230px) minmax(140px,1fr) auto}
+.work-page .work-view-toolbar .work-search{grid-column:2;grid-row:1}
+.work-page .work-view-toolbar .work-assignee{grid-column:3;grid-row:1}
+.work-page .work-view-toolbar .work-toolbar-actions{grid-column:4;grid-row:1}
+.work-page .work-search input:focus{outline:0;box-shadow:none;border:0}
+@media(max-width:1100px){.work-page .work-view-toolbar{grid-template-columns:minmax(0,1fr) auto}.work-page .work-view-toolbar .work-search{grid-column:1/-1;grid-row:3;max-width:none}.work-page .work-view-toolbar .work-assignee{grid-column:1;grid-row:2}.work-page .work-view-toolbar .work-toolbar-actions{grid-column:2;grid-row:2}}
+.work-add-lane{display:flex;align-items:center;gap:6px;width:100%;min-height:36px;padding:6px 8px;border:0;border-radius:7px;background:transparent;color:#176647;font:inherit;font-size:12px;text-align:left;cursor:pointer}.work-add-lane:hover{background:#e4f0e8}.work-add-lane:focus-visible{outline:2px solid #176647;outline-offset:2px}
+
+.work-editor.work-compose {
+  width: auto;
+  max-height: none;
+  min-width: 0;
+  margin: 8px 16px 14px;
+  border: 1px solid var(--border, #cedbd2);
+  border-radius: 12px;
+  background: var(--panel, #fff);
+}
+.work-cards .work-editor.work-compose { margin: 0; }
+.work-compose form { max-height: none; }
+.work-compose .work-editor-body { overflow: visible; gap: 8px; padding: 12px; }
+.work-compose .work-editor-footer { padding: 8px 12px 12px; border: 0; }
+.work-compose .work-editor-footer .button { min-width: 0; font-size: 12px; padding-inline: 10px; }
+.work-compose .work-compose-title,
+.work-compose .work-compose-description {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 7px;
+  background: transparent;
+  color: var(--text, #253249);
+  font: inherit;
+}
+.work-compose .work-compose-title { font-weight: 650; }
+.work-compose .work-compose-description { font-size: 13px; resize: vertical; }
+.work-compose-date { align-self: flex-start; max-width: 100%; }
+.work-compose-details { display: grid; min-width: 0; font-size: 13px; }
+.work-compose-details > summary { cursor: pointer; width: fit-content; padding-block: 6px; color: var(--muted, #586b60); }
+.work-compose-details[open] > :not(summary) { margin-top: 12px; }
+
+.work-subtasks { min-width: 0; }
+.work-subtasks-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.work-subtasks-heading h3 { font-size: 13px; margin: 0; }
+.work-subtasks-heading > span { color: var(--muted, #586b60); font-size: 12px; }
+.work-subtask-list { margin: 6px 0 0; padding: 0; list-style: none; }
+.work-subtask-list li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border, #e1e8e3);
+}
+.work-subtask-check { display: grid; place-items: center; min-height: 40px; cursor: pointer; }
+.work-subtask-check input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent, #176647); }
+.work-subtask-list .work-subtask-title {
+  width: 100%;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text, #253249);
+  font: inherit;
+  font-size: 13px;
+}
+.work-subtask-list .is-done .work-subtask-title:not(:focus) { text-decoration: line-through; color: var(--muted, #586b60); }
+.work-add-subtask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent, #176647);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.work-add-subtask:hover:not(:disabled) { background: #eaf4ee; }
+.work-subtask-count { display: inline-flex; align-items: center; gap: 4px; color: var(--muted, #586b60); font-size: 12px; }
+
+/* Compact task view: the task stays central, while its properties remain visible. */
+.work-editor:has(.work-editor-properties){width:min(980px,calc(100vw - 32px));max-height:min(82dvh,850px)}
+.work-editor:has(.work-editor-properties) form{max-height:min(82dvh,850px)}
+.work-editor:has(.work-editor-properties) .work-editor-heading{padding:12px 18px}
+.work-editor-heading-actions{display:flex;align-items:center;gap:8px}
+.work-task-menu{position:relative}
+.work-task-menu summary{display:grid;place-items:center;width:32px;height:32px;border-radius:7px;cursor:pointer;color:var(--muted,#586b60);font-size:18px;letter-spacing:1px;list-style:none}
+.work-task-menu summary::-webkit-details-marker{display:none}
+.work-task-menu summary:hover{background:#edf4ef}
+.work-task-menu summary:focus-visible{outline:2px solid var(--accent,#176647)}
+.work-task-menu-items{position:absolute;right:0;top:38px;z-index:5;display:grid;min-width:190px;padding:5px;border:1px solid var(--border,#cedbd2);border-radius:9px;background:#fff;box-shadow:0 8px 28px #1d1d1f24}
+.work-task-menu-items button{display:flex;align-items:center;gap:8px;width:100%;border:0;border-radius:5px;background:transparent;padding:9px 10px;text-align:left;color:var(--text,#28332f);font:inherit;font-size:13px;cursor:pointer}
+.work-task-menu-items button:hover{background:#f1f5f2}
+.work-task-menu-items .work-task-menu-delete{color:#ab3027}
+.work-editor:has(.work-editor-properties) .work-editor-body{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:0;min-height:0;padding:0;overflow:auto}
+.work-editor-content{display:flex;flex-direction:column;gap:14px;min-width:0}
+.work-editor:has(.work-editor-properties) .work-editor-content{padding:20px 24px 22px}
+.work-editor-properties{display:flex;flex-direction:column;gap:14px;min-width:0;padding:20px 18px;background:#f7f8f7;border-left:1px solid var(--border,#cedbd2)}
+.work-editor-properties .work-field-grid{display:flex;flex-direction:column;gap:14px}
+.work-editor-properties .work-hint{margin:0}
+.work-editor:has(.work-editor-properties) .work-editor-content>.work-field:first-child>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.work-editor:has(.work-editor-properties) .work-editor-content>.work-field:first-child input{border:0;padding:2px 0;font-size:20px;font-weight:650;background:transparent}
+.work-editor:has(.work-editor-properties) .work-editor-content>.work-field:nth-child(2)>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.work-editor:has(.work-editor-properties) .work-editor-content>.work-field:nth-child(2) textarea{min-height:46px;border:0;padding:4px 0;background:transparent;resize:vertical}
+.work-editor:has(.work-editor-properties) .work-editor-content>.work-field:nth-child(2) textarea{height:48px}
+.work-editor:has(.work-editor-properties) .work-subtasks{margin-top:4px}
+.work-editor:has(.work-editor-properties) .work-subtasks-heading{padding-bottom:7px;border-bottom:1px solid var(--border,#cedbd2)}
+.work-editor:has(.work-editor-properties) .work-subtask-list li{min-height:38px}
+.work-editor:has(.work-editor-properties) .work-subtask-list .work-subtask-title{padding:4px 6px}
+.work-editor:has(.work-editor-properties) .work-comments{margin-top:3px}
+.work-editor:has(.work-editor-properties) .work-comments .work-field textarea{min-height:45px}
+.work-editor:has(.work-editor-properties) .work-comments .work-field textarea{height:48px}
+.work-editor:has(.work-editor-properties) .work-files{margin-top:2px}
+.work-editor:has(.work-editor-properties) .work-files>summary{cursor:pointer;font-size:13px;font-weight:650;padding:5px 0}
+.work-editor:has(.work-editor-properties) .work-files[open]>summary{margin-bottom:10px}
+.work-editor:has(.work-editor-properties) .work-editor-footer{padding:10px 18px}
+.work-editor:has(.work-editor-properties) .work-editor-footer>.button{padding:7px 13px}
+.work-editor:has(.work-editor-properties) .work-confirm{display:flex;align-items:center;gap:8px}
+.work-editor:has(.work-editor-properties) .work-confirm p{margin:0 auto 0 0}
+@media(max-width:700px){.work-editor:has(.work-editor-properties){width:calc(100vw - 20px);max-height:92dvh}.work-editor:has(.work-editor-properties) form{max-height:92dvh}.work-editor:has(.work-editor-properties) .work-editor-body{grid-template-columns:1fr}.work-editor:has(.work-editor-properties) .work-editor-content{padding:16px}.work-editor-properties{border-left:0;border-top:1px solid var(--border,#cedbd2);padding:16px}.work-editor:has(.work-editor-properties) .work-confirm{flex-wrap:wrap}.work-editor:has(.work-editor-properties) .work-confirm p{flex-basis:100%}}
+
+.work-page .work-board{gap:10px}
+.work-page .work-lane{min-height:0;background:#f7f8f7}
+.work-page .work-lane>header{padding:11px 12px 8px}
+.work-page .work-cards{gap:6px;padding:0 8px 8px}
+.work-page .work-kanban-card .work-card{gap:5px;padding:10px 11px}
+.work-page .work-kanban-card select{width:auto;max-width:calc(100% - 22px);margin:0 11px 8px;padding:2px 4px;border:0;background:transparent;font-size:11px;color:var(--muted,#586b60)}
+.work-page .work-empty-lane{padding:10px 6px;text-align:left}
+
+/* Quick Add stays a short composer even when the shared dialog theme is loaded later. */
+.work-page .work-editor.work-compose{width:min(600px,calc(100% - 32px));max-width:100%;box-sizing:border-box;margin:8px 16px 14px}
+.work-page .work-cards .work-editor.work-compose{width:100%;margin:0}
+.work-page .work-editor.work-compose .work-editor-body{display:block;padding:10px 13px 4px;overflow:visible}
+.work-page .work-editor.work-compose .work-editor-content{gap:3px}
+.work-page .work-editor.work-compose .work-compose-title{padding:5px 3px;font-size:14px;line-height:20px}
+.work-page .work-editor.work-compose .work-compose-description{height:29px;min-height:29px;padding:4px 3px;font-size:12px;line-height:20px}
+.work-page .work-editor.work-compose .work-subtasks{margin-top:2px}
+.work-page .work-editor.work-compose .work-add-subtask{min-height:28px;padding:2px 3px}
+.work-page .work-editor.work-compose .work-subtask-list li{min-height:32px}
+.work-page .work-editor.work-compose .work-compose-date{margin-top:3px}
+.work-page .work-editor.work-compose .work-compose-date .work-field{gap:2px}
+.work-page .work-editor.work-compose .work-compose-date .work-field>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.work-page .work-editor.work-compose .work-compose-date input{width:160px;padding:5px 8px;font-size:12px}
+.work-page .work-editor.work-compose .work-compose-details{position:relative;display:block;margin-top:3px}
+.work-page .work-editor.work-compose .work-compose-details>summary{display:inline-flex;align-items:center;min-height:29px;padding:2px 4px;font-size:12px;color:var(--muted,#586b60)}
+.work-page .work-editor.work-compose .work-compose-details:not([open])>.work-compose-advanced{display:none}
+.work-page .work-editor.work-compose .work-compose-advanced{position:absolute;top:100%;left:0;z-index:10;display:flex;flex-direction:column;gap:10px;width:min(430px,calc(100vw - 70px));max-height:min(62vh,500px);overflow:auto;box-sizing:border-box;padding:14px;border:1px solid var(--border,#cedbd2);border-radius:11px;background:#fff;box-shadow:0 10px 30px #1d1d1f25}
+.work-page .work-editor.work-compose .work-compose-advanced .work-field-grid{gap:10px}
+.work-page .work-editor.work-compose .work-compose-advanced .work-comments .work-field textarea{height:48px;min-height:48px}
+.work-page .work-editor.work-compose .work-editor-footer{padding:6px 13px 10px;gap:6px}
+.work-page .work-editor.work-compose .work-editor-footer>.button{flex:0 0 auto;padding:6px 10px;font-size:12px}
+@media(max-width:650px){.work-page .work-editor.work-compose{width:calc(100% - 20px);margin:8px 10px 12px}.work-page .work-editor.work-compose .work-compose-advanced{width:min(430px,calc(100vw - 56px))}.work-page .work-editor.work-compose .work-editor-footer>.button{flex:1 1 auto}}
+
+.work-editor .work-subtasks-heading{border:0!important}
+.work-editor .work-subtask-list li{min-height:34px;border:0;grid-template-columns:28px minmax(0,1fr) 28px;gap:8px}
+.work-editor .work-subtask-check{position:relative;width:28px;min-height:28px}
+.work-editor .work-subtask-check input{position:absolute;inset:0;width:28px;height:28px;margin:0;opacity:0;cursor:pointer}
+.work-editor .work-subtask-check-box{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid #87958e;border-radius:5px;background:#fff;color:#fff;pointer-events:none}
+.work-editor .work-subtask-check-box svg{opacity:0}
+.work-editor .work-subtask-check input:checked+.work-subtask-check-box{background:var(--accent,#19694d);border-color:var(--accent,#19694d)}
+.work-editor .work-subtask-check input:checked+.work-subtask-check-box svg{opacity:1}
+.work-editor .work-subtask-check input:focus-visible+.work-subtask-check-box{outline:2px solid #8ebaa5;outline-offset:2px}
+.work-editor .work-subtask-list .work-subtask-title{border:0!important;border-radius:0!important;box-shadow:none;background:transparent;padding:5px 0}
+.work-editor .work-add-subtask{margin-top:10px;margin-left:1px;padding:5px 8px;min-height:34px}
+.work-editor .work-files{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.work-editor .work-upload{position:relative;display:inline-flex;align-items:center;min-height:36px;padding:6px 12px;border:1px solid var(--border,#cedbd2);border-radius:9px;background:#fff;color:var(--accent,#176647);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.work-editor .work-upload:hover{background:#edf5f0}
+.work-editor .work-upload:focus-within{outline:2px solid #8ebaa5;outline-offset:2px}
+.work-editor .work-upload input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.work-editor .work-upload:has(input:disabled){opacity:.6;cursor:wait}
+.work-editor .work-editor-footer>.work-delete{margin-right:auto}
+.work-editor:has(.work-editor-properties) .work-editor-content{padding:16px 22px 18px;gap:11px}
+.work-editor:has(.work-editor-properties) .work-editor-properties{padding:16px;gap:9px}
+.work-editor:has(.work-editor-properties) .work-editor-properties .work-field-grid{gap:9px}
+.work-editor:has(.work-editor-properties) .work-editor-properties .work-field{gap:4px}
+.work-editor:has(.work-editor-properties) .work-editor-properties .work-hint{font-size:11px;line-height:1.35}
+
+/* Task editor: compact, wrapping controls beside the file action. */
+.work-editor:not(.work-compose):has(.work-task-toolbar){width:min(910px,calc(100vw - 24px));max-height:88dvh;font-family:Inter,system-ui,sans-serif}
+.work-editor:not(.work-compose):has(.work-task-toolbar) form{max-height:88dvh}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-heading{padding:10px 16px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-body{display:block;padding:0;overflow:auto;min-height:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content{padding:14px 18px;gap:9px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child>span,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:nth-child(2)>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child input{border:0;padding:2px 0;font-size:19px;font-weight:650;background:transparent}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:nth-child(2) textarea{height:38px;min-height:38px;border:0;padding:3px 0;background:transparent;resize:vertical}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtasks{margin-top:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtask-list li{min-height:34px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-add-subtask{margin-top:1px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-toolbar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px 10px;margin-top:3px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-files{display:contents}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-files .work-file{flex:1 1 100%;margin:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-upload{min-height:34px;padding:5px 10px;font-size:12px;white-space:nowrap}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field-grid{display:contents}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters>.directory-select{flex:1 1 170px;min-width:150px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field{flex:1 1 125px;min-width:120px;gap:3px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field:has(input[type="datetime-local"]){flex-basis:185px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field>span,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .directory-select>label{font:500 11px/1.3 Inter,system-ui,sans-serif;color:var(--muted,#586b60)}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters input,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters select{height:35px;padding:5px 8px;font:12px/1.3 Inter,system-ui,sans-serif}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox{min-height:35px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-hint{flex:1 0 100%;font-size:11px;line-height:1.35;margin:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-footer{padding:9px 16px}
+.work-task-check.work-priority-1 .work-task-check-box{border-color:#f05b5b;color:#fff}
+.work-task-check.work-priority-2 .work-task-check-box{border-color:#f59e0b;color:#fff}
+.work-task-check.work-priority-3 .work-task-check-box{border-color:#438df5;color:#fff}
+.work-task-check.work-priority-4 .work-task-check-box{border-color:#87958e;color:#fff}
+.work-task-check.work-priority-1 input:checked+.work-task-check-box{background:#f05b5b;border-color:#f05b5b}
+.work-task-check.work-priority-2 input:checked+.work-task-check-box{background:#f59e0b;border-color:#f59e0b}
+.work-task-check.work-priority-3 input:checked+.work-task-check-box{background:#438df5;border-color:#438df5}
+.work-task-check.work-priority-4 input:checked+.work-task-check-box{background:var(--accent,#176647);border-color:var(--accent,#176647)}
+@media(max-width:520px){.work-editor:not(.work-compose):has(.work-task-toolbar){max-height:94dvh}.work-editor:not(.work-compose):has(.work-task-toolbar) form{max-height:94dvh}.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content{padding:12px}.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters>.directory-select{flex-basis:100%}}
+@media(forced-colors:active){.work-task-check.work-priority-1 .work-task-check-box,.work-task-check.work-priority-2 .work-task-check-box,.work-task-check.work-priority-3 .work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight!important;border-color:Highlight!important}}
+
+/* CRM choice menus and priority rings. */
+.work-editor .work-choice{position:relative;min-width:0}
+.work-editor .work-choice:has(.work-choice-options){z-index:12}
+.work-editor .work-choice-trigger{display:flex;align-items:center;gap:7px;width:100%;min-height:35px;padding:5px 9px;border:1px solid var(--border,#cedbd2);border-radius:9px;background:#fff;color:var(--text,#28332f);font:12px/1.3 Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
+.work-editor .work-choice-trigger:hover:not(:disabled){border-color:#8db4a0;background:#fbfdfb}
+.work-editor .work-choice-trigger:focus-visible{outline:2px solid var(--accent,#176647);outline-offset:2px}
+.work-editor .work-choice-trigger:disabled{cursor:not-allowed;opacity:.65}
+.work-editor .work-choice-value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-editor .work-choice-trigger>svg{flex:none;color:var(--muted,#586b60)}
+.work-editor .work-choice-options{position:absolute;top:calc(100% + 5px);left:0;z-index:20;width:max-content;min-width:100%;max-width:min(300px,calc(100vw - 40px));max-height:220px;overflow-y:auto;box-sizing:border-box;padding:5px;border:1px solid var(--border,#cedbd2);border-radius:11px;background:#fff;box-shadow:0 12px 30px #1d332522}
+.work-editor .work-choice-options>button{display:flex;align-items:center;gap:9px;width:100%;min-height:34px;padding:6px 9px;border:0;border-radius:7px;background:transparent;color:var(--text,#28332f);font:12px/1.35 Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
+.work-editor .work-choice-options>button>span:nth-child(2){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-editor .work-choice-options>button:hover:not(:disabled),.work-editor .work-choice-options>button:focus-visible{outline:none;background:#edf5f0}
+.work-editor .work-choice-options>button[aria-selected="true"]{color:var(--accent,#176647);font-weight:600}
+.work-editor .work-choice-options>button:disabled{opacity:.55;cursor:not-allowed}
+.work-priority-dot{display:inline-block;flex:none;width:9px;height:9px;border-radius:3px;background:#87958e}
+.work-priority-dot.work-priority-1{background:#f05b5b}
+.work-priority-dot.work-priority-2{background:#f59e0b}
+.work-priority-dot.work-priority-3{background:#438df5}
+.work-task-check .work-task-check-box{border-radius:7px;width:23px;height:23px}
+.work-task-check.work-priority-1:hover .work-task-check-box{border-color:#f05b5b}
+.work-task-check.work-priority-2:hover .work-task-check-box{border-color:#f59e0b}
+.work-task-check.work-priority-3:hover .work-task-check-box{border-color:#438df5}
+.work-task-check.work-priority-4:hover .work-task-check-box{border-color:#87958e}
+@media(forced-colors:active){.work-priority-dot{background:ButtonText!important}.work-editor .work-choice-options>button:focus-visible{outline:2px solid Highlight}}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-choice-options{top:auto;bottom:calc(100% + 5px)}
+.work-editor .work-priority-field .work-choice-options{left:auto;right:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-choice-options{left:auto;right:0}
+
+/* Compact task controls share one shape and keep their captions inside. */
+.work-page .work-view-toolbar{grid-template-columns:max-content minmax(140px,1fr) auto}
+.work-page .work-view-toolbar .work-assignee{grid-column:2;grid-row:1;justify-self:end}
+.work-page .work-view-toolbar .work-toolbar-actions{grid-column:3;grid-row:1}
+@media(max-width:1100px){.work-page .work-view-toolbar{grid-template-columns:minmax(0,1fr) auto}.work-page .work-view-toolbar .work-assignee{grid-column:1;grid-row:2;justify-self:start}.work-page .work-view-toolbar .work-toolbar-actions{grid-column:2;grid-row:2}}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-toolbar{align-items:center;gap:7px;margin-top:6px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters>.directory-select{flex:1 1 145px;min-width:130px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field{flex:0 1 120px;min-width:110px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field:has(input[type="datetime-local"]){flex-basis:145px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field>span:not(.work-date-placeholder),
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .directory-select>label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-choice-trigger,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-compact-date input,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-upload{height:34px;min-height:34px;border:1px solid var(--border,#cedbd2);border-radius:8px;background:#fff;box-sizing:border-box}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox{padding:4px 8px;gap:5px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox input{height:25px;padding:0;font-size:12px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox>svg{width:14px;height:14px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-choice-trigger{padding:5px 8px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-compact-date{position:relative;display:block;height:34px;border:1px solid var(--border,#cedbd2);border-radius:8px;background:#fff;box-sizing:border-box;overflow:hidden}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-compact-date:focus-within{outline:2px solid var(--accent,#176647);outline-offset:2px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-compact-date input{width:100%;height:100%;padding:5px 7px;border:0;border-radius:0;font-size:12px;outline:0;box-shadow:none}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-compact-date:not(.has-value) input:not(:focus){color:transparent}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-date-placeholder{position:absolute;top:0;bottom:0;left:0;right:30px;display:flex;align-items:center;padding-left:8px;background:#fff;color:var(--muted,#586b60);font-size:12px;pointer-events:none}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-compact-date:focus-within .work-date-placeholder{display:none}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-upload{order:10;gap:5px;padding:5px 9px;color:var(--accent,#176647);font-weight:550}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-upload svg{flex:none}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-hint{display:none}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-files .work-file{order:9;display:flex;align-items:center;justify-content:flex-start;gap:7px;flex:1 1 100%;min-width:0;max-width:100%;padding:6px 9px;margin:0;border:1px solid var(--border,#cedbd2);border-radius:8px;background:#f7faf8;color:var(--text,#28332f);font-size:12px;box-sizing:border-box}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-files .work-file span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-files .work-file small{margin-left:auto;color:var(--muted,#586b60);white-space:nowrap}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-files .work-file .icon-button{margin-left:auto;flex:none}
+
+/* Keep the modal anchored to the viewport when opening it from a scrolled list. */
+dialog.work-editor:has(.work-task-toolbar){position:fixed;inset:0;margin:auto}
+
+/* Task properties stay in the requested order on a single horizontal track. */
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-toolbar{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;min-width:0;margin-top:7px;padding:12px 2px 10px;scrollbar-width:thin;scrollbar-color:#a9b9ad transparent;scroll-snap-type:x proximity}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-toolbar:focus-visible{outline:2px solid var(--accent,#176647);outline-offset:2px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-choice-options.work-choice-portal{top:0;bottom:auto!important;right:auto!important;min-width:0;max-width:220px;box-sizing:border-box;transform:translateY(-100%);z-index:30}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .company-options.directory-portal{position:absolute;inset:auto;transform:translateY(-100%);max-height:220px;overflow-y:auto;box-sizing:border-box;z-index:30}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field{flex:0 0 132px;min-width:0;scroll-snap-align:start}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-field:has(input[type="datetime-local"]){flex:0 0 165px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters>.directory-select{flex:0 0 132px;min-width:0;scroll-snap-align:start}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .directory-select .company-combobox{min-width:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .directory-select input{font-size:12px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .directory-select input::placeholder{font-size:12px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-upload{flex:0 0 auto;order:0;gap:4px;padding-inline:7px;font-size:12px;scroll-snap-align:end}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-file-list{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-file-list .work-file{flex:none;order:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters :is(.work-choice-trigger,.work-compact-date input,.work-date-placeholder,.company-combobox input){font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.3;font-weight:400;letter-spacing:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox input::placeholder{font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.3;font-weight:400;letter-spacing:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .work-choice-trigger.is-placeholder,
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-parameters .company-combobox input::placeholder{color:var(--muted,#586b60)}
+
+.work-page .work-add-day,
+.work-editor .work-add-subtask {
+  font-size: 13px;
+}
+
+.work-page .work-section-heading .mobile-icon-action,
+.work-editor.work-compose .work-editor-footer button[type="submit"] {
+  font-size: 14px;
+}
+
+dialog.work-editor.work-new-note {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(440px, calc(100vw - 24px));
+}
+.work-editor.work-new-note .work-editor-heading {
+  padding: 12px 16px;
+}
+.work-editor.work-new-note .work-editor-body {
+  padding: 16px 16px 12px;
+}
+.work-editor.work-new-note .work-editor-footer {
+  padding: 8px 16px;
+}
+.work-editor.work-new-note .work-editor-content {
+  gap: 10px;
+}
+.work-editor.work-new-note .work-field textarea {
+  height: 68px;
+  min-height: 68px;
+}

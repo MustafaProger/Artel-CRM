@@ -4,5 +4,6 @@ import LogisticsApp from './LogisticsApp'
 import './styles.css'
 import './apple-theme.css'
 import './logistics.css'
+import './motion.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><LogisticsApp /></React.StrictMode>)

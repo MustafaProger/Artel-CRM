@@ -26,7 +26,7 @@ export default function TripRequestsPanel({ requests, loading, loaded = requests
     {loading && loaded && <LoadingProgress label="Обновляем заявки"/>}
     {loading && !loaded ? <LoadingSkeleton variant="requests" label="Загружаем заявки" rows={4}/> : <>
       {!!visible.length && <div className="trip-request-summary"><span>Заявок: {visible.length}</span><strong>{number(visible.reduce((sum, request) => sum + Number(request.quantityLitres), 0))} л</strong></div>}
-      <div className="trip-requests-list">{visible.map(request => {
+      <div className="trip-requests-list view-entrance">{visible.map(request => {
         const place = getDeliveryPlaceDisplay(request.addressName, request.address)
         const point = tripRequestMapCoordinates(request, directories.addresses)
         const link = mapLink({ ...request, ...(point?.status === 'found' ? point : {}) })

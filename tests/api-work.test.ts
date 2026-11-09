@@ -58,12 +58,18 @@ test('work assignments transfer across authenticated accounts, remain scoped and
     assert.equal(created.status, 201);
     const task = created.body.entry as WorkTask;
     assert.equal(task.createdBy, runtime.users[0].id);
+    // Older tasks have no priority; a status-only request must remain compatible.
+    await runtime.store.mutate(base.provenance.sourceSha256, data => {
+      delete data.work!.tasks.find(row => row.id === task.id)!.priority;
+      return { changed: true, result: null };
+    });
     assert.deepEqual((await runtime.alice('/api/work')).body.work.tasks.map((row: WorkTask) => row.id), [task.id]);
     assert.deepEqual((await runtime.bob('/api/work')).body.work.tasks, []);
     assert.equal((await runtime.bob(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, title: 'Чужая правка' })).status, 404);
     assert.equal((await runtime.bob(`/api/work/tasks/${task.id}`, 'DELETE', { version: 1 })).status, 404);
     const transferred = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: task.version, assigneeId: runtime.users[2].id, status: 'doing' });
     assert.equal(transferred.status, 200); assert.equal(transferred.body.entry.version, 2);
+    assert.equal(transferred.body.entry.priority, 4);
     assert.deepEqual((await runtime.alice('/api/work')).body.work.tasks, []);
     assert.deepEqual((await runtime.alice(`/api/work?assigneeId=${runtime.users[2].id}`)).body.work.tasks, []);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 2, assigneeId: runtime.users[1].id })).status, 404);
@@ -96,6 +102,7 @@ test('work versions, server validation and idempotency prevent lost edits, inval
     assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), original);
     const result = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'done', dueDate: null, reminderAt: null }); assert.equal(result.status, 200);
     const changed = encodeOperations(await runtime.store.read(base.provenance.sourceSha256));
+    assert.ok(result.body.entry.archivedAt, 'Completing a task archives it atomically');
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, status: 'doing' })).status, 409);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 1 })).status, 409);
     assert.equal(encodeOperations(await runtime.store.read(base.provenance.sourceSha256)), changed);
@@ -105,6 +112,25 @@ test('work versions, server validation and idempotency prevent lost edits, inval
     assert.equal(archived.title, payload.title);
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'DELETE', { version: 3 })).status, 200);
     assert.equal((await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).work!.tasks.length, 0);
+  } finally { await runtime.close(); }
+});
+
+test('task priority is validated, persisted and preserved by unrelated edits', async () => {
+  const runtime = await setup();
+  try {
+    const created = await runtime.alice('/api/work/tasks', 'POST', { title: 'Срочная задача', priority: 1 });
+    assert.equal(created.status, 201);
+    const task = created.body.entry as WorkTask;
+    assert.equal(task.priority, 1);
+    for (const priority of [0, 5, '1', null]) {
+      const invalid = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, priority });
+      assert.equal(invalid.status, 400, String(priority));
+    }
+    const changed = await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 1, description: 'Проверено' });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.entry.priority, 1);
+    const saved = (await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256)).work!.tasks.find(row => row.id === task.id);
+    assert.equal(saved?.priority, 1);
   } finally { await runtime.close(); }
 });
 
@@ -149,9 +175,13 @@ test('company questions, append-only authored comments, reminders and separate n
     assert.equal(response.work.companyRecords[0].comments.length, 2); assert.equal(response.work.companyRecords[0].reminderAt, payload.reminderAt);
     assert.equal((await runtime.bob(`/api/work/companies/${row.id}`, 'PATCH', { version: 2, comments: [] })).status, 400);
     assert.equal((await runtime.bob(`/api/work/companies/${row.id}`, 'PATCH', { version: 2, comment: 'Окно подтверждено', reminderAt: null })).status, 200);
-    const savedNote = await runtime.alice('/api/work/notes', 'POST', { title: 'Позвонить после встречи', content: 'Обсудить документы' }); assert.equal(savedNote.status, 201);
+    const savedNote = await runtime.alice('/api/work/notes', 'POST', { title: 'Позвонить после встречи', content: 'Обсудить документы', assigneeId: runtime.users[2].id }); assert.equal(savedNote.status, 201);
     const note = savedNote.body.entry as WorkNote;
+    assert.equal(note.assigneeId, runtime.users[1].id);
     assert.equal((await runtime.bob(`/api/work/notes/${note.id}`, 'PATCH', { version: 1, content: 'Чужая заметка' })).status, 404);
+    const editedNote = await runtime.director(`/api/work/notes/${note.id}`, 'PATCH', { version: 1, assigneeId: runtime.users[2].id });
+    assert.equal(editedNote.status, 200);
+    assert.equal(editedNote.body.entry.assigneeId, note.assigneeId);
     assert.equal((await runtime.director('/api/work')).body.work.notes.length, 1);
     const persisted = await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256);
     assert.equal(persisted.work!.companyRecords[0].comments[2].authorId, runtime.users[2].id);
@@ -265,7 +295,13 @@ test('lean Work projection exactly preserves visible company choices, scope and 
         const evaluate = (snapshot: Snapshot) => {
           try {
             const result = mutateWork(structuredClone(data), snapshot, 'tasks', body, task.id, 'PATCH', actor, f.users);
-            if (result.entry) result.entry.updatedAt = 'ignored-clock';
+            if (result.entry) {
+              if ('archivedAt' in result.entry && result.entry.archivedAt) {
+                assert.equal(result.entry.archivedAt, result.entry.updatedAt);
+                result.entry.archivedAt = 'ignored-clock';
+              }
+              result.entry.updatedAt = 'ignored-clock';
+            }
             return result;
           } catch (e) { return { status: (e as {status:number}).status, message: (e as Error).message }; }
         };

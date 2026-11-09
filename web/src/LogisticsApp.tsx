@@ -79,11 +79,11 @@ function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: (
       <label className="logistics-mobile-navigation"><span>Раздел</span><select aria-label="Раздел логистики" value={active.id} onChange={event => { location.hash = event.target.value }}>{(['work', 'reference'] as const).filter(group => available.some(item => item.group === group)).map(group => <optgroup key={group} label={group === 'work' ? 'Рабочее место' : 'Справочники'}>{available.filter(item => item.group === group).map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</optgroup>)}</select></label>
     </aside>}
     <main id="logistics-content" tabIndex={-1} className="logistics-content">
-      <div className="logistics-page-heading"><div><h1>{active.title}</h1><p>{active.description}</p></div><span className="logistics-workspace-label">Рабочее место логиста</span></div>
+      <div key={active.id} className="logistics-page-heading view-entrance-heading"><div><h1>{active.title}</h1><p>{active.description}</p></div><span className="logistics-workspace-label">Рабочее место логиста</span></div>
       {!canEnter ? <p className="shipment-error" role="alert">Раздел «Рейсы» недоступен. Обратитесь к администратору.</p> : <>
         {error && <div className="shipment-error logistics-load-error" role="alert"><span>{error}</span><button className="button" disabled={loading} onClick={refresh}>Повторить загрузку</button></div>}
         {!data && loading && <PageLoading/>}
-        {data && <div className="logistics-page-content">
+        {data && <div key={active.id} className="logistics-page-content view-entrance">
           {active.id === 'trips' ? <TripsPage data={data} canManagePlaces={canManage} onChanged={refresh} allowDelete={canManage}/> : <>
             {!canManage && <p className="logistics-readonly">Справочник доступен для просмотра. Изменения вносит администратор.</p>}
             <DirectoriesPage key={active.id} data={data} onChanged={refresh} canManage={canManage} initialTab={active.id} allowedTabs={[active.id]} hideTabs/>

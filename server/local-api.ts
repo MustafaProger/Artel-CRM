@@ -975,7 +975,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           return write(response,200,JSON.stringify(readWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),url.searchParams,currentActor,activeUsers(data))));
         }
         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
-        const body=await jsonBody(request, false, 3 * 1024 * 1024);
+        const body=await jsonBody(request, false, 28 * 1024 * 1024);
         const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
         const result=await transact(base.provenance.sourceSha256,data=>{
           const currentActor=authorized(data);

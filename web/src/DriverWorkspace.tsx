@@ -1,3 +1,5 @@
+import ScrollableSegments from './ScrollableSegments'
+import { useViewEntrance } from './useViewEntrance'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import TripExecutionAction, { ExecutionEvent } from './TripExecutionAction'
 import { executionStageLabel } from './trip-execution-model'
@@ -38,6 +40,7 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [section, setSection] = useState<'active' | 'archive'>('active')
+  const viewEntrance = useViewEntrance<HTMLDivElement>(section, '.driver-count, .driver-trip-list, .driver-empty')
   const [selectedId, setSelectedId] = useState<string | null>(tripFromHash)
   const [selected, setSelected] = useState<DriverTrip | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -106,14 +109,14 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
     <main id="driver-content" tabIndex={-1} className="driver-content">
       <div className="driver-heading"><div><p>{user.name}</p><h1>Мои рейсы</h1></div><div className="driver-heading-actions"><DriverNotifications userId={user.id}/><button className="button driver-refresh" aria-label="Обновить мои рейсы" disabled={loading || detailLoading} onClick={refresh}><RefreshCw size={17} className={loading ? 'spin' : ''}/><span>Обновить</span></button></div></div>
       <p className="driver-intro">Рейсы и доставки, назначенные вам логистом.</p>
-      <div key={selectedId || section} className="driver-route-content">
+      <div ref={viewEntrance} key={selectedId ?? "list"} className="driver-route-content">
       {selectedId ? <>
         <a className="button driver-back" href="#driver-trips"><ArrowLeft size={16}/>Все мои рейсы</a>
         {detailLoading && !selected && <LoadingSkeleton variant="form" label="Открываем рейс"/>}
         {detailError && <p className="driver-error" role="alert">{detailError}</p>}
         {selected && <TripDetail key={selected.id} trip={selected} onUpdated={updateTrip} onReload={refresh}/>}
       </> : <>
-        <div className="driver-sections" role="group" aria-label="Разделы рейсов"><button type="button" aria-pressed={section === 'active'} className={section === 'active' ? 'is-active' : ''} onClick={() => setSection('active')}>Активные</button><button type="button" aria-pressed={section === 'archive'} className={section === 'archive' ? 'is-active' : ''} onClick={() => setSection('archive')}>Архивные</button></div>
+        <ScrollableSegments className="driver-sections" label="Разделы рейсов" value={section}><button type="button" aria-pressed={section === 'active'} onClick={() => setSection('active')}>Активные</button><button type="button" aria-pressed={section === 'archive'} onClick={() => setSection('archive')}>Архивные</button></ScrollableSegments>
         <label className="driver-search"><Search size={18}/><input type="search" aria-label="Поиск моих рейсов" placeholder="Номер рейса, дата, адрес или клиент" value={query} onChange={event => setQuery(event.target.value)}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск рейсов" onClick={() => setQuery('')}><X size={17}/></button>}</label>
         {error && <div className="driver-error" role="alert"><p>{error}</p><button className="button" onClick={refresh}>Повторить загрузку рейсов</button></div>}
         {loading && tripsLoaded && <LoadingProgress label="Обновляем ваши рейсы"/>}
@@ -135,7 +138,7 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
 }
 
 function TripDetail({ trip, onUpdated, onReload }: { trip: DriverTrip; onUpdated: (trip: DriverTrip) => void; onReload: () => void }) {
-  return <article className="driver-trip-detail">
+  return <article className="driver-trip-detail view-entrance">
     <header className="driver-detail-heading"><h2>{tripLabel(trip)}</h2><p className="trip-identity-date">{dateLabel(trip.date)}</p>{trip.vehiclePlate && <p className="driver-vehicle"><Truck size={18}/>{trip.vehiclePlate}</p>}</header>
     <section className="driver-stop"><div className="driver-stop-heading"><span className="driver-stop-marker"><Truck size={18}/></span><h3>Место погрузки</h3></div>{trip.supplier && <p className="driver-stop-party">{trip.supplier}</p>}<Address address={trip.loadingAddress} mapUrl={trip.loadingMapUrl}/><Timing actual={trip.flowVersion === 'driver-v1' ? null : trip.loadingActualAt}/>{trip.notes && <p className="driver-note">{trip.notes}</p>}</section>
     {trip.flowVersion === 'driver-v1' && <DriverLoadingActions trip={trip} onUpdated={onUpdated}/>}

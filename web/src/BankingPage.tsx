@@ -1,3 +1,4 @@
+import { useViewEntrance } from './useViewEntrance'
 import LoadingSkeleton from './LoadingSkeleton'
 import { watchVisibleRefresh } from './visible-refresh'
 import { useDialogMotion } from './useDialogMotion'
@@ -43,6 +44,8 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const [source, setSource] = useState<'api' | 'legacy'>('api')
   const [connection, setConnection] = useState(''), [account, setAccount] = useState('')
   const sber = bankConnections.find(item => item.id === connection && item.provider === 'sber')
+  const viewEntrance = useViewEntrance<HTMLElement>(`${source}:${connection}`, source === 'legacy'
+    ? '.payment-archive' : sber ? '.sber-statements' : connection ? '.bank-account-panel, .bank-ledger' : '.bank-section-heading, .bank-cards')
   const [from, setFrom] = useState(() => defaultBankPeriod().from), [to, setTo] = useState(currentDay)
   const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [direction, setDirection] = useState(''), [status, setStatus] = useState('')
   const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [revision, setRevision] = useState(0)
@@ -128,7 +131,7 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const selectedBank = bankConnections.find(item => item.id === connection)
   const syncControls = <><button className="button" onClick={() => setSettings(v => !v)}><Unplug size={16}/>Подключение</button><button className="button primary" onClick={() => void synchronize()} disabled={busy || loading || !!error || !(card ? !card.missing.length : data?.connections.some(card => !card.missing.length) || Object.values(sberCards).some(state => !state.missing.length))}><RefreshCw size={16} className={busy ? 'spin' : ''}/>{busy ? 'Обновляем…' : card?.progress ? 'Продолжить загрузку' : 'Синхронизировать'}</button></>
   const periodControls = <div className="bank-period"><label>Период с<input aria-label="Период с" type="date" value={from} max={to || currentDay()} onChange={e => { setFrom(e.target.value); setPage(1) }}/></label><span>—</span><label>Период по<input aria-label="Период по" type="date" value={to} min={from} max={currentDay()} onChange={e => { setTo(e.target.value); setPage(1) }}/></label></div>
-  return <section className="banking-page">
+  return <section ref={viewEntrance} className="banking-page">
     <ScrollableSegments className="bank-source-tabs" role="tablist" label="Источник платежей" value={source}><button role="tab" aria-selected={source === 'api'} onClick={() => setSource('api')}>Банковские подключения</button><button role="tab" aria-selected={source === 'legacy'} onClick={() => setSource('legacy')}>Архив из файла</button></ScrollableSegments>
     {source === 'legacy' ? <>{legacy}</> : sber ? <SberStatements key={sber.id} connectionId={sber.id} onBack={() => selectBank('')}/> : <>
       {selectedBank ? <BankConnectionHeader bankName={selectedBank.bankName} company={selectedBank.company} provider={selectedBank.provider} onBack={() => selectBank('')}
@@ -144,7 +147,7 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
       </>}
       {settings && <div className="bank-settings panel"><h3>Настройка доступа к выпискам</h3><p>Доступ настраивается на сервере для каждого юридического лица. После настройки выберите период и запустите первую синхронизацию.</p>{(card ? [card] : data?.connections ?? []).map(item => <div key={item.id}><strong>{item.bankName} · {item.company}</strong><p>{item.missing.length ? `Требуются: ${item.missing.join(', ')}.` : 'Настройки доступа сохранены на сервере. Подключение подтверждается успешной загрузкой выписки.'}</p>{item.limitations.map(text => <p className="bank-muted" key={text}>{text}</p>)}</div>)}<p>Автоматическая сверка: {data?.scheduleEnabled ? 'включена на сервере' : 'ожидает включения на сервере'}. Для первого получения истории нужен ручной запуск.</p></div>}
       {!data ? loading ? <LoadingSkeleton variant="banks" label="Загружаем банковские подключения"/> : <div className="bank-notice bank-error" role="alert">{error || 'Не удалось загрузить подключения.'} <button className="button" onClick={() => setRevision(v => v + 1)}>Повторить загрузку</button></div> : <>
-        {!connection && <div className="bank-cards">{connectionCards.map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}>
+        {!connection && <div className="bank-cards view-entrance">{connectionCards.map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}>
           <div className="bank-card-top"><span className="bank-emblem"><Building2 size={22}/></span><span className={`bank-state ${item.state}`}>{item.label}</span></div>
           <h3>{item.bankName}<ChevronRight size={18}/></h3><p className="bank-company">{item.company}</p>
           <div className="bank-accounts">{item.accounts.length ? item.accounts.map(account => <span key={account.number}>{account.number}<small>{account.currency}</small></span>) : <span>Счета ещё не подключены</span>}</div>

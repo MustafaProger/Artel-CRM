@@ -7,8 +7,13 @@
 }
 
 .app-shell .page-content,
-.driver-shell .driver-route-content {
-  animation: surface-appear var(--motion-enter) ease-out;
+.driver-shell .driver-route-content,
+.view-entrance {
+  animation: surface-appear var(--motion-enter) var(--motion-ease);
+}
+
+.view-entrance-heading {
+  animation: heading-appear var(--motion-feedback) var(--motion-ease);
 }
 
 /* Touch feedback starts on press, without depending on hover support.
@@ -41,22 +46,27 @@
 .trips-list > .trip-card,
 .driver-trip-list > .driver-trip-card,
 .driver-trip-detail > .driver-stop,
-.work-page :is(.work-companies, .work-calendar),
 .company-options {
-  animation: surface-appear var(--motion-enter) ease-out;
+  animation: surface-appear var(--motion-enter) var(--motion-ease);
 }
 .trips-list > .trip-card:nth-child(n+7),
 .driver-trip-list > .driver-trip-card:nth-child(n+7) { animation: none; }
 
 @keyframes surface-appear {
-  from { opacity: 0; }
+  from { opacity: .35; }
   to { opacity: 1; }
+}
+
+@keyframes heading-appear {
+  from { opacity: .35; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell .page-content, .driver-shell .driver-route-content,
+  .view-entrance, .view-entrance-heading,
   .trips-list > .trip-card, .driver-trip-list > .driver-trip-card,
-  .driver-trip-detail > .driver-stop, .work-page :is(.work-companies, .work-calendar),
+  .driver-trip-detail > .driver-stop,
   .company-options { animation: none; }
   :is(.app-shell, .driver-shell, .auth-shell, dialog) :is(button.button, button.icon-button, a.button):active { transform: none; }
 }

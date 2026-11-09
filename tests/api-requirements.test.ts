@@ -97,7 +97,7 @@ test('task comments, private downloadable files, handoff, archive and restoratio
     const companyRecord=await r.director('/api/work/companies','POST',{companyId,question:'Документы',addAttachments:payload.addAttachments}); assert.equal(companyRecord.status,201);
     assert.equal((await r.director(`/api/work/companies/${companyRecord.body.entry.id}/files/${companyRecord.body.entry.attachments[0].id}`)).body,'Договор для сотрудника');
     const previous=encodeOperations(await r.store.read(base.provenance.sourceSha256));
-    for (const fields of [{comments:[]},{addAttachments:[{name:'../bad.txt',data:'YQ=='}]},{addAttachments:[{name:'bad.txt',data:'invalid'}]},{addAttachments:[{name:'large.txt',data:Buffer.alloc(1024*1024+1).toString('base64')}]}]) assert.equal((await employeeApi(`/api/work/tasks/${task.id}`,'PATCH',{version:3,...fields})).status,400);
+    for (const fields of [{comments:[]},{addAttachments:[{name:'../bad.txt',data:'YQ=='}]},{addAttachments:[{name:'bad.txt',data:'invalid'}]},{addAttachments:[{name:'large.txt',data:Buffer.alloc(20*1024*1024+1).toString('base64')}]}]) assert.equal((await employeeApi(`/api/work/tasks/${task.id}`,'PATCH',{version:3,...fields})).status,400);
     assert.equal(encodeOperations(await r.store.read(base.provenance.sourceSha256)),previous);
     assert.equal((await employeeApi(`/api/work/tasks/${task.id}`,'DELETE',{version:3})).status,200);
     assert.equal((await employeeApi(path)).status,404);

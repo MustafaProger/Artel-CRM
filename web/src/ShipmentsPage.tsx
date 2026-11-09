@@ -1,3 +1,4 @@
+import { useViewEntrance } from './useViewEntrance'
 import LoadingSkeleton, { LoadingProgress, SkeletonTableRows } from './LoadingSkeleton'
 import { useDialogMotion } from './useDialogMotion'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
@@ -27,6 +28,7 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
   onOpenMenu: () => void; menuOpen: boolean; data: Snapshot; period: string; onPeriodChange: (period:string)=>void; onChanged: () => void; onOpenCompany: (company: Company) => void; initialQuery?: string; canDelete?: boolean
 }) {
   const [shipmentType,setShipmentType] = useState<ShipmentType>('tanker')
+  const viewEntrance = useViewEntrance<HTMLDivElement>(shipmentType, '.shipment-grid-scroll')
   const [organization,setOrganization] = useState('all')
   const [query,setQuery] = useState(initialQuery), [debouncedQuery,setDebouncedQuery] = useState(initialQuery)
   const [manager,setManager] = useState('all'), [settlement,setSettlement] = useState('all')
@@ -116,7 +118,7 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
     finally {setExporting(false)}
   }
   const companyFor = (shipment:Shipment,key:string) => data.companies.find(company => company.id === (key === 'customer_name' ? shipment.customerId : key === 'supplier_name' ? shipment.supplierId : shipment.carrierId))
-  return <div className="shipments-workspace">
+  return <div ref={viewEntrance} className="shipments-workspace">
     <section className="panel shipment-panel" aria-label="Операции отгрузки">
       <header className="shipment-toolbar">
         <div className="shipment-header">

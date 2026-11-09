@@ -6,11 +6,13 @@ export const isWorkDirectoryCompany = (company: Company): boolean =>
   !company.directoryArchived && company.roles.some(role => role === 'customer' || role === 'supplier');
 
 export const workStatuses = [
-  { id: 'todo', name: 'К выполнению' },
+  { id: 'todo', name: 'К работе' },
   { id: 'doing', name: 'В работе' },
   { id: 'done', name: 'Готово' },
 ] as const;
 export type WorkStatus = (typeof workStatuses)[number]['id'];
+export const workPriorities = [1, 2, 3, 4] as const;
+export type WorkPriority = (typeof workPriorities)[number];
 export type WorkKind = 'tasks' | 'companies' | 'notes';
 
 export interface WorkEntry {
@@ -22,21 +24,27 @@ export interface WorkEntry {
   createdBy: string;
   updatedBy: string;
 }
+export interface WorkSubtask { id: string; title: string; done: boolean }
+export const workSubtaskLimit = 50;
+
 export interface WorkTask extends WorkEntry {
   archivedAt?: string | null;
+  subtasks?: WorkSubtask[];
   comments?: WorkComment[];
   attachments?: WorkAttachment[];
   title: string;
   description: string;
   status: WorkStatus;
+  /** Older tasks without a priority are treated as P4. */
+  priority?: WorkPriority;
   companyId: string | null;
   dueDate: string | null;
   /** UTC instant; entered and displayed in the employee's browser time zone. */
   reminderAt: string | null;
 }
 export interface WorkComment { id: string; text: string; createdAt: string; authorId: string }
-export const workFileLimit = 1024 * 1024;
-export const workFilesTotalLimit = 2 * 1024 * 1024;
+export const workFileLimit = 20 * 1024 * 1024;
+export const workFilesTotalLimit = 20 * 1024 * 1024;
 export interface WorkAttachment { id: string; name: string; size: number; createdAt: string; authorId: string; data?: string }
 export interface WorkCompanyRecord extends WorkEntry {
   archivedAt?: string | null;

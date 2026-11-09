@@ -218,7 +218,7 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
   return <main className="auth-screen">
     <section className="auth-story" aria-label="Об Артэль CRM">
       <div className="auth-story-rings" aria-hidden="true" />
-      <div className="auth-story-content">
+      <div className="auth-story-content view-entrance">
         <AuthBrand logistics={logistics} />
         <div className="auth-story-copy">
           <h2>{logistics ? 'Рейсы и документы.' : 'Отгрузки и финансы.'}<br /><em>{logistics ? 'Работа логиста.' : 'Всё под контролем.'}</em></h2>
@@ -244,7 +244,7 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
         {!session ? <div className="auth-connection">
           {checking ? <p className="auth-loading" role="status"><LoaderCircle size={20} aria-hidden="true" /> Проверяем доступ…</p>
             : <><p className="auth-error" role="alert">{error}</p><button className="auth-submit" onClick={() => void refresh()}>Повторить загрузку<ArrowRight size={20} aria-hidden="true" /></button></>}
-        </div> : logistics && session.needsSetup ? <p className="auth-error" role="alert">Учётные записи ещё не настроены. Обратитесь к администратору основной CRM.</p> : <form className="auth-form" onSubmit={submit} aria-busy={busy}>
+        </div> : logistics && session.needsSetup ? <p className="auth-error" role="alert">Учётные записи ещё не настроены. Обратитесь к администратору основной CRM.</p> : <form className="auth-form view-entrance" onSubmit={submit} aria-busy={busy}>
           <fieldset disabled={busy} aria-label={needsSetup ? 'Создание учётной записи директора' : 'Данные для входа'}>
             {needsSetup && <div className="auth-field">
               <label htmlFor="auth-name">Имя</label>

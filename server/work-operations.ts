@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
-import { isWorkDirectoryCompany, emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+import { isWorkDirectoryCompany, emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
 import { queueTaskAssignment } from './push';
@@ -22,6 +22,16 @@ export function workCompanyIds(data: OperationsData, actor: AccountUser): string
     .filter(row => canAccess(actor, row)).flatMap(row => row.companyId ? [row.companyId] : []))];
 }
 
+function validSubtasks(value: unknown): value is WorkSubtask[] {
+  if (!Array.isArray(value) || value.length > workSubtaskLimit) return false;
+  const ids = new Set<string>();
+  for (const row of value) {
+    if (!object(row) || !identifier(row.id) || ids.has(row.id) || !boundedText(row.title, 200, true) || typeof row.done !== 'boolean') return false;
+    ids.add(row.id);
+  }
+  return true;
+}
+
 /** Old stores may omit work entirely. Existing malformed work is never silently discarded. */
 export function validateWorkData(value: unknown): asserts value is WorkData | undefined {
   if (value === undefined) return;
@@ -33,7 +43,8 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
     for (const row of rows) {
       if (!object(row) || !identifier(row.id) || ids.has(row.id) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || !identifier(row.assigneeId) || !identifier(row.createdBy) || !identifier(row.updatedBy) || !instant(row.createdAt) || !instant(row.updatedAt)) throw new StoreError('Invalid work entry');
       ids.add(row.id);
-      if (kind === 'tasks' && (!boundedText(row.title, 200, true) || !boundedText(row.description, 10000) || !workStatuses.some(status => status.id === row.status) || row.companyId !== null && !identifier(row.companyId) || row.dueDate !== null && !date(row.dueDate) || row.reminderAt !== null && !instant(row.reminderAt))) throw new StoreError('Invalid work task');
+      if (kind === 'tasks' && (!boundedText(row.title, 200, true) || !boundedText(row.description, 10000) || !workStatuses.some(status => status.id === row.status) || row.priority !== undefined && !workPriorities.includes(row.priority as 1 | 2 | 3 | 4) || row.companyId !== null && !identifier(row.companyId) || row.dueDate !== null && !date(row.dueDate) || row.reminderAt !== null && !instant(row.reminderAt))) throw new StoreError('Invalid work task');
+      if (kind === 'tasks' && row.subtasks !== undefined && !validSubtasks(row.subtasks)) throw new StoreError('Invalid work subtasks');
       if (kind === 'notes' && (!boundedText(row.title, 200, true) || !boundedText(row.content, 10000))) throw new StoreError('Invalid work note');
       if (kind !== 'notes') {
         if (row.archivedAt !== undefined && row.archivedAt !== null && !instant(row.archivedAt)) throw new StoreError('Invalid work archive');
@@ -128,12 +139,13 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (kind === 'tasks') queueTaskAssignment(data, undefined, previous as WorkTask, actor.id);
     return { deleted: true, id, changed: true };
   }
-  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'companyId', 'dueDate', 'reminderAt'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
+  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
   if (Object.keys(body).some(key => !allowed.includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
   if (previous && body.requestId !== undefined || !previous && body.version !== undefined) throw new ApiError(400, 'Некорректные параметры создания или изменения.');
   if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId))) throw new ApiError(400, 'Некорректный идентификатор запроса.');
   const get = (name: string, fallback: unknown) => body[name] === undefined ? previous ? (previous as unknown as Record<string, unknown>)[name] : fallback : body[name];
-  const assigneeId = get('assigneeId', actor.id);
+  // Notes belong to their creator. Keep the stored assignment for older notes.
+  const assigneeId = kind === 'notes' ? previous?.assigneeId ?? actor.id : get('assigneeId', actor.id);
   const activeAssignee = users.some(user => user.id === assigneeId && user.active && !user.deletedAt);
   if (!identifier(assigneeId) || !activeAssignee && previous?.assigneeId !== assigneeId) throw new ApiError(400, 'Выберите действующего сотрудника.');
   // Managers may create for themselves and then explicitly hand their task over; they cannot write into another employee's list directly.
@@ -146,7 +158,11 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   if (kind === 'tasks') {
     const status = get('status', 'todo');
     if (!workStatuses.some(row => row.id === status)) throw new ApiError(400, 'Неизвестное состояние задачи.');
-    entry = { ...common, title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true) };
+    const priority = body.priority === undefined ? (previous as WorkTask | undefined)?.priority ?? 4 : body.priority;
+    if (!workPriorities.includes(priority as 1 | 2 | 3 | 4)) throw new ApiError(400, 'Неизвестный приоритет задачи.');
+    const subtasks = body.subtasks === undefined ? (previous as WorkTask | undefined)?.subtasks : body.subtasks;
+    if (subtasks !== undefined && !validSubtasks(subtasks)) throw new ApiError(400, `Укажите названия подзадач. Допускается до ${workSubtaskLimit} подзадач по 200 символов.`);
+    entry = { ...common, title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
   } else if (kind === 'companies') {
     const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
     const comments = [...((previous as WorkCompanyRecord | undefined)?.comments ?? [])];
@@ -175,11 +191,11 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (body.addAttachments !== undefined) {
       if (!Array.isArray(body.addAttachments) || body.addAttachments.length > 20) throw new ApiError(400, 'Некорректный список файлов.');
       for (const file of body.addAttachments) {
-        if (!object(file) || Object.keys(file).some(key => !['name', 'data'].includes(key)) || !boundedText(file.name, 200, true) || (/[\\/]/.test(file.name) || [...file.name].some(char => char.charCodeAt(0) < 32)) || typeof file.data !== 'string' || file.data.length > Math.ceil(workFileLimit / 3) * 4 || Buffer.from(file.data, 'base64').toString('base64') !== file.data || Buffer.from(file.data, 'base64').length > workFileLimit) throw new ApiError(400, 'Файл: до 1 МБ, имя до 200 символов без путей.');
+        if (!object(file) || Object.keys(file).some(key => !['name', 'data'].includes(key)) || !boundedText(file.name, 200, true) || (/[\\/]/.test(file.name) || [...file.name].some(char => char.charCodeAt(0) < 32)) || typeof file.data !== 'string' || file.data.length > Math.ceil(workFileLimit / 3) * 4 || Buffer.from(file.data, 'base64').toString('base64') !== file.data || Buffer.from(file.data, 'base64').length > workFileLimit) throw new ApiError(400, 'Файл: до 20 МБ, имя до 200 символов без путей.');
         files.push({ id: `work-file-${randomUUID()}`, name: file.name, data: file.data, size: Buffer.from(file.data, 'base64').length, authorId: actor.id, createdAt: now });
       }
     }
-    if (files.length > 20 || files.reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit) throw new ApiError(400, 'В карточке допускается до 20 файлов, суммарно до 2 МБ.');
+    if (files.length > 20 || files.reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit) throw new ApiError(400, 'В карточке допускается до 20 файлов, суммарно до 20 МБ.');
     record.attachments = files;
   }
   if (!previous) {

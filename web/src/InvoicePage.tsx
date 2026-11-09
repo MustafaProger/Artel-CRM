@@ -386,7 +386,7 @@ export default function InvoicePage({ user, menuOpen, onOpenMenu }: { user: User
     {data && error && <Retry error={error} retry={() => void refresh()} />}
 
     {!data ? loadState : <>
-    <section className="panel invoice-create-panel create-panel" id={`${id}-panel-create`} aria-labelledby={`${id}-create-heading`}>
+    <section className="panel invoice-create-panel create-panel view-entrance" id={`${id}-panel-create`} aria-labelledby={`${id}-create-heading`}>
       <header className="panel-heading"><div><h2 id={`${id}-create-heading`}>Новый счёт</h2><p className="field-hint">Выберите компании и укажите сумму — литры рассчитаются автоматически.</p></div></header>
       {data && <form className="invoice-form" id={`${id}-invoice-form`} onSubmit={event => void createInvoice(event)}>
         <label className="field seller-field" htmlFor={`${id}-organization`}><span>Продавец</span>
@@ -431,7 +431,7 @@ export default function InvoicePage({ user, menuOpen, onOpenMenu }: { user: User
         </div>
       </form>}
     </section>
-    <section className="panel invoice-history-panel" id={`${id}-panel-history`} aria-labelledby={`${id}-history-heading`} tabIndex={-1} ref={historyPanel}>
+    <section className="panel invoice-history-panel view-entrance" id={`${id}-panel-history`} aria-labelledby={`${id}-history-heading`} tabIndex={-1} ref={historyPanel}>
       <header className="panel-heading"><div><div className="invoice-history-title"><h2 id={`${id}-history-heading`}>История счетов</h2>{data && <span className="invoice-history-count">{data.history.items.length}</span>}</div><p className="field-hint">Ваши счета и готовые документы — в одном месте.</p></div></header>
       {data ? data.history.items.length ? <div className="history-list">
         {downloadError && <p className="form-error" role="alert">{downloadError}</p>}{retryError && <p className="form-error" role="alert">{retryError}</p>}

@@ -46,7 +46,7 @@ export default function CabinetBalances() {
     {!data && loading && <LoadingSkeleton variant="cabinet" label="Загружаем кабинеты и остатки"/>}
     {data && <>
       {!data.credentialStorageReady && <p className="soft-notice"><LockKeyhole size={16} aria-hidden="true"/> Сохранение доступов пока недоступно: требуется настройка защиты на сервере.</p>}
-      <div className="cabinet-layout"><div className="cabinet-connected">
+      <div className="cabinet-layout view-entrance"><div className="cabinet-connected">
         <div className="cabinet-section-heading"><h3>Ваши кабинеты</h3><span>{data.connections.length}</span></div>
         {!data.connections.length && <div className="panel cabinet-empty"><Building2 size={32}/><h3>Добавьте первый кабинет</h3><p>Выберите сервис и укажите данные для входа. Здесь появятся его счета и остатки.</p><button className="button primary" disabled={!data.credentialStorageReady} onClick={() => setEditor('choose')}><Plus size={16}/>Добавить кабинет</button></div>}
         {cabinetProviders.filter(provider => data.connections.some(connection => connection.provider === provider.id)).map(provider => <article className="panel cabinet-card" key={provider.id} aria-label={provider.name}>
