@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { Directories, ShipmentAddress } from '../web/src/model'
-import { changedTransportContext, tripTransportStates, type TransportCustomerDraft } from '../web/src/trip-transport-draft'
+import { autoAssignTransportSections, changedTransportContext, tripTransportStates, type TransportCustomerDraft } from '../web/src/trip-transport-draft'
 
 const addresses: ShipmentAddress[] = [
   { id: 'full', name: 'Полная машина', companyId: 'a', kind: 'delivery', oilDepotDistancesKm: { depot: '50', second: '100' } },
@@ -16,6 +16,31 @@ const directories: Directories = {
 const shared = { vehicle_id: 'truck', oil_depot_id: 'depot' }
 const customer = (key = 'a', indexes = [0, 1, 2], litres = '11000', address = 'full'): TransportCustomerDraft => ({ key, pricingLive: true, fields: { customer_id: key, unloading_address_id: address, quantity_litres: litres, transport_pricing_mode: 'auto', transport_section_indexes: JSON.stringify(indexes), transport_amount: '' } })
 const state = (row: TransportCustomerDraft, catalog = directories, fields: Record<string, string> = shared) => tripTransportStates(fields, [row], catalog, addresses).get(row.key)!
+
+test('litres select the exact pair of full sections after leaving the field', () => {
+  const vehicle = { id: 'pairs', plate: 'А002АА', compartmentsLitres: ['4000', '5000', '3000'] }
+  for (const [litres, expected] of [['9000', [0, 1]], ['8 000', [1, 2]], ['7000', [0, 2]]] as const) {
+    const row = customer('a', [], litres)
+    assert.deepEqual(JSON.parse(autoAssignTransportSections([row], vehicle)[0].fields.transport_section_indexes), expected)
+  }
+  assert.equal(autoAssignTransportSections([customer('a', [], '6000')], vehicle)[0].fields.transport_section_indexes, '[]')
+})
+
+test('auto assignment respects occupied and manually selected sections', () => {
+  const vehicle = { id: 'pairs', plate: 'А002АА', compartmentsLitres: ['4000', '5000', '3000'] }
+  const first = customer('a', [0, 1], '9000')
+  const second = customer('b', [], '8000')
+  assert.equal(autoAssignTransportSections([first, second], vehicle)[1].fields.transport_section_indexes, '[]')
+  assert.equal(autoAssignTransportSections([first, customer('b', [], '3000')], vehicle)[1].fields.transport_section_indexes, '[2]')
+  assert.equal(autoAssignTransportSections([first], vehicle)[0], first)
+  const saved = { ...customer('a', [], '9000'), pricingLive: false }
+  assert.equal(autoAssignTransportSections([saved], vehicle)[0], saved)
+})
+
+test('ambiguous equal-volume combinations remain unassigned for review', () => {
+  const vehicle = { id: 'equal', plate: 'А003АА', compartmentsLitres: ['4000', '4000', '5000'] }
+  assert.equal(autoAssignTransportSections([customer('a', [], '9000')], vehicle)[0].fields.transport_section_indexes, '[]')
+})
 
 test('new complete trip derives 15000 without writing the editable draft or inventing sections', () => {
   const row = customer(), before = structuredClone(row)

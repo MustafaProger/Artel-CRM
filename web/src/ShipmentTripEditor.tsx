@@ -24,7 +24,7 @@ import { getDeliveryPlaceDisplay } from './trip-request-display'
 import TripRequestEditor from './TripRequestEditor'
 import type { Company } from './model'
 import './trip-requests.css'
-import { changedTransportContext, tripTransportStates, type TransportCustomerDraft } from './trip-transport-draft'
+import { autoAssignTransportSections, changedTransportContext, tripTransportStates, type TransportCustomerDraft } from './trip-transport-draft'
 import { TransportAmountField, TransportPriceBreakdown, TransportSectionAssignment } from './TripTransportPrice'
 
 interface CustomerDraft extends TransportCustomerDraft {
@@ -216,7 +216,8 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       if ((key === 'quantity_tonnes' || key === 'product_id') && isUnpackagedDiesel(directories.products.find(entry => entry.id === next.product_id))) next.quantity_gross_tonnes = next.quantity_tonnes
       const vehicleChanged = next.vehicle_id !== previous.fields.vehicle_id
       const pricingContextChanged = vehicleChanged || next.oil_depot_id !== previous.fields.oil_depot_id
-      return { ...previous, fields: next, customers: pricingContextChanged ? previous.customers.map(customer => changedTransportContext(customer, vehicleChanged)) : previous.customers }
+      const customers = pricingContextChanged ? previous.customers.map(customer => changedTransportContext(customer, vehicleChanged)) : previous.customers
+      return { ...previous, fields: next, customers: vehicleChanged ? autoAssignTransportSections(customers, directories.vehicles.find(vehicle => vehicle.id === next.vehicle_id)) : customers }
     })
     changed()
   }
@@ -225,13 +226,23 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       if (customer.key !== customerKey) return customer
       const contextChanged = ['customer_id', 'unloading_address_id', 'quantity_litres', 'transport_section_indexes'].includes(key) && customer.fields[key] !== value
       const current = contextChanged ? changedTransportContext(customer) : customer
-      return { ...current, ...(contextChanged && ['customer_id', 'unloading_address_id'].includes(key) ? { pricingLocation: undefined } : {}), ...(key === 'transport_amount' ? { pricingLive: false, pricingNotice: '' } : {}), fields: { ...current.fields, [key]: value, ...(key === 'transport_section_indexes' ? { transport_pricing_mode: current.fields.transport_pricing_mode || 'manual' } : {}), ...(key === 'transport_amount' ? { transport_pricing_mode: 'manual', transport_price_snapshot: '' } : {}), ...(key === 'unloading_address_id' && contextChanged ? { unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '' } : {}), ...(key === 'customer_id' && contextChanged ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '', manager_id: customerManagerId(directories, value) } : {}) } }
+      return { ...current, ...(contextChanged && ['customer_id', 'unloading_address_id'].includes(key) ? { pricingLocation: undefined } : {}), ...(key === 'transport_amount' ? { pricingLive: false, pricingNotice: '' } : {}), fields: { ...current.fields, [key]: value, ...(key === 'quantity_litres' && contextChanged && customer.pricingLive ? { transport_section_indexes: '' } : {}), ...(key === 'transport_section_indexes' ? { transport_pricing_mode: current.fields.transport_pricing_mode || 'manual' } : {}), ...(key === 'transport_amount' ? { transport_pricing_mode: 'manual', transport_price_snapshot: '' } : {}), ...(key === 'unloading_address_id' && contextChanged ? { unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '' } : {}), ...(key === 'customer_id' && contextChanged ? { unloading_address_id: '', unloading_address: '', unloading_map_url: '', unloading_latitude: '', unloading_longitude: '', manager_id: customerManagerId(directories, value) } : {}) } }
     }) }))
     changed()
   }
+  const assignSections = (customerKey: string) => {
+    setDraft(previous => {
+      const vehicle = directories.vehicles.find(item => item.id === previous.fields.vehicle_id)
+      const customers = autoAssignTransportSections(previous.customers, vehicle, customerKey)
+      return customers.some((customer, index) => customer !== previous.customers[index]) ? { ...previous, customers } : previous
+    })
+  }
   const setTransportMode = (customerKey: string, automatic: boolean) => {
     const amount = transportStates.get(customerKey)?.fields.transport_amount ?? ''
-    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, pricingLive: automatic, pricingNotice: '', fields: { ...customer.fields, transport_pricing_mode: automatic ? 'auto' : 'manual', transport_price_snapshot: '', transport_amount: amount } }) }))
+    setDraft(previous => {
+      const customers = previous.customers.map(customer => customer.key !== customerKey ? customer : { ...customer, pricingLive: automatic, pricingNotice: '', fields: { ...customer.fields, transport_pricing_mode: automatic ? 'auto' : 'manual', transport_price_snapshot: '', transport_amount: amount } })
+      return { ...previous, customers: automatic ? autoAssignTransportSections(customers, directories.vehicles.find(vehicle => vehicle.id === previous.fields.vehicle_id), customerKey) : customers }
+    })
     changed()
   }
   const selectRequest = (customerKey: string, requestId: string) => {
@@ -240,11 +251,11 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
       setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : { ...newCustomer(), key: customer.key }) }))
       changed(); return
     }
-    setDraft(previous => ({ ...previous, customers: previous.customers.map(customer => customer.key !== customerKey ? customer : {
-      ...changedTransportContext(customer), sourceRequestId: request.id, sourceRequestVersion: request.version, requestCompanyName: request.companyName, requestAddressName: request.addressName,
+    setDraft(previous => ({ ...previous, customers: autoAssignTransportSections(previous.customers.map(customer => customer.key !== customerKey ? customer : {
+      ...changedTransportContext(customer, true), sourceRequestId: request.id, sourceRequestVersion: request.version, requestCompanyName: request.companyName, requestAddressName: request.addressName,
       pricingLocation: { address: request.address, latitude: request.latitude, longitude: request.longitude, locationSnapshot: request.locationSnapshot },
-      fields: { ...changedTransportContext(customer).fields, customer_id: request.companyId, unloading_address_id: request.addressId, unloading_address: request.address, unloading_map_url: request.mapUrl ?? '', quantity_litres: request.quantityLitres, sale_price_per_litre: request.salePricePerLitre ?? '', delivery_notes: request.comment, manager_id: customerManagerId(directories, request.companyId) },
-    }) }))
+      fields: { ...changedTransportContext(customer, true).fields, customer_id: request.companyId, unloading_address_id: request.addressId, unloading_address: request.address, unloading_map_url: request.mapUrl ?? '', quantity_litres: request.quantityLitres, sale_price_per_litre: request.salePricePerLitre ?? '', delivery_notes: request.comment, manager_id: customerManagerId(directories, request.companyId) },
+    }), directories.vehicles.find(vehicle => vehicle.id === previous.fields.vehicle_id), customerKey) }))
     changed()
   }
   const addCustomer = () => {
@@ -364,7 +375,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   }
 
   const select = (label: string, key: string, entries: SelectEntry[], options: { required?: boolean; disabled?: boolean; customer?: CustomerDraft } = {}) => <DirectorySelect label={label} value={(options.customer?.fields ?? fields)[key] ?? ''} entries={entries} required={options.required} disabled={disabled || options.disabled} onChange={value => options.customer ? updateCustomer(options.customer.key, key, value) : update(key, value)}/>
-  const input = (label: string, key: string, options: { required?: boolean; type?: string; customer?: CustomerDraft; text?: boolean } = {}) => <label className="shipment-field"><span>{label}{options.required && ' *'}</span><input type={options.type ?? 'text'} inputMode={options.type === 'date' || options.type === 'datetime-local' || options.text ? undefined : 'decimal'} autoFocus={key === 'date'} value={(options.customer?.fields ?? fields)[key] ?? ''} required={options.required} disabled={disabled} onChange={event => options.customer ? updateCustomer(options.customer.key, key, event.target.value) : update(key, event.target.value)}/></label>
+  const input = (label: string, key: string, options: { required?: boolean; type?: string; customer?: CustomerDraft; text?: boolean } = {}) => <label className="shipment-field"><span>{label}{options.required && ' *'}</span><input type={options.type ?? 'text'} inputMode={options.type === 'date' || options.type === 'datetime-local' || options.text ? undefined : 'decimal'} autoFocus={key === 'date'} value={(options.customer?.fields ?? fields)[key] ?? ''} required={options.required} disabled={disabled} onChange={event => options.customer ? updateCustomer(options.customer.key, key, event.target.value) : update(key, event.target.value)} onBlur={key === 'quantity_litres' && options.customer ? () => assignSections(options.customer!.key) : undefined}/></label>
   const location = (customer: CustomerDraft) => {
     const values = customer.fields
     return <TripLocationPicker label="Место выгрузки" kind="delivery" companyId={values.customer_id} value={values.unloading_address_id ?? ''} addresses={addresses} addressSnapshot={values.unloading_address || undefined} mapSnapshot={values.unloading_map_url || undefined} disabled={disabled} canManage={canManagePlaces} onChange={id => updateCustomer(customer.key, 'unloading_address_id', id)} onCreated={address => { setAddedAddresses(previous => [...previous.filter(item => item.id !== address.id), address]); onDirectoriesChanged?.() }}/>

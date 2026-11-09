@@ -1,4 +1,5 @@
-import type { Directories, ShipmentAddress } from './model'
+import Decimal from 'decimal.js'
+import type { Directories, ShipmentAddress, Vehicle } from './model'
 import { calculateTransportPrice, readTransportPriceSnapshot, readTransportSectionIndexes, transportAddressMatches, type TransportPriceSnapshot } from './transport-pricing'
 
 export interface TransportCustomerDraft {
@@ -17,6 +18,54 @@ export interface TripTransportState {
   snapshot: TransportPriceSnapshot | null
   errors: string[]
   fields: Record<string, string>
+}
+
+/** Assign only an exact, unambiguous combination of full, unused sections. */
+export function autoAssignTransportSections<T extends TransportCustomerDraft>(customers: T[], vehicle?: Vehicle, customerKey?: string): T[] {
+  const compartments = vehicle?.compartmentsLitres
+  if (!compartments?.length) return customers
+  const result = [...customers]
+  for (const [position, customer] of result.entries()) {
+    if (customerKey && customer.key !== customerKey || !customer.pricingLive || customer.fields.transport_pricing_mode !== 'auto') continue
+    try { if (readTransportSectionIndexes(customer.fields.transport_section_indexes).length) continue } catch { continue }
+    const raw = customer.fields.quantity_litres.replace(/\s/g, '').replace(',', '.')
+    if (!/^\d{1,12}(?:\.\d{1,6})?$/.test(raw) || !new Decimal(raw).gt(0)) continue
+    const units = (value: string) => BigInt(new Decimal(value).times(1_000_000).toFixed(0))
+    const target = units(raw)
+    const occupied = new Set(result.flatMap((other, index) => {
+      if (index === position) return []
+      try { return readTransportSectionIndexes(other.fields.transport_section_indexes) } catch { return [] }
+    }))
+    const available = compartments.map((volume, index) => ({ index, volume: units(volume) })).filter(section => !occupied.has(section.index))
+    const half = Math.ceil(available.length / 2)
+    const sums = (sections: typeof available) => {
+      const found = new Map<bigint, { indexes: number[]; count: number }>()
+      for (let mask = 0; mask < 2 ** sections.length; mask++) {
+        let sum = 0n
+        const indexes: number[] = []
+        for (let bit = 0; bit < sections.length; bit++) if (mask & 1 << bit) {
+          sum += sections[bit].volume
+          indexes.push(sections[bit].index)
+        }
+        const prior = found.get(sum)
+        if (prior) prior.count = 2
+        else found.set(sum, { indexes, count: 1 })
+      }
+      return found
+    }
+    const left = sums(available.slice(0, half))
+    const right = sums(available.slice(half))
+    let match: number[] | null = null
+    let ambiguous = false
+    for (const [sum, first] of left) {
+      const second = right.get(target - sum)
+      if (!second) continue
+      if (match || first.count > 1 || second.count > 1) { ambiguous = true; break }
+      match = [...first.indexes, ...second.indexes]
+    }
+    if (match && !ambiguous) result[position] = { ...customer, fields: { ...customer.fields, transport_section_indexes: JSON.stringify(match) } }
+  }
+  return result
 }
 
 export function tripTransportStates(shared: Record<string, string>, customers: TransportCustomerDraft[], directories: Directories, addresses: ShipmentAddress[], original?: { fields: Record<string, string>; customers: TransportCustomerDraft[] }): Map<string, TripTransportState> {
