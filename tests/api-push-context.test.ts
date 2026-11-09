@@ -5,6 +5,8 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { createSnapshotMiddleware } from '../server/local-api';
 import { integrationRuntime } from './helpers/trip-saby-integration';
+import { migrateAuthStorage } from '../server/auth-partition';
+import { dirname } from 'node:path';
 
 async function fixture() {
   const rt = await integrationRuntime(), sent: { url: string; probe: { id: string }; userId: string }[] = [];
@@ -80,5 +82,24 @@ test('push test context rejects invalid, inaccessible or missing task targets be
     assert.equal((await f.request('/api/push/test', 'POST', { endpoint: adminEndpoint, kind: 'work', operatorPlanId: f.planId }, f.admin)).status, 400);
     assert.deepEqual((await f.store.read(f.source)).push, beforeAdmin);
     assert.equal((await f.request('/api/push/test', 'POST', { endpoint, kind: 'operator', operatorPlanId: f.planId }, f.operator)).status, 200);
+  } finally { await f.close(); }
+});
+
+test('push config uses the fresh narrow authority view and revocation still rejects the old cookie', async () => {
+  const f = await fixture();
+  try {
+    await migrateAuthStorage(dirname(f.store.path), f.source);
+    const read = f.store.read.bind(f.store);
+    let businessReads = 0;
+    f.store.read = async source => { businessReads++; return read(source); };
+    assert.equal((await f.request('/api/push/config', 'GET', undefined, f.admin)).status, 200);
+    assert.equal((await f.request('/api/push/config', 'GET', undefined, f.operator)).status, 200);
+    assert.equal((await f.request('/api/push/config')).status, 401);
+    assert.equal((await f.request('/api/auth/logout', 'POST', {}, f.operator)).status, 200);
+    assert.equal((await f.request('/api/push/config', 'GET', undefined, f.operator)).status, 401);
+    assert.equal((await f.request('/api/auth/session', 'GET', undefined, f.admin)).body.user.role, 'director');
+    assert.equal(businessReads, 0);
+    assert.equal((await f.request('/api/navigation', 'GET', undefined, f.admin)).status, 200);
+    assert.ok(businessReads > 0, 'business routes retain the full authority and business snapshot');
   } finally { await f.close(); }
 });

@@ -11,6 +11,8 @@ import { integrationRuntime } from './helpers/trip-saby-integration';
 import type { TripRequest } from '../web/src/trip-request-model';
 import type { ShipmentTrip } from '../web/src/model';
 import { mapLink } from '../web/src/map-link';
+import { AuthPartition, migrateAuthStorage, mergeAuthStorage } from '../server/auth-partition';
+const authLayout = process.env.ARTEL_TEST_AUTH_PARTITION === '1';
 
 async function fixture(options: Pick<LocalApiOptions, 'tripRequestGeocoder'> = {}) {
   const rt = await integrationRuntime();
@@ -150,8 +152,17 @@ test('queued geocoding rechecks permissions and current snapshot before returnin
     try {
       const source = await f.create(1);
       const body = change === 'directory' ? { companyId: source.companyId, addressId: source.addressId } : { requestId: source.id };
-      const pending = f.request('/api/trip-requests/geocode', 'POST', body, f.one.cookie);
       await started;
+      // Saving already starts the provider in the background. Wait for the
+      // geocode HTTP request's second (post-body) read, not merely that earlier
+      // provider call; otherwise a fast store can change before this request
+      // has captured the state that the test is intended to invalidate.
+      let captured!: () => void, reads = 0;
+      const readCaptured = new Promise<void>(done => { captured = done; });
+      const read = f.store.read.bind(f.store);
+      f.store.read = async sha => { const data = await read(sha); if (++reads === 2) captured(); return data; };
+      const pending = f.request('/api/trip-requests/geocode', 'POST', body, f.one.cookie);
+      await readCaptured;
       await f.store.mutate(f.source, data => {
         if (change === 'permission') data.accounts!.users.find(row => row.id === f.one.user.id)!.sections = [];
         if (change === 'point') Object.assign(data.tripRequests![source.id], { latitude: '56', longitude: '38', version: source.version + 1 });
@@ -160,7 +171,7 @@ test('queued geocoding rechecks permissions and current snapshot before returnin
         return { result: null, changed: true };
       });
       release(); const result = await pending;
-      assert.equal(result.status, change === 'permission' ? 403 : 409); assert.doesNotMatch(JSON.stringify(result.body), /MUST-NOT-RETURN-STALE/);
+      assert.equal(result.status, change === 'permission' ? 403 : 409, change); assert.doesNotMatch(JSON.stringify(result.body), /MUST-NOT-RETURN-STALE/);
     } finally { release(); await f.close(); }
   }
 });
@@ -745,8 +756,8 @@ test('request projection and trips context preserve the existing catalog and per
 test('partitioned requests preserve Work, history, idempotency, trip consumption and restart/export', async () => {
   const { migrateWorkStorage, mergeWorkStorage, WorkPartition } = await import('../server/work-partition');
   const f = await fixture(); try {
-    await migrateWorkStorage(dirname(f.store.path), f.source);
-    const part = new WorkPartition(f.store.path), before = await f.store.read(f.source), work = await readFile(part.workPath, 'utf8');
+    await (authLayout ? migrateAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source);
+    const part = (authLayout ? new AuthPartition(f.store.path) : new WorkPartition(f.store.path)), before = await f.store.read(f.source), work = await readFile(part.workPath, 'utf8');
     const input = { companyId: 'customer', addressId: 'delivery', quantityLitres: '1000', salePricePerLitre: '61.25', executionDate: '2026-10-30', idempotencyKey: randomUUID() };
     const created = await f.request('/api/trip-requests', 'POST', input, f.one.cookie);
     assert.equal(created.status, 201); const request = created.body.request;
@@ -762,14 +773,14 @@ test('partitioned requests preserve Work, history, idempotency, trip consumption
     assert.deepEqual(after.directories, before.directories); assert.deepEqual(after.accounts, before.accounts);
     for (const [id, row] of Object.entries(before.shipments)) assert.deepEqual(after.shipments[id], row);
     assert.equal(await readFile(part.workPath, 'utf8'), work);
-    await mergeWorkStorage(dirname(f.store.path), f.source); assert.deepEqual(await f.store.read(f.source), after);
+    await (authLayout ? mergeAuthStorage : mergeWorkStorage)(dirname(f.store.path), f.source); assert.deepEqual(await f.store.read(f.source), after);
   } finally { await f.close(); }
 });
 
 test('separate request admission reauthorizes revoked accounts inside the transaction', async () => {
   const { migrateWorkStorage } = await import('../server/work-partition');
   const f = await fixture(); try {
-    await migrateWorkStorage(dirname(f.store.path), f.source);
+    await (authLayout ? migrateAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source);
     const original = f.store.mutateTripRequests.bind(f.store);
     f.store.mutateTripRequests = async (source, update) => {
       await f.store.mutate(source, data => { const user = data.accounts!.users.find(row => row.id === f.one.user.id)!; user.active = false; user.version++; return { changed: true, result: null }; });
@@ -784,7 +795,7 @@ test('separate request admission reauthorizes revoked accounts inside the transa
 test('request cancellation racing trip consumption has a single atomic winner on the split store', async () => {
   const { migrateWorkStorage } = await import('../server/work-partition');
   const f = await fixture(); try {
-    await migrateWorkStorage(dirname(f.store.path), f.source); const row = await f.create();
+    await (authLayout ? migrateAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source); const row = await f.create();
     const [trip, cancelled] = await Promise.all([f.request('/api/shipment-trips', 'POST', f.tripBody([row]), f.one.cookie), f.request('/api/trip-requests/' + row.id, 'DELETE', { version: row.version }, f.two.cookie)]);
     assert.ok(trip.status === 201 && cancelled.status === 409 || trip.status === 409 && cancelled.status === 200, JSON.stringify([trip, cancelled]));
     const stored = await f.store.read(f.source), saved = stored.tripRequests![row.id];

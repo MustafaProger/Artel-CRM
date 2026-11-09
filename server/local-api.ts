@@ -450,7 +450,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       // Driver sessions never reach generic routes (including bank/auth subrouters).
       // One fresh view covers the synchronous routing/authorization chain. Reuse it
       // only before yielding; body/provider awaits and mutation callbacks read afresh.
-      const requestData = await operations.read(base.provenance.sourceSha256);
+      const authOnly = ['/api/auth/session', '/api/push/config'].includes(pathname) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST';
+      const requestData = await (authOnly && operations.readAuth ? operations.readAuth(base.provenance.sourceSha256) : operations.read(base.provenance.sourceSha256));
       const boundaryUser = authenticate(requestData, request);
       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
       if (pathname === '/api/cabinets' || pathname.startsWith('/api/cabinets/')) return cabinetRoutes(operations, base.provenance.sourceSha256, options.cabinetEnvironment ?? process.env, request, response, () => jsonBody(request, false, 16384));

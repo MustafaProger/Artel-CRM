@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 2,
+  "sourceSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "revision": 0,
+  "shipments": {},
+  "companies": [
+    {
+      "name": "Синтетический перевозчик",
+      "inn": "0392816475",
+      "kpp": "037195284",
+      "address": "Синтетический юридический адрес перевозчика",
+      "phone": "+70000000004",
+      "edoId": "SYNTHETICCARRIER",
+      "id": "carrier",
+      "roles": [
+        "carrier"
+      ],
+      "managerLabels": [],
+      "shipmentIds": [],
+      "paymentIds": [],
+      "flags": []
+    },
+    {
+      "id": "supplier",
+      "name": "Синтетический поставщик",
+      "inn": "7707083893",
+      "kpp": "770701001",
+      "address": "Синтетический юридический адрес",
+      "phone": "+70000000007",
+      "roles": [
+        "supplier"
+      ],
+      "managerLabels": [],
+      "shipmentIds": [],
+      "paymentIds": [],
+      "flags": []
+    },
+    {
+      "id": "customer",
+      "name": "ИП ПолучательТестовый Тест",
+      "inn": "010000000102",
+      "address": "Синтетический юридический адрес ИП",
+      "phone": "+70000000008",
+      "roles": [
+        "customer"
+      ],
+      "managerLabels": [],
+      "shipmentIds": [],
+      "paymentIds": [],
+      "flags": []
+    }
+  ],
+  "directories": {
+    "managers": [
+      {
+        "id": "manager",
+        "name": "Тест"
+      }
+    ],
+    "products": [
+      {
+        "id": "product",
+        "name": "ДТ",
+        "documentName": "Синтетическое дизельное топливо",
+        "transportProductKind": "diesel",
+        "cargoPackaging": "bulk",
+        "dangerousGoodsSource": "Синтетический паспорт",
+        "dangerousGoodsUnNumber": "1202",
+        "dangerousGoodsShippingName": "ТОПЛИВО ДИЗЕЛЬНОЕ",
+        "dangerousGoodsClass": "3",
+        "dangerousGoodsClassificationCode": "F1",
+        "dangerousGoodsPackingGroup": "III",
+        "dangerousGoodsHazardSign": "3",
+        "dangerousGoodsTunnelCode": "D/E"
+      }
+    ],
+    "paymentForms": [
+      {
+        "id": "payment",
+        "name": "б/нал"
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "vehicle",
+        "carrierId": "carrier",
+        "plate": "Т001ЕЕ777",
+        "vehicleType": "Синтетическая цистерна",
+        "transportVehicleType": "Синтетическая цистерна",
+        "brand": "Синтетическая марка",
+        "capacityLitres": "25000",
+        "payloadTonnes": "20",
+        "payloadSource": "Синтетический ПТС",
+        "ownershipType": "1"
+      }
+    ],
+    "drivers": [
+      {
+        "id": "driver",
+        "carrierId": "carrier",
+        "name": "Тест",
+        "fullName": "ВодительТестовый Тест",
+        "phone": "+70000000003",
+        "inn": "048172639504",
+        "vehicleId": "vehicle"
+      }
+    ],
+    "addresses": [
+      {
+        "id": "loading",
+        "companyId": "supplier",
+        "kind": "loading",
+        "name": "Погрузка",
+        "address": "Синтетическая погрузка"
+      },
+      {
+        "id": "delivery",
+        "companyId": "customer",
+        "kind": "delivery",
+        "name": "Доставка",
+        "address": "Синтетическая доставка",
+        "receiverName": "ПриёмщикТестовый Тест",
+        "receiverPhone": "+70000000009"
+      }
+    ],
+    "oilDepots": [
+      {
+        "id": "depot",
+        "name": "Синтетическая нефтебаза",
+        "address": "Синтетическая погрузка",
+        "ownerCompanyId": "supplier",
+        "loadingActorCompanyId": "supplier",
+        "infrastructureOwnerCompanyId": "supplier"
+      }
+    ],
+    "defaults": {
+      "profit": "template-payment-form"
+    },
+    "duplicates": [],
+    "customerManagers": [],
+    "fleetSeedApplied": true
+  },
+  "paymentAllocations": []
+}

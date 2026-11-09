@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+import { migrateAuthStorage } from '../server/auth-partition';
 import { OperationsStore } from '../server/operations-store';
 import { BlobOperationsStore } from '../server/blob-operations-store';
 import { clearOperations } from '../server/reset-operations';
@@ -52,6 +53,10 @@ async function authSnapshot(directory: string) {
 async function runtime(cloud=false){
   const directory=await mkdtemp(resolve(tmpdir(),'artel-auth-'));
   const snapshotDirectory=resolve(directory,'snapshot'),base=await authSnapshot(snapshotDirectory);
+  if (process.env.ARTEL_TEST_AUTH_PARTITION === '1') {
+    await new OperationsStore(directory).mutate(base.provenance.sourceSha256, () => ({ changed: true, result: null }));
+    await migrateAuthStorage(directory, base.provenance.sourceSha256);
+  }
   const denied=async()=>{throw new Error('External providers are forbidden in synthetic auth tests');};
   const middleware=createSnapshotMiddleware(snapshotDirectory,{operationsDirectory:directory,
     bankEnvironment:{ARTEL_BANK_REQUESTS_ENABLED:'false',ARTEL_BANK_SYNC_ENABLED:'false'},cabinetEnvironment:{},geocoderEnvironment:{},

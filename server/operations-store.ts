@@ -1,6 +1,7 @@
 import { readTransportPriceSnapshot, readTransportSectionIndexes, validTransportPricing } from '../web/src/transport-pricing';
 import { validateTripExchangeControls, type TripExchangeControl } from './trip-exchange-control';
 import { WorkPartition, isWorkPartition } from './work-partition';
+import { AuthPartition, isAuthPartition } from './auth-partition';
 import { validateTripExecutions, type StoredTripExecution } from './trip-execution';
 import { validateDocumentArchive } from './document-archive';
 import { validateOperator } from './operator';
@@ -234,7 +235,7 @@ export function encodeOperations(data: OperationsData, sourceSha256 = data.sourc
   return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth'>>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth' | 'readAuth'>>;
 
 export class LegacyOperationsStore {
   readonly path: string;
@@ -336,31 +337,42 @@ export class LegacyOperationsStore {
  * same logical snapshot. Physical partitioning is an explicit offline operation. */
 export class OperationsStore extends LegacyOperationsStore {
   private partition = new WorkPartition(this.path);
+  private authPartition = new AuthPartition(this.path);
   override async read(source: string): Promise<OperationsData> {
+    if (await isAuthPartition(this.path, source)) return this.authPartition.read(source);
     return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
   }
+  async readAuth(source: string): Promise<OperationsData> {
+    return await isAuthPartition(this.path, source) ? this.authPartition.readAuth(source) : this.read(source);
+  }
   override async mutate<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    if (await isAuthPartition(this.path, source)) return this.authPartition.mutate(source, update);
     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update) : super.mutate(source, update);
   }
   /** Separate FIFO admission only; the same core file, latch, validation and WAL
    * still commit requests and trip consumption atomically with the rest of CRM. */
-  async mutateTripRequests<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+  mutateTripRequests<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    return this.mutateInteractive(source, update, false);
+  }
+  private async mutateInteractive<T>(source: string, update: import('./work-partition').Update<T>, auth: boolean): Promise<T> {
     // Register before any asynchronous pointer I/O, whose completion order can
     // differ from invocation order. Share this queue across facade instances,
     // while keeping the existing file admission and transaction locks intact.
     const previous = tripRequestQueues.get(this.path) ?? Promise.resolve();
     const pending = previous.catch(() => undefined).then(async () =>
+      await isAuthPartition(this.path, source) ? (auth ? this.authPartition.mutateAuth(source, update) : this.authPartition.mutate(source, update, false, true)) :
       await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, false, true) : super.mutate(source, update));
     tripRequestQueues.set(this.path, pending);
     try { return await pending; } finally { if (tripRequestQueues.get(this.path) === pending) tripRequestQueues.delete(this.path); }
   }
-  /** Login/logout share the existing interactive FIFO with trip requests. They
-   * bypass queued background core work, but retain the same fresh read, latch,
-   * validation and durable commit. No separate session store or lock is added. */
+  /** Login/logout share interactive FIFO with trip requests. An explicitly
+   * migrated auth partition commits the small authority domain under the same
+   * global latch; legacy/Work layouts retain the previous full-core path. */
   mutateAuth<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
-    return this.mutateTripRequests(source, update);
+    return this.mutateInteractive(source, update, true);
   }
   async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+    if (await isAuthPartition(this.path, source)) return this.authPartition.mutate(source, update, true);
     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
   }
 }

@@ -10,7 +10,7 @@ import {resolve,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {performance} from 'node:perf_hooks';
 const root=resolve(process.env.SOURCE_ROOT??resolve(dirname(fileURLToPath(import.meta.url)),'..'));
-const output=resolve(process.argv[2]??'auth-performance.json'),rounds=Number(process.env.ROUNDS??10);
+const output=resolve(process.argv[2]??'auth-performance.json'),rounds=Number(process.env.ROUNDS??10),bankRows=Number(process.env.BANK_ROWS??3500);
 assert.ok(Number.isSafeInteger(rounds)&&rounds>0&&rounds<=100);
 for(const key of Object.keys(process.env))if(/^(ARTEL_|SABY_|SBER_|BANK_|VAPID_|PUSH_|CHECKO_|CRON_|BLOB_|VERCEL_)/.test(key))delete process.env[key];
 const scope=new AsyncLocalStorage(),originalScrypt=crypto.scrypt;
@@ -21,7 +21,7 @@ const [{integrationRuntime},{createSnapshotMiddleware},{OperationsStore},{migrat
 ]);
 const harnessSha256=crypto.createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex');
 const f=await integrationRuntime(),password='Synthetic-auth-performance-password-only',loginName='qa.auth.perf';
-const report={syntheticOnly:true,sourceRoot:root,harnessSha256,rounds,externalCalls:0,coreLoad:'3500 synthetic bank operations and 180 synthetic shipment records',backgroundModel:'6 concurrent full-core bank metadata writes; models common queue contention, not provider network time or complete bank/Saby jobs',samples:[],workerSamples:[],coldSamples:[]};
+const report={syntheticOnly:true,sourceRoot:root,harnessSha256,rounds,externalCalls:0,coreLoad:`${bankRows} synthetic bank operations and 180 synthetic shipment records`,backgroundModel:'6 concurrent full-core bank metadata writes; models common queue contention, not provider network time or complete bank/Saby jobs',samples:[],workerSamples:[],coldSamples:[]};
 const deny=async()=>{report.externalCalls++;throw Error('External providers disabled');};
 const emptyTrace=()=>({reads:[],mutations:[],kdfCount:0,kdfMs:0});
 const percentile=(a,p)=>[...a].sort((a,b)=>a-b)[Math.ceil(a.length*p)-1];
@@ -31,12 +31,14 @@ try{
  const credentials=await passwordFields(password);
  await f.store.mutate(f.source,d=>{
   d.accounts={users:[{id:'synthetic-auth-user',name:'Synthetic auth user',login:loginName,role:'director',managerId:null,active:true,version:1,...credentials}],sessions:[],attempts:{}};
-  d.banking=emptyBanking();const c=fixtures.fixtureConfig();d.banking.operations=Array.from({length:3500},(_,i)=>normalizeTbank(c,{number:fixtures.accountNumber,currency:'RUB'},fixtures.fixtureDay,fixtures.tbankRow(`auth-perf-${i}`)));
+  d.banking=emptyBanking();const c=fixtures.fixtureConfig();d.banking.operations=Array.from({length:bankRows},(_,i)=>normalizeTbank(c,{number:fixtures.accountNumber,currency:'RUB'},fixtures.fixtureDay,fixtures.tbankRow(`auth-perf-${i}`)));
   const rows=Object.values(d.shipments);for(let i=0;i<89;i++)for(const [j,r] of rows.entries())d.shipments[`shipment-local-auth-${i}-${j}`]={...structuredClone(r),fields:{...r.fields,trip_id:`shipment-trip-abcdef-${i}`}};
   return{changed:true,result:null};
  });
  await migrateWorkStorage(dirname(f.store.path),f.source);
- report.coreBytes=(await stat(resolve(dirname(f.store.path),'work-storage/core/operations.json'))).size;
+ if(process.env.AUTH_PARTITION==='1')await (await moduleAt('server/auth-partition.ts')).migrateAuthStorage(dirname(f.store.path),f.source);
+ report.coreBytes=(await stat(resolve(dirname(f.store.path),process.env.AUTH_PARTITION==='1'?'auth-storage/core.json':'work-storage/core/operations.json'))).size;
+ if(process.env.AUTH_PARTITION==='1')report.authBytes=(await stat(resolve(dirname(f.store.path),'auth-storage/auth.json'))).size;
  const store=new OperationsStore(dirname(f.store.path));
  const originalRead=store.read.bind(store),originalMutate=store.mutate.bind(store);
  for(const name of ['read','readAuth','readSession','readAuthContext'])if(typeof store[name]==='function'){

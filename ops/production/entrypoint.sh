@@ -29,4 +29,8 @@ rm -f -- "$ARTEL_STORE_DIR/work-storage/transaction.lock" \
   "$ARTEL_STORE_DIR/work-storage/core-queue.lock" \
   "$ARTEL_STORE_DIR/work-storage/work-queue.lock" \
   "$ARTEL_STORE_DIR/work-storage/trip-requests-queue.lock"
+rm -f -- "$ARTEL_STORE_DIR/auth-storage/transaction.lock" \
+  "$ARTEL_STORE_DIR/auth-storage/core-queue.lock" \
+  "$ARTEL_STORE_DIR/auth-storage/work-queue.lock" \
+  "$ARTEL_STORE_DIR/auth-storage/interactive-queue.lock"
 exec "$@"

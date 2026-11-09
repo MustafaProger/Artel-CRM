@@ -22,7 +22,8 @@ with (destination / '.backup.lock').open('w') as lock:
     raw = (ROOT / 'data/operations/operations.json').read_bytes()
     envelope = json.loads(raw)
     storage_layout = 'legacy'
-    if envelope.get('format') == 'artel-work-partition-v1':
+    if envelope.get('format') in ('artel-work-partition-v1', 'artel-auth-partition-v1'):
+        partition_format = envelope['format']
         # Do not archive independently copied files: they could straddle a commit.
         # Exporter uses the runtime's consistency latch and replays any journal.
         exported = subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
@@ -32,7 +33,8 @@ with (destination / '.backup.lock').open('w') as lock:
             raise RuntimeError('Consistent partition export failed; no backup published')
         raw = exported.stdout
         envelope = json.loads(raw)
-        storage_layout = 'partitioned-flattened'
+        storage_layout = ('auth-partitioned-flattened' if partition_format == 'artel-auth-partition-v1'
+                          else 'partitioned-flattened')
 
     if not isinstance(envelope.get('data'), dict) or not isinstance(envelope.get('sha256'), str):
         raise RuntimeError('Invalid operations envelope; no backup published')

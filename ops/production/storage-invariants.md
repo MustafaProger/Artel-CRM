@@ -61,3 +61,27 @@ revision by two. Total partition size is conservatively bounded for a <=64MiB
 flat export. Backup, audit and deployment tools must be layout-aware.
 
 Trip requests have their own FIFO admission lock, but still commit the core file under the shared transaction latch. There is no third data partition, pointer change, or alternate backup format. Trip consumption uses the ordinary core transaction and races cancellation under the same latch.
+
+
+## Auth partition, 2026-11-09
+
+An explicit offline `split-auth` migration installs `artel-auth-partition-v1`
+only after exact logical verification. The three authoritative files are
+`auth-storage/{core,auth,work}.json`; `auth.json` owns accounts, directories and
+push together. This keeps session revocation, device removal and the invoice
+revocation outbox in one durable transaction. All domains share the transaction
+latch; multi-part changes use `auth-storage/commit.json` redo recovery.
+
+The lifetime lease also fences `auth-storage/{transaction,core-queue,work-queue,interactive-queue}.lock`.
+After SIGKILL the entrypoint removes these stale markers, preserving the redo
+journal. The old Work directory is historical migration evidence, never a source
+for a new writer or recovery. Once the root pointer changes, do not start an old
+backend. Recovery uses the new backend or an offline merge of CURRENT data.
+
+The scheduled backup recognizes both partition formats and archives a verified
+consistent flat export. A stopped release backup captures all data files,
+including all three auth partitions and any redo journal, with an exact manifest.
+A pointer-only copy is never a backup. Deployment/audit snapshots must verify a
+stable complete generation; do not independently read three parts around a commit.
+Migration, merge and restore are performed only with all writers stopped and
+through the same lifetime-lock entrypoint. Keep the permanent lease inode intact.
