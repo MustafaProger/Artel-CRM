@@ -13,11 +13,11 @@ const manualKeys = ['organization_id','document_number','date','customer_id','su
 export default function ShipmentAzsEditor({shipment,companies,directories,defaultPaymentForm='б/нал',onClose: onDismiss,onSaved}:ShipmentEditorProps) {
   const dialog=useRef<HTMLDialogElement>(null), savingRef=useRef(false)
   const initial=useMemo<Record<string,string>>(()=>({...Object.fromEntries(manualKeys.map(key=>[key,shipment?.fields[key]??''])),date:shipment?.date??today(),payment_form_id:shipment?.fields.payment_form_id??directories.paymentForms.find(entry=>entry.name===defaultPaymentForm&&['cash','cashless'].includes(settlementKind(entry.name)))?.id??''}),[shipment,directories,defaultPaymentForm])
-  const [fields,setFields]=useState<Record<string,string>>(initial),[saving,setSaving]=useState(false),[error,setError]=useState(''),[confirmClose,setConfirmClose]=useState(false)
+  const [fields,setFields]=useState<Record<string,string>>(initial),[saving,setSaving]=useState(false),[error,setError]=useState('')
   const dirty=manualKeys.some(key=>fields[key]!==initial[key])
   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
-  const update=(key:string,value:string)=>{setFields(previous=>({...previous,[key]:value,...(key==='customer_id'?{manager_id:customerManagerId(directories,value)}:{})}));setConfirmClose(false)}
-  const close=()=>{if(savingRef.current)return;if(dirty)setConfirmClose(true);else onClose()}
+  const update=(key:string,value:string)=>{setFields(previous=>({...previous,[key]:value,...(key==='customer_id'?{manager_id:customerManagerId(directories,value)}:{})}))}
+  const close=()=>{if(savingRef.current)return;onClose()}
   const paymentForm=directories.paymentForms.find(entry=>entry.id===fields.payment_form_id)?.name??null
   // The server owns payment allocations. Preview uses the last returned total as its opening amount.
   const calculated=calculateAzsShipment({...shipment?.fields,...fields,payment_form:paymentForm,opening_paid_amount:shipment?.fields.paid_amount_source??null},{historical:!!shipment})
@@ -49,6 +49,6 @@ export default function ShipmentAzsEditor({shipment,companies,directories,defaul
       </fieldset>
       {error&&<div className="shipment-error" role="alert">{error}</div>}
     </div>
-    <footer className="shipment-editor-footer">{confirmClose?<div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить</button><button type="button" className="button danger" onClick={onClose}>Закрыть без сохранения</button></div>:<><button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button type="submit" className="button primary" disabled={saving||!!shipment&&!dirty}>{saving?<LoaderCircle className="spin" size={17}/>:<Save size={17}/>}Сохранить отгрузку</button></>}</footer>
+    <footer className="shipment-editor-footer"><><button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button type="submit" className="button primary" disabled={saving||!!shipment&&!dirty}>{saving?<LoaderCircle className="spin" size={17}/>:<Save size={17}/>}Сохранить отгрузку</button></></footer>
   </form></dialog>
 }

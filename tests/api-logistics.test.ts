@@ -35,7 +35,7 @@ async function fixture() {
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const request = async (path: string, method = 'GET', data?: unknown, cookie?: string, extraHeaders: Record<string,string> = {}) => {
-    if (method === 'POST' && path === prefix + '/shipment-trips' && cookie) await prepareTripRequestFixture(rt.store, rt.base, data);
+    if (method === 'POST' && path === prefix + '/shipment-trips' && cookie) await prepareTripRequestFixture(rt.store, rt.base, data, { cookie, url: path });
     const response = await fetch(origin + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}), ...extraHeaders }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
     const text = await response.text();
     return { status: response.status, body: response.headers.get('content-type')?.includes('application/json') ? JSON.parse(text) : null, text, cookie: response.headers.get('set-cookie')?.split(';')[0], headers: response.headers };
@@ -157,7 +157,7 @@ test('logistics managers retain own-client isolation, hidden mixed trips, denied
     assert.ok(!listed.text.includes(foreignTrip.body.trip.id)); assert.ok(!listed.text.includes(mixedTrip.body.trip.id));
     for (const suffix of ['', '/saby', '/saby-workflow', '/etrn', `/etrn/xml/${foreignTrip.body.trip.customers[0].id}`, `/etrn/files/${foreignTrip.body.trip.customers[0].id}/file`]) assert.equal((await f.request(`${prefix}/shipment-trips/${foreignTrip.body.trip.id}${suffix}`, 'GET', undefined, user.cookie)).status, 404, suffix);
     assert.equal((await f.request(`${prefix}/shipment-trips/${mixedTrip.body.trip.id}`, 'GET', undefined, user.cookie)).status, 403);
-    assert.equal((await f.request(prefix + '/shipment-trips', 'POST', foreign, user.cookie)).status, 403);
+    assert.equal((await f.request(prefix + '/shipment-trips', 'POST', foreign, user.cookie)).status, 404);
     assert.equal((await f.request(`${prefix}/shipment-trips/${f.tripId}`, 'DELETE', { versions: editing(f.trip).versions }, user.cookie)).status, 403);
     assert.equal((await f.request(prefix + '/directories', 'POST', { kind: 'products', name: 'Denied' }, user.cookie)).status, 403);
     const revocation = await f.request(`/api/auth/users/${user.id}`, 'PATCH', { ...user.input, sections: [], version: user.version }, f.crmCookie);

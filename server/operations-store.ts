@@ -57,7 +57,7 @@ export interface OperationsData {
   tripExchangeControls?: Record<string, TripExchangeControl>;
   tripExecutions?: Record<string, StoredTripExecution>;
   driverTripProgress?: Record<string, DriverTripProgress>;
-  tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null }>;
+  tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null; createdAt?: string }>;
   tripRequests?: Record<string, TripRequest>;
   tripRequestCreates?: Record<string, { requestId: string; fingerprint: string; actorId: string | null }>;
   tripNumbers?: Record<string, number>;
@@ -94,7 +94,7 @@ export function validate(data: unknown, sourceSha256: string): asserts data is O
   }
   if (data.tripCreateRequests !== undefined) {
     if (!object(data.tripCreateRequests)) throw new StoreError('Invalid trip requests');
-    for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string') throw new StoreError('Invalid trip request');
+    for (const [key, value] of Object.entries(data.tripCreateRequests)) if (!/^[a-f0-9-]{36}$/.test(key) || !object(value) || typeof value.tripId !== 'string' || !/^shipment-trip-[a-f0-9-]+$/.test(value.tripId) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) || value.actorId !== null && typeof value.actorId !== 'string' || value.createdAt !== undefined && (typeof value.createdAt !== 'string' || !Number.isFinite(Date.parse(value.createdAt)))) throw new StoreError('Invalid trip request');
   }
   try { validateTripExchangeControls(data.tripExchangeControls); } catch { throw new StoreError('Invalid trip exchange controls'); }
   try { validateTripExecutions(data.tripExecutions); } catch { throw new StoreError('Invalid trip executions'); }

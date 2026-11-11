@@ -187,7 +187,7 @@ test('request point requires a bounded string pair and rejects invalid or unauth
     const before = await readFile(f.store.path, 'utf8');
     for (const point of [{ latitude: '55' }, { longitude: '37' }, { latitude: '', longitude: '' }, { latitude: null, longitude: null }, { latitude: 55, longitude: 37 }, { latitude: ['55'], longitude: '37' }, { latitude: '91', longitude: '37' }, { latitude: '55', longitude: '-181' }, { latitude: '1e1', longitude: '37' }, { latitude: '0x10', longitude: '37' }, { latitude: '5'.repeat(65), longitude: '37' }]) {
       assert.equal((await f.request('/api/trip-requests', 'POST', { ...create, ...point }, f.one.cookie)).status, 400);
-      assert.equal((await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { ...patch, ...point }, f.two.cookie)).status, 400);
+      assert.equal((await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { ...patch, ...point }, f.one.cookie)).status, 400);
       assert.equal(await readFile(f.store.path, 'utf8'), before);
     }
     const valid = { latitude: '0', longitude: '-180' };
@@ -195,7 +195,7 @@ test('request point requires a bounded string pair and rejects invalid or unauth
     assert.equal((await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { ...patch, ...valid }, noTrips.cookie)).status, 403);
     assert.equal((await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { ...patch, ...valid })).status, 401);
     assert.equal(await readFile(f.store.path, 'utf8'), before);
-    const updated = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { ...patch, latitude: ' +00.000 ', longitude: '-0' }, f.two.cookie);
+    const updated = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { ...patch, latitude: ' +00.000 ', longitude: '-0' }, f.one.cookie);
     assert.equal(updated.status, 200, JSON.stringify(updated.body));
     assert.equal(updated.body.request.latitude, '0'); assert.equal(updated.body.request.longitude, '0');
     assert.equal(new URL(updated.body.request.mapUrl).searchParams.get('pt'), '0,0');
@@ -221,7 +221,7 @@ test('request point preserves old replay fingerprints and distinguishes new poin
     assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, latitude: '55.71', longitude: '37.62' }, f.one.cookie)).body.request.id, source.id);
     assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, longitude: '37.63' }, f.one.cookie)).status, 409);
     assert.equal((await f.request('/api/trip-requests', 'POST', body, f.two.cookie)).status, 409);
-    const changed = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: 1, quantityLitres: source.quantityLitres, latitude: '-90', longitude: '180' }, f.two.cookie);
+    const changed = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: 1, quantityLitres: source.quantityLitres, latitude: '-90', longitude: '180' }, f.one.cookie);
     assert.equal(changed.status, 200); assert.equal(changed.body.request.version, 2);
     assert.equal((await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: 1, quantityLitres: source.quantityLitres, latitude: '55', longitude: '37' }, f.one.cookie)).status, 409);
     const unchanged = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: 2, quantityLitres: '1250', comment: 'Точка прежняя' }, f.one.cookie);
@@ -236,7 +236,7 @@ test('chosen request point reaches trip and driver map link while directory and 
   try {
     await f.store.mutate(f.source, data => { data.directories!.addresses.find(row => row.id === 'delivery')!.mapUrl = 'https://yandex.ru/maps/?pt=37.6,55.7'; return { result: null, changed: true }; });
     const historicRequest = await f.create();
-    const historical = await f.request('/api/shipment-trips', 'POST', f.tripBody([historicRequest]), f.two.cookie);
+    const historical = await f.request('/api/shipment-trips', 'POST', f.tripBody([historicRequest]), f.one.cookie);
     assert.equal(historical.status, 201);
     const historicalTrip = historical.body.trip;
     const previousStore = await f.store.read(f.source);
@@ -244,7 +244,7 @@ test('chosen request point reaches trip and driver map link while directory and 
     const updated = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: source.version, quantityLitres: source.quantityLitres, comment: source.comment, latitude: '55.812345', longitude: '37.723456' }, f.one.cookie);
     assert.equal(updated.status, 200);
     assert.notEqual(updated.body.request.mapUrl, source.mapUrl);
-    const created = await f.request('/api/shipment-trips', 'POST', f.tripBody([updated.body.request]), f.two.cookie);
+    const created = await f.request('/api/shipment-trips', 'POST', f.tripBody([updated.body.request]), f.one.cookie);
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const delivery = created.body.trip.customers[0].fields;
     assert.equal(delivery.unloading_address, source.address);
@@ -264,12 +264,25 @@ test('chosen request point reaches trip and driver map link while directory and 
   } finally { await f.close(); }
 });
 
-test('shared request queue exposes only operational catalog and persists four requests, two consumed with source history', async () => {
+test('request queue isolates owners and admins; only directors see everyone, with authors and operational catalog', async () => {
   const f = await fixture();
   try {
-    const sources = await Promise.all([0, 1, 2, 3].map(index => f.create(index)));
+    const sources = await Promise.all([0, 1, 2, 3].map(index => f.create(index, index < 2 ? f.two.cookie : f.one.cookie)));
     const listed = await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie);
-    assert.equal(listed.status, 200); assert.equal(listed.body.requests.length, 4);
+    assert.equal(listed.status, 200); assert.equal(listed.body.requests.length, 2);
+    assert.deepEqual(new Set(listed.body.requests.map((row: TripRequest) => row.id)), new Set(sources.slice(0, 2).map(row => row.id)));
+    assert.ok(listed.body.requests.every((row: TripRequest) => row.createdByName === f.two.user.name));
+    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.admin)).body.requests.length, 4);
+    const password = randomUUID();
+    const added = await f.request('/api/auth/users', 'POST', { name: 'Admin', login: 'requests-admin', password, role: 'admin', managerId: 'no-trips-manager' }, f.admin);
+    assert.equal(added.status, 201);
+    const admin = (await f.request('/api/auth/login', 'POST', { login: 'requests-admin', password })).cookie;
+    assert.deepEqual((await f.request('/api/trip-requests', 'GET', undefined, admin)).body.requests, []);
+    const foreign = sources[2];
+    assert.equal((await f.request(`/api/trip-requests/${foreign.id}`, 'PATCH', { version: foreign.version, quantityLitres: '1000' }, f.two.cookie)).status, 404);
+    assert.equal((await f.request(`/api/trip-requests/${foreign.id}`, 'DELETE', { version: foreign.version }, admin)).status, 404);
+    assert.equal((await f.request('/api/trip-requests/geocode', 'POST', { requestId: foreign.id }, f.two.cookie)).status, 404);
+    assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([foreign]), f.two.cookie)).status, 404);
     assert.equal(listed.body.addresses.filter((row: { companyId: string }) => row.companyId === 'customer').length, 2);
     assert.equal(listed.body.addresses.find((row: { id: string }) => row.id === 'delivery-2').address, 'Другой синтетический адрес');
     assert.doesNotMatch(JSON.stringify(listed.body), /PRIVATE-OTHER-CUSTOMER-BANK|bankName|receiverPhone/);
@@ -277,6 +290,9 @@ test('shared request queue exposes only operational catalog and persists four re
     const created = await f.request('/api/shipment-trips', 'POST', input, f.two.cookie);
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const trip = created.body.trip as ShipmentTrip;
+    const tripList = (await f.request('/api/shipment-trips', 'GET', undefined, f.two.cookie)).body.trips as ShipmentTrip[];
+    assert.equal(tripList.find(row => row.id === trip.id)?.createdByName, f.two.user.name);
+    assert.ok(tripList.find(row => row.id === trip.id)?.createdAt);
     assert.equal(trip.customers[0].fields.quantity_litres, '900');
     assert.equal(trip.customers[0].fields.unloading_latitude, '55.7');
     assert.ok(trip.customers.every(row => row.fields.manager_id === 'other-manager'));
@@ -306,12 +322,12 @@ test('request creation retries, updates and cancellation preserve versions and i
     assert.deepEqual(results.map(row => row.status), [201, 201]);
     const original = results[0].body.request as TripRequest; assert.equal(original.id, results[1].body.request.id); assert.equal(original.quantityLitres, '1250.5');
     assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, quantityLitres: '1' }, f.two.cookie)).status, 409);
-    assert.equal((await f.request(`/api/trip-requests/${original.id}`, 'PATCH', { version: 1, quantityLitres: '1500', addressId: 'delivery-2' }, f.one.cookie)).status, 400);
-    const edited = await f.request(`/api/trip-requests/${original.id}`, 'PATCH', { version: 1, quantityLitres: '1500', comment: 'Изменён' }, f.one.cookie);
+    assert.equal((await f.request(`/api/trip-requests/${original.id}`, 'PATCH', { version: 1, quantityLitres: '1500', addressId: 'delivery-2' }, f.two.cookie)).status, 400);
+    const edited = await f.request(`/api/trip-requests/${original.id}`, 'PATCH', { version: 1, quantityLitres: '1500', comment: 'Изменён' }, f.two.cookie);
     assert.equal(edited.status, 200); assert.equal(edited.body.request.version, 2); assert.equal(edited.body.request.ownerUserId, f.two.user.id);
     assert.equal((await f.request(`/api/trip-requests/${original.id}`, 'DELETE', { version: 1 }, f.two.cookie)).status, 409);
     assert.equal((await f.request(`/api/trip-requests/${original.id}`, 'DELETE', { version: 2 }, f.two.cookie)).status, 200);
-    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.length, 0);
+    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie)).body.requests.length, 0);
     assert.equal((await f.store.read(f.source)).tripRequests![original.id].status, 'cancelled');
     const retry = await f.request('/api/trip-requests', 'POST', body, f.two.cookie);
     assert.equal(retry.body.request.status, 'cancelled');
@@ -325,10 +341,10 @@ test('competing consumers have one winner; stale or invalid selections roll back
     const first = await f.create(), second = await f.create(1);
     const before = await readFile(f.store.path, 'utf8');
     const mismatch = f.tripBody([first, second]); mismatch.customers[1].fields.unloading_address_id = 'delivery';
-    assert.equal((await f.request('/api/shipment-trips', 'POST', mismatch, f.two.cookie)).status, 400);
+    assert.equal((await f.request('/api/shipment-trips', 'POST', mismatch, f.one.cookie)).status, 400);
     assert.equal(await readFile(f.store.path, 'utf8'), before);
     const duplicated = f.tripBody([first, first]);
-    assert.equal((await f.request('/api/shipment-trips', 'POST', duplicated, f.two.cookie)).status, 400);
+    assert.equal((await f.request('/api/shipment-trips', 'POST', duplicated, f.one.cookie)).status, 400);
     const noRequests = f.tripBody([first]);
     for (const row of noRequests.customers) { delete (row as Partial<typeof row>).sourceRequestId; delete (row as Partial<typeof row>).sourceRequestVersion; }
     const direct = await f.request('/api/shipment-trips', 'POST', noRequests, f.admin);
@@ -339,23 +355,23 @@ test('competing consumers have one winner; stale or invalid selections roll back
     const extended = await f.request(`/api/shipment-trips/${direct.body.trip.id}`, 'PATCH', { ...directEdit, customers: [...directEdit.customers, noRequests.customers[0]] }, f.admin);
     assert.equal(extended.status, 200, JSON.stringify(extended.body));
     assert.equal(extended.body.trip.customers.length, 2);
-    const races = await Promise.all([f.one.cookie, f.two.cookie].map(cookie => f.request('/api/shipment-trips', 'POST', f.tripBody([first]), cookie)));
+    const races = await Promise.all([f.one.cookie, f.admin].map(cookie => f.request('/api/shipment-trips', 'POST', f.tripBody([first]), cookie)));
     assert.deepEqual(races.map(row => row.status).sort(), [201, 409]);
     const beforeRejected = await readFile(f.store.path, 'utf8');
-    assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([second, first]), f.two.cookie)).status, 409);
+    assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([second, first]), f.one.cookie)).status, 409);
     assert.equal(await readFile(f.store.path, 'utf8'), beforeRejected);
     assert.equal((await f.store.read(f.source)).tripRequests![second.id].status, 'active');
   } finally { await f.close(); }
 });
 
-test('trip permission is required for shared queue and refreshed for consumption; cross-assigned deliveries require a source grant', async () => {
+test('trip permission is required for requests and refreshed for consumption; cross-assigned deliveries require a source grant', async () => {
   const f = await fixture();
   try {
     const none = await f.employee('requests-none', 'no-trips-manager', ['shipments']);
     assert.equal((await f.request('/api/trip-requests', 'GET', undefined, none.cookie)).status, 403);
     assert.equal((await f.request('/api/trip-requests/map-config', 'GET', undefined, none.cookie)).status, 403);
     assert.equal((await f.request('/api/trip-requests/map-config', 'GET', undefined, f.one.cookie)).status, 200);
-    const source = await f.create();
+    const source = await f.create(0, f.two.cookie);
     assert.equal((await f.request('/api/directories/addresses/delivery', 'DELETE', { version: 0 }, f.admin)).status, 409);
     assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([source]), none.cookie)).status, 404);
     const saved = await f.request('/api/shipment-trips', 'POST', f.tripBody([source]), f.two.cookie);
@@ -364,11 +380,11 @@ test('trip permission is required for shared queue and refreshed for consumption
     const extra = { fields: { ...change.customers[0].fields } };
     const add = await f.request(`/api/shipment-trips/${saved.body.trip.id}`, 'PATCH', { ...change, customers: [...change.customers, extra] }, f.two.cookie);
     assert.equal(add.status, 403); // No source grant for a company assigned to another employee.
-    const allowed = await f.create(2);
+    const allowed = await f.create(2, f.two.cookie);
     const added = await f.request(`/api/shipment-trips/${saved.body.trip.id}`, 'PATCH', { ...change, customers: [...change.customers, f.tripBody([allowed]).customers[0]] }, f.two.cookie);
     assert.equal(added.status, 200, JSON.stringify(added.body));
     assert.equal((await f.store.read(f.source)).tripRequests![allowed.id].status, 'consumed');
-    const next = await f.create(3);
+    const next = await f.create(3, f.two.cookie);
     await f.store.mutate(f.source, data => { data.accounts!.users.find(row => row.id === f.two.user.id)!.sections = []; return { result: null, changed: true }; });
     assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([next]), f.two.cookie)).status, 403);
     assert.equal((await f.store.read(f.source)).tripRequests![next.id].status, 'active');
@@ -384,11 +400,11 @@ test('changed directory coordinates and stale request versions never silently re
       place.address = 'Изменённый адрес'; place.latitude = '60'; place.longitude = '30';
       return { result: null, changed: true };
     });
-    const edited = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: source.version, quantityLitres: '2222', comment: source.comment }, f.two.cookie);
+    const edited = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: source.version, quantityLitres: '2222', comment: source.comment }, f.one.cookie);
     assert.equal(edited.status, 200);
-    const stale = await f.request('/api/shipment-trips', 'POST', f.tripBody([source]), f.two.cookie);
+    const stale = await f.request('/api/shipment-trips', 'POST', f.tripBody([source]), f.one.cookie);
     assert.equal(stale.status, 409);
-    const saved = await f.request('/api/shipment-trips', 'POST', f.tripBody([edited.body.request]), f.two.cookie);
+    const saved = await f.request('/api/shipment-trips', 'POST', f.tripBody([edited.body.request]), f.one.cookie);
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.equal(saved.body.trip.customers[0].fields.unloading_address, source.address);
     assert.equal(saved.body.trip.customers[0].fields.unloading_latitude, source.latitude);
@@ -445,7 +461,7 @@ test('consumed requests retain historical shipment protections while normal comp
   const f = await fixture();
   try {
     const source = await f.create();
-    const saved = await f.request('/api/shipment-trips', 'POST', f.tripBody([source]), f.two.cookie);
+    const saved = await f.request('/api/shipment-trips', 'POST', f.tripBody([source]), f.one.cookie);
     assert.equal(saved.status, 201);
     const before = await f.store.read(f.source);
     const history = structuredClone(before.tripRequests![source.id]);
@@ -458,7 +474,7 @@ test('consumed requests retain historical shipment protections while normal comp
     const after = await f.store.read(f.source);
     assert.deepEqual(after.tripRequests![source.id], history);
     assert.equal(after.companies.find(row => row.id === source.companyId)!.directoryArchived, true);
-    assert.equal((await f.request(`/api/shipment-trips/${saved.body.trip.id}`, 'GET', undefined, f.two.cookie)).status, 200);
+    assert.equal((await f.request(`/api/shipment-trips/${saved.body.trip.id}`, 'GET', undefined, f.one.cookie)).status, 200);
   } finally { await f.close(); }
 });
 
@@ -477,7 +493,7 @@ test('save triggers one address lookup; initial list immediately includes durabl
     finish();
     assert.deepEqual((await f.request('/api/trip-requests/geocode', 'POST', { requestId: source.id }, f.one.cookie)).body, point);
     for (let index = 0; index < 3; index++) {
-      const loaded = await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie);
+      const loaded = await f.request('/api/trip-requests', 'GET', undefined, f.admin);
       assert.deepEqual(loaded.body.requests[0].location, point);
       assert.deepEqual(loaded.body.addresses.find((row: { id: string }) => row.id === source.addressId).location, point);
     }
@@ -653,7 +669,7 @@ test('request price is optional, normalized, persisted, versioned, clearable and
     assert.equal(source.salePricePerLitre, '65.5');
     assert.equal((await f.request('/api/trip-requests', 'POST', body, f.one.cookie)).body.request.id, source.id);
     assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, salePricePerLitre: '66' }, f.one.cookie)).status, 409);
-    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie)).body.requests.find((row: TripRequest) => row.id === source.id).salePricePerLitre, '65.5');
+    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.find((row: TripRequest) => row.id === source.id).salePricePerLitre, '65.5');
     const updated = await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: source.version, quantityLitres: '15000', salePricePerLitre: '65' }, f.one.cookie);
     assert.equal(updated.status, 200); assert.equal(updated.body.request.salePricePerLitre, '65');
     assert.equal((await f.request(`/api/trip-requests/${source.id}`, 'PATCH', { version: source.version, quantityLitres: '15000', salePricePerLitre: '70' }, f.one.cookie)).status, 409);
@@ -715,7 +731,7 @@ test('execution dates persist, sort earliest first, validate and protect retries
     for (const date of ['2026-02-30', '2026-13-01', '2026-1-01', '0000-01-01', 1, {}, '2026-10-29T12:00:00Z']) {
       assert.equal((await f.request('/api/trip-requests', 'POST', { ...body, executionDate: date, idempotencyKey: randomUUID() }, f.one.cookie)).status, 400);
     }
-    const updated = await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-28' }, f.two.cookie);
+    const updated = await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-28' }, f.one.cookie);
     assert.equal(updated.status, 200); assert.equal(updated.body.request.executionDate, '2026-10-28');
     assert.equal((await f.request(`/api/trip-requests/${legacy.id}`, 'PATCH', { version: legacy.version, quantityLitres: legacy.quantityLitres, executionDate: '2026-10-27' }, f.one.cookie)).status, 409);
     const undated = await f.create(2);
@@ -767,7 +783,7 @@ test('partitioned requests preserve Work, history, idempotency, trip consumption
     const consumed = await f.request('/api/shipment-trips', 'POST', f.tripBody([request]), f.one.cookie);
     assert.equal(consumed.status, 201, JSON.stringify(consumed.body));
     assert.equal((await f.request('/api/trip-requests/' + request.id, 'DELETE', { version: request.version }, f.one.cookie)).status, 409);
-    const cancelled = await f.create(2); assert.equal((await f.request('/api/trip-requests/' + cancelled.id, 'DELETE', { version: cancelled.version }, f.two.cookie)).status, 200);
+    const cancelled = await f.create(2); assert.equal((await f.request('/api/trip-requests/' + cancelled.id, 'DELETE', { version: cancelled.version }, f.one.cookie)).status, 200);
     const after = await new OperationsStore(dirname(f.store.path)).read(f.source);
     assert.equal(after.tripRequests![request.id].status, 'consumed'); assert.equal(after.tripRequests![cancelled.id].status, 'cancelled');
     assert.equal(after.tripRequests![request.id].executionDate, input.executionDate);
@@ -797,7 +813,7 @@ test('request cancellation racing trip consumption has a single atomic winner on
   const { migrateWorkStorage } = await import('../server/work-partition');
   const f = await fixture(); try {
     await (authLayout ? migrateTestAuthStorage : migrateWorkStorage)(dirname(f.store.path), f.source); const row = await f.create();
-    const [trip, cancelled] = await Promise.all([f.request('/api/shipment-trips', 'POST', f.tripBody([row]), f.one.cookie), f.request('/api/trip-requests/' + row.id, 'DELETE', { version: row.version }, f.two.cookie)]);
+    const [trip, cancelled] = await Promise.all([f.request('/api/shipment-trips', 'POST', f.tripBody([row]), f.one.cookie), f.request('/api/trip-requests/' + row.id, 'DELETE', { version: row.version }, f.one.cookie)]);
     assert.ok(trip.status === 201 && cancelled.status === 409 || trip.status === 409 && cancelled.status === 200, JSON.stringify([trip, cancelled]));
     const stored = await f.store.read(f.source), saved = stored.tripRequests![row.id];
     assert.equal(saved.version, row.version + 1);
@@ -831,7 +847,8 @@ test('deleting a trip atomically returns every original request, preserves its c
     }
     assert.deepEqual(stored.tripRequests![unrelated.id], originalRequests[unrelated.id]);
     assert.ok(trip.customers.every(row => stored.shipments[row.id].deleted));
-    const listed = await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie);
+    assert.deepEqual((await f.request('/api/trip-requests', 'GET', undefined, f.two.cookie)).body.requests, []);
+    const listed = await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie);
     assert.deepEqual(listed.body.requests.map((r: TripRequest) => r.id).sort(), [first.id, second.id, unrelated.id].sort());
     const after = await readFile(f.store.path, 'utf8');
     assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'DELETE', { versions }, f.admin)).status, 404);

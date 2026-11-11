@@ -34,7 +34,7 @@ export function tripRequestGeocodeTarget(data: OperationsData, snapshot: Snapsho
     if (!location && !depot.address?.trim()) location = { status: 'not_found', message: 'Адрес нефтебазы не указан.' };
   } else {
     const company = snapshot.companies.find(row => row.id === body.companyId && row.roles.includes('customer') && !row.directoryArchived);
-    if (!company || !canAccessTripRequest(actor, snapshot, { companyId: company.id })) throw new ApiError(404, 'Компания недоступна.');
+    if (!company || actor && !hasSection(actor, 'trips')) throw new ApiError(404, 'Компания недоступна.');
     const address = addresses.find(row => row.id === body.addressId && row.companyId === company.id && row.kind === 'delivery');
     if (!address) throw new ApiError(404, 'Площадка не найдена.');
     source = { ...address, address: address.address || address.name };
@@ -50,5 +50,5 @@ import type { Snapshot } from '../web/src/model';
 import { tripRequestExplicitCoordinates, tripRequestMapCoordinates, type TripRequestAddress, type TripRequestLocationResult } from '../web/src/trip-request-map-coordinates';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
-import { canAccessTripRequest, requireTripRequest } from './trip-requests';
+import { requireTripRequest } from './trip-requests';
 

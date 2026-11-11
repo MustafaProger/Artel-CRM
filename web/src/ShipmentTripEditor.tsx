@@ -98,7 +98,6 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const [reload, setReload] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [confirmClose, setConfirmClose] = useState(false)
   const [readAutomation, setReadAutomation] = useState<TripSabyAutomationCapability | undefined>(undefined)
   const automation = sabyAutomation ?? readAutomation
   const dirty = serialize(draft) !== initial
@@ -125,7 +124,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     setRequestsLoading(true); setRequestsError(''); setRequestsForbidden(false)
     void fetch('/api/trip-requests', { signal: controller.signal }).then(async response => {
       const result = await response.json()
-      if (response.status === 403) { if (!controller.signal.aborted) setRequestsForbidden(true); throw new Error('Для выбора общих заявок нужен доступ к разделу «Рейсы». Рейс можно заполнить из справочника.') }
+      if (response.status === 403) { if (!controller.signal.aborted) setRequestsForbidden(true); throw new Error('Для выбора заявок нужен доступ к разделу «Рейсы». Рейс можно заполнить из справочника.') }
       if (!response.ok) throw new Error(result.error || 'Не удалось загрузить заявки.')
       return result
     })
@@ -166,12 +165,6 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     return () => controller.abort()
   }, [tripId, reload])
 
-  useEffect(() => {
-    if (!dirty) return
-    const preventLoss = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload', preventLoss)
-    return () => window.removeEventListener('beforeunload', preventLoss)
-  }, [dirty])
 
   useEffect(() => {
     if (error) errorElement.current?.focus()
@@ -204,7 +197,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
   const vehicleEntries = directories.vehicles.map(entry => ({ id: entry.id, name: entry.name || entry.plate, detail: [entry.name && entry.name !== entry.plate ? entry.plate : '', entry.capacityLitres ? `${number(entry.capacityLitres)} л` : ''].filter(Boolean).join(' · ') }))
   const transportStates = tripTransportStates(fields, draft.customers, directories, [...addresses, ...requestAddresses.filter(address => !addresses.some(existing => existing.id === address.id))], originalPricingDraft)
 
-  const changed = () => { setConfirmClose(false); setError('') }
+  const changed = () => { setError('') }
   const update = (key: string, value: string) => {
     setDraft(previous => {
       const next = { ...previous.fields, [key]: value }
@@ -274,7 +267,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
     try { return JSON.parse(customer.fields.intermediate_stops_after || '[]') as TripIntermediateStop[] } catch { return [] }
   }
   const changeStops = (customer: CustomerDraft, stops: TripIntermediateStop[]) => updateCustomer(customer.key, 'intermediate_stops_after', stops.length ? JSON.stringify(stops) : '')
-  const close = () => { if (uncertain) { setError('Результат сохранения пока неизвестен. Повторите сохранение, чтобы получить результат без дублей.'); return } if (!saving) { if (dirty) setConfirmClose(true); else onClose() } }
+  const close = () => { if (uncertain) { setError('Результат сохранения пока неизвестен. Повторите сохранение, чтобы получить результат без дублей.'); return } if (!saving) { onClose() } }
 
   const validate = () => {
     if (!tripId && !isOurOrganizationId(fields.organization_id)) return 'Выберите нашу организацию: НК АРТЭЛЬ или АРТЭЛЬ.'
@@ -496,7 +489,7 @@ export default function ShipmentTripEditor({ shipment, companies, directories, d
           <details className="shipment-trip-extras"><summary><div><span>Дополнительные затраты</span><small>{numericValue(fields.additional_costs || '0')?.gt(0) ? `${number(numericValue(fields.additional_costs)!.toString(), 2)} ₽ на всю машину` : 'При необходимости'}</small></div><ChevronDown size={19}/></summary><div className="shipment-trip-extras-body">{input('Дополнительные затраты, ₽', 'additional_costs')}<p>Общие для всей машины. Распределяются между клиентами пропорционально литрам.</p></div></details>
         </>}
       </div>
-      <footer className="shipment-editor-footer">{confirmClose ? <div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={() => setConfirmClose(false)}>Продолжить</button><button type="button" className="button danger" onClick={onClose}>Закрыть без сохранения</button></div> : <><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={saving || loading || conflict || !!loadError || !!tripId && !dirty}>{saving ? <LoaderCircle className="spin" size={17}/> : <Save size={17}/>} {uncertain ? 'Повторить сохранение' : tripMode ? 'Сохранить рейс' : 'Сохранить отгрузку'}</button></>}</footer>
+      <footer className="shipment-editor-footer"><><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={saving || loading || conflict || !!loadError || !!tripId && !dirty}>{saving ? <LoaderCircle className="spin" size={17}/> : <Save size={17}/>} {uncertain ? 'Повторить сохранение' : tripMode ? 'Сохранить рейс' : 'Сохранить отгрузку'}</button></></footer>
     </form>
   </dialog>{creatingRequest && <TripRequestEditor companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onClose={() => setCreatingRequest(false)} onSaved={() => { setCreatingRequest(false); setRequestRefresh(value => value + 1); onRequestsChanged?.() }}/>}</>
 }

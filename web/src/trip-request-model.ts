@@ -13,6 +13,7 @@ export interface TripRequest {
   executionDate?: string | null;
   comment: string;
   ownerUserId: string | null;
+  createdByName?: string;
   managerId: string | null;
   companyName: string;
   addressName: string;

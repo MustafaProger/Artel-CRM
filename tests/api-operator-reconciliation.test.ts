@@ -55,6 +55,6 @@ test('operator-only employee sees only explicitly granted service directory',()=
  const user:AccountUser={id:'staff',name:'Staff',login:'staff',role:'employee',managerId:'staff',active:true,version:1,sections:['work','operator','directories'],directoryGrants:['operatorServices']}
  assert.deepEqual(availableDirectoryTabs(user),['operatorServices'])
  assert.deepEqual(availableDirectoryTabs({...user,directoryGrants:[]}),[])
- assert.ok(availableDirectoryTabs({...user,role:'admin'}).includes('customers'))
+ assert.deepEqual(availableDirectoryTabs({...user,role:'admin'}), ['suppliers', 'oilDepots', 'products', 'vehicles', 'drivers', 'managers', 'operatorServices'])
  assert.deepEqual(availableDirectoryTabs({...user,active:false}),[])
 })

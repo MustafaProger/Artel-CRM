@@ -34,9 +34,8 @@ export function validateTripRequests(value: unknown, creates: unknown) {
   }
 }
 
-/** The user explicitly chose one common queue for everyone with the trips section. */
-export function canAccessTripRequest(actor: AccountUser | null, _snapshot: Snapshot, _request: Pick<TripRequest, 'companyId'>) {
-  return !actor || hasSection(actor, 'trips');
+export function canAccessTripRequest(actor: AccountUser | null, request: Pick<TripRequest, 'ownerUserId'>) {
+  return !actor || hasSection(actor, 'trips') && (actor.role === 'director' || request.ownerUserId === actor.id);
 }
 
 /** Operational company/location lookup; no accounting or bank properties are exposed. */
@@ -47,15 +46,15 @@ export function tripRequestCatalog(snapshot: Snapshot) {
   return { companies, addresses };
 }
 
-export function requireTripRequest(data: OperationsData, snapshot: Snapshot, actor: AccountUser | null, id: string, active = true): TripRequest {
+export function requireTripRequest(data: OperationsData, _snapshot: Snapshot, actor: AccountUser | null, id: string, active = true): TripRequest {
   const request = data.tripRequests?.[id];
-  if (!request || !canAccessTripRequest(actor, snapshot, request)) throw new ApiError(404, 'Заявка не найдена.');
+  if (!request || !canAccessTripRequest(actor, request)) throw new ApiError(404, 'Заявка не найдена.');
   if (active && request.status !== 'active') throw new ApiError(409, 'Заявка уже использована или удалена. Обновите список заявок.');
   return request;
 }
 
-export function listTripRequests(data: OperationsData, snapshot: Snapshot, actor: AccountUser | null) {
-  return Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && canAccessTripRequest(actor, snapshot, row)).sort(compareRequestDates);
+export function listTripRequests(data: OperationsData, _snapshot: Snapshot, actor: AccountUser | null) {
+  return Object.values(data.tripRequests ?? {}).filter(row => row.status === 'active' && canAccessTripRequest(actor, row)).sort(compareRequestDates);
 }
 
 function quantity(value: unknown) {
@@ -124,7 +123,7 @@ export function saveTripRequest(data: OperationsData, snapshot: Snapshot, actor:
     return { request: requireTripRequest(data, snapshot, actor, replay.requestId, false), created: false, changed: false };
   }
   const company = snapshot.companies.find(row => row.id === body.companyId && row.roles.includes('customer') && !row.directoryArchived);
-  if (!company || !canAccessTripRequest(actor, snapshot, { companyId: company.id })) throw new ApiError(404, 'Компания недоступна.');
+  if (!company || actor && !hasSection(actor, 'trips')) throw new ApiError(404, 'Компания недоступна.');
   const place = snapshot.directories?.addresses.find(row => row.id === body.addressId && row.companyId === company.id && row.kind === 'delivery');
   if (!place) throw new ApiError(400, 'Выберите место выгрузки этой компании из справочника.');
   const samePlaceAddress = address === undefined || address === (place.address || place.name);

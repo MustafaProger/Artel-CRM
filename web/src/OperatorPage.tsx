@@ -24,7 +24,7 @@ import { OperatorServicesContext } from './OperatorServiceBadge'
 import { operatorDiscountAt } from './operator-catalog'
 import './operator.css'
 
-type Editor = { kind: 'fuel'; row?: OperatorRefuelling; planId?: string } | { kind: 'payment' | 'delete'; row: OperatorRefuelling }
+type Editor = { kind: 'fuel'; row?: OperatorRefuelling; planId?: string }
 const recipientText = (row: OperatorRefuelling) => row.schemaVersion !== undefined ? row.recipientText : [row.recipient.name, row.recipient.bank, row.recipient.card && `Карта: ${row.recipient.card}`, row.recipient.phone && `Телефон: ${row.recipient.phone}`, row.recipient.details].filter(Boolean).join('\n')
 const groupName = (row: OperatorRefuelling) => row.schemaVersion !== undefined ? row.groupName ?? '' : ''
 const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -67,6 +67,7 @@ export default function OperatorPage({ creatorName }: { creatorName: string }) {
   useEffect(() => { if (!message) return; const timer = setTimeout(() => setMessage(''), 3500); return () => clearTimeout(timer) }, [message])
   const saved = (next: OperatorWorkspace, notice = 'Сохранено') => { request.current++; setData(next); setEditor(null); setPlanEditor(null); setCaseEditor(null); setCaseTask(null); setTaskPicker(false); setActionRow(null); setMessage(notice) }
   const payment = useOperatorPayment(next => { request.current++; setData(next) })
+  const removal = useOperatorPayment(next => { request.current++; setData(next) }, 'delete')
   const q = query.trim().toLocaleLowerCase('ru')
   const rows = (data?.refuellings ?? []).filter(row => !row.deletedAt && (!serviceId || !!data && reconciliationServiceId(data, row) === serviceId) && (!planId || row.schemaVersion === 3 && (row.planId === planId || row.allocations.some(item => item.planId === planId))) && (!from || row.date >= from) && (!to || row.date <= to) && (paid === 'all' || row.paid === (paid === 'paid')) && `${row.name} ${row.schemaVersion !== undefined ? data?.services.find(service => service.id === row.serviceId)?.name ?? row.service : row.service} ${groupName(row)} ${recipientText(row)} ${row.comment} ${row.schemaVersion === 3 ? [row.planClientName, ...row.allocations.map(item => item.planClientName)].join(' ') : ''}`.toLocaleLowerCase('ru').includes(q))
   const filters = JSON.stringify([q, from, to, paid, serviceId, planId])
@@ -104,6 +105,9 @@ export default function OperatorPage({ creatorName }: { creatorName: string }) {
         </div>}
     </div>
     {error && <p className="soft-notice" role="alert">{error}</p>}
+    {removal.error && <p className="soft-notice" role="alert">{removal.error}</p>}
+    {removal.pending && <button type="button" className="button" disabled={removal.busy} onClick={() => void removal.retry()}>Проверить удаление</button>}
+    {removal.busy && <p role="status">Удаляем операцию…</p>}
     {payment.error && <p className="soft-notice" role="alert">{payment.error}</p>}
     {payment.pending && <button type="button" className="button" disabled={payment.busy} onClick={() => void payment.retry()}>Проверить сохранение оплаты</button>}
     {payment.busy && <p role="status">Сохраняем отметку оплаты…</p>}
@@ -135,7 +139,8 @@ export default function OperatorPage({ creatorName }: { creatorName: string }) {
     {actionRow && data && <OperatorOperationActions paymentDisabled={payment.disabled} row={actionRow} onClose={() => setActionRow(null)} canReturn={actionRow.paid && claimedLitres(data, actionRow).lt(actionRow.litres)} canDefer={actionRow.paid && claimedLitres(data, actionRow).isZero()} historyLocked={operationLocked(data, actionRow)} onAction={action => {
       if (action === 'return' || action === 'defer') setCaseEditor({ mode: 'create', source: actionRow, kind: action === 'return' ? 'return' : 'deferred' })
       else if (action === 'payment') void payment.change(actionRow)
-      else setEditor({ kind: action === 'view' ? 'fuel' : action, row: actionRow })
+      else if (action === 'delete' && !removal.disabled) void removal.change(actionRow)
+      else if (action === 'view') setEditor({ kind: 'fuel', row: actionRow })
     }} />}
     {sourcePicker && data && <OperatorCaseSourcePicker workspace={data} kind={sourcePicker} onClose={() => setSourcePicker(null)} onSelect={source => { setCaseEditor({ mode: 'create', source, kind: sourcePicker }); setSourcePicker(null) }}/>}
     {taskPicker && data && <OperatorTaskPicker cases={data.cases ?? []} onClose={() => setTaskPicker(false)} onPlan={() => { setTaskPicker(false); setPlanEditor({}) }} onTask={entry => { setTaskPicker(false); setCaseTask(entry) }}/>} 
@@ -150,7 +155,7 @@ const claimedLitres = (data: OperatorWorkspace, row: OperatorRefuelling) => (dat
 const operationLocked = (data: OperatorWorkspace, row: OperatorRefuelling) => (data.cases ?? []).some(entry => entry.operationId === row.id) || row.schemaVersion === 3 && !!row.carryovers?.length
 
 function OperatorEditor({ editor, workspace, onClose, onSaved }: { editor: Editor; workspace: OperatorWorkspace; onClose: () => void; onSaved: (data: OperatorWorkspace, notice?: string) => void }) {
-  const row = editor.row, fuel = editor.kind === 'fuel' ? editor.row : undefined
+  const row = editor.row, fuel = row
   const existingServiceId = fuel?.schemaVersion !== undefined ? fuel.serviceId : workspace.services.find(service => service.name === fuel?.service)?.id ?? ''
   const initial: Record<string, string> = {
     date: fuel?.date ?? today(), name: fuel?.name ?? '', groupId: fuel?.schemaVersion !== undefined ? fuel.groupId ?? '' : '',
@@ -172,30 +177,25 @@ function OperatorEditor({ editor, workspace, onClose, onSaved }: { editor: Edito
     setValues(previous => ({ ...previous, ...(entry ? { name: entry.source.driverName } : {}), amountMode: 'auto', amount: calculateOperatorPayable(previous.litres, previous.pricePerLitre, previous.discountPercent, id ? amount : '0') ?? '' }))
   }
   const planned = !fuel || fuel.schemaVersion === 3
-  const [planId, setPlanId] = useState(fuel?.schemaVersion === 3 ? fuel.planId : editor.kind === 'fuel' ? editor.planId ?? '' : '')
+  const [planId, setPlanId] = useState(fuel?.schemaVersion === 3 ? fuel.planId : editor.planId ?? '')
   const [allocationDrafts, setAllocations] = useState<AllocationDraft[]>(allocationFromRow(fuel))
-  const initialPlan = useRef(planId), initialAllocations = useRef(allocationDrafts)
   const operationPlans = catalog.plans.filter(item => item.status === 'active' || fuel?.schemaVersion === 3 && (item.id === fuel.planId || fuel.allocations.some(allocation => allocation.planId === item.id)))
   const plan = operationPlans.find(item => item.id === planId)
   const allocations = resolveAllocationSuggestions(allocationDrafts, plan, values.amount, fuel, operationPlans)
   const allocationProblem = planned ? allocationError(plan, allocations, values.amount, operationPlans) : ''
-  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [uncertain, setUncertain] = useState(false), [discard, setDiscard] = useState(false), [stale, setStale] = useState(false)
-  const original = useRef(initial), pending = useRef<string | null>(null), lock = useRef(false), dialog = useRef<HTMLDialogElement>(null)
-  const { close, complete } = useDialogMotion(dialog, onClose)
-  const payment = editor.kind === 'payment', deleting = editor.kind === 'delete', readonly = editor.kind === 'fuel' && !!fuel && (fuel.paid || operationLocked(workspace, fuel))
-  const historicalPrecision = !!fuel && (fuel.schemaVersion === undefined || !!fuel.legacyPrecision)
+  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false)
+  const original = useRef(initial), initialPlan = useRef(planId), initialAllocations = useRef(allocationDrafts)
   const dirty = JSON.stringify(values) !== JSON.stringify(original.current) || planId !== initialPlan.current || JSON.stringify(allocations) !== JSON.stringify(initialAllocations.current) || !!carryoverId
-  const title = deleting ? 'Удаление операции' : payment ? (editor.row.paid ? 'Снять подтверждение оплаты' : 'Подтвердить оплату') : row ? 'Операция' : 'Новая операция'
+  const pending = useRef<string | null>(null), lock = useRef(false), dialog = useRef<HTMLDialogElement>(null)
+  const { close, complete } = useDialogMotion(dialog, onClose)
+  const readonly = !!fuel && (fuel.paid || operationLocked(workspace, fuel))
+  const historicalPrecision = !!fuel && (fuel.schemaVersion === undefined || !!fuel.legacyPrecision)
+  const title = row ? 'Операция' : 'Новая операция'
   const dismiss = () => {
     if (lock.current) return
     if (uncertain) { setError('Результат пока неизвестен. Нажмите «Проверить сохранение» для повтора того же запроса.'); return }
-    if (dirty) setDiscard(true); else close()
+    close()
   }
-  useEffect(() => {
-    if (!dirty && !uncertain) return
-    const handler = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload', handler); return () => window.removeEventListener('beforeunload', handler)
-  }, [dirty, uncertain])
   const update = (key: string, value: string) => setValues(previous => {
     const next = { ...previous, [key]: value }
     if (key === 'amount') next.amountMode = 'manual'
@@ -235,11 +235,11 @@ function OperatorEditor({ editor, workspace, onClose, onSaved }: { editor: Edito
   const field = (key: string, label: string, type = 'text', required = true) => <label key={key}>{label}<input aria-label={label} type={type} required={required} readOnly={key === 'name' && !!carryoverId} value={values[key]} maxLength={key === 'comment' ? 4000 : 500} inputMode={['litres', 'pricePerLitre', 'amount'].includes(key) ? 'decimal' : undefined} onChange={event => update(key, event.target.value)} /></label>
   const submit = async (event: FormEvent) => {
     event.preventDefault(); if (lock.current || readonly) return
-    if (!payment && !deleting && !pending.current && (allocationProblem || carryoverProblem)) { setError(carryoverProblem || allocationProblem); return }
-    const path = `/api/operator/refuellings${row ? `/${row.id}` : ''}${payment ? '/payment' : deleting ? '/delete' : ''}`
+    if (!pending.current && (allocationProblem || carryoverProblem)) { setError(carryoverProblem || allocationProblem); return }
+    const path = `/api/operator/refuellings${row ? `/${row.id}` : ''}`
     let body = pending.current
     if (!body) {
-      const payload = editor.kind === 'payment' ? { paid: !editor.row.paid } : deleting ? {} : planned ? {
+      const payload = planned ? {
         date: values.date, name: values.name, ...(values.groupId ? { groupId: values.groupId } : {}), serviceId: values.serviceId, serviceVersion: Number(values.serviceVersion),
         discountPercent: values.discountPercent, litres: values.litres, pricePerLitre: values.pricePerLitre, amount: values.amount, amountMode: values.amountMode, comment: values.comment,
         schemaVersion: 3, planId, planVersion: plan?.version, ...(fuel?.schemaVersion === 3 ? { planVersions: Object.fromEntries([...new Set([fuel.planId, ...fuel.allocations.map(item => item.planId ?? fuel.planId), ...allocations.map(item => item.planId ?? planId)])].map(id => [id, catalog.plans.find(p => p.id === id)?.version])) } : {}), ...(carryoverId && carryoverCase ? { carryovers: [{ caseId: carryoverId, version: carryoverCase.version, amount: carryoverAmount }] } : {}), allocations: allocations.map(item => ({ ...(item.kind === 'recipient' ? { kind: item.kind, recipientId: item.recipientId, amount: item.amount } : { kind: item.kind, managerId: item.managerId, amount: item.amount }), planId: item.planId ?? planId, planVersion: catalog.plans.find(p => p.id === (item.planId ?? planId))?.version })),
@@ -253,25 +253,24 @@ function OperatorEditor({ editor, workspace, onClose, onSaved }: { editor: Edito
       const result = await response.json()
       if (!response.ok) {
         if (isDefinitiveOperatorRejection(response.status, result.error, uncertain)) { pending.current = null; setUncertain(false) } else setUncertain(true)
-        setStale(!payment && !deleting && response.status === 409 && /сервис|скидк|справочник|групп|задан|план|остат|лимит/i.test(result.error ?? ''))
+        setStale(response.status === 409 && /сервис|скидк|справочник|групп|задан|план|остат|лимит/i.test(result.error ?? ''))
         setError(result.error || 'Сохранение не подтверждено.'); return
       }
       // Retain exactly the same request until persisted read-back succeeds.
       setUncertain(true)
       const next = await readWorkspace()
-      if (deleting || result.deleted === true ? next.refuellings.some(item => item.id === result.id) : !next.refuellings.some(item => item.id === result.id)) throw new Error('Результат записи пока не подтверждён.')
-      pending.current = null; setUncertain(false); await complete(() => onSaved(next, deleting ? 'Операция удалена' : result.deleted === true ? 'Операция уже была удалена. Повторный запрос не восстановил её.' : undefined))
+      if (result.deleted === true ? next.refuellings.some(item => item.id === result.id) : !next.refuellings.some(item => item.id === result.id)) throw new Error('Результат записи пока не подтверждён.')
+      pending.current = null; setUncertain(false); await complete(() => onSaved(next, result.deleted === true ? 'Операция уже была удалена. Повторный запрос не восстановил её.' : undefined))
     } catch { setUncertain(true); setError('Ответ не получен или повторное чтение не удалось. Проверьте сохранение тем же запросом.') }
     finally { lock.current = false; setSaving(false) }
   }
-  return <dialog ref={dialog} className={`operator-dialog${discard ? ' operator-discard-dialog' : ''}`} aria-labelledby="operator-editor-title" onCancel={event => { event.preventDefault(); dismiss() }}>
+  return <dialog ref={dialog} className="operator-dialog" aria-labelledby="operator-editor-title" onCancel={event => { event.preventDefault(); dismiss() }}>
     <form onSubmit={event => void submit(event)}>
       <header><h2 id="operator-editor-title">{title}</h2><button type="button" className="icon-button" aria-label="Закрыть форму" disabled={saving} onClick={dismiss}><X size={20} /></button></header>
       <div className="operator-dialog-body">
       {error && <p role="alert" className="soft-notice">{error}</p>}
-      {stale && !discard && <button type="button" className="button" disabled={saving || uncertain} onClick={() => void refreshCatalog()}>Загрузить актуальные данные</button>}
-      {discard ? <div className="operator-discard"><p>Закрыть форму без сохранения?</p><div className="operator-actions"><button type="button" className="button" onClick={() => setDiscard(false)}>Продолжить ввод</button><button type="button" className="button" onClick={close}>Не сохранять</button></div></div> : <>
-        {editor.kind === 'delete' ? <div className="operator-delete-summary"><p>Удалить операцию водителя <strong>{editor.row.name}</strong> на <strong>{display(editor.row.amount, true)} ₽</strong>?</p><p>{editor.row.schemaVersion === 3 ? 'Суммы вернутся в доступные остатки задания. Операция исчезнет из журнала.' : 'Операция исчезнет из журнала.'}</p></div> : editor.kind === 'payment' ? <><p><strong>{editor.row.name}</strong> · {display(editor.row.amount, true)} ₽</p><p>{editor.row.paid ? 'Отметка будет снята. Предыдущее подтверждение останется в истории.' : 'Подтвердите, что деньги получены. Это ручная отметка оператора.'}</p><pre>{recipientText(editor.row)}</pre></> : <fieldset disabled={saving || uncertain || readonly} className="operator-form-grid">
+      {stale && <button type="button" className="button" disabled={saving || uncertain} onClick={() => void refreshCatalog()}>Загрузить актуальные данные</button>}
+        <fieldset disabled={saving || uncertain || readonly} className="operator-form-grid">
           {planned && <label className="operator-full">Задание<select aria-label="Задание" required disabled={!!fuel} value={plan?.id ?? ''} onChange={event => { setPlanId(event.target.value); setAllocations([]) }}><option value="">Выберите задание</option>{operationPlans.map(item => <option key={item.id} value={item.id} disabled={item.status === 'completed'}>{item.clientName} · {planDate(item.createdAt)} · осталось {display(item.remaining, true)} ₽</option>)}</select></label>}
           {field('date', 'Дата заправки', 'date')}{field('name', 'Имя водителя')}
           <label>Сервис<select style={values.serviceId ? {backgroundColor: catalog.services.find(item => item.id === values.serviceId)?.backgroundColor ?? operatorServiceBackground(catalog.services.find(item => item.id === values.serviceId)?.name ?? '', values.serviceId), color: operatorServiceInk(catalog.services.find(item => item.id === values.serviceId)?.backgroundColor ?? operatorServiceBackground(catalog.services.find(item => item.id === values.serviceId)?.name ?? '', values.serviceId))} : undefined} aria-label="Сервис" required value={values.serviceId} onChange={event => update('serviceId', event.target.value)}><option value="">Выберите сервис</option>
@@ -289,15 +288,15 @@ function OperatorEditor({ editor, workspace, onClose, onSaved }: { editor: Edito
           <p className="operator-full muted" role="status">{values.amountMode === 'manual' ? 'Сумма изменена вручную. При изменении литров, цены или сервиса она рассчитается заново.' : 'Сумма рассчитывается с учётом скидки сервиса. При необходимости её можно изменить вручную.'}</p>
           {planned ? <AllocationEditor plan={plan} plans={operationPlans} allocations={allocations} onChange={setAllocations} amount={values.amount} original={fuel} /> : <label className="operator-full">Имя получателя и реквизиты<textarea aria-label="Имя получателя и реквизиты" required rows={4} maxLength={4000} value={values.recipientText} onChange={event => update('recipientText', event.target.value)} /></label>}
           {field('comment', 'Комментарий', 'text', false)}
-        </fieldset>}
+        </fieldset>
         {fuel && <>
           {fuel.schemaVersion === 3 && <details open><summary>Сохранённые получатели и реквизиты</summary><pre>{recipientText(fuel)}</pre></details>}
           {readonly && <p>{operationLocked(workspace, fuel) ? 'Операция связана с возвратом или остатком литров. Исходная оплата и распределение сохранены.' : 'Для исправления снимите подтверждение оплаты в журнале.'}</p>}
           {fuel.paymentHistory.length > 0 && <><h3>История оплаты</h3><ul>{fuel.paymentHistory.map((entry, index) => <li key={index}>{entry.paid ? 'Подтверждена' : 'Подтверждение снято'} · {entry.actorName} · {new Date(entry.at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК</li>)}</ul></>}
         </>}
-      </>}
+
       </div>
-      {!discard && <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>{deleting ? 'Отмена' : 'Закрыть'}</button>{!readonly && <button type="submit" className={`button primary ${deleting ? 'operator-danger-button' : ''}`} disabled={saving || (!uncertain && !payment && !deleting && (!!allocationProblem || !!carryoverProblem || !!row && !dirty))}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : deleting ? 'Удалить операцию' : payment ? 'Подтвердить' : 'Сохранить операцию'}</button>}</footer>}
+      <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button>{!readonly && <button type="submit" className="button primary" disabled={saving || !!row && !dirty && !uncertain || !uncertain && !!(allocationProblem || carryoverProblem)}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : 'Сохранить операцию'}</button>}</footer>
     </form>
   </dialog>
 }

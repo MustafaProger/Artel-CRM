@@ -70,13 +70,6 @@ function ReconciliationDay({row, date, editing, locked, onEdit, onCancel, onDate
     const input = focusField.current === 'amount' ? secondInput.current : firstInput.current
     input?.focus({preventScroll:true});input?.select()
   }, [editing])
-  const dirty = editing && (litres !== (original.current?.litres ?? '') || amount !== (original.current?.amount ?? '') || uncertain || saving)
-  useEffect(() => {
-    if (!dirty) return
-    const prevent = (event: BeforeUnloadEvent) => {event.preventDefault();event.returnValue=''}
-    window.addEventListener('beforeunload', prevent)
-    return () => window.removeEventListener('beforeunload', prevent)
-  }, [dirty])
   const save = async (event: FormEvent) => {
     event.preventDefault();if (lock.current) return
     const prior = original.current

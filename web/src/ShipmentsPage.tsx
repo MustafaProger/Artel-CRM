@@ -1,6 +1,6 @@
+import { useDirectAction } from './useDirectAction'
 import { useViewEntrance } from './useViewEntrance'
-import LoadingSkeleton, { LoadingProgress, SkeletonTableRows } from './LoadingSkeleton'
-import { useDialogMotion } from './useDialogMotion'
+import { LoadingProgress, SkeletonTableRows } from './LoadingSkeleton'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ArrowDownToLine, ArrowUp, ArrowDown, Filter, Check, ChevronDown, LoaderCircle, Pencil, Plus, Menu, Search, Trash2, Truck, X } from 'lucide-react'
 import type { Company, Metric, Shipment, ShipmentTrip, ShipmentType, Snapshot } from './model'
@@ -39,9 +39,28 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
   const [items,setItems] = useState<Shipment[]>([]), [total,setTotal] = useState(0), [hasMore,setHasMore] = useState(false), [nextOffset,setNextOffset] = useState(0)
   const [summary,setSummary] = useState<ShipmentPageResult['summary'] | null>(null)
   const [loading,setLoading] = useState(true), [error,setError] = useState(''), [revision,setRevision] = useState(0)
-  const [editor,setEditor] = useState<{shipment:Shipment|null} | null>(null), [deleting,setDeleting] = useState<Shipment|null>(null)
+  const [editor,setEditor] = useState<{shipment:Shipment|null} | null>(null)
   const [exporting,setExporting] = useState(false), [exportError,setExportError] = useState(''), [notice,setNotice] = useState('')
   const [scrollTop,setScrollTop] = useState(0), [viewportHeight,setViewportHeight] = useState(600)
+  const removal = useDirectAction()
+  const remove = (shipment: Shipment) => removal.run(shipment.id, async () => {
+    const tripId = shipment.fields.trip_id
+    const endpoint = tripId ? `/api/shipment-trips/${encodeURIComponent(tripId)}` : `/api/shipments/${encodeURIComponent(shipment.id)}`
+    let payload: Record<string, unknown> = { version: shipment.version ?? 0 }
+    if (tripId) {
+      const response = await fetch(endpoint)
+      if (!response.ok) throw await apiError(response)
+      const { trip, deletion }: { trip: ShipmentTrip; deletion?: { reason?: string } } = await response.json()
+      if (deletion?.reason) throw new Error(deletion.reason)
+      const delivery = trip.customers.find(row => row.id === shipment.id)
+      if (!delivery || delivery.version !== (shipment.version ?? 0)) throw new Error('Отгрузка изменилась. Обновите список и повторите действие.')
+      payload = { versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])) }
+    }
+    const response = await fetch(endpoint, {method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    if (!response.ok) throw await apiError(response)
+    setNotice('Запись удалена')
+    refresh()
+  })
   const scroller = useRef<HTMLDivElement>(null), request = useRef<AbortController|null>(null), exportRequest = useRef<AbortController|null>(null)
   const generation = useRef(0), busy = useRef(false), loadedParams = useRef<string | null>(null)
   useEffect(() => setQuery(initialQuery), [initialQuery])
@@ -150,7 +169,7 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
                 const displayed = column.key === 'organization_id' && !raw ? 'Не указана' : column.key === 'purchase_unit' && raw ? raw==='tonnes'?'₽/т':'₽/л' : column.key === 'month' && raw && /^\d{4}-\d{2}$/.test(raw) ? monthName(raw) : raw === null || raw === '' ? '—' : column.kind === 'date' && /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(raw) ? formatDate(raw.slice(0,10)) : column.kind === 'number' && /^-?\d+(\.\d+)?$/.test(raw) ? number(raw,4) : raw
                 return <td key={column.key} tabIndex={index===0&&columnIndex===0?0:-1} data-column-index={columnIndex} onDoubleClick={()=>{if(!shipment.tripReadOnly)setEditor({shipment})}} onKeyDown={e=>{if((e.key==='F2'||e.key==='Enter')&&!shipment.tripReadOnly){e.preventDefault();setEditor({shipment});return}if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();const cell=e.currentTarget;const target=(e.key==='ArrowRight'?cell.nextElementSibling:e.key==='ArrowLeft'?cell.previousElementSibling:(e.key==='ArrowDown'?cell.parentElement?.nextElementSibling:cell.parentElement?.previousElementSibling)?.querySelector(`[data-column-index="${columnIndex}"]`)) as HTMLElement|null;target?.focus()}} className={`${column.kind === 'number' ? 'shipment-numeric' : ''} ${stickyStyle(column) ? 'shipment-sticky' : ''} ${['customer_amount','profit_source'].includes(column.key) ? 'shipment-emphasis' : ''}`} style={stickyStyle(column)} title={raw ?? 'Не указано'}>{!showActions && column.key === 'date' ? <button className="shipment-company-link" aria-label={`Редактировать отгрузку ${shipment.id}`} onClick={() => setEditor({shipment})}>{displayed}</button> : company ? <button className="shipment-company-link" onClick={() => onOpenCompany(company)}>{displayed}</button> : <span className="shipment-cell-value">{displayed}</span>}</td>
               })}
-              {showActions && <td className="shipment-row-actions"><button className="icon-button" disabled={shipment.tripReadOnly} aria-label={`${shipment.fields.trip_id ? 'Изменить состав клиентов' : 'Редактировать отгрузку'} ${shipment.id}`} title={shipment.tripReadOnly ? 'Общий рейс изменяет администратор' : shipment.fields.trip_id ? 'Редактировать машину и всех клиентов' : 'Редактировать'} onClick={() => setEditor({shipment})}><Pencil size={17}/></button>{canDelete && <button className="icon-button shipment-delete-button" aria-label={`Удалить отгрузку ${shipment.id}`} title={shipment.fields.trip_id ? 'Удалить отгрузку всей машины' : 'Удалить'} onClick={() => setDeleting(shipment)}><Trash2 size={17}/></button>}</td>}
+              {showActions && <td className="shipment-row-actions"><button className="icon-button" disabled={shipment.tripReadOnly} aria-label={`${shipment.fields.trip_id ? 'Изменить состав клиентов' : 'Редактировать отгрузку'} ${shipment.id}`} title={shipment.tripReadOnly ? 'Общий рейс изменяет администратор' : shipment.fields.trip_id ? 'Редактировать машину и всех клиентов' : 'Редактировать'} onClick={() => setEditor({shipment})}><Pencil size={17}/></button>{canDelete && <button className="icon-button shipment-delete-button" aria-label={`Удалить отгрузку ${shipment.id}`} title={shipment.fields.trip_id ? 'Удалить отгрузку всей машины' : 'Удалить'} disabled={!!removal.pending || shipment.tripReadOnly} onClick={() => void remove(shipment)}><Trash2 size={17}/></button>}</td>}
             </tr>)}
             {end < items.length && <tr className="shipment-spacer" aria-hidden="true"><td colSpan={columns.length + extraColumns} style={{height:(items.length - end) * ROW_HEIGHT}}/></tr>}
           </tbody>
@@ -162,41 +181,7 @@ export default function ShipmentsPage({onOpenMenu,menuOpen,data,period,onPeriodC
     </section>
     {filterColumn&&<ShipmentColumnFilter column={filterColumn} params={params} filter={filters[filterColumn.key]} onClose={()=>setFilterColumn(null)} onApply={filter=>{setFilters(previous=>{const next={...previous};if(filter)next[filterColumn.key]=filter;else delete next[filterColumn.key];return next});setFilterColumn(null)}}/>}
     {editor&&data.directories&&<ShipmentEditor shipmentType={shipmentType} shipment={editor.shipment} companies={data.companies} directories={data.directories} defaultPaymentForm={settlement==='cash'?'нал':settlement==='f2'?'ф2':'б/нал'} onDirectoriesChanged={onChanged} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice('Отгрузка сохранена');refresh()}}/>}
-    {deleting && <DeleteShipmentDialog shipment={deleting} companies={data.companies} onClose={() => setDeleting(null)} onDeleted={() => {setDeleting(null);setNotice('Отгрузка удалена');refresh()}}/>}
+    {removal.error && <p className="shipment-error" role="alert">{removal.error}</p>}
     {notice && <div className="toast" role="status"><Check size={18}/>{notice}</div>}
   </div>
-}
-
-function DeleteShipmentDialog({shipment,companies,onClose: onDismiss,onDeleted}:{shipment:Shipment;companies:Company[];onClose:()=>void;onDeleted:()=>void}) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  const [saving,setSaving] = useState(false), [error,setError] = useState('')
-  const [trip,setTrip] = useState<ShipmentTrip|null>(null), [loading,setLoading] = useState(!!shipment.fields.trip_id), [reload,setReload] = useState(0)
-  const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
-  useEffect(() => {
-    if (!shipment.fields.trip_id) return
-    const controller = new AbortController()
-    const load = async () => {
-      setLoading(true);setError('')
-      try {
-        const response = await fetch(`/api/shipment-trips/${encodeURIComponent(shipment.fields.trip_id!)}`,{signal:controller.signal})
-        if (!response.ok) throw await apiError(response)
-        const result = await response.json()
-        if (!controller.signal.aborted) setTrip(result.trip)
-      } catch (reason) {if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Не удалось загрузить клиентов отгрузки')}
-      finally {if (!controller.signal.aborted) setLoading(false)}
-    }
-    void load()
-    return () => controller.abort()
-  },[shipment.fields.trip_id,reload])
-  const remove = async () => {
-    if (saving || loading || (shipment.fields.trip_id && !trip)) return
-    setSaving(true);setError('')
-    try {
-      const response = await fetch(trip ? `/api/shipment-trips/${encodeURIComponent(trip.id)}` : `/api/shipments/${encodeURIComponent(shipment.id)}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify(trip ? {versions:Object.fromEntries(trip.customers.map(customer=>[customer.id,customer.version]))} : {version:shipment.version ?? 0})})
-      if(!response.ok) throw await apiError(response)
-      await complete(onDeleted)
-    } catch(e) {setError(e instanceof Error ? e.message : 'Не удалось удалить операцию')}
-    finally {setSaving(false)}
-  }
-  return <dialog ref={dialog} className="shipment-delete-dialog" aria-labelledby="shipment-delete-title" onCancel={e => {e.preventDefault();if(!saving) onClose()}}><h2 id="shipment-delete-title">{shipment.fields.trip_id ? 'Удалить отгрузку всей машины?' : 'Удалить эту отгрузку?'}</h2>{shipment.fields.trip_id ? <>{loading ? <LoadingSkeleton label="Загружаем состав отгрузки" rows={3}/> : trip && <><p>{formatDate(trip.fields.date)} · {number(trip.fields.quantity_tonnes,6)} т · клиентов: {trip.customers.length}</p><div className="shipment-delete-details">{trip.customers.map(customer=><span key={customer.id}>{companies.find(company=>company.id===customer.fields.customer_id)?.name ?? 'Клиент'} · {number(customer.fields.quantity_litres,2)} л</span>)}</div><p>Все перечисленные клиенты этой машины будут удалены из отгрузок и исключены из итогов.</p></>}</> : <><p>{formatDate(shipment.date)} · {shipment.customer || 'Контрагент не указан'}</p><div className="shipment-delete-details"><span>{shipment.product || 'Топливо не указано'}</span><strong>{number(shipment.liters,2)} л · {number(shipment.revenue,2)} ₽</strong></div><p>Операция будет удалена из CRM и исключена из итогов.</p></>}{error && <div className="shipment-error" role="alert">{error}{shipment.fields.trip_id && <button className="button" disabled={loading||saving} onClick={()=>setReload(value=>value+1)}>Обновить состав</button>}</div>}<footer><button className="button" onClick={onClose} disabled={saving} autoFocus>Отмена</button><button className="button danger" onClick={remove} disabled={saving||loading||!!shipment.fields.trip_id&&!trip}>{saving ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>} {saving ? 'Удаляем…' : shipment.fields.trip_id ? 'Удалить всю отгрузку' : 'Удалить операцию'}</button></footer></dialog>
 }

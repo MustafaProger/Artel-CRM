@@ -1,3 +1,4 @@
+import { creationTime } from './utils'
 import { useEffect, useRef, useState } from 'react'
 import Decimal from 'decimal.js'
 import { LoaderCircle, Save, X } from 'lucide-react'
@@ -39,7 +40,7 @@ export default function TripRequestEditor({ request, companies, directories, onC
   const [deliveryAddress, setDeliveryAddress] = useState(request?.address ?? '')
   const [point, setPoint] = useState<{ latitude: string; longitude: string } | null>(null)
   const [version, setVersion] = useState(request?.version ?? 0), [latestRequest, setLatestRequest] = useState<TripRequest | null>(null), [unavailable, setUnavailable] = useState(false)
-  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [error, setError] = useState(''), [discard, setDiscard] = useState(false)
+  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [error, setError] = useState('')
   const { close: dismiss, complete } = useDialogMotion(dialog, onDismiss)
   const disabled = saving || uncertain
   const addresses = directories.addresses.filter(address => address.companyId === companyId && address.kind === 'delivery')
@@ -55,16 +56,10 @@ export default function TripRequestEditor({ request, companies, directories, onC
   const resolvedPoint = inheritedPoint ?? automaticPoint
   const shownPoint = point ?? (resolvedPoint?.status === 'found' ? { latitude: String(resolvedPoint.latitude), longitude: String(resolvedPoint.longitude) } : null)
   useEffect(() => { if (error) errorElement.current?.focus() }, [error])
-  useEffect(() => {
-    if (!dirty) return
-    const preventLoss = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload', preventLoss)
-    return () => window.removeEventListener('beforeunload', preventLoss)
-  }, [dirty])
   const close = () => {
     if (busy.current) return
     if (uncertain) { setError('Результат сохранения пока неизвестен. Повторите сохранение, чтобы проверить тот же запрос.'); return }
-    if (dirty) setDiscard(true); else dismiss()
+    dismiss()
   }
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -121,25 +116,26 @@ export default function TripRequestEditor({ request, companies, directories, onC
       <div className="shipment-editor-body">
         <p className="shipment-editor-note">{request ? 'Уточните адрес доставки, количество литров, цену для клиента или комментарий.' : 'Выберите компанию и одну из её площадок. Литры, цена для клиента и комментарий будут перенесены в рейс.'}</p>
         {error && <div ref={errorElement} className="shipment-error" role="alert" tabIndex={-1}>{error}</div>}
-        {latestRequest && <button type="button" className="button" disabled={saving} onClick={() => { setVersion(latestRequest.version); setExecutionDate(latestRequest.executionDate ?? ''); setQuantityLitres(latestRequest.quantityLitres); setSalePricePerLitre(latestRequest.salePricePerLitre ?? ''); setComment(latestRequest.comment); setSavedRequest(latestRequest); setDeliveryAddress(latestRequest.address); setPoint(null); setLatestRequest(null); setError(''); setDiscard(false) }}>Загрузить актуальную заявку</button>}
+        {latestRequest && <button type="button" className="button" disabled={saving} onClick={() => { setVersion(latestRequest.version); setExecutionDate(latestRequest.executionDate ?? ''); setQuantityLitres(latestRequest.quantityLitres); setSalePricePerLitre(latestRequest.salePricePerLitre ?? ''); setComment(latestRequest.comment); setSavedRequest(latestRequest); setDeliveryAddress(latestRequest.address); setPoint(null); setLatestRequest(null); setError('') }}>Загрузить актуальную заявку</button>}
         {unavailable && <p className="shipment-calculation-warning" role="status">Заявка уже удалена или включена в рейс. Закройте форму, чтобы обновить список.</p>}
         {uncertain && <p className="shipment-calculation-warning" role="status">Ответ пока не подтверждён. Повторное сохранение проверит тот же запрос.</p>}
         <div className="trip-request-form">
           {request && requestPlace ? <div className="trip-request-place"><strong>{request.companyName}</strong><dl className="trip-request-location">{requestPlace.name && <div><dt>Площадка</dt><dd>{requestPlace.name}</dd></div>}</dl></div> : <>
-            <DirectorySelect label="Компания" required entries={companies.filter(company => !company.directoryArchived && company.roles.includes('customer')).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={companyId} disabled={disabled} onChange={id => { setCompanyId(id); setAddressId(''); setDeliveryAddress(''); setPoint(null); setError(''); setDiscard(false) }}/>
-            <DirectorySelect label="Место доставки" required wrapSelection entries={addresses.map(address => { const place = getDeliveryPlaceDisplay(address.name, address.address); return { id: address.id, name: place.name || place.address, detail: place.name ? `Адрес: ${place.address}` : undefined } })} value={addressId} disabled={disabled || !companyId} emptyMessage="У компании нет мест доставки. Добавьте место в справочнике." onChange={id => { setAddressId(id); const selected = addresses.find(address => address.id === id); setDeliveryAddress(selected?.address || selected?.name || ''); setPoint(null); setError(''); setDiscard(false) }}/>
+            <DirectorySelect label="Компания" required entries={companies.filter(company => !company.directoryArchived && company.roles.includes('customer')).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={companyId} disabled={disabled} onChange={id => { setCompanyId(id); setAddressId(''); setDeliveryAddress(''); setPoint(null); setError('') }}/>
+            <DirectorySelect label="Место доставки" required wrapSelection entries={addresses.map(address => { const place = getDeliveryPlaceDisplay(address.name, address.address); return { id: address.id, name: place.name || place.address, detail: place.name ? `Адрес: ${place.address}` : undefined } })} value={addressId} disabled={disabled || !companyId} emptyMessage="У компании нет мест доставки. Добавьте место при заполнении рейса." onChange={id => { setAddressId(id); const selected = addresses.find(address => address.id === id); setDeliveryAddress(selected?.address || selected?.name || ''); setPoint(null); setError('') }}/>
           </>}
-          {(request || selectedAddress) && <div className="trip-request-address-input"><label className="shipment-field"><span>Адрес доставки *</span><textarea rows={3} maxLength={2000} value={deliveryAddress} disabled={disabled} required onChange={event => { setDeliveryAddress(event.target.value); setPoint(null); setError(''); setDiscard(false) }}/></label><small className="trip-request-address-hint">Точка определяется автоматически после сохранения. Изменение адреса действует только для этой заявки.</small></div>}
+          {(request || selectedAddress) && <div className="trip-request-address-input"><label className="shipment-field"><span>Адрес доставки *</span><textarea rows={3} maxLength={2000} value={deliveryAddress} disabled={disabled} required onChange={event => { setDeliveryAddress(event.target.value); setPoint(null); setError('') }}/></label><small className="trip-request-address-hint">Точка определяется автоматически после сохранения. Изменение адреса действует только для этой заявки.</small></div>}
           {addressChanged && <p className="trip-request-geocode-status" role="status">Найдём уточнённый адрес после сохранения.</p>}
           {automaticPoint && <div className="trip-request-geocode-status" role="status"><span>{locationStatusText(automaticPoint)}</span>{automaticPoint.status === 'unavailable' && geocodeTarget && <button type="button" className="button" disabled={disabled} onClick={() => retryLocation(geocodeTarget)}>Повторить поиск адреса</button>}</div>}
-          {(request || selectedAddress) && <DeliveryPointPicker key={`${addressId}-${version}-${addressChanged ? 'changed' : 'saved'}`} latitude={shownPoint?.latitude} longitude={shownPoint?.longitude} mapUrl={point || addressChanged ? null : savedRequest ? savedRequest.mapUrl : selectedAddress?.mapUrl} disabled={disabled} onChange={(latitude, longitude) => { setPoint({ latitude, longitude }); setError(''); setDiscard(false) }}/>} 
-          <label className="shipment-field"><span>Дата выполнения</span><input type="date" min="0001-01-01" max="9999-12-31" value={executionDate} disabled={disabled} onChange={event => { setExecutionDate(event.target.value); setError(''); setDiscard(false) }}/></label>
-          <label className="shipment-field"><span>Количество литров, л *</span><input inputMode="decimal" value={quantityLitres} disabled={disabled} required onChange={event => { setQuantityLitres(event.target.value); setError(''); setDiscard(false) }}/></label>
-          <label className="shipment-field"><span>Цена за литр для клиента, ₽</span><input aria-label="Цена за литр для клиента, ₽" inputMode="decimal" maxLength={40} value={salePricePerLitre} disabled={disabled} onChange={event => { setSalePricePerLitre(event.target.value); setError(''); setDiscard(false) }}/><small>Необязательно. В рейсе цену можно изменить.</small></label>
-          <label className="shipment-field"><span>Комментарий</span><textarea rows={3} maxLength={4000} value={comment} disabled={disabled} onChange={event => { setComment(event.target.value); setError(''); setDiscard(false) }}/></label>
+          {(request || selectedAddress) && <DeliveryPointPicker key={`${addressId}-${version}-${addressChanged ? 'changed' : 'saved'}`} latitude={shownPoint?.latitude} longitude={shownPoint?.longitude} mapUrl={point || addressChanged ? null : savedRequest ? savedRequest.mapUrl : selectedAddress?.mapUrl} disabled={disabled} onChange={(latitude, longitude) => { setPoint({ latitude, longitude }); setError('') }}/>}
+          <label className="shipment-field"><span>Дата выполнения</span><input type="date" min="0001-01-01" max="9999-12-31" value={executionDate} disabled={disabled} onChange={event => { setExecutionDate(event.target.value); setError('') }}/></label>
+          <label className="shipment-field"><span>Количество литров, л *</span><input inputMode="decimal" value={quantityLitres} disabled={disabled} required onChange={event => { setQuantityLitres(event.target.value); setError('') }}/></label>
+          <label className="shipment-field"><span>Цена за литр для клиента, ₽</span><input aria-label="Цена за литр для клиента, ₽" inputMode="decimal" maxLength={40} value={salePricePerLitre} disabled={disabled} onChange={event => { setSalePricePerLitre(event.target.value); setError('') }}/><small>Необязательно. В рейсе цену можно изменить.</small></label>
+          <label className="shipment-field"><span>Комментарий</span><textarea rows={3} maxLength={4000} value={comment} disabled={disabled} onChange={event => { setComment(event.target.value); setError('') }}/></label>
         </div>
+        {savedRequest && <small className="trip-creation-meta">Создана: {savedRequest.createdByName ?? 'автор неизвестен'} · <time dateTime={savedRequest.createdAt}>{creationTime(savedRequest.createdAt)}</time></small>}
       </div>
-      <footer className="shipment-editor-footer">{discard ? <div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={() => setDiscard(false)}>Продолжить</button><button type="button" className="button danger" onClick={dismiss}>Закрыть без сохранения</button></div> : <><button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button type="submit" className="button primary" disabled={saving || unavailable || !!latestRequest || !!request && !dirty}>{saving ? <LoaderCircle className="spin" size={17}/> : <Save size={17}/>} {uncertain ? 'Повторить сохранение' : 'Сохранить заявку'}</button></>}</footer>
+      <footer className="shipment-editor-footer"><><button type="button" className="button" disabled={saving} onClick={close}>Отмена</button><button type="submit" className="button primary" disabled={saving || unavailable || !!latestRequest || !!request && !dirty}>{saving ? <LoaderCircle className="spin" size={17}/> : <Save size={17}/>} {uncertain ? 'Повторить сохранение' : 'Сохранить заявку'}</button></></footer>
     </form>
   </dialog>
 }

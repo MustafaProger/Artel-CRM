@@ -32,11 +32,11 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
       transport_amount:shipment?.fields.transport_amount ?? '0',additional_costs:shipment?.fields.additional_costs ?? shipment?.fields.kvp_source ?? '0',
     } as Record<string,string>
   }, [shipment,directories,defaultPaymentForm])
-  const [fields,setFields] = useState(initial), [saving,setSaving] = useState(false), [error,setError] = useState(''), [confirmClose,setConfirmClose] = useState(false)
+  const [fields,setFields] = useState(initial), [saving,setSaving] = useState(false), [error,setError] = useState('')
   const dirty = manualKeys.some(k => fields[k] !== initial[k])
   const { close: onClose, complete } = useDialogMotion(dialog, onDismiss)
-  const update = (key: string,value: string) => {setFields(previous => ({...previous,[key]:value,...(key==='customer_id'?{unloading_address_id:'',manager_id:customerManagerId(directories,value)}:key==='supplier_id'?{loading_address_id:''}:key==='driver_id'?{vehicle_id:directories.drivers.find(d=>d.id===value)?.vehicleId || ''}:{})}));setConfirmClose(false)}
-  const close = () => {if(saving)return;if(dirty)setConfirmClose(true);else onClose()}
+  const update = (key: string,value: string) => {setFields(previous => ({...previous,[key]:value,...(key==='customer_id'?{unloading_address_id:'',manager_id:customerManagerId(directories,value)}:key==='supplier_id'?{loading_address_id:''}:key==='driver_id'?{vehicle_id:directories.drivers.find(d=>d.id===value)?.vehicleId || ''}:{})}))}
+  const close = () => {if(saving)return;onClose()}
   const customer = companies.find(c=>c.id===fields.customer_id), supplier=companies.find(c=>c.id===fields.supplier_id)
   const vehicle=directories.vehicles.find(v=>v.id===fields.vehicle_id)
   const historical = !!shipment && shipment.fields.calculation_mode !== 'automatic'
@@ -80,6 +80,6 @@ function LegacyShipmentEditor({ shipment, companies, directories, defaultPayment
       {!!shipment?.sourceRow&&<fieldset className="shipment-fieldset"><legend>Данные из Excel</legend><div className="shipment-calculation-strip">{output('КВП, ₽',shipment.fields.kvp_source,true)}{output('Дата из файла',shipment.fields.unlabelled_note&&/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(shipment.fields.unlabelled_note)?formatDate(shipment.fields.unlabelled_note.slice(0,10)):shipment.fields.unlabelled_note)}</div><p className="shipment-editor-note">Сохранённые значения исходной строки. У столбца с датами в файле нет заголовка.</p></fieldset>}
       {error&&<div className="shipment-error" role="alert">{error}</div>}
     </div>
-    <footer className="shipment-editor-footer">{confirmClose?<div className="shipment-discard" role="alert"><span>Есть несохранённые изменения.</span><button type="button" className="button" onClick={()=>setConfirmClose(false)}>Продолжить</button><button type="button" className="button danger" onClick={onClose}>Закрыть без сохранения</button></div>:<><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={saving||!!shipment&&!dirty}>{saving?<LoaderCircle className="spin" size={17}/>:<Save size={17}/>}Сохранить отгрузку</button></>}</footer>
+    <footer className="shipment-editor-footer"><><button type="button" className="button" onClick={close} disabled={saving}>Отмена</button><button type="submit" className="button primary" disabled={saving||!!shipment&&!dirty}>{saving?<LoaderCircle className="spin" size={17}/>:<Save size={17}/>}Сохранить отгрузку</button></></footer>
   </form></dialog>
 }

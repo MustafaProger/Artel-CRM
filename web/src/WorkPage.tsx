@@ -306,14 +306,14 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const [files, setFiles] = useState<File[]>([]);
   const [subtasks, setSubtasks] = useState<WorkSubtask[]>(() => task?.subtasks ?? []);
   const archived = !!task?.archivedAt;
-  const [saving, setSaving] = useState(false), [error, setError] = useState(''), [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false), [error, setError] = useState('');
   const [pendingAction, setPendingAction] = useState<SavedAction | null>(null);
   const motion = useDialogMotion(dialog, onDismiss);
   const onClose = motion.close;
 
   const editSubtasks = (next: WorkSubtask[]) => {
     setSubtasks(next);
-    setDirty(true);
+
   };
   const addSubtask = () => {
     const id = crypto.randomUUID();
@@ -321,8 +321,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
     editSubtasks([...subtasks, { id, title: '', done: false }]);
   };
   useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }); } }, [error]);
-  useEffect(() => { if (!dirty) return; const prevent = (event: BeforeUnloadEvent) => event.preventDefault(); window.addEventListener('beforeunload', prevent); return () => window.removeEventListener('beforeunload', prevent); }, [dirty]);
-  const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })); setDirty(true); };
+  const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })) };
   const close = () => { if (!inFlight.current) onClose(); };
   const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
     if (inFlight.current) return;
@@ -354,7 +353,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const companyField = editor.kind !== 'notes' && <DirectorySelect label="Компания" placeholder="Компания" portalMenu={editor.kind === 'tasks'} entries={companies.filter(company => isWorkDirectoryCompany(company) || company.id === task?.companyId).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={fields.companyId} onChange={id => update('companyId', id)} disabled={saving} required={editor.kind === 'companies'} legacy={fields.companyId && !companies.some(company => company.id === fields.companyId) ? 'Компания недоступна' : undefined}/>;
   const taskParameters = <div className={editor.kind === 'tasks' ? 'work-task-parameters' : 'work-other-parameters'}>
       {editor.kind !== 'tasks' && companyField}
-      <div className="work-field-grid"><WorkChoice label="Исполнитель *" value={fields.assigneeId} portalMenu={editor.kind === 'tasks'} placeholder={editor.kind === 'tasks' && !entry && !chosen.assignee} disabled={saving || !entry && isScopedEmployee(actor)} onChange={value => { update('assigneeId', value); setChosen(previous => ({ ...previous, assignee: true })); }} options={[...(!users.some(user => user.id === fields.assigneeId) ? [{ value: fields.assigneeId, name: `${userName(fields.assigneeId)} · доступ отключён`, disabled: true }] : []), ...users.map(user => ({ value: user.id, name: `${user.name}${user.id === actor.id ? ' (я)' : ''}` }))]}/>{editor.kind === 'tasks' && <WorkChoice label="Приоритет" value={fields.priority} portalMenu placeholder={!entry && !chosen.priority} disabled={saving} priority onChange={value => { update('priority', value); setChosen(previous => ({ ...previous, priority: true })); }} options={[{ value: '1', name: 'P1 · Срочно' }, { value: '2', name: 'P2 · Высокий' }, { value: '3', name: 'P3 · Средний' }, { value: '4', name: 'P4 · Обычный' }]}/>}
+      <div className="work-field-grid"><WorkChoice label="Исполнитель *" value={fields.assigneeId} portalMenu={editor.kind === 'tasks'} placeholder={editor.kind === 'tasks' && !entry && !chosen.assignee} disabled={saving || editor.kind !== 'tasks' && !entry && isScopedEmployee(actor)} onChange={value => { update('assigneeId', value); setChosen(previous => ({ ...previous, assignee: true })); }} options={[...(!users.some(user => user.id === fields.assigneeId) ? [{ value: fields.assigneeId, name: `${userName(fields.assigneeId)} · доступ отключён`, disabled: true }] : []), ...users.map(user => ({ value: user.id, name: `${user.name}${user.id === actor.id ? ' (я)' : ''}` }))]}/>{editor.kind === 'tasks' && <WorkChoice label="Приоритет" value={fields.priority} portalMenu placeholder={!entry && !chosen.priority} disabled={saving} priority onChange={value => { update('priority', value); setChosen(previous => ({ ...previous, priority: true })); }} options={[{ value: '1', name: 'P1 · Срочно' }, { value: '2', name: 'P2 · Высокий' }, { value: '3', name: 'P3 · Средний' }, { value: '4', name: 'P4 · Обычный' }]}/>}
         {editor.kind === 'tasks' && compactDate('Срок задачи', 'dueDate', 'date')}{editor.kind === 'tasks' ? compactDate('Напоминание', 'reminderAt', 'datetime-local') : editor.kind !== 'notes' && input('Напоминание', 'reminderAt', { type: 'datetime-local' })}
       </div>
       {editor.kind === 'tasks' && companyField}
@@ -365,7 +364,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
         {record?.attachments?.map(file => <a key={file.id} className="work-file" href={`/api/work/${editor.kind}/${encodeURIComponent(entry!.id)}/files/${encodeURIComponent(file.id)}`} download={file.name}><Paperclip size={14} aria-hidden="true"/><span>{file.name}</span><small>{Math.ceil(file.size / 1024)} КБ</small></a>)}
         {files.map((file, index) => <div className="work-file" key={index}>{file.name}<button type="button" className="icon-button" aria-label={`Убрать файл ${file.name}`} disabled={saving} onClick={() => setFiles(files.filter((_, i) => i !== index))}><X size={15}/></button></div>)}
   </>;
-  const uploadAction = <label className="work-upload"><Paperclip size={14} aria-hidden="true"/><span>Добавить файл</span><input type="file" multiple aria-label="Добавить файл" disabled={saving} onChange={event => { const selected = [...files, ...Array.from(event.target.files ?? [])]; event.target.value = ''; if (selected.some(file => file.size > workFileLimit) || selected.reduce((sum, file) => sum + file.size, 0) + (record?.attachments ?? []).reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit || selected.length + (record?.attachments?.length ?? 0) > 20) { setError('Файл: до 20 МБ; в карточке не более 20 файлов и 20 МБ суммарно.'); return; } setFiles(selected); setDirty(true); setError(''); }}/></label>;
+  const uploadAction = <label className="work-upload"><Paperclip size={14} aria-hidden="true"/><span>Добавить файл</span><input type="file" multiple aria-label="Добавить файл" disabled={saving} onChange={event => { const selected = [...files, ...Array.from(event.target.files ?? [])]; event.target.value = ''; if (selected.some(file => file.size > workFileLimit) || selected.reduce((sum, file) => sum + file.size, 0) + (record?.attachments ?? []).reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit || selected.length + (record?.attachments?.length ?? 0) > 20) { setError('Файл: до 20 МБ; в карточке не более 20 файлов и 20 МБ суммарно.'); return; } setFiles(selected); setError(''); }}/></label>;
   const taskFiles = editor.kind !== 'notes' && <section className="work-files" aria-label="Файлы">{fileRows}{uploadAction}</section>;
   const taskActivity = <>
       {editor.kind === 'companies' && <section className="work-comments"><h3>Комментарии</h3>{record?.comments?.map(comment => <article key={comment.id}><small>{userName(comment.authorId)} · {dateLabel(comment.createdAt)}</small><p>{comment.text}</p></article>)}{input('Новый комментарий', 'comment', { multiline: true })}</section>}

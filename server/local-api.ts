@@ -753,9 +753,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const currentActor = actor ? authorized(stored) : null;
           const snapshot = currentTripRequestSnapshot(base, stored);
           const catalog = tripRequestCatalog(snapshot);
+          const names = new Map(stored.accounts?.users.map(user => [user.id, user.name]));
           const requests = await Promise.all(listTripRequests(stored, snapshot, currentActor).map(async row => {
             const target = tripRequestGeocodeTarget(stored, snapshot, currentActor, { requestId: row.id });
-            return { ...row, location: target.location ?? await locations.read(target.address) };
+            return { ...row, createdByName: names.get(row.ownerUserId ?? ''), location: target.location ?? await locations.read(target.address) };
           }));
           const addresses = await Promise.all(catalog.addresses.map(async row => ({ ...row, location: tripRequestExplicitCoordinates(row) ?? await locations.read(row.address) })));
           // An initial GET reads the local projection only. Legacy active requests backfill once,
@@ -774,7 +775,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const known = place ? await locations.read(typeof body.address === 'string' ? body.address : place.address || place.name) : null;
           const result = saveTripRequest(data, snapshot, currentActor, body, id, known?.status === 'found' ? known : undefined);
           const target = result.request.status === 'active' ? tripRequestGeocodeTarget(data, snapshot, currentActor, { requestId: result.request.id }) : { address: result.request.address, location: tripRequestExplicitCoordinates(result.request) };
-          return { result: { request: { ...result.request, location: target.location ?? await locations.read(target.address) }, created: result.created }, changed: result.changed };
+          return { result: { request: { ...result.request, createdByName: data.accounts?.users.find(user => user.id === result.request.ownerUserId)?.name, location: target.location ?? await locations.read(target.address) }, created: result.created }, changed: result.changed };
         });
         const savedRequest = saved.request as import('../web/src/trip-request-model').TripRequest | undefined;
         if (savedRequest?.status === 'active' && savedRequest.location?.status === 'pending') void locations.resolve(savedRequest.address, 'background').catch(() => undefined);
@@ -1158,9 +1159,20 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const numbers = readTripNumbers(fullSnapshot, stored);
           const config = options.sabyClient?.config ?? sabyConfigFromEnv();
           const currentActor = actor ? authorized(stored) : null;
+          const names = new Map(stored.accounts?.users.map(user => [user.id, user.name]));
+          const creators = new Map<string, { actorId: string | null; createdAt?: string }>();
+          for (const row of Object.values(stored.tripCreateRequests ?? {})) {
+            const current = creators.get(row.tripId);
+            if (!current || row.createdAt) creators.set(row.tripId, row);
+            else if (!current.createdAt && current.actorId !== row.actorId) creators.set(row.tripId, { actorId: null });
+          }
           const trips = [...new Set(snapshot.shipments.map(row => row.fields.trip_id).filter((id): id is string => !!id))].filter(id => {
             try { if (currentActor) requireWholeTrip(currentActor, fullSnapshot, id); return true; } catch { return false; }
-          }).map(id => ({ ...getShipmentTrip(snapshot, id, numbers), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id, { snapshot: fullSnapshot, trip: getShipmentTrip(fullSnapshot, id, numbers), config }) })).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
+          }).map(id => {
+            const creator = creators.get(id);
+            const trip = getShipmentTrip(snapshot, id, numbers);
+            return { ...trip, createdAt: creator?.createdAt ?? trip.createdAt, createdByName: names.get(creator?.actorId ?? ''), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id, { snapshot: fullSnapshot, trip: getShipmentTrip(fullSnapshot, id, numbers), config }) };
+          }).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
           return write(response, 200, JSON.stringify({ trips, automation }));
         }

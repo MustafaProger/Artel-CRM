@@ -1,6 +1,7 @@
 import { permissionSections } from './page-catalog';
 export type AccountRole = 'director' | 'admin' | 'employee' | 'manager' | 'logistician' | 'driver';
 export const roleNames: Record<AccountRole, string> = { director: 'Директор', admin: 'Администратор', employee: 'Сотрудник', manager: 'Менеджер', logistician: 'Логист', driver: 'Водитель' };
+export const selectableRoles = (Object.entries(roleNames) as [AccountRole, string][]).filter(([role]) => role !== 'logistician');
 export const isScopedEmployee = (user: Pick<AccountUser, 'role'>) => ['employee', 'manager', 'logistician'].includes(user.role);
 export const sections = permissionSections;
 // Keep the removed identifier readable for existing account records.
@@ -25,4 +26,4 @@ export const sharedDirectories = [
 export type SharedDirectory = typeof sharedDirectories[number]['id'];
 export const validDirectoryGrants = (value: unknown): value is SharedDirectory[] => Array.isArray(value) && new Set(value).size === value.length && value.every(id => sharedDirectories.some(row => row.id === id));
 export const hasDirectoryGrant = (user: AccountUser, kind: string) => hasSection(user, 'directories') && (isAdministrator(user) || user.directoryGrants?.includes(kind as SharedDirectory) === true);
-export const availableDirectoryTabs = (user: AccountUser) => hasSection(user, 'directories') ? [...(['overview', 'shipments', 'trips'] as SectionId[]).some(section => hasSection(user, section)) ? ['customers', 'addresses'] : [], ...sharedDirectories.filter(row => hasDirectoryGrant(user, row.id)).map(row => row.id)] : [];
+export const availableDirectoryTabs = (user: AccountUser) => hasSection(user, 'directories') ? [...sharedDirectories.filter(row => row.id !== 'paymentForms' && hasDirectoryGrant(user, row.id)).map(row => row.id)] : [];

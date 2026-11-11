@@ -52,12 +52,23 @@ async function fixture() {
 }
 const update = (user: AccountUser, changes: object = {}) => ({ name: user.name, login: user.login, role: user.role, managerId: user.managerId, active: user.active, version: user.version, sections: effectiveSections(user), ...changes });
 
-for (const role of ['employee', 'logistician'] as const) test(`${role} persists with explicit sections, preserves identity/password and enforces employee boundaries`, async () => {
+test('employee persists with explicit sections; the retired role remains readable without losing permissions', async () => {
+  const role = 'employee';
   const f = await fixture(); try {
     const before = (await f.store.read(base.provenance.sourceSha256)).accounts!.users.find(user => user.id === f.users[0].id)!;
     const own = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
     const foreign = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[1].managerId!) });
     assert.equal(own.status, 201); assert.equal(foreign.status, 201);
+    assert.equal((await f.director(`/api/auth/users/${before.id}`, 'PATCH', update(f.users[0], { role: 'logistician' }))).status, 400);
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      const account = data.accounts!.users.find(user => user.id === before.id)!;
+      account.sections = effectiveSections(account);
+      account.role = 'logistician';
+      return { result: null, changed: true };
+    });
+    const legacySession = await f.aidar('/api/auth/session');
+    assert.equal(legacySession.body.user.role, 'employee');
+    assert.deepEqual(legacySession.body.user.sections, effectiveSections(before));
     const changed = await f.director(`/api/auth/users/${before.id}`, 'PATCH', update(f.users[0], { role }));
     assert.equal(changed.status, 200); assert.equal(changed.body.user.role, role);
     assert.deepEqual(changed.body.user.sections, effectiveSections(before));
@@ -185,7 +196,7 @@ test('mixed-owner trips hide shared totals and reject all partial truck changes 
     assert.equal((await f.aidar('/api/shipment-trips', 'POST', { fields, customers: [customer(0), customer(1)] })).status, 403);
     assert.equal(encodeOperations(await f.store.read(base.provenance.sourceSha256)), before);
     const ownBody = { fields, customers: [customer(0), customer(0)] };
-    await prepareTripRequestFixture(f.store, base, ownBody);
+    await prepareTripRequestFixture(f.store, base, ownBody, f.users[0]);
     const created = await f.aidar('/api/shipment-trips', 'POST', ownBody); assert.equal(created.status, 201, JSON.stringify(created.body));
     const ownTrip = created.body.trip as ShipmentTrip;
     assert.equal((await f.zufar('/api/shipment-trips/' + ownTrip.id)).status, 404);

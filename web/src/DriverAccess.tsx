@@ -24,7 +24,7 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
   const [notice, setNotice] = useState('')
   const [temporaryPassword, setTemporaryPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [confirmation, setConfirmation] = useState<'issue' | 'reset' | 'revoke' | null>(null)
+  const [confirmation, setConfirmation] = useState<'issue' | 'reset' | null>(null)
   const [customPassword, setCustomPassword] = useState(false)
   const [password, setPassword] = useState('')
   const [repeatPassword, setRepeatPassword] = useState('')
@@ -52,11 +52,11 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
 
   useEffect(() => { void refresh(); return () => { request.current++ } }, [refresh])
 
-  const openConfirmation = (action: 'issue' | 'reset' | 'revoke', custom = false) => {
+  const openPasswordForm = (action: 'issue' | 'reset') => {
     setPassword('')
     setRepeatPassword('')
     setShowCustomPassword(false)
-    setCustomPassword(custom)
+    setCustomPassword(true)
     setConfirmation(action)
     setError('')
     setNotice('')
@@ -136,20 +136,20 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
       </div>
       {!temporaryPassword && !confirmation && <div className="driver-access-controls">
         <div className="driver-access-actions">
-          {access.status === 'not-issued' ? <button type="button" className="button primary" disabled={disabled || busy || loading || needsCheck} onClick={() => void change('issue')}><KeyRound size={16}/>Выдать доступ</button> : <button type="button" className="button" disabled={disabled || busy || loading || needsCheck} onClick={() => openConfirmation('reset')}><KeyRound size={16}/>Выдать новый пароль</button>}
-          <button type="button" className="button" disabled={disabled || busy || loading || needsCheck} onClick={() => openConfirmation(access.status === 'not-issued' ? 'issue' : 'reset', true)}>Задать свой пароль</button>
+          {access.status === 'not-issued' ? <button type="button" className="button primary" disabled={disabled || busy || loading || needsCheck} onClick={() => void change('issue')}><KeyRound size={16}/>Выдать доступ</button> : <button type="button" className="button" disabled={disabled || busy || loading || needsCheck} onClick={() => void change('reset')}><KeyRound size={16}/>Выдать новый пароль</button>}
+          <button type="button" className="button" disabled={disabled || busy || loading || needsCheck} onClick={() => openPasswordForm(access.status === 'not-issued' ? 'issue' : 'reset')}>Задать свой пароль</button>
         </div>
-        {access.active && <button type="button" className="driver-access-revoke" disabled={disabled || busy || loading || needsCheck} onClick={() => openConfirmation('revoke')}>Отозвать доступ</button>}
+        {access.active && <button type="button" className="driver-access-revoke" disabled={disabled || busy || loading || needsCheck} onClick={() => void change('revoke')}>Отозвать доступ</button>}
       </div>}
-      {confirmation && <div className="driver-access-confirm" role="group" aria-label="Подтверждение изменения доступа">
-        <h4>{confirmation === 'revoke' ? 'Отзыв доступа' : customPassword ? 'Свой пароль' : 'Новый пароль'}</h4>
-        <p>{confirmation === 'revoke' ? 'Водитель выйдет из кабинета и не сможет войти до новой выдачи пароля.' : confirmation === 'issue' ? 'Установите пароль для первого входа водителя.' : 'Прежний пароль перестанет действовать, открытые сеансы водителя завершатся.'}</p>
+      {confirmation && <div className="driver-access-confirm" role="group" aria-label="Свой пароль водителя">
+        <h4>{customPassword ? 'Свой пароль' : 'Новый пароль'}</h4>
+        <p>{confirmation === 'issue' ? 'Установите пароль для первого входа водителя.' : 'Прежний пароль перестанет действовать, открытые сеансы водителя завершатся.'}</p>
         {customPassword && <div className="driver-access-custom" onKeyDown={event => { if (event.key === 'Enter') event.preventDefault() }}>
           <label className="shipment-field"><span>Новый пароль водителя</span><span className="driver-access-password"><input aria-label="Новый пароль водителя" type={showCustomPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} minLength={12} maxLength={256} autoComplete="new-password" spellCheck={false} disabled={disabled || busy} aria-describedby="driver-password-help" autoFocus/><button type="button" className="icon-button" disabled={busy} aria-label={showCustomPassword ? 'Скрыть введённый пароль' : 'Показать введённый пароль'} onClick={() => setShowCustomPassword(value => !value)}>{showCustomPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></span></label>
           <label className="shipment-field"><span>Повторите пароль</span><input aria-label="Повторите пароль" type={showCustomPassword ? 'text' : 'password'} value={repeatPassword} onChange={event => setRepeatPassword(event.target.value)} maxLength={256} autoComplete="new-password" spellCheck={false} disabled={disabled || busy} aria-invalid={!!repeatPassword && password !== repeatPassword} aria-describedby="driver-password-help"/></label>
           <p id="driver-password-help" className="driver-access-hint" aria-live="polite">{repeatPassword && password !== repeatPassword ? 'Пароли не совпадают.' : 'От 12 до 256 символов.'}</p>
         </div>}
-        <div className="driver-access-actions"><button type="button" className={`button ${confirmation === 'revoke' ? 'directory-danger' : 'primary'}`} disabled={disabled || busy || loading || needsCheck || (customPassword && !validPassword)} onClick={() => void change(confirmation)}>{confirmation === 'revoke' ? 'Подтвердить отзыв' : customPassword ? 'Сохранить пароль' : 'Подтвердить новый пароль'}</button><button type="button" className="button" disabled={busy} onClick={cancelConfirmation}>Отмена изменения доступа</button></div>
+        <div className="driver-access-actions"><button type="button" className="button primary" disabled={disabled || busy || loading || needsCheck || (customPassword && !validPassword)} onClick={() => void change(confirmation)}>Сохранить пароль</button><button type="button" className="button" disabled={busy} onClick={cancelConfirmation}>Отмена изменения доступа</button></div>
       </div>}
       {temporaryPassword && <div className="driver-access-secret" aria-label="Выданные данные входа">
         <p>Пароль доступен только сейчас. Передайте его водителю перед закрытием панели. Повторно посмотреть пароль нельзя — можно выдать новый.</p>

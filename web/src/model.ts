@@ -241,6 +241,7 @@ export interface ShipmentTrip {
   number?: number;
   /** Earliest retained delivery creation time; absent on historical imports. */
   createdAt?: string | null;
+  createdByName?: string;
   fields: Record<string, string | null>;
   customers: { id: string; version: number; paidAmount: DecimalValue; fields: Record<string, string | null> }[];
 }

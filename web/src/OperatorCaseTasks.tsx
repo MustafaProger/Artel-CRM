@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useId, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, X } from 'lucide-react'
 import type { OperatorCaseKind, OperatorCaseSummary } from './operator-case-model'
 import type { OperatorWorkspace } from './operator-model'
@@ -32,27 +32,21 @@ export function CaseTaskEditor({ entry: initial, onClose, onSaved }: {
 }) {
   const [entry, setEntry] = useState(initial)
   const [dueDate, setDueDate] = useState(initial.task?.dueDate ?? operatorToday()), [comment, setComment] = useState(initial.task?.comment ?? '')
-  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false), [discard, setDiscard] = useState(false), [error, setError] = useState('')
-  const dialog = useRef<HTMLDialogElement>(null), lock = useRef(false), pending = useRef<string | null>(null), original = useRef({ dueDate, comment })
+  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false), [error, setError] = useState('')
+  const dirty = dueDate !== (entry.task?.dueDate ?? operatorToday()) || comment !== (entry.task?.comment ?? '')
+  const dialog = useRef<HTMLDialogElement>(null), lock = useRef(false), pending = useRef<string | null>(null)
   const title = useId(), { close, complete } = useDialogMotion(dialog, onClose)
-  const dirty = dueDate !== original.current.dueDate || comment !== original.current.comment
   const dismiss = () => {
     if (lock.current) return
     if (uncertain) { setError('Проверьте сохранение тем же запросом, прежде чем закрыть форму.'); return }
-    if (dirty) setDiscard(true); else close()
+    close()
   }
-  useEffect(() => {
-    if (!dirty && !uncertain) return
-    const prevent = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload', prevent); return () => window.removeEventListener('beforeunload', prevent)
-  }, [dirty, uncertain])
   const refresh = async () => {
     if (lock.current || uncertain) return
     lock.current = true; setSaving(true)
     try {
       const next = await readWorkspace(), latest = next.cases.find(item => item.id === entry.id)
       if (!latest) throw new Error('Возврат или остаток не найден. Закройте форму и обновите список.')
-      original.current = { dueDate: latest.task?.dueDate ?? operatorToday(), comment: latest.task?.comment ?? '' }
       setEntry(latest); setStale(false)
       setError(latest.status === 'completed' ? 'Остаток уже исполнен. Новое задание не требуется.' : 'Данные обновлены. Проверьте дату и описание перед сохранением.')
     } catch (reason) { setError((reason as Error).message) }
@@ -88,14 +82,13 @@ export function CaseTaskEditor({ entry: initial, onClose, onSaved }: {
   return <dialog ref={dialog} className="operator-dialog operator-case-dialog" aria-labelledby={title} onCancel={event => { event.preventDefault(); dismiss() }}><form onSubmit={event => void submit(event)}>
     <header><h2 id={title}>{entry.kind === 'return' ? 'Задание на возврат' : 'Задание на заправку'}</h2><button type="button" className="icon-button" aria-label="Закрыть форму задания" disabled={saving} onClick={dismiss}><X size={20}/></button></header>
     <div className="operator-dialog-body">{error && <p className="soft-notice" role="alert">{error}</p>}{stale && <button type="button" className="button operator-case-refresh" disabled={saving || uncertain} onClick={() => void refresh()}>Обновить данные</button>}
-      {discard ? <div className="operator-discard"><p>Закрыть форму без сохранения?</p><div className="operator-actions"><button type="button" className="button" onClick={() => setDiscard(false)}>Продолжить ввод</button><button type="button" className="button" onClick={close}>Не сохранять</button></div></div> : <>
         <div className="operator-case-dialog-source"><strong>{entry.source.driverName}</strong><span>{entry.source.service} · осталось {display(entry.remainingLitres)} л · {display(entry.remainingAmount, true)} ₽</span></div>
         <fieldset className="operator-case-fields" disabled={saving || uncertain || entry.status === 'completed'}>
           <label>Дата выполнения<input type="date" aria-label="Дата выполнения" required value={dueDate} onChange={event => setDueDate(event.target.value)}/></label>
           <label>Что нужно сделать<textarea aria-label="Что нужно сделать" rows={3} maxLength={2000} value={comment} placeholder={entry.kind === 'return' ? 'Например, сегодня связаться с водителем и вернуть остаток' : 'Например, сегодня заправить водителя из сохранённого остатка'} onChange={event => setComment(event.target.value)}/></label>
           <p className="operator-case-explanation">Задание появится во вкладке «Задания». При выполнении {entry.kind === 'return' ? 'выберите возврат денег или заправку' : 'отметьте фактически заправленные литры'}. Неиспользованные литры сохранятся, дату задания можно будет перенести.</p>
         </fieldset>
-      </>}
-    </div>{!discard && <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button><button type="submit" className="button primary" disabled={saving || !uncertain && (stale || entry.status !== 'open' || !dueDate || !!entry.task && !dirty)}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : entry.task ? 'Сохранить задание' : 'Поставить задание'}</button></footer>}
+
+    </div><footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button><button type="submit" className="button primary" disabled={saving || !uncertain && (stale || entry.status !== 'open' || !dueDate || !!entry.task && !dirty)}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : entry.task ? 'Сохранить задание' : 'Поставить задание'}</button></footer>
   </form></dialog>
 }

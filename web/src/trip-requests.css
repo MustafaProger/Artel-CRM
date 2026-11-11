@@ -8,3 +8,6 @@
 .trip-request-address-hint{font-size:12px;line-height:1.5;color:var(--muted)}
 
 .trip-request-price{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin:8px 0 0;font-size:13px;line-height:1.6;color:var(--muted)}.trip-request-price strong{font-size:16px;color:var(--ink);font-variant-numeric:tabular-nums}
+
+.trip-requests-empty h2{margin:20px 0 12px}
+.trip-creation-meta{display:block;margin-top:14px;color:var(--muted,#6e7683);font-size:12px;line-height:1.5}

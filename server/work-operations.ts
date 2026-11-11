@@ -149,7 +149,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   const activeAssignee = users.some(user => user.id === assigneeId && user.active && !user.deletedAt);
   if (!identifier(assigneeId) || !activeAssignee && previous?.assigneeId !== assigneeId) throw new ApiError(400, 'Выберите действующего сотрудника.');
   // Managers may create for themselves and then explicitly hand their task over; they cannot write into another employee's list directly.
-  if (!previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
+  if (kind !== 'tasks' && !previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
   const companyId = kind === 'notes' ? null : get('companyId', null);
   if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId && (isWorkDirectoryCompany(company) || previous && 'companyId' in previous && previous.companyId === companyId)))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
   const now = new Date().toISOString();

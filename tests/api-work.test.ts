@@ -79,6 +79,11 @@ test('work assignments transfer across authenticated accounts, remain scoped and
     const stored = await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256);
     const reloaded = readWork(stored, currentSnapshot(base, stored), new URLSearchParams(), runtime.users[2], runtime.users);
     assert.equal(reloaded.work.tasks[0].assigneeId, runtime.users[2].id); assert.equal(reloaded.work.tasks[0].reminderAt, task.reminderAt);
+    const delegated = await runtime.alice('/api/work/tasks', 'POST', { title: 'Задача для коллеги', assigneeId: runtime.users[2].id, requestId: randomUUID() });
+    assert.equal(delegated.status, 201);
+    assert.equal(delegated.body.entry.createdBy, runtime.users[1].id);
+    assert.deepEqual((await runtime.alice('/api/work')).body.work.tasks, []);
+    assert.ok((await runtime.bob('/api/work')).body.work.tasks.some((row: WorkTask) => row.id === delegated.body.entry.id));
   } finally { await runtime.close(); }
 });
 

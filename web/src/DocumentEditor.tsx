@@ -1,7 +1,6 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Download, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react'
 import { useDialogMotion } from './useDialogMotion'
-import DocumentDeleteDialog from './DocumentDeleteDialog'
 import { documentsRequest } from './documents-api'
 import { documentExpired, documentMaxBytes, type ArchiveItem, type DocumentArchiveView, type DocumentCategory } from './documents-model'
 
@@ -13,16 +12,21 @@ export default function DocumentEditor({ kind, category, item, files, onClose, o
 }) {
   const dialog = useRef<HTMLDialogElement>(null), titleId = useId(), lock = useRef(false), backdropDown = useRef(false)
   const { close, complete } = useDialogMotion(dialog, onClose)
-  const [deleting, setDeleting] = useState(false)
   const [name, setName] = useState(item?.name ?? '')
   const [rows, setRows] = useState<DraftFile[]>(() => files.map(f => ({ key: f.id, id: f.id, title: f.title, expiresOn: f.expiresOn ?? '', fileName: f.fileName })))
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const toggleFile = (key: string) => setExpanded(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next })
-  const initial = useRef(JSON.stringify({ name: item?.name ?? '', rows }))
-  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [discard, setDiscard] = useState(false)
-  const dirty = initial.current !== JSON.stringify({ name, rows })
-  const dismiss = () => { if (lock.current) return; if (dirty) setDiscard(true); else close() }
-  useEffect(() => { if (!dirty) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn) }, [dirty])
+  const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const remove = async () => {
+    if (!item || lock.current) return
+    lock.current = true; setBusy(true); setError('')
+    try {
+      const result = await documentsRequest<{ archive: DocumentArchiveView }>(`/cards/${item.id}`, { version: item.version }, 'DELETE')
+      await complete(() => onDeleted(result.archive))
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось удалить документ.') }
+    finally { lock.current = false; setBusy(false) }
+  }
+  const dismiss = () => { if (lock.current) return; close() }
   const update = (key: string, change: Partial<DraftFile>) => setRows(current => current.map(row => row.key === key ? { ...row, ...change } : row))
   const trapFocus = (event: KeyboardEvent<HTMLDialogElement>) => {
     if (event.key !== 'Tab') return
@@ -34,7 +38,7 @@ export default function DocumentEditor({ kind, category, item, files, onClose, o
   const outside = (event: { clientX: number; clientY: number }) => { const b = dialog.current!.getBoundingClientRect(); return event.clientX < b.left || event.clientX > b.right || event.clientY < b.top || event.clientY > b.bottom }
   const save = async (event: FormEvent) => {
     event.preventDefault(); if (lock.current) return
-    lock.current = true; setBusy(true); setError(''); setDiscard(false)
+    lock.current = true; setBusy(true); setError('')
     try {
       const attachments = kind === 'category' ? [] : await Promise.all(rows.filter(row => !row.removed).map(async row => {
         if (row.file && (!row.file.size || row.file.size > documentMaxBytes)) throw new Error(`«${row.title || row.file.name}»: выберите непустой файл до 5 МБ.`)
@@ -70,9 +74,8 @@ export default function DocumentEditor({ kind, category, item, files, onClose, o
       </div>
       <footer className="archive-drawer-footer">
         {error && <p className="archive-error" role="alert">{error}</p>}
-        {discard ? <div className="archive-discard" role="alert"><p>Есть несохранённые изменения.</p><div className="archive-actions"><button className="button" type="button" onClick={() => setDiscard(false)}>Продолжить редактирование</button><button className="button" type="button" onClick={close}>Не сохранять</button></div></div> : <div className="archive-actions">{item && <button className="button archive-remove archive-delete-item" type="button" disabled={busy} onClick={() => setDeleting(true)}><Trash2 size={18}/>Удалить</button>}<button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>}
+        <div className="archive-actions">{item && <button className="button archive-remove archive-delete-item" type="button" disabled={busy} onClick={() => void remove()}><Trash2 size={18}/>Удалить</button>}<button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button><button className="button" type="button" disabled={busy} onClick={dismiss}>Отмена</button></div>
       </footer>
     </form>
-    {deleting && item && <DocumentDeleteDialog kind="cards" id={item.id} name={item.name} version={item.version} onClose={() => setDeleting(false)} onDeleted={next => { setDeleting(false); void complete(() => onDeleted(next)) }}/ >}
   </dialog>
 }

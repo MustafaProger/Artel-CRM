@@ -104,11 +104,9 @@ export function CaseEditor({ editor, workspace, onClose, onSaved }: {
   const [entry, setEntry] = useState(editor.mode === 'settle' ? editor.entry : null)
   const [litres, setLitres] = useState(editor.mode === 'settle' && editor.method === 'fuel' ? editor.entry.remainingLitres : '')
   const [transferred, setTransferred] = useState(false)
-  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false), [discard, setDiscard] = useState(false), [error, setError] = useState('')
+  const [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false), [error, setError] = useState('')
   const dialog = useRef<HTMLDialogElement>(null), lock = useRef(false), pending = useRef<string | null>(null)
   const titleId = useId(), volumeId = useId(), previewId = useId()
-  const initialLitres = useRef(litres)
-  const dirty = litres !== initialLitres.current || transferred
   const { close, complete } = useDialogMotion(dialog, onClose)
   const creating = editor.mode === 'create', money = editor.mode === 'settle' && editor.method === 'money'
   const kind = creating ? editor.kind : entry!.kind
@@ -132,15 +130,8 @@ export function CaseEditor({ editor, workspace, onClose, onSaved }: {
   const dismiss = () => {
     if (lock.current) return
     if (uncertain) { setError('Проверьте сохранение тем же запросом, прежде чем закрыть форму.'); return }
-    if (dirty) setDiscard(true)
-    else close()
+    close()
   }
-  useEffect(() => {
-    if (!dirty && !uncertain) return
-    const prevent = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload', prevent)
-    return () => window.removeEventListener('beforeunload', prevent)
-  }, [dirty, uncertain])
 
   const refresh = async () => {
     if (lock.current || uncertain) return
@@ -197,7 +188,6 @@ export function CaseEditor({ editor, workspace, onClose, onSaved }: {
     <div className="operator-dialog-body">
       {error && <p className="soft-notice" role="alert">{error}</p>}
       {stale && !uncertain && <button type="button" className="button operator-case-refresh" disabled={saving} onClick={() => void refresh()}>Обновить данные</button>}
-      {discard ? <div className="operator-discard"><p>Закрыть форму без сохранения?</p><div className="operator-actions"><button type="button" className="button" onClick={() => setDiscard(false)}>Продолжить ввод</button><button type="button" className="button" onClick={close}>Не сохранять</button></div></div> : <>
         <div className="operator-case-dialog-source"><strong>{driverName}</strong><span>Исходная операция от {calendarDate(facts.date)}</span><OperatorServiceBadge service={facts.service} discountPercent={facts.discountPercent}/></div>
         <fieldset disabled={saving || uncertain} className="operator-case-fields">
           {volumeInput && <label htmlFor={volumeId}>{creating ? 'Литры к возврату' : 'Заправлено, л'}<input id={volumeId} aria-label={creating ? 'Литры к возврату' : 'Заправлено, л'} required inputMode="decimal" autoComplete="off" maxLength={40} value={litres} onChange={event => { setLitres(event.target.value); setError('') }} aria-invalid={!!visibleProblem} aria-describedby={previewId}/></label>}
@@ -207,8 +197,8 @@ export function CaseEditor({ editor, workspace, onClose, onSaved }: {
           <div id={previewId} className="operator-case-preview" aria-live="polite"><span>{money ? 'Вернуть водителю' : creating ? 'Сумма по исходной цене и скидке' : 'Сумма заправленного остатка'}</span><output>{amount === null ? '—' : `${display(amount, true)} ₽`}</output>{volumeInput && <small>Доступно: {display(available.toFixed())} л</small>}</div>
           {money ? <label className="operator-case-confirm"><input type="checkbox" checked={transferred} onChange={event => setTransferred(event.target.checked)} required/><span>Подтверждаю: {display(entry!.remainingAmount, true)} ₽ уже переведены водителю.</span></label> : <p className="operator-case-explanation">{creating ? 'Цена и скидка взяты из исходной операции. Оплата, распределение получателям и лимиты задания сохраняются.' : 'Укажите фактически заправленный литраж. Неиспользованные литры останутся открытыми.'}</p>}
         </fieldset>
-      </>}
+
     </div>
-    {!discard && <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button><button type="submit" className="button primary" disabled={saving || !uncertain && (!!problem || stale)}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : creating ? kind === 'return' ? 'Создать возврат' : 'Перенести заправку' : money ? <><Check size={16} aria-hidden="true"/>Деньги возвращены</> : 'Подтвердить заправку'}</button></footer>}
+    <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button><button type="submit" className="button primary" disabled={saving || !uncertain && (!!problem || stale)}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : creating ? kind === 'return' ? 'Создать возврат' : 'Перенести заправку' : money ? <><Check size={16} aria-hidden="true"/>Деньги возвращены</> : 'Подтвердить заправку'}</button></footer>
   </form></dialog>
 }

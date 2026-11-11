@@ -262,7 +262,7 @@ export function saveShipmentTrip(base: Snapshot, data: OperationsData, body: Rec
     if (row.sourceRequest) Object.assign(row.sourceRequest, { status: 'consumed', version: row.sourceRequest.version + 1, tripId: id, shipmentId, updatedAt: now });
   }
   for (const row of removed) tombstone(data, row, now);
-  if (typeof key === 'string') (data.tripCreateRequests ??= {})[key] = { tripId: id, fingerprint, actorId };
+  if (typeof key === 'string' || !existingId && actorId) (data.tripCreateRequests ??= {})[typeof key === 'string' ? key : randomUUID()] = { tripId: id, fingerprint, actorId, ...(!existingId ? { createdAt: now } : {}) };
   const updated = currentSnapshot(base, data);
   // An arrival belongs to the exact assignment. Preserve superseded evidence,
   // but require a new driver arrival when that assignment changes.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import Decimal from 'decimal.js'
 import { ArrowRight, Pencil, Plus, X } from 'lucide-react'
 import { apiFetch } from './workspace-api'
@@ -112,18 +112,13 @@ const recipientFields = (plan?: OperatorPlanSummary) => plan?.recipients.map(({ 
 export function PlanEditor({ plan: initialPlan, workspace, creatorName, onClose, onSaved }: { plan?: OperatorPlanSummary; workspace: OperatorWorkspace; creatorName: string; onClose: () => void; onSaved: (data: OperatorWorkspace) => void }) {
   const [plan, setPlan] = useState(initialPlan), [catalog, setCatalog] = useState(workspace), [stale, setStale] = useState(false)
   const [clientName, setClientName] = useState(plan?.clientName ?? '')
-  const [recipients, setRecipients] = useState(() => recipientFields(plan)), [error, setError] = useState(''), [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false), [discard, setDiscard] = useState(false)
+  const [recipients, setRecipients] = useState(() => recipientFields(plan)), [error, setError] = useState(''), [saving, setSaving] = useState(false), [uncertain, setUncertain] = useState(false)
+  const dirty = clientName !== (plan?.clientName ?? '') || JSON.stringify(recipients) !== JSON.stringify(recipientFields(plan))
   const dialog = useRef<HTMLDialogElement>(null), lock = useRef(false), pending = useRef<string | null>(null)
-  const original = useRef(JSON.stringify({ clientName, recipients })), dirty = JSON.stringify({ clientName, recipients }) !== original.current
   const hasOperations = !!plan && catalog.refuellings.some(row => row.schemaVersion === 3 && (row.planId === plan.id || row.allocations.some(item => item.planId === plan.id)))
   const usedRecipient = (id: string) => !!plan?.recipients.some(item => item.id === id && new Decimal(item.used).greaterThan(0))
   const { close, complete } = useDialogMotion(dialog, onClose)
-  const dismiss = () => { if (lock.current) return; if (uncertain) { setError('Проверьте сохранение тем же запросом, прежде чем закрыть форму.'); return } if (dirty) setDiscard(true); else close() }
-  useEffect(() => {
-    if (!dirty && !uncertain) return
-    const handler = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload', handler); return () => window.removeEventListener('beforeunload', handler)
-  }, [dirty, uncertain])
+  const dismiss = () => { if (lock.current) return; if (uncertain) { setError('Проверьте сохранение тем же запросом, прежде чем закрыть форму.'); return } close() }
   const refreshPlan = async () => {
     if (lock.current || uncertain || !plan) return
     lock.current = true; setSaving(true)
@@ -131,7 +126,6 @@ export function PlanEditor({ plan: initialPlan, workspace, creatorName, onClose,
       const next = await readWorkspace(), latest = next.plans.find(item => item.id === plan.id)
       if (!latest) throw new Error('Задание не найдено. Закройте форму и обновите список.')
       const freshRecipients = recipientFields(latest)
-      original.current = JSON.stringify({ clientName: latest.clientName, recipients: freshRecipients })
       setPlan(latest); setCatalog(next); setClientName(latest.clientName); setRecipients(freshRecipients)
       setStale(false); setError('Загружена актуальная версия задания. Можно внести изменения заново.')
     } catch (error) { setError((error as Error).message || 'Не удалось обновить задание. Ваш ввод сохранён.') }
@@ -161,7 +155,6 @@ export function PlanEditor({ plan: initialPlan, workspace, creatorName, onClose,
     <div className="operator-dialog-body">
     {error && <p className="soft-notice" role="alert">{error}</p>}
     {stale && !uncertain && <div className="operator-edit-conflict"><p>Можно загрузить актуальную версию задания. Это заменит несохранённые изменения в форме.</p><button type="button" className="button" disabled={saving} onClick={() => void refreshPlan()}>Загрузить актуальное задание</button></div>}
-    {discard ? <div className="operator-discard"><p>Закрыть форму без сохранения?</p><div className="operator-actions"><button type="button" className="button" onClick={() => setDiscard(false)}>Продолжить ввод</button><button type="button" className="button" onClick={close}>Не сохранять</button></div></div> : <>
       <fieldset className="operator-form-grid" disabled={saving || uncertain}>
         <label className="operator-full">Клиент<input aria-label="Клиент" required readOnly={hasOperations} maxLength={500} value={clientName} placeholder="Например, ООО Метр" onChange={event => setClientName(event.target.value)} /></label>
         <p className="operator-full operator-plan-author">Создатель: <strong>{plan ? plan.createdByName || 'Пользователь CRM' : creatorName}</strong></p>
@@ -174,8 +167,8 @@ export function PlanEditor({ plan: initialPlan, workspace, creatorName, onClose,
         <button type="button" className="button operator-full" disabled={recipients.length >= 50} onClick={() => setRecipients([...recipients, newRecipient()])}><Plus size={16} />Добавить реквизиты</button>
         <p className="operator-full muted operator-form-hint">У каждого получателя свой лимит. Задание завершится, когда все лимиты будут распределены по операциям.</p>
       </fieldset>
-    </>}
+
     </div>
-    {!discard && <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button><button type="submit" className="button primary" disabled={saving || !!plan && !dirty && !uncertain}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : 'Сохранить задание'}</button></footer>}
+    <footer><button type="button" className="button" disabled={saving || uncertain} onClick={dismiss}>Закрыть</button><button type="submit" className="button primary" disabled={saving || !!plan && !dirty && !uncertain}>{saving ? 'Сохраняем…' : uncertain ? 'Проверить сохранение' : 'Сохранить задание'}</button></footer>
   </form></dialog>
 }

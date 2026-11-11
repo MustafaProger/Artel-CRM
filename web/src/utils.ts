@@ -24,3 +24,6 @@ export function downloadCsv(filename: string, headings: string[], rows: (string 
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+const creationDateTime = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Moscow' })
+export const creationTime = (value: string) => Number.isFinite(Date.parse(value)) ? creationDateTime.format(new Date(value)) : 'дата неизвестна'

@@ -18,7 +18,7 @@ export interface AccountsData {
   sessions: { hash: string; userId: string; expiresAt: number; audience?: 'logistics' }[];
   attempts: Record<string, { count: number; until: number }>;
 }
-export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
+export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role === 'logistician' ? 'employee' : user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
 export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt && user.role !== 'driver').map(publicUser);
 export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -86,7 +86,7 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if(!/^[a-z0-9._-]{3,64}$/.test(login))throw new ApiError(400,'Логин: 3–64 латинских буквы, цифры, точка, дефис или подчёркивание.');
   if(accounts.users.some(u=>u.login===login && u.id!==id))throw new ApiError(409,'Этот логин уже используется.');
   const role=setup?'director':input.role;
-  if(!['director','admin','employee','manager','logistician'].includes(String(role)))throw new ApiError(400,'Выберите роль пользователя.');
+  if(!['director','admin','employee','manager'].includes(String(role)))throw new ApiError(400,'Выберите роль пользователя.');
   const managerId=input.managerId || null;
   if(managerId!==null && (typeof managerId!=='string' || !snapshot.directories?.managers.some(m=>m.id===managerId)))throw new ApiError(400,'Выберите сотрудника из справочника.');
   if(managerId && accounts.users.some(u=>u.id!==id && u.managerId===managerId && u.active))throw new ApiError(409,'Сотрудник уже связан с активной учётной записью.');

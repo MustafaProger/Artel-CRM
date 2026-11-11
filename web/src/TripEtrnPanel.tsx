@@ -21,7 +21,7 @@ const safeSabyUrl = (value: string | null | undefined) => {
   try { const url = new URL(value || ''); return url.protocol === 'https:' && !url.username && !url.password && ['saby.ru', 'sbis.ru'].some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ? url.href : null } catch { return null }
 }
 
-export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: { trip: ShipmentTrip; data: DirectoryData; onDelete?: () => void; onIssuesChange?: (tripId: string, issues: TripWorkflowIssue[]) => void }) {
+export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete, deleting = false }: { trip: ShipmentTrip; data: DirectoryData; onDelete?: () => void; deleting?: boolean; onIssuesChange?: (tripId: string, issues: TripWorkflowIssue[]) => void }) {
   const endpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/saby-workflow`
   const etrnEndpoint = `/api/shipment-trips/${encodeURIComponent(trip.id)}/etrn`
   const [result, setResult] = useState<Workflow | null>(null), [etrn, setEtrn] = useState<EtrnTripResponse | null>(null)
@@ -151,7 +151,7 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
     } finally { lock.current = false; if (mounted.current) setBusy(false) }
   }
   const paused = result?.exchangeControl?.paused === true
-  const actions = <><TripExchangeActions control={result?.exchangeControl} busy={busy} onRefresh={refreshState} onControl={controlExchange} onDelete={onDelete}/>{refreshNotice && <p className="etrn-note" role="status">{refreshNotice}</p>}</>
+  const actions = <><TripExchangeActions control={result?.exchangeControl} busy={busy} onRefresh={refreshState} onControl={controlExchange} onDelete={onDelete} deleting={deleting}/>{refreshNotice && <p className="etrn-note" role="status">{refreshNotice}</p>}</>
   const title = (shipmentId: string, index: number) => {
     const row = trip.customers.find(customer => customer.id === shipmentId)
     return `Доставка ${index + 1} · ${data.companies.find(company => company.id === row?.fields.customer_id)?.name || 'Клиент'}`
@@ -190,7 +190,7 @@ export default function TripEtrnPanel({ trip, data, onIssuesChange, onDelete }: 
   if (!result) return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`} aria-busy={busy}>
     <div className="trip-saby-heading"><div><span className="workflow-eyebrow">ДОКУМЕНТЫ РЕЙСА</span><h3>Документы Saby</h3></div>{busy && <LoaderCircle size={18} className="spin" aria-label="Загрузка документов"/>}</div>
     {error ? <p className="shipment-error" role="alert">{error}</p> : <LoadingSkeleton label="Загружаем маршрут и этапы обмена" rows={4}/>}
-    {onDelete && !busy && <button type="button" className="button danger" onClick={onDelete}>Удалить рейс</button>}
+    {onDelete && !busy && <button type="button" className="button danger" disabled={deleting} onClick={onDelete}>{deleting ? 'Удаляем…' : 'Удалить рейс'}</button>}
     {!busy && <button type="button" className="button" onClick={() => { setBusy(true); setError(''); void read().catch(reason => { if (mounted.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером') }).finally(() => { if (mounted.current) setBusy(false) }) }}><RefreshCw size={15}/>Повторить загрузку</button>}
   </section>
   if (result?.documentMode === 'nk_direct_etrn') return <section className="trip-saby-panel etrn-panel" aria-label={`Документы рейса в Saby · ${tripLabel(trip)}`} aria-busy={busy}>

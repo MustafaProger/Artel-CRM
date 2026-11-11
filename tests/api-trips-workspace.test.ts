@@ -36,7 +36,7 @@ async function runtime() {
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const request = async (path: string, method = 'GET', data?: unknown, cookie?: string) => {
-    if (method === 'POST' && path === '/api/shipment-trips' && cookie) await prepareTripRequestFixture(store, base, data);
+    if (method === 'POST' && path === '/api/shipment-trips' && cookie) await prepareTripRequestFixture(store, base, data, { cookie, url: path });
     return fetch(url + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   };
   const password = randomUUID();
