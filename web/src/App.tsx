@@ -79,6 +79,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const availablePages = pages.filter(item => hasPageAccess(user, item.id))
   const [data,setData] = useState<Snapshot | null>(null)
   const [snapshotPage,setSnapshotPage] = useState<Page | null>(null)
+  const [todayTaskCount,setTodayTaskCount] = useState<number | undefined>(undefined)
   const [shipmentCount,setShipmentCount] = useState<number | undefined>(undefined)
   const [error,setError] = useState('')
   const [page,setPage] = useState<Page>(() => location.hash || /^\/invoices(?:\/|$)/.test(location.pathname) ? getPage() : availablePages[0]?.id ?? 'overview')
@@ -144,15 +145,20 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   useEffect(() => {
     setError(''); setSnapshotPage(null)
     if (!hasPageAccess(user, page)) return
-    if (requiresSnapshot) { void fetchData(); return () => snapshotController.current?.abort() }
+    if (requiresSnapshot) void fetchData()
+    if (requiresSnapshot && !hasSection(user, 'work')) return () => snapshotController.current?.abort()
     // These pages fetch their own scoped data. The sidebar count must neither
     // build a financial snapshot nor delay mounting the page and its first GET.
     const controller = new AbortController()
     void fetch('/api/navigation', { cache: 'no-store', signal: controller.signal })
       .then(async response => { if (!response.ok) throw new Error('Navigation unavailable'); return response.json() })
-      .then(result => { if (!controller.signal.aborted) setShipmentCount(result.shipmentCount) })
-      .catch(() => { if (!controller.signal.aborted) setShipmentCount(undefined) })
-    return () => controller.abort()
+      .then(result => {
+        if (controller.signal.aborted) return
+        if (!requiresSnapshot) setShipmentCount(result.shipmentCount)
+        if (page !== 'work') setTodayTaskCount(result.todayTaskCount)
+      })
+      .catch(() => { if (!controller.signal.aborted && !requiresSnapshot) setShipmentCount(undefined) })
+    return () => { controller.abort(); if (requiresSnapshot) snapshotController.current?.abort() }
   }, [page, user.version])
   useEffect(() => {
     const handle = () => {
@@ -182,7 +188,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
         </div>
         <a className="brand" href="#overview" aria-label="Артэль — обзор" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артэль</span></a>
       </div>
-      <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={p.id === 'shipments' ? shipmentCount : undefined}/>)}</nav>
+      <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={p.id === 'shipments' ? shipmentCount : p.id === 'work' ? todayTaskCount : undefined}/>)}</nav>
       <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
       <nav aria-label="Управление">{availablePages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
       <div className="sidebar-bottom"><div className="sidebar-profile sidebar-user-controls"><span title={user.name}>{user.name}</span>{notificationKind && <NotificationMenu userId={user.id} kind={notificationKind} sidebar/>}<button className="button sidebar-account-action" aria-label="Выйти" title="Выйти" onClick={onLogout}><LogOut size={18} aria-hidden="true"/></button></div>{page === 'shipments' && <button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button>}</div>
@@ -198,7 +204,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'operator' && <OperatorPage key={user.id} creatorName={user.name}/>}
       {page === 'accounts' && data && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
       {page === 'documents' && <DocumentsPage/>}
-      {page === 'work' && <WorkPage/>}
+      {page === 'work' && <WorkPage onTaskCount={setTodayTaskCount}/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'payroll' && <PayrollPage/>}
       {page === 'shipments' && data && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}

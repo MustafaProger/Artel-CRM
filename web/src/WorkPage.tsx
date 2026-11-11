@@ -2,17 +2,17 @@ import { useDialogMotion } from './useDialogMotion'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bell, Check, ChevronDown, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, List, ListChecks, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
-import { isScopedEmployee, type AccountUser } from './auth-model';
+import { Bell, Check, ChevronDown, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, List, ListChecks, Plus, RefreshCw, Save, Send, Trash2, X } from 'lucide-react';
+import { hasSection, isScopedEmployee, type AccountUser } from './auth-model';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
-import { isWorkDirectoryCompany, workStatuses, workFileLimit, workFilesTotalLimit, workSubtaskLimit, type WorkPriority, type WorkSubtask, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkStatus, type WorkTask } from './work-model';
+import { isWorkDirectoryCompany, isMyWork, workAssigneeIds, workToday, workStatuses, workFileLimit, workFilesTotalLimit, workSubtaskLimit, type WorkPriority, type WorkSubtask, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkStatus, type WorkTask } from './work-model';
 import './work.css';
 import ScrollableSegments from './ScrollableSegments';
 import { useViewEntrance } from './useViewEntrance';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry; dueDate?: string; status?: WorkStatus };
-type SavedAction = 'saved' | 'archived' | 'restored' | 'deleted';
+type SavedAction = 'saved' | 'archived' | 'restored' | 'deleted' | 'handed-off';
 type CalendarEvent = { id: string; day: string; title: string; reminder: boolean; priority?: WorkPriority; editor: Editor };
 const localDay = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 const addDays = (value: Date, days: number) => { const next = new Date(value); next.setDate(next.getDate() + days); return next; };
@@ -29,7 +29,7 @@ function SubtaskCount({ subtasks }: { subtasks?: WorkSubtask[] }) {
   return <span className="work-subtask-count"><ListChecks size={14} aria-hidden="true"/>Подзадачи {subtasks.filter(row => row.done).length}/{subtasks.length}</span>;
 }
 
-function WorkChoice({ label, value, options, onChange, disabled = false, priority = false, placeholder = false, portalMenu = false }: {
+function WorkChoice({ label, value, options, onChange, disabled = false, priority = false, placeholder = false, portalMenu = false, selectedValues }: {
   label: string;
   value: string;
   options: { value: string; name: string; disabled?: boolean }[];
@@ -38,14 +38,15 @@ function WorkChoice({ label, value, options, onChange, disabled = false, priorit
   priority?: boolean;
   placeholder?: boolean;
   portalMenu?: boolean;
+  selectedValues?: readonly string[];
 }) {
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, width: 0 });
-  const selected = options.find(option => option.value === value);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, width: 0, maxHeight: 0, above: true });
+  const selected = options.filter(option => selectedValues ? selectedValues.includes(option.value) : option.value === value);
   useLayoutEffect(() => {
     if (!open || !portalMenu) return;
     const place = () => {
@@ -54,7 +55,14 @@ function WorkChoice({ label, value, options, onChange, disabled = false, priorit
       if (!host || !anchor) return;
       const dialogRect = host.getBoundingClientRect(), rect = anchor.getBoundingClientRect();
       const width = Math.min(priority ? 220 : 190, dialogRect.width - 16);
-      setMenuPosition({ top: rect.top - dialogRect.top - 5, left: Math.max(8, Math.min(rect.left - dialogRect.left, dialogRect.width - width - 8)), width });
+      const spaceAbove = rect.top - Math.max(dialogRect.top, 0);
+      const spaceBelow = Math.min(dialogRect.bottom, window.innerHeight) - rect.bottom;
+      const above = spaceAbove >= Math.min(spaceBelow, 220);
+      setMenuPosition({
+        top: (above ? rect.top - 5 : rect.bottom + 5) - dialogRect.top,
+        left: Math.max(8, Math.min(rect.left - dialogRect.left, dialogRect.width - width - 8)),
+        width, maxHeight: Math.min(220, Math.max(spaceAbove, spaceBelow) - 10), above,
+      });
     };
     place();
     window.addEventListener('resize', place);
@@ -71,7 +79,7 @@ function WorkChoice({ label, value, options, onChange, disabled = false, priorit
     const choices = Array.from((menu.current ?? root.current)?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? []);
     choices[(index + choices.length) % choices.length]?.focus();
   };
-  const choices = <div ref={menu} id={`${id}-options`} className={`work-choice-options${portalMenu ? ' work-choice-portal' : ''}`} role="listbox" aria-labelledby={`${id}-label`} style={portalMenu ? { top: menuPosition.top, left: menuPosition.left, width: menuPosition.width } : undefined} onKeyDown={event => {
+  const choices = <div ref={menu} id={`${id}-options`} className={`work-choice-options${portalMenu ? ` work-choice-portal${menuPosition.above ? '' : ' is-below'}` : ''}`} role="listbox" aria-multiselectable={selectedValues ? true : undefined} aria-labelledby={`${id}-label`} style={portalMenu ? { top: menuPosition.top, left: menuPosition.left, width: menuPosition.width, maxHeight: menuPosition.maxHeight } : undefined} onKeyDown={event => {
     event.stopPropagation();
     if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus(); }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -79,9 +87,9 @@ function WorkChoice({ label, value, options, onChange, disabled = false, priorit
       const available = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? []);
       focusOption(available.indexOf(document.activeElement as HTMLButtonElement) + (event.key === 'ArrowDown' ? 1 : -1));
     }
-  }}>{options.map(option => <button key={option.value} type="button" role="option" aria-selected={option.value === value} disabled={option.disabled} onClick={() => { onChange(option.value); setOpen(false); trigger.current?.focus(); }}>
+  }}>{options.map(option => <button key={option.value} type="button" role="option" aria-selected={selected.includes(option)} disabled={option.disabled} onClick={() => { onChange(option.value); if (!selectedValues) { setOpen(false); trigger.current?.focus(); } }}>
       {priority && <span className={`work-priority-dot work-priority-${option.value}`} aria-hidden="true"/>}
-      <span>{option.name}</span>{option.value === value && <Check size={15} aria-hidden="true"/>}
+      <span>{option.name}</span>{selected.includes(option) && <Check size={15} aria-hidden="true"/>}
     </button>)}</div>;
   const host = portalMenu ? root.current?.closest('dialog') : null;
   return <div ref={root} className={`work-field work-choice${priority ? ' work-priority-field' : ''}`} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget) && !menu.current?.contains(event.relatedTarget)) setOpen(false); }} onKeyDown={event => {
@@ -98,14 +106,14 @@ function WorkChoice({ label, value, options, onChange, disabled = false, priorit
       if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !open) { event.preventDefault(); setOpen(true); requestAnimationFrame(() => focusOption(event.key === 'ArrowDown' ? 0 : options.length - 1)); }
     }}>
       {priority && !placeholder && <span className={`work-priority-dot work-priority-${value}`} aria-hidden="true"/>}
-      <span className="work-choice-value">{placeholder ? label.replace(' *', '') : selected?.name ?? label}</span>
+      <span className="work-choice-value" title={selected.map(option => option.name).join(', ')}>{placeholder ? label.replace(' *', '') : selected.map(option => option.name).join(', ') || label}</span>
       <ChevronDown size={15} aria-hidden="true"/>
     </button>
     {open && (host ? createPortal(choices, host) : choices)}
   </div>;
 }
 
-export default function WorkPage() {
+export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number) => void }) {
   const [data, setData] = useState<WorkResponse | null>(null);
   const [loading, setLoading] = useState(true), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [filter, setFilter] = useState(''), [view, setView] = useState<'board' | 'kanban' | 'calendar' | 'archive'>('board');
@@ -136,11 +144,11 @@ export default function WorkPage() {
       const response = await fetch(`/api/work${filter ? `?assigneeId=${encodeURIComponent(filter)}` : ''}`, { signal: controller.signal, cache: 'no-store' });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рабочее пространство.');
-      if (!controller.signal.aborted && active.current) { setData(result); setError(''); setTaskErrors({}); }
+      if (!controller.signal.aborted && active.current) { setData(result); onTaskCount(result.todayTaskCount); setError(''); setTaskErrors({}); }
     } catch (reason) {
       if (!controller.signal.aborted && active.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.');
     } finally { if (!controller.signal.aborted && active.current) setLoading(false); }
-  }, [filter]);
+  }, [filter, onTaskCount]);
   useEffect(() => {
     active.current = true;
     void refresh(true);
@@ -171,7 +179,10 @@ export default function WorkPage() {
       const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: status === 'done' }), signal: AbortSignal.timeout(20000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
-      if (active.current) setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
+      if (active.current) {
+        onTaskCount(result.todayTaskCount);
+        setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
+      }
     } catch (reason) {
       if (active.current) setTaskErrors(previous => ({ ...previous, [task.id]: reason instanceof Error && reason.name !== 'TimeoutError' && reason.name !== 'TypeError' ? reason.message : 'Не удалось подтвердить сохранение. Обновите список перед повтором.' }));
     } finally {
@@ -188,16 +199,20 @@ export default function WorkPage() {
       const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: status === 'done' }), signal: AbortSignal.timeout(20000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось изменить состояние задачи.');
-      if (active.current) setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
+      if (active.current) {
+        onTaskCount(result.todayTaskCount);
+        setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
+      }
     } catch (reason) {
       if (active.current) setError(reason instanceof Error ? reason.message : 'Не удалось подтвердить изменение. Обновите список.');
     } finally { completing.current.delete(task.id); if (active.current) { setMovingTask(null); setDraggedTask(null); setDropStatus(null); } }
   };
   const userName = (id: string) => [...(data?.users ?? []), ...(data?.historicalUsers ?? [])].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
+  const assigneeNames = (row: AnyWorkEntry) => workAssigneeIds(row).map(userName).join(', ');
   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
   const isManager = !!data && isScopedEmployee(data.currentUser);
   const work = data?.work;
-  const today = localDay(new Date());
+  const today = workToday();
   const events: CalendarEvent[] = [];
   for (const task of (work?.tasks ?? []).filter(task => !task.archivedAt)) {
     if (task.dueDate) events.push({ id: `${task.id}-due`, day: task.dueDate, title: task.title, priority: task.priority ?? 4, reminder: false, editor: { kind: 'tasks', entry: task } });
@@ -237,7 +252,7 @@ export default function WorkPage() {
           <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
           {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
           {task?.description && <span className="work-task-description">{task.description}</span>}
-          <span className="work-task-meta"><span>{userName(row.assigneeId)}</span><SubtaskCount subtasks={task?.subtasks}/>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
+          <span className="work-task-meta"><span>{assigneeNames(row)}</span><SubtaskCount subtasks={task?.subtasks}/>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
         </button>
         {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
       </div>
@@ -247,21 +262,30 @@ export default function WorkPage() {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const start = new Date(first); start.setDate(1 - (first.getDay() + 6) % 7);
   const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
-  const renderEditor = () => data && editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser} onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }} onClose={() => setEditor(null)} onSaved={(action, entry) => {
-        request.current?.abort();
-        const key = editor.kind === 'companies' ? 'companyRecords' : editor.kind;
-        setData(previous => {
-          if (!previous) return previous;
-          const remaining = previous.work[key].filter(row => row.id !== editor.entry?.id && row.id !== entry?.id);
-          return { ...previous, work: { ...previous.work, [key]: entry && (!filter || entry.assigneeId === (filter === 'mine' ? previous.currentUser.id : filter)) ? [...remaining, entry] : remaining } };
-        });
-        setEditor(null);
-        setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : 'Сохранено. Назначение доступно сотруднику в разделе «Работа».');
-      }}/>;
+  const updateWorkList = (edited: Editor, entry?: AnyWorkEntry) => {
+    request.current?.abort();
+    const key = edited.kind === 'companies' ? 'companyRecords' : edited.kind;
+    setData(previous => {
+      if (!previous) return previous;
+      const remaining = previous.work[key].filter(row => row.id !== edited.entry?.id && row.id !== entry?.id);
+      const actor = previous.currentUser;
+      const visible = entry && (!isScopedEmployee(actor) || isMyWork(entry, actor.id)) &&
+        (!filter || (filter === 'mine' ? isMyWork(entry, actor.id) : workAssigneeIds(entry).includes(filter)));
+      return { ...previous, work: { ...previous.work, [key]: visible ? [...remaining, entry] : remaining } };
+    });
+  };
+  const renderEditor = () => data && editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser}
+    onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }}
+    onClose={() => setEditor(null)} onTaskCount={onTaskCount} onCommentSaved={entry => updateWorkList(editor, entry)}
+    onSaved={(action, entry) => {
+      updateWorkList(editor, entry);
+      setEditor(null);
+      setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : action === 'handed-off' ? 'Задача передана.' : 'Сохранено.');
+    }}/>;
   return <div className="work-page">
     <div className="work-view-toolbar">
       <ScrollableSegments className="work-views" label="Представление работы" value={view}><button className={`button ${view === 'board' ? 'primary' : ''}`} aria-pressed={view === 'board'} onClick={() => { if (view !== 'board') navigate(() => setView('board')); }}><List size={17}/>Задачи</button><button className={`button ${view === 'calendar' ? 'primary' : ''}`} aria-pressed={view === 'calendar'} onClick={() => { if (view !== 'calendar') navigate(() => setView('calendar')); }}><CalendarDays size={17}/>Календарь</button><button className={`button ${view === 'archive' ? 'primary' : ''}`} aria-pressed={view === 'archive'} onClick={() => { if (view !== 'archive') navigate(() => setView('archive')); }}>Архив задач</button></ScrollableSegments>
-      <div className="work-assignee">{isManager ? <span className="work-filter-caption">Назначенные мне</span> : <select className="filter-select" aria-label="Фильтр исполнителя" disabled={Object.keys(pendingTasks).length > 0} value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
+      <div className="work-assignee">{isManager ? <span className="work-filter-caption">Мои записи</span> : <select className="filter-select" aria-label="Фильтр исполнителя" disabled={Object.keys(pendingTasks).length > 0} value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все сотрудники</option><option value="mine">Мои записи</option>{data?.users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}</div>
       <div className="work-toolbar-actions"><button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => void refresh(true)} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
       </div>
     </div>
@@ -275,7 +299,7 @@ export default function WorkPage() {
           {view === 'kanban' ? <div className="work-board" aria-label="Канбан состояний задач">{workStatuses.map(status => {
             const tasks = (work?.tasks ?? []).filter(task => task.status === status.id && (status.id === 'done' || !task.archivedAt)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
             return <section key={status.id} className={`work-lane work-lane-${status.id}${dropStatus === status.id ? ' work-lane-drop' : ''}`} aria-label={status.name} onDragOver={event => { if (draggedTask && !movingTask) { event.preventDefault(); setDropStatus(status.id); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropStatus(null); }} onDrop={event => { event.preventDefault(); const task = work?.tasks.find(row => row.id === draggedTask); if (task) void moveTask(task, status.id); }}>
-              <header><h2>{status.name}</h2><span>{tasks.length}</span></header><div className="work-cards">{tasks.map(task => <div key={task.id} className={`work-kanban-card${movingTask === task.id ? ' is-moving' : ''}`} draggable={!movingTask} onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', task.id); setDraggedTask(task.id); }} onDragEnd={() => { setDraggedTask(null); setDropStatus(null); }}><button className="work-card" onClick={() => openEditor({ kind: 'tasks', entry: task })}><strong>{task.title}</strong>{task.description && <p>{task.description}</p>}<SubtaskCount subtasks={task.subtasks}/><small>{companyName(task.companyId) || 'Без компании'} · {userName(task.assigneeId)}</small>{task.dueDate && <span className={`work-card-footer${task.dueDate < today && task.status !== 'done' ? ' work-overdue' : ''}`}><CalendarDays size={13}/>{dateLabel(task.dueDate)}</span>}</button><select aria-label={`Состояние задачи: ${task.title}`} value={task.status} disabled={!!movingTask} onChange={event => void moveTask(task, event.target.value as WorkStatus)}>{workStatuses.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>)}{!tasks.length && <p className="work-empty-lane">Перетащите задачу сюда</p>}{<button className="work-add-lane" onClick={() => openEditor({ kind: 'tasks', status: status.id })}><Plus size={16}/>Добавить задачу</button>}</div>
+              <header><h2>{status.name}</h2><span>{tasks.length}</span></header><div className="work-cards">{tasks.map(task => <div key={task.id} className={`work-kanban-card${movingTask === task.id ? ' is-moving' : ''}`} draggable={!movingTask} onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', task.id); setDraggedTask(task.id); }} onDragEnd={() => { setDraggedTask(null); setDropStatus(null); }}><button className="work-card" onClick={() => openEditor({ kind: 'tasks', entry: task })}><strong>{task.title}</strong>{task.description && <p>{task.description}</p>}<SubtaskCount subtasks={task.subtasks}/><small>{companyName(task.companyId) || 'Без компании'} · {assigneeNames(task)}</small>{task.dueDate && <span className={`work-card-footer${task.dueDate < today && task.status !== 'done' ? ' work-overdue' : ''}`}><CalendarDays size={13}/>{dateLabel(task.dueDate)}</span>}</button><select aria-label={`Состояние задачи: ${task.title}`} value={task.status} disabled={!!movingTask} onChange={event => void moveTask(task, event.target.value as WorkStatus)}>{workStatuses.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>)}{!tasks.length && <p className="work-empty-lane">Перетащите задачу сюда</p>}{<button className="work-add-lane" onClick={() => openEditor({ kind: 'tasks', status: status.id })}><Plus size={16}/>Добавить задачу</button>}</div>
             </section>;
           })}</div> : view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : listScope === 'today' ? 'Сегодня' : listScope === 'upcoming' ? 'Предстоящие' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => openEditor({ kind: 'tasks', dueDate: listScope === 'today' ? today : undefined })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header>
             {view === 'board' && <div className="work-list-controls"><ScrollableSegments className="work-list-scopes" label="Период задач" value={listScope}><button type="button" aria-pressed={listScope === 'all'} onClick={() => { if (listScope !== 'all') navigate(() => setListScope('all')); }}>Все</button><button type="button" aria-pressed={listScope === 'today'} onClick={() => { if (listScope !== 'today') navigate(() => setListScope('today')); }}>Сегодня</button><button type="button" aria-pressed={listScope === 'upcoming'} onClick={() => { if (listScope !== 'upcoming') navigate(() => { setListScope('upcoming'); setSelectedWeek(weekStart(new Date())); }); }}>Предстоящие</button></ScrollableSegments></div>}
@@ -293,21 +317,33 @@ export default function WorkPage() {
   </div>;
 }
 
-function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void }) {
+function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void; onCommentSaved: (entry: WorkTask) => void; onTaskCount: (count: number) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const focusSubtask = useRef<string | null>(null);
   const errorMessage = useRef<HTMLParagraphElement>(null);
   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const [requestId] = useState(() => crypto.randomUUID());
-  const entry = editor.entry, task = entry as WorkTask | undefined, record = entry as WorkCompanyRecord | undefined, note = entry as WorkNote | undefined;
-  const [fields, setFields] = useState(() => ({ title: task?.title ?? '', description: task?.description ?? '', status: task?.status ?? editor.status ?? 'todo', priority: String(task?.priority ?? 4), companyId: task?.companyId ?? '', assigneeId: entry?.assigneeId ?? actor.id, dueDate: task?.dueDate ?? editor.dueDate ?? '', reminderAt: localInputTime(task?.reminderAt), question: record?.question ?? '', comment: '', content: note?.content ?? '' }));
-  const [chosen, setChosen] = useState({ assignee: false, priority: false });
+  const [entry, setEntry] = useState(editor.entry);
+  const task = editor.kind === 'tasks' ? entry as WorkTask | undefined : undefined;
+  const record = editor.kind === 'companies' ? entry as WorkCompanyRecord | undefined : task;
+  const note = entry as WorkNote | undefined;
+  const [assignees, setAssignees] = useState(() => task ? [...workAssigneeIds(task)] : []);
+  const [activity, setActivity] = useState<'comments' | 'handoff' | null>(null);
+  const [handoffTo, setHandoffTo] = useState<string[]>([]);
+  const activityId = useId();
+  const taskUsers = users.filter(user => hasSection(user, 'work'));
+  const assigneeOptions = [
+    ...assignees.filter(id => !taskUsers.some(user => user.id === id)).map(id => ({ value: id, name: `${userName(id)} · доступ отключён` })),
+    ...taskUsers.map(user => ({ value: user.id, name: `${user.name}${user.id === actor.id ? ' (я)' : ''}` })),
+  ];
+  const [fields, setFields] = useState(() => ({ title: task?.title ?? note?.title ?? '', description: task?.description ?? '', status: task?.status ?? editor.status ?? 'todo', priority: String(task?.priority ?? 4), companyId: record?.companyId ?? '', assigneeId: entry?.assigneeId ?? actor.id, dueDate: task?.dueDate ?? editor.dueDate ?? '', reminderAt: localInputTime(record?.reminderAt), question: record && 'question' in record ? record.question : '', comment: '', content: note?.content ?? '' }));
+  const [priorityChosen, setPriorityChosen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [subtasks, setSubtasks] = useState<WorkSubtask[]>(() => task?.subtasks ?? []);
-  const archived = !!task?.archivedAt;
+  const archived = !!record?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState('');
-  const [pendingAction, setPendingAction] = useState<SavedAction | null>(null);
+  const [pendingAction, setPendingAction] = useState<SavedAction | 'comment' | null>(null);
   const motion = useDialogMotion(dialog, onDismiss);
   const onClose = motion.close;
 
@@ -323,26 +359,52 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }); } }, [error]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })) };
   const close = () => { if (!inFlight.current) onClose(); };
-  const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean) => {
+  const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean, activityAction?: 'comment' | 'handed-off') => {
+    const postingComment = activityAction === 'comment';
+    const handingOff = activityAction === 'handed-off';
     if (inFlight.current) return;
-    if (method !== 'DELETE' && !formRef.current?.reportValidity()) return;
+    if (method !== 'DELETE' && !postingComment && !formRef.current?.reportValidity()) return;
     inFlight.current = true; onSaving(true); setSaving(true); setError('');
-    setPendingAction(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved');
+    const action = activityAction ?? (method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved');
+    setPendingAction(action);
     try {
       let body: Record<string, unknown> = { version: entry?.version };
-      if (method !== 'DELETE') {
-        const reminderAt = fields.reminderAt === localInputTime(task?.reminderAt)
-          ? task?.reminderAt ?? null
+      if (postingComment) {
+        body.comment = fields.comment;
+      } else if (method !== 'DELETE') {
+        const reminderAt = fields.reminderAt === localInputTime(record?.reminderAt)
+          ? record?.reminderAt ?? null
           : fields.reminderAt ? new Date(fields.reminderAt).toISOString() : null;
         const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
-        body = { ...(entry ? { version: entry.version } : { requestId }), ...(editor.kind !== 'notes' ? { assigneeId: fields.assigneeId, archived: nextArchived ?? (editor.kind === 'tasks' && task?.status === 'done' && fields.status !== 'done' ? false : archived), comment: fields.comment, addAttachments } : {}), ...(editor.kind === 'tasks' ? { title: fields.title, description: fields.description, status: fields.status, priority: Number(fields.priority) as WorkPriority, companyId: fields.companyId || null, dueDate: fields.dueDate || null, reminderAt, ...(subtasks.length || task?.subtasks ? { subtasks } : {}) } : editor.kind === 'companies' ? { companyId: fields.companyId, question: fields.question, comment: fields.comment, reminderAt } : { title: fields.title, content: fields.content }) };
+        const identity = entry ? { version: entry.version } : { requestId };
+        const recordFields = { comment: fields.comment, addAttachments, reminderAt };
+        if (editor.kind === 'tasks') {
+          body = {
+            ...identity, ...recordFields,
+            title: fields.title, description: fields.description,
+            priority: Number(fields.priority), companyId: fields.companyId || null, dueDate: fields.dueDate || null,
+            ...(subtasks.length || task?.subtasks ? { subtasks } : {}),
+            ...(handingOff
+              ? { handoff: true, assigneeIds: handoffTo }
+              : { assigneeIds: assignees, status: fields.status, archived }),
+          };
+        } else if (editor.kind === 'companies') {
+          body = { ...identity, ...recordFields, assigneeId: fields.assigneeId, companyId: fields.companyId, question: fields.question, archived: nextArchived ?? archived };
+        } else {
+          body = { ...identity, title: fields.title, content: fields.content };
+        }
       }
-      if (editor.kind === 'tasks' && nextArchived === false) body.status = 'todo';
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || (method === 'DELETE' ? 'Не удалось удалить запись.' : 'Не удалось сохранить запись.'));
-      const finish = () => onSaved(method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved', result.entry);
-      await motion.complete(finish);
+      onTaskCount(result.todayTaskCount);
+      if (postingComment) {
+        setEntry(result.entry);
+        update('comment', '');
+        onCommentSaved(result.entry);
+      } else {
+        await motion.complete(() => onSaved(action as SavedAction, result.entry));
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
     finally { inFlight.current = false; onSaving(false); setSaving(false); setPendingAction(null); }
   };
@@ -350,14 +412,17 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number; placeholder?: string; hideLabel?: boolean } = {}) => <label className="work-field">{!options.hideLabel && <span>{label}{options.required ? ' *' : ''}</span>}{options.multiline ? <textarea aria-label={label} placeholder={options.placeholder} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} placeholder={options.placeholder} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;
   const compactDate = (label: string, key: 'dueDate' | 'reminderAt', type: 'date' | 'datetime-local') => <label className={`work-field work-compact-date${fields[key] ? ' has-value' : ''}`}><span className="work-accessible-label">{label}</span><input type={type} aria-label={label} value={fields[key]} disabled={saving} onClick={event => event.currentTarget.showPicker?.()} onChange={event => update(key, event.target.value)}/>{!fields[key] && <span className="work-date-placeholder" aria-hidden="true">{label}</span>}</label>;
   const heading = editor.kind === 'tasks' ? entry ? 'Задача' : 'Новая задача' : editor.kind === 'companies' ? 'Работа с компанией' : entry ? 'Заметка' : 'Новая заметка';
-  const companyField = editor.kind !== 'notes' && <DirectorySelect label="Компания" placeholder="Компания" portalMenu={editor.kind === 'tasks'} entries={companies.filter(company => isWorkDirectoryCompany(company) || company.id === task?.companyId).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={fields.companyId} onChange={id => update('companyId', id)} disabled={saving} required={editor.kind === 'companies'} legacy={fields.companyId && !companies.some(company => company.id === fields.companyId) ? 'Компания недоступна' : undefined}/>;
+  const companyField = editor.kind !== 'notes' && <DirectorySelect label="Компания" placeholder="Компания" portalMenu={editor.kind === 'tasks'} entries={companies.filter(company => isWorkDirectoryCompany(company) || company.id === record?.companyId).map(company => ({ id: company.id, name: company.name, detail: company.inn ? `ИНН ${company.inn}` : undefined }))} value={fields.companyId} onChange={id => update('companyId', id)} disabled={saving} required={editor.kind === 'companies'} legacy={fields.companyId && !companies.some(company => company.id === fields.companyId) ? 'Компания недоступна' : undefined}/>;
   const taskParameters = <div className={editor.kind === 'tasks' ? 'work-task-parameters' : 'work-other-parameters'}>
       {editor.kind !== 'tasks' && companyField}
-      <div className="work-field-grid"><WorkChoice label="Исполнитель *" value={fields.assigneeId} portalMenu={editor.kind === 'tasks'} placeholder={editor.kind === 'tasks' && !entry && !chosen.assignee} disabled={saving || editor.kind !== 'tasks' && !entry && isScopedEmployee(actor)} onChange={value => { update('assigneeId', value); setChosen(previous => ({ ...previous, assignee: true })); }} options={[...(!users.some(user => user.id === fields.assigneeId) ? [{ value: fields.assigneeId, name: `${userName(fields.assigneeId)} · доступ отключён`, disabled: true }] : []), ...users.map(user => ({ value: user.id, name: `${user.name}${user.id === actor.id ? ' (я)' : ''}` }))]}/>{editor.kind === 'tasks' && <WorkChoice label="Приоритет" value={fields.priority} portalMenu placeholder={!entry && !chosen.priority} disabled={saving} priority onChange={value => { update('priority', value); setChosen(previous => ({ ...previous, priority: true })); }} options={[{ value: '1', name: 'P1 · Срочно' }, { value: '2', name: 'P2 · Высокий' }, { value: '3', name: 'P3 · Средний' }, { value: '4', name: 'P4 · Обычный' }]}/>}
+      <div className="work-field-grid">{editor.kind === 'tasks' ? <WorkChoice label="Исполнители" value="" selectedValues={assignees} portalMenu disabled={saving}
+        onChange={id => setAssignees(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])}
+        options={assigneeOptions}/> : <WorkChoice label="Исполнитель *" value={fields.assigneeId} disabled={saving || !entry && isScopedEmployee(actor)} onChange={value => update('assigneeId', value)} options={[...(!users.some(user => user.id === fields.assigneeId) ? [{ value: fields.assigneeId, name: `${userName(fields.assigneeId)} · доступ отключён`, disabled: true }] : []), ...users.map(user => ({ value: user.id, name: `${user.name}${user.id === actor.id ? ' (я)' : ''}` }))]}/>}
+      {editor.kind === 'tasks' && <WorkChoice label="Приоритет" value={fields.priority} portalMenu placeholder={!entry && !priorityChosen} disabled={saving} priority onChange={value => { update('priority', value); setPriorityChosen(true); }} options={[{ value: '1', name: 'P1 · Срочно' }, { value: '2', name: 'P2 · Высокий' }, { value: '3', name: 'P3 · Средний' }, { value: '4', name: 'P4 · Обычный' }]}/>}
         {editor.kind === 'tasks' && compactDate('Срок задачи', 'dueDate', 'date')}{editor.kind === 'tasks' ? compactDate('Напоминание', 'reminderAt', 'datetime-local') : editor.kind !== 'notes' && input('Напоминание', 'reminderAt', { type: 'datetime-local' })}
       </div>
       {editor.kind === 'tasks' && companyField}
-      {isScopedEmployee(actor) && <p className="work-hint">{entry ? 'После передачи запись появится у выбранного сотрудника и исчезнет из ваших назначений.' : 'Новая запись назначается вам. После сохранения её можно передать сотруднику.'}</p>}
+      {editor.kind !== 'tasks' && isScopedEmployee(actor) && <p className="work-hint">{entry ? 'После передачи запись появится у выбранного сотрудника и исчезнет из ваших назначений.' : 'Новая запись назначается вам. После сохранения её можно передать сотруднику.'}</p>}
       {editor.kind !== 'notes' && <p className="work-hint">При включённых уведомлениях напоминание придёт исполнителю на устройство. Укажите время в часовом поясе вашего устройства.</p>}
   </div>;
   const fileRows = <>
@@ -380,7 +445,11 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
     <div className="work-editor-body">
       <div className="work-editor-content">
       {editor.kind !== 'companies' && input('Название', 'title', { required: true, hideLabel: isNote, placeholder: isNote ? 'Название' : editor.kind === 'tasks' ? 'Название задачи' : undefined })}
-      {editor.kind === 'tasks' && input('Описание', 'description', { multiline: true, placeholder: 'Описание' })}
+      {editor.kind === 'tasks' && <div className="work-description-field">
+        <div aria-hidden="true">{fields.description}{' '}</div>
+        <textarea aria-label="Описание" placeholder="Описание" value={fields.description} rows={1} maxLength={10000}
+          disabled={saving} onChange={event => update('description', event.target.value)}/>
+      </div>}
       {editor.kind === 'tasks' && <section className="work-subtasks" aria-label="Подзадачи">
         {subtasks.length > 0 && <div className="work-subtasks-heading">
           <h3>Подзадачи</h3>
@@ -399,9 +468,49 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
           <button type="button" className="icon-button" aria-label={`Удалить подзадачу ${index + 1}`} disabled={saving}
             onClick={() => editSubtasks(subtasks.filter(item => item.id !== row.id))}><X size={16}/></button>
         </li>)}</ul>}
-        <button type="button" className="work-add-subtask" disabled={saving || subtasks.length >= workSubtaskLimit} onClick={addSubtask}>
-          <Plus size={16}/>Добавить подзадачу
-        </button>
+        <div className="work-task-actions">
+          <button type="button" className="work-add-subtask" disabled={saving || subtasks.length >= workSubtaskLimit} onClick={addSubtask}>
+            <Plus size={16}/>Добавить подзадачу
+          </button>
+          <button type="button" className="work-add-subtask" aria-expanded={activity === 'comments'} aria-controls={activity === 'comments' ? activityId : undefined}
+            onClick={() => setActivity(activity === 'comments' ? null : 'comments')}>
+            <MessageSquare size={16}/>Комментарии{task?.comments?.length ? ` (${task.comments.length})` : ''}
+          </button>
+          {task && <button type="button" className="work-add-subtask" aria-expanded={activity === 'handoff'} aria-controls={activity === 'handoff' ? activityId : undefined}
+            onClick={() => setActivity(activity === 'handoff' ? null : 'handoff')}>
+            <Send size={16}/>Передать задачу
+          </button>}
+        </div>
+      </section>}
+      {editor.kind === 'tasks' && activity && <section id={activityId} className="work-task-activity" aria-label={activity === 'comments' ? 'Комментарии' : 'Передача задачи'}>
+        {activity === 'comments' ? <>
+          {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.map(comment => <li key={comment.id}>
+            <span className="work-activity-icon">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
+            <article>
+              <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
+              {comment.handoffTo && <small>Исполнители после передачи · {comment.handoffTo.map(userName).join(', ')}</small>}
+              <p>{comment.text}</p>
+            </article>
+          </li>)}</ol>}
+          {input('Новый комментарий', 'comment', { multiline: true, hideLabel: true, placeholder: 'Напишите комментарий' })}
+          {task && <button type="button" className="button primary" disabled={saving || !fields.comment.trim()} onClick={() => void save('PATCH', undefined, 'comment')}>
+            {pendingAction === 'comment' ? 'Отправляем…' : 'Отправить комментарий'}
+          </button>}
+        </> : <>
+          <fieldset className="work-handoff-people" disabled={saving}>
+            <legend>Кому передать</legend>
+            {taskUsers.filter(user => user.id !== actor.id).map(user => <label key={user.id}>
+              <input type="checkbox" checked={handoffTo.includes(user.id)}
+                onChange={() => setHandoffTo(current => current.includes(user.id) ? current.filter(id => id !== user.id) : [...current, user.id])}/>
+              {user.name}
+            </label>)}
+          </fieldset>
+          <label className="work-field"><span>Комментарий к передаче</span><textarea rows={2} value={fields.comment} maxLength={10000} disabled={saving}
+            placeholder="Что осталось сделать?" onChange={event => update('comment', event.target.value)}/></label>
+          <button type="button" className="button primary" disabled={saving || !handoffTo.length} onClick={() => void save('PATCH', undefined, 'handed-off')}>
+            {pendingAction === 'handed-off' ? 'Передаём…' : 'Передать'}
+          </button>
+        </>}
       </section>}
       {editor.kind === 'tasks' && <><div className="work-task-toolbar" role="group" aria-label="Параметры задачи" tabIndex={0}>{taskParameters}{uploadAction}</div>{(record?.attachments?.length || files.length) ? <section className="work-files work-task-file-list" aria-label="Файлы задачи">{fileRows}</section> : null}</>}
       {editor.kind === 'tasks' ? taskActivity : details}

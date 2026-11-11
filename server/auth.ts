@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual 
 import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
+import { workAssigneeIds } from '../web/src/work-model';
 import { effectiveSections, defaultEmployeeSections, validDirectoryGrants, hasSection, isAdministrator, isScopedEmployee, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
@@ -127,7 +128,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   if (user.deletedAt && (input.version === user.version - 1 || input.version === user.version)) return { id, deleted: true, changed: false };
   if (input.version !== user.version) throw new ApiError(409, 'Пользователь уже изменён. Обновите список.');
   if (user.active && user.role === 'director' && !accounts.users.some(row => row.id !== id && row.active && !row.deletedAt && row.role === 'director')) throw new ApiError(409, 'Нельзя удалить последнего активного директора.');
-  const tasks = data.work?.tasks.filter(row => row.assigneeId === id && !row.archivedAt && row.status !== 'done').length ?? 0;
+  const tasks = data.work?.tasks.filter(row => workAssigneeIds(row).includes(id) && !row.archivedAt && row.status !== 'done').length ?? 0;
   const companies = data.work?.companyRecords.filter(row => row.assigneeId === id && !row.archivedAt).length ?? 0;
   if (tasks || companies) throw new ApiError(409, `У сотрудника есть незавершённые записи: задачи — ${tasks}, работа с компаниями — ${companies}. В разделе «Работа» передайте их другому сотруднику или завершите и архивируйте, затем повторите удаление.`);
   if (hasSection(user, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));

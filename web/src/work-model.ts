@@ -28,6 +28,8 @@ export interface WorkSubtask { id: string; title: string; done: boolean }
 export const workSubtaskLimit = 50;
 
 export interface WorkTask extends WorkEntry {
+  /** Older records use the single assigneeId. */
+  assigneeIds?: string[];
   archivedAt?: string | null;
   subtasks?: WorkSubtask[];
   comments?: WorkComment[];
@@ -42,7 +44,7 @@ export interface WorkTask extends WorkEntry {
   /** UTC instant; entered and displayed in the employee's browser time zone. */
   reminderAt: string | null;
 }
-export interface WorkComment { id: string; text: string; createdAt: string; authorId: string }
+export interface WorkComment { id: string; text: string; createdAt: string; authorId: string; handoffTo?: string[] }
 export const workFileLimit = 20 * 1024 * 1024;
 export const workFilesTotalLimit = 20 * 1024 * 1024;
 export interface WorkAttachment { id: string; name: string; size: number; createdAt: string; authorId: string; data?: string }
@@ -69,6 +71,16 @@ export interface WorkResponse {
   companies: Company[];
   currentUser: AccountUser;
   revision: number;
+  todayTaskCount: number;
 }
+
+export const workAssigneeIds = (entry: AnyWorkEntry): readonly string[] =>
+  'status' in entry && entry.assigneeIds ? entry.assigneeIds : [entry.assigneeId];
+
+export const isMyWork = (entry: AnyWorkEntry, userId: string): boolean =>
+  workAssigneeIds(entry).includes(userId) || 'status' in entry && entry.createdBy === userId;
+
+const workDayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' });
+export const workToday = (now = new Date()): string => workDayFormatter.format(now);
 
 export const emptyWork = (): WorkData => ({ tasks: [], companyRecords: [], notes: [] });

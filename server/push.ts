@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import webPush from 'web-push';
 import { ApiError } from './api-error';
 import { hasSection } from '../web/src/auth-model';
-import type { WorkTask } from '../web/src/work-model';
+import { workAssigneeIds, type WorkTask } from '../web/src/work-model';
 import type { Shipment } from '../web/src/model';
 import { sessionToken } from './auth';
 import type { OperationsData, OperationsStorage } from './operations-store';
@@ -14,7 +14,7 @@ export interface PushDevice {
   keys: { p256dh: string; auth: string }; createdAt: number; testAt?: number;
 }
 interface Delivery { deviceId: string; at: number; attempts: number; retryAt: number; lease?: string; sent?: boolean }
-interface TaskAssignment { version: number; assigneeId: string; at: number }
+interface TaskAssignment { taskId?: string; version: number; assigneeId: string; at: number }
 interface TripAssignment { token: string; driverId: string; at: number }
 export interface PushProbe {
   userId: string; deviceId: string; tokenHash: string; createdAt: number; expiresAt: number;
@@ -79,7 +79,7 @@ export function validatePush(value: PushData | undefined) {
   if (value.taskAssignments !== undefined) {
     if (!value.taskAssignments || typeof value.taskAssignments !== 'object' || Array.isArray(value.taskAssignments)) throw new Error('Invalid task assignments');
     for (const [id, row] of Object.entries(value.taskAssignments)) {
-      if (!id || !row || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.assigneeId !== 'string' || !row.assigneeId || !Number.isSafeInteger(row.at) || row.at < 0) throw new Error('Invalid task assignment');
+      if (!id || !row || row.taskId !== undefined && (typeof row.taskId !== 'string' || !row.taskId) || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.assigneeId !== 'string' || !row.assigneeId || !Number.isSafeInteger(row.at) || row.at < 0) throw new Error('Invalid task assignment');
     }
   }
   if (value.tripAssignments !== undefined) {
@@ -98,20 +98,25 @@ export function validatePush(value: PushData | undefined) {
   }
 }
 /** Store alongside the task mutation, so a committed assignment survives a failed immediate dispatch. */
-export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string): void {
+export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string, handoff = false): void {
   const id = task?.id ?? previous?.id;
   if (!id) return;
-  if (!task || task.archivedAt || task.status === 'done') {
-    if (data.push?.taskAssignments) delete data.push.taskAssignments[id];
-    return;
+  const recipients = task && !task.archivedAt && task.status !== 'done' ? workAssigneeIds(task) : [];
+  const previousRecipients = previous && !handoff ? workAssigneeIds(previous) : [];
+  if (recipients.length === previousRecipients.length && recipients.every(recipient => previousRecipients.includes(recipient)) && recipients.length) return;
+
+  const existing = data.push?.taskAssignments;
+  for (const [key, assignment] of Object.entries(existing ?? {})) {
+    if ((assignment.taskId ?? key) === id && (handoff || !recipients.includes(assignment.assigneeId))) delete existing![key];
   }
-  if (previous?.assigneeId === task.assigneeId) return;
-  if (task.assigneeId === actorId) {
-    if (data.push?.taskAssignments) delete data.push.taskAssignments[id];
-    return;
+  if (!task) return;
+  for (const assigneeId of recipients) {
+    if (assigneeId === actorId || previousRecipients.includes(assigneeId)) continue;
+    const push = data.push ??= { devices: [], deliveries: {} };
+    const assignments = push.taskAssignments ??= {};
+    const key = Object.hasOwn(assignments, id) ? `assignment-${createHash('sha256').update(JSON.stringify([id, assigneeId])).digest('hex')}` : id;
+    assignments[key] = { ...(key === id ? {} : { taskId: id }), version: task.version, assigneeId, at: Date.now() };
   }
-  const push = data.push ??= { devices: [], deliveries: {} };
-  (push.taskAssignments ??= {})[id] = { version: task.version, assigneeId: task.assigneeId, at: Date.now() };
 }
 /** Called in the same transaction as the complete trip; retries and ordinary edits preserve the event. */
 export function queueTripAssignment(data: OperationsData, id: string, rows: Shipment[], previous: Shipment[]) {
@@ -148,11 +153,13 @@ export const sendPush: PushSender = (device, payload, config) => webPush.sendNot
 });
 function reminderCandidates(data: OperationsData, now: number) {
   const rows = [...(data.work?.tasks ?? []).map(row => ({ ...row, kind: 'tasks' })), ...(data.work?.companyRecords ?? []).map(row => ({ ...row, kind: 'companies' }))];
-  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || row.status !== 'done') && data.accounts?.users.some(user => user.id === row.assigneeId && hasSection(user, 'work')));
+  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || row.status !== 'done'))
+    .flatMap(row => workAssigneeIds(row).filter(id => data.accounts?.users.some(user => user.id === id && hasSection(user, 'work')))
+      .map(assigneeId => ({ ...row, assigneeId })));
 }
 const assignmentLifetime = 86400000;
 const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssignment, now: number) =>
-  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.assigneeId === assignment.assigneeId && !task.archivedAt && task.status !== 'done');
+  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === (assignment.taskId ?? id) && workAssigneeIds(task).includes(assignment.assigneeId) && !task.archivedAt && task.status !== 'done');
 const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssignment, now: number) => {
   if (assignment.at <= now - assignmentLifetime || data.directories?.deletedEntries?.drivers?.includes(assignment.driverId) || !data.directories?.drivers.some(driver => driver.id === assignment.driverId)) return false;
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);
@@ -164,7 +171,7 @@ function candidates(data: OperationsData, now: number): PushCandidate[] {
   const assignments: PushCandidate[] = [];
   for (const [id, assignment] of Object.entries(data.push?.taskAssignments ?? {})) {
     if (assignmentTask(data, id, assignment, now) && data.accounts?.users.some(user => user.id === assignment.assigneeId && hasSection(user, 'work'))) {
-      assignments.push({ kind: 'tasks', id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment' });
+      assignments.push({ kind: 'tasks', id: assignment.taskId ?? id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment' });
     }
   }
   for (const [id, assignment] of Object.entries(data.push?.tripAssignments ?? {})) {

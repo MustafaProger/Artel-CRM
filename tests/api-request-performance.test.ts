@@ -1,3 +1,4 @@
+import { hasSection } from '../web/src/auth-model';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -92,7 +93,7 @@ test('navigation counts equal full financial snapshot scope across current and l
     const navigation = await f.get('/api/navigation', user.id);
     assert.equal(navigation.status, 200, user.id);
     assert.equal(navigation.reads, 1, user.id);
-    assert.deepEqual(navigation.body, { shipmentCount: full.body.overview.shipmentCount }, user.id);
+    assert.deepEqual(navigation.body, { shipmentCount: full.body.overview.shipmentCount, ...(hasSection(publicUser(user), 'work') ? { todayTaskCount: 0 } : {}) }, user.id);
     if (user.id === 'employee') assert.ok(navigation.body.shipmentCount > 0 && navigation.body.shipmentCount < base.shipments.length, 'the scoped fixture contains both visible and hidden shipments');
   }
   assert.equal((await f.get('/api/navigation', 'driver')).status, 403);

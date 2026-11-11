@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { isScopedEmployee, type AccountUser } from '../web/src/auth-model';
+import { hasSection, isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
-import { isWorkDirectoryCompany, emptyWork, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+import { isWorkDirectoryCompany, emptyWork, isMyWork, workAssigneeIds, workToday, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
 import { queueTaskAssignment } from './push';
@@ -13,7 +13,8 @@ const date = (value: unknown): value is string => typeof value === 'string' && /
 const instant = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && date(value.slice(0, 10)) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().replace('.000Z', 'Z') === value.replace('.000Z', 'Z');
 const listKey = (kind: WorkKind) => kind === 'companies' ? 'companyRecords' : kind;
 const isSupervisor = (actor: AccountUser) => actor.role === 'director' || actor.role === 'admin';
-const canAccess = (actor: AccountUser, entry: AnyWorkEntry) => isSupervisor(actor) || isScopedEmployee(actor) && entry.assigneeId === actor.id;
+const canAccess = (actor: AccountUser, entry: AnyWorkEntry) => isSupervisor(actor) || isScopedEmployee(actor) && isMyWork(entry, actor.id);
+const validAssignees = (value: unknown): value is string[] => Array.isArray(value) && value.every(identifier) && new Set(value).size === value.length;
 
 /** A handed-over task grants its company label in Work, never ownership of that
  * company's shipments or money. Existing task edits must retain this reference. */
@@ -44,6 +45,7 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
       if (!object(row) || !identifier(row.id) || ids.has(row.id) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || !identifier(row.assigneeId) || !identifier(row.createdBy) || !identifier(row.updatedBy) || !instant(row.createdAt) || !instant(row.updatedAt)) throw new StoreError('Invalid work entry');
       ids.add(row.id);
       if (kind === 'tasks' && (!boundedText(row.title, 200, true) || !boundedText(row.description, 10000) || !workStatuses.some(status => status.id === row.status) || row.priority !== undefined && !workPriorities.includes(row.priority as 1 | 2 | 3 | 4) || row.companyId !== null && !identifier(row.companyId) || row.dueDate !== null && !date(row.dueDate) || row.reminderAt !== null && !instant(row.reminderAt))) throw new StoreError('Invalid work task');
+      if (kind === 'tasks' && row.assigneeIds !== undefined && (!validAssignees(row.assigneeIds) || row.assigneeIds[0] !== row.assigneeId)) throw new StoreError('Invalid task assignees');
       if (kind === 'tasks' && row.subtasks !== undefined && !validSubtasks(row.subtasks)) throw new StoreError('Invalid work subtasks');
       if (kind === 'notes' && (!boundedText(row.title, 200, true) || !boundedText(row.content, 10000))) throw new StoreError('Invalid work note');
       if (kind !== 'notes') {
@@ -67,6 +69,7 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
         const comments = new Set<string>();
         for (const comment of row.comments) {
           if (!object(comment) || !identifier(comment.id) || comments.has(comment.id) || !boundedText(comment.text, 10000, true) || !instant(comment.createdAt) || !identifier(comment.authorId)) throw new StoreError('Invalid work comment');
+          if (comment.handoffTo !== undefined && (kind !== 'tasks' || !validAssignees(comment.handoffTo) || !comment.handoffTo.length)) throw new StoreError('Invalid task handoff');
           comments.add(comment.id);
         }
       }
@@ -78,23 +81,30 @@ export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSe
   if (!isSupervisor(actor) && !isScopedEmployee(actor)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
   const requested = params.get('assigneeId');
   if (requested && requested !== 'mine' && !users.some(user => user.id === requested) && !(isSupervisor(actor) && data.accounts?.users.some(user => user.id === requested))) throw new ApiError(400, 'Сотрудник не найден.');
-  const assigneeId = requested === 'mine' ? actor.id : requested;
   const work = data.work ?? emptyWork();
-  const visible = (entry: AnyWorkEntry) => canAccess(actor, entry) && (!assigneeId || entry.assigneeId === assigneeId);
+  const visible = (entry: AnyWorkEntry) => canAccess(actor, entry) && (!requested || (requested === 'mine' ? isMyWork(entry, actor.id) : workAssigneeIds(entry).includes(requested)));
   const visibleWork = { tasks: work.tasks.filter(visible).map(publicWorkEntry), companyRecords: work.companyRecords.filter(visible).map(publicWorkEntry), notes: work.notes.filter(visible) };
   // Old links keep their labels without making unrelated companies selectable.
   const referencedCompanies = new Set([...visibleWork.tasks, ...visibleWork.companyRecords].flatMap(row => row.companyId ? [row.companyId] : []));
   const referenced = new Set<string>();
   for (const row of [...visibleWork.tasks, ...visibleWork.companyRecords, ...visibleWork.notes]) {
-    for (const id of [row.assigneeId, row.createdBy, row.updatedBy]) referenced.add(id);
-    if ('comments' in row) for (const comment of row.comments ?? []) referenced.add(comment.authorId);
+    for (const id of [...workAssigneeIds(row), row.createdBy, row.updatedBy]) referenced.add(id);
+    if ('comments' in row) for (const comment of row.comments ?? []) {
+      for (const id of [comment.authorId, ...comment.handoffTo ?? []]) referenced.add(id);
+    }
     if ('attachments' in row) for (const file of row.attachments ?? []) referenced.add(file.authorId);
   }
   return {
     work: visibleWork,
+    todayTaskCount: todayTaskCount(data, actor),
     historicalUsers: (data.accounts?.users ?? []).filter(user => referenced.has(user.id) && !users.some(active => active.id === user.id)).map(({ id, name }) => ({ id, name })),
     users: isSupervisor(actor) ? users : users.map(user => ({ ...user, login: '' })), companies: snapshot.companies.filter(company => isWorkDirectoryCompany(company) || referencedCompanies.has(company.id)), currentUser: actor, revision: data.revision,
   };
+}
+
+export function todayTaskCount(data: OperationsData, actor: AccountUser): number {
+  const today = workToday();
+  return data.work?.tasks.filter(task => task.dueDate === today && !task.archivedAt && task.status !== 'done' && isMyWork(task, actor.id)).length ?? 0;
 }
 
 const stringField = (value: unknown, label: string, max: number, required = false) => {
@@ -139,16 +149,34 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (kind === 'tasks') queueTaskAssignment(data, undefined, previous as WorkTask, actor.id);
     return { deleted: true, id, changed: true };
   }
-  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
+  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks', 'assigneeIds', 'handoff'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
   if (Object.keys(body).some(key => !allowed.includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
   if (previous && body.requestId !== undefined || !previous && body.version !== undefined) throw new ApiError(400, 'Некорректные параметры создания или изменения.');
   if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId))) throw new ApiError(400, 'Некорректный идентификатор запроса.');
   const get = (name: string, fallback: unknown) => body[name] === undefined ? previous ? (previous as unknown as Record<string, unknown>)[name] : fallback : body[name];
   // Notes belong to their creator. Keep the stored assignment for older notes.
-  const assigneeId = kind === 'notes' ? previous?.assigneeId ?? actor.id : get('assigneeId', actor.id);
-  const activeAssignee = users.some(user => user.id === assigneeId && user.active && !user.deletedAt);
-  if (!identifier(assigneeId) || !activeAssignee && previous?.assigneeId !== assigneeId) throw new ApiError(400, 'Выберите действующего сотрудника.');
-  // Managers may create for themselves and then explicitly hand their task over; they cannot write into another employee's list directly.
+  const previousAssignees = previous ? workAssigneeIds(previous) : [];
+  const creator = previous?.createdBy ?? actor.id;
+  const handoff = body.handoff === true;
+  if (body.handoff !== undefined && (!handoff || !previous || !Array.isArray(body.assigneeIds) || !body.assigneeIds.length)) throw new ApiError(400, 'Укажите исполнителей для передачи задачи.');
+  let assigneeIds: readonly string[];
+  if (kind === 'tasks' && body.assigneeIds !== undefined) {
+    if (body.assigneeId !== undefined || !validAssignees(body.assigneeIds)) throw new ApiError(400, 'Выберите исполнителей из списка сотрудников.');
+    assigneeIds = body.assigneeIds.length ? body.assigneeIds : [creator];
+  } else if (kind === 'tasks' && previous && body.assigneeId === undefined) {
+    assigneeIds = previousAssignees;
+  } else {
+    const assigneeId = kind === 'notes' ? previous?.assigneeId ?? actor.id : get('assigneeId', actor.id);
+    if (!identifier(assigneeId)) throw new ApiError(400, 'Выберите действующего сотрудника.');
+    assigneeIds = [assigneeId];
+  }
+  const assigneeId = assigneeIds[0];
+  const activeAssignee = (id: string) => users.some(user => user.id === id && user.active && !user.deletedAt && (kind !== 'tasks' || hasSection(user, 'work')));
+  if (assigneeIds.some(id => !activeAssignee(id) && !previousAssignees.includes(id))) throw new ApiError(400, 'Выберите действующего сотрудника.');
+  if (handoff && (!assigneeIds.some(id => id !== actor.id) || assigneeIds.some(id => !activeAssignee(id)) ||
+    assigneeIds.length === previousAssignees.length && assigneeIds.every(id => previousAssignees.includes(id)))) {
+    throw new ApiError(400, 'Для передачи измените список исполнителей и выберите хотя бы одного коллегу.');
+  }
   if (kind !== 'tasks' && !previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
   const companyId = kind === 'notes' ? null : get('companyId', null);
   if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId && (isWorkDirectoryCompany(company) || previous && 'companyId' in previous && previous.companyId === companyId)))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
@@ -156,13 +184,13 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   const common = { id: id ?? `work-${kind}-${body.requestId ?? randomUUID()}`, version: (previous?.version ?? 0) + 1, assigneeId, createdAt: previous?.createdAt ?? now, updatedAt: now, createdBy: previous?.createdBy ?? actor.id, updatedBy: actor.id };
   let entry: AnyWorkEntry;
   if (kind === 'tasks') {
-    const status = get('status', 'todo');
+    const status = handoff ? 'todo' : get('status', 'todo');
     if (!workStatuses.some(row => row.id === status)) throw new ApiError(400, 'Неизвестное состояние задачи.');
     const priority = body.priority === undefined ? (previous as WorkTask | undefined)?.priority ?? 4 : body.priority;
     if (!workPriorities.includes(priority as 1 | 2 | 3 | 4)) throw new ApiError(400, 'Неизвестный приоритет задачи.');
     const subtasks = body.subtasks === undefined ? (previous as WorkTask | undefined)?.subtasks : body.subtasks;
     if (subtasks !== undefined && !validSubtasks(subtasks)) throw new ApiError(400, `Укажите названия подзадач. Допускается до ${workSubtaskLimit} подзадач по 200 символов.`);
-    entry = { ...common, title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
+    entry = { ...common, ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
   } else if (kind === 'companies') {
     const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
     const comments = [...((previous as WorkCompanyRecord | undefined)?.comments ?? [])];
@@ -175,7 +203,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     const previousRecord = previous as WorkTask | WorkCompanyRecord | undefined;
     const record = entry as WorkTask | WorkCompanyRecord;
     if (body.archived !== undefined && typeof body.archived !== 'boolean') throw new ApiError(400, 'Некорректное состояние архива.');
-    record.archivedAt = body.archived === true ? previousRecord?.archivedAt ?? now : body.archived === false ? null : previousRecord?.archivedAt ?? null;
+    record.archivedAt = handoff ? null : body.archived === true ? previousRecord?.archivedAt ?? now : body.archived === false ? null : previousRecord?.archivedAt ?? null;
     if (kind === 'tasks') {
       const task = entry as WorkTask;
       if (body.archived === false && body.status === undefined) task.status = 'todo';
@@ -185,7 +213,10 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (kind === 'tasks') {
       record.comments = [...(previousRecord?.comments ?? [])];
       const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
-      if (comment) record.comments.push({ id: `work-comment-${randomUUID()}`, text: comment, authorId: actor.id, createdAt: now });
+      if (comment || handoff) record.comments.push({
+        id: `work-comment-${randomUUID()}`, text: comment || 'Задача передана', authorId: actor.id, createdAt: now,
+        ...(handoff ? { handoffTo: [...assigneeIds] } : {}),
+      });
     }
     const files: WorkAttachment[] = [...(previousRecord?.attachments ?? [])];
     if (body.addAttachments !== undefined) {
@@ -210,12 +241,12 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
       return { entry: publicWorkEntry(duplicate), created: false, changed: false };
     }
   }
-  if (!activeAssignee && kind !== 'notes' && !('archivedAt' in entry && entry.archivedAt) && !('status' in entry && entry.status === 'done')) throw new ApiError(400, 'Чтобы вернуть запись в работу, выберите действующего сотрудника.');
+  if (!assigneeIds.some(activeAssignee) && kind !== 'notes' && !('archivedAt' in entry && entry.archivedAt) && !('status' in entry && entry.status === 'done')) throw new ApiError(400, 'Чтобы вернуть запись в работу, выберите действующего сотрудника.');
   if (key === 'tasks') work.tasks = [...work.tasks.filter(row => row.id !== entry.id), entry as WorkTask];
   else if (key === 'companyRecords') work.companyRecords = [...work.companyRecords.filter(row => row.id !== entry.id), entry as WorkCompanyRecord];
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];
   validateWorkData(work);
   data.work = work;
-  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor.id);
+  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor.id, handoff);
   return { entry: publicWorkEntry(entry), created: !previous, changed: true };
 }

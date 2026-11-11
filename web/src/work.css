@@ -303,10 +303,8 @@
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-heading{padding:10px 16px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-body{display:block;padding:0;overflow:auto;min-height:0}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content{padding:14px 18px;gap:9px}
-.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child>span,
-.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:nth-child(2)>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child input{border:0;padding:2px 0;font-size:19px;font-weight:650;background:transparent}
-.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:nth-child(2) textarea{height:38px;min-height:38px;border:0;padding:3px 0;background:transparent;resize:vertical}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtasks{margin-top:0}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtask-list li{min-height:34px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-add-subtask{margin-top:1px}
@@ -462,3 +460,138 @@ dialog.work-editor.work-note-editor {
 .work-calendar-event.work-priority-1 { --work-calendar-priority: #f05b5b; }
 .work-calendar-event.work-priority-2 { --work-calendar-priority: #f59e0b; }
 .work-calendar-event.work-priority-3 { --work-calendar-priority: #438df5; }
+
+.work-editor .work-choice-portal.is-below {
+  transform: none !important;
+}
+.work-description-field {
+  display: grid;
+  min-width: 0;
+}
+dialog.work-editor .work-editor-content .work-description-field > :is(div, textarea) {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  border: 0;
+  padding: 6px 2px;
+  font: 16px/1.5 Inter, system-ui, sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+dialog.work-editor .work-editor-content .work-description-field > div {
+  visibility: hidden;
+}
+dialog.work-editor .work-editor-content .work-description-field > textarea {
+  display: block;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: var(--text, #28332f);
+}
+.work-description-field:focus-within {
+  outline: 2px solid var(--accent, #176647);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.work-task-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.work-task-actions [aria-expanded="true"] {
+  background: #e9f3ed;
+}
+.work-task-activity {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border, #cedbd2);
+  border-radius: 10px;
+  background: #f6f8f7;
+}
+.work-task-activity > .button {
+  justify-self: start;
+}
+.work-task-activity .work-field textarea {
+  min-height: 60px;
+}
+.work-activity-list {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.work-activity-list::before {
+  content: "";
+  position: absolute;
+  inset: 16px auto 16px 14px;
+  width: 1px;
+  background: var(--border, #cedbd2);
+}
+.work-activity-list > li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 29px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+.work-activity-icon {
+  display: grid;
+  place-items: center;
+  height: 29px;
+  border-radius: 50%;
+  color: var(--accent, #176647);
+  background: #dfeee5;
+}
+.work-activity-list article {
+  padding: 9px 12px;
+  border: 1px solid var(--border, #cedbd2);
+  border-radius: 8px;
+  background: white;
+  overflow-wrap: anywhere;
+}
+.work-activity-list header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 12px;
+  font-size: 13px;
+}
+.work-activity-list :is(time, small) {
+  font-size: 12px;
+  color: var(--muted, #586b60);
+}
+.work-activity-list p {
+  white-space: pre-wrap;
+  margin: 5px 0 0;
+  font-size: 14px;
+}
+.work-handoff-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.work-handoff-people legend {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.work-handoff-people label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.work-handoff-people input {
+  accent-color: var(--accent, #176647);
+}

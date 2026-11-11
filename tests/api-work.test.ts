@@ -11,7 +11,7 @@ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore, StoreError, decodeOperations, encodeOperations } from '../server/operations-store';
 import { currentSnapshot } from '../server/shipment-operations';
 import { readWork, validateWorkData } from '../server/work-operations';
-import { emptyWork, type WorkCompanyRecord, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+import { emptyWork, workToday, type WorkCompanyRecord, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import type { AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 
@@ -75,16 +75,72 @@ test('work assignments transfer across authenticated accounts, remain scoped and
     assert.equal((await runtime.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: 2, assigneeId: runtime.users[1].id })).status, 404);
     assert.deepEqual((await runtime.bob('/api/work')).body.work.tasks.map((row: WorkTask) => row.id), [task.id]);
     assert.equal((await runtime.director('/api/work')).body.work.tasks.length, 1);
-    assert.equal((await runtime.director('/api/work?assigneeId=mine')).body.work.tasks.length, 0);
+    assert.equal((await runtime.director('/api/work?assigneeId=mine')).body.work.tasks.length, 1);
     const stored = await new OperationsStore(runtime.directory).read(base.provenance.sourceSha256);
     const reloaded = readWork(stored, currentSnapshot(base, stored), new URLSearchParams(), runtime.users[2], runtime.users);
     assert.equal(reloaded.work.tasks[0].assigneeId, runtime.users[2].id); assert.equal(reloaded.work.tasks[0].reminderAt, task.reminderAt);
     const delegated = await runtime.alice('/api/work/tasks', 'POST', { title: 'Задача для коллеги', assigneeId: runtime.users[2].id, requestId: randomUUID() });
     assert.equal(delegated.status, 201);
     assert.equal(delegated.body.entry.createdBy, runtime.users[1].id);
-    assert.deepEqual((await runtime.alice('/api/work')).body.work.tasks, []);
+    assert.deepEqual((await runtime.alice('/api/work')).body.work.tasks.map((row: WorkTask) => row.id), [delegated.body.entry.id]);
     assert.ok((await runtime.bob('/api/work')).body.work.tasks.some((row: WorkTask) => row.id === delegated.body.entry.id));
   } finally { await runtime.close(); }
+});
+
+test('multiple assignees, authored comments, handoff from archive and today count follow each account', async () => {
+  const f = await setup();
+  try {
+    const [aidar, zhenya, egor] = f.users;
+    const today = workToday();
+    assert.equal(workToday(new Date('2026-11-10T21:00:00.000Z')), '2026-11-11');
+    const myTasks = async (client: typeof f.alice) => ((await client('/api/work?assigneeId=mine')).body as WorkResponse).work.tasks;
+    const count = async (client: typeof f.alice) => (await client('/api/navigation')).body.todayTaskCount;
+    const personal = await f.alice('/api/work/tasks', 'POST', { title: 'Личная задача', assigneeIds: [], dueDate: today });
+    assert.equal(personal.status, 201);
+    assert.equal(personal.body.entry.assigneeId, zhenya.id);
+    assert.equal((await myTasks(f.bob)).length, 0);
+    assert.equal((await myTasks(f.director)).length, 0);
+    const payload = { title: 'Оформить УПД', assigneeIds: [aidar.id, zhenya.id], dueDate: today, requestId: randomUUID() };
+    const created = await f.director('/api/work/tasks', 'POST', payload);
+    assert.equal(created.status, 201);
+    assert.equal((await f.director('/api/work/tasks', 'POST', payload)).status, 200);
+    assert.deepEqual(created.body.entry.assigneeIds, [aidar.id, zhenya.id]);
+    assert.equal(await count(f.director), 1);
+    assert.equal(await count(f.alice), 2);
+    assert.equal(await count(f.bob), 0);
+    assert.equal((await f.director(`/api/work?assigneeId=${zhenya.id}`)).body.work.tasks.length, 2);
+
+    const { id } = created.body.entry;
+    const path = `/api/work/tasks/${id}`;
+    const completed = await f.alice(path, 'PATCH', { version: 1, status: 'done' });
+    assert.equal(completed.status, 200);
+    assert.equal(await count(f.director), 0);
+    assert.equal(await count(f.alice), 1);
+    assert.equal((await f.bob(path, 'PATCH', { version: 2, comment: 'Чужая задача' })).status, 404);
+    const comment = await f.alice(path, 'PATCH', { version: 2, comment: 'УПД готов' });
+    assert.equal(comment.status, 200);
+    assert.deepEqual(comment.body.entry.assigneeIds, payload.assigneeIds);
+    assert.equal((await f.alice(path, 'PATCH', { version: 2, handoff: true, assigneeIds: [egor.id] })).status, 409);
+    assert.equal((await f.alice(path, 'PATCH', { version: 3, handoff: true, assigneeIds: [] })).status, 400);
+    const handoff = await f.alice(path, 'PATCH', { version: 3, handoff: true, assigneeIds: [egor.id], comment: 'Распечатай УПД' });
+    assert.equal(handoff.status, 200);
+    assert.equal(handoff.body.entry.status, 'todo');
+    assert.equal(handoff.body.entry.archivedAt, null);
+    assert.deepEqual((await myTasks(f.alice)).map(task => task.id), [personal.body.entry.id]);
+    assert.deepEqual((await myTasks(f.director)).map(task => task.id), [id]);
+    const [received] = await myTasks(f.bob);
+    assert.equal(received.id, id);
+    assert.deepEqual(received.comments?.map(({ text, authorId, handoffTo }) => ({ text, authorId, handoffTo })), [
+      { text: 'УПД готов', authorId: zhenya.id, handoffTo: undefined },
+      { text: 'Распечатай УПД', authorId: zhenya.id, handoffTo: [egor.id] },
+    ]);
+    assert.ok(received.comments?.every(row => Number.isFinite(Date.parse(row.createdAt))));
+    assert.equal(await count(f.bob), 1);
+    assert.equal(await count(f.director), 1);
+    assert.equal((await f.bob(path, 'PATCH', { version: 4, status: 'done' })).status, 200);
+    assert.equal(await count(f.bob), 0);
+    assert.equal(await count(f.director), 0);
+  } finally { await f.close(); }
 });
 
 test('work versions, server validation and idempotency prevent lost edits, invalid references and duplicate tasks', async () => {

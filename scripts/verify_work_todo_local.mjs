@@ -1,4 +1,4 @@
-import { chromium, expect } from '@playwright/test';
+import { chromium, webkit, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -38,12 +38,21 @@ try {
     assert.ok(response.ok, JSON.stringify(result));
     return result;
   };
+  const createUser = async (name, login) => {
+    const manager = (await api('/api/directories', 'POST', { kind: 'managers', name })).entry;
+    return (await api('/api/auth/users', 'POST', { name, login, password, role: 'manager', managerId: manager.id })).user;
+  };
+  const zhenya = await createUser('Женя QA', 'zhenya-qa');
+  const egor = await createUser('Егор QA', 'egor-qa');
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format();
+  const longDescription = Array.from({ length: 7 }, (_, index) => `${index + 1}. Проверить реквизиты получателя и сумму по отгрузке перед печатью УПД.`).join('\n\n');
   const task = (await api('/api/work/tasks', 'POST', {
     title: 'Проверка редактора', dueDate: '2026-11-09', subtasks: [{ id: randomUUID(), title: 'Подзадача', done: false }],
   })).entry;
 
-  browser = await chromium.launch({ headless: true, executablePath: process.env.ARTEL_QA_CHROMIUM });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
+  const useWebkit = process.argv.includes('--webkit');
+  browser = await (useWebkit ? webkit : chromium).launch({ headless: true, executablePath: process.env.ARTEL_QA_CHROMIUM });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce', ...(useWebkit ? { serviceWorkers: 'block' } : {}) });
   await context.request.post(`${base}/api/auth/login`, { data: { login: 'todo-qa', password } });
   const page = await context.newPage();
   const errors = [];
@@ -57,7 +66,7 @@ try {
   await expect(dialog.getByLabel('Срок задачи')).toHaveValue('2026-11-09');
   await expect(dialog.getByRole('button', { name: 'Отмена' })).toHaveCount(0);
   await expect(dialog.getByText('•••')).toHaveCount(0);
-  await expect(dialog.getByText('Комментарии')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Комментарии', exact: true })).toBeVisible();
   await expect(dialog.getByText('Добавить файл', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Удалить', exact: true })).toBeVisible();
   const subtask = dialog.getByRole('textbox', { name: 'Название подзадачи 1' });
@@ -75,11 +84,16 @@ try {
   await created.getByRole('button', { name: 'Добавить подзадачу' }).click();
   await created.getByRole('textbox', { name: 'Название подзадачи 1' }).fill('Первый шаг');
   await created.getByRole('textbox', { name: 'Название', exact: true }).fill('Новая задача QA');
-  const assigneeChoice = created.getByRole('combobox', { name: 'Исполнитель *' });
+  const assigneeChoice = created.getByRole('combobox', { name: 'Исполнители' });
   await assigneeChoice.click();
-  await expect(created.getByRole('listbox', { name: 'Исполнитель *' })).toBeVisible();
+  await expect(created.getByRole('listbox', { name: 'Исполнители' })).toBeVisible();
+  await created.getByRole('option', { name: zhenya.name }).click();
+  await created.getByRole('option', { name: egor.name }).click();
+  await expect(created.getByRole('option', { name: zhenya.name })).toHaveAttribute('aria-selected', 'true');
   await assigneeChoice.press('Escape');
-  await expect(created.getByRole('listbox', { name: 'Исполнитель *' })).toHaveCount(0);
+  await expect(created.getByRole('listbox', { name: 'Исполнители' })).toHaveCount(0);
+  await created.getByLabel('Срок задачи').fill(today);
+  await created.getByRole('textbox', { name: 'Описание' }).fill(longDescription);
   const priorityChoice = created.getByRole('combobox', { name: 'Приоритет' });
   await priorityChoice.click();
   await expect(created.getByRole('listbox', { name: 'Приоритет' })).toBeVisible();
@@ -93,6 +107,9 @@ try {
   const priorityTask = (await api('/api/work')).work.tasks.find(row => row.title === 'Новая задача QA');
   assert.equal(priorityTask.subtasks[0].title, 'Первый шаг');
   assert.equal(priorityTask.priority, 1);
+  assert.deepEqual(priorityTask.assigneeIds, [zhenya.id, egor.id]);
+  const sidebarCount = page.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Работа', exact: true }).locator('small');
+  await expect(sidebarCount).toHaveText('1');
   const priorityCheck = page.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' });
   await expect(priorityCheck).toBeVisible();
   assert.deepEqual(await priorityCheck.locator('xpath=following-sibling::span').evaluate(element => { const style = getComputedStyle(element); return [style.borderTopColor, style.borderRadius]; }), ['rgb(240, 91, 91)', '7px']);
@@ -103,6 +120,15 @@ try {
   await page.getByRole('button', { name: 'Задача: Новая задача QA' }).click();
   const mobileDialog = page.getByRole('dialog', { name: 'Задача' });
   await expect(mobileDialog.getByRole('combobox', { name: 'Приоритет' })).toBeVisible();
+  const description = mobileDialog.getByRole('textbox', { name: 'Описание' });
+  await expect(description).toHaveValue(longDescription);
+  assert.ok(await description.evaluate(element => element.scrollHeight <= element.clientHeight + 1), 'all description lines fit in the editor');
+  await mobileDialog.getByRole('button', { name: 'Комментарии' }).click();
+  await mobileDialog.getByRole('textbox', { name: 'Новый комментарий' }).fill('УПД подготовлен.');
+  await mobileDialog.getByRole('button', { name: 'Отправить комментарий' }).click();
+  await expect(mobileDialog.getByText('УПД подготовлен.', { exact: true })).toBeVisible();
+  await expect(mobileDialog.locator('article time')).toHaveAttribute('datetime', /^\d{4}-/);
+  await expect(mobileDialog.getByText('Директор QA', { exact: true })).toBeVisible();
   await mobileDialog.screenshot({ path: '/tmp/artel-work-task-mobile-preview.png' });
   await mobileDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
   await expect(mobileDialog).toHaveCount(0);
@@ -123,6 +149,37 @@ try {
   await expect(priorityCheck).toBeVisible();
   await expect(priorityCheck).not.toBeChecked();
 
+  const zhenyaContext = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce', ...(useWebkit ? { serviceWorkers: 'block' } : {}) });
+  const egorContext = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce', ...(useWebkit ? { serviceWorkers: 'block' } : {}) });
+  for (const [userContext, login] of [[zhenyaContext, 'zhenya-qa'], [egorContext, 'egor-qa']]) {
+    assert.ok((await userContext.request.post(`${base}/api/auth/login`, { data: { login, password } })).ok());
+  }
+  const sender = await zhenyaContext.newPage();
+  await sender.goto(`${base}/#work`);
+  await sender.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' }).click();
+  await sender.getByRole('button', { name: 'Архив задач', exact: true }).click();
+  await sender.getByRole('button', { name: 'Задача: Новая задача QA' }).click();
+  const senderDialog = sender.getByRole('dialog', { name: 'Задача' });
+  await senderDialog.getByRole('button', { name: 'Передать задачу' }).click();
+  await senderDialog.getByRole('checkbox', { name: egor.name }).check();
+  await senderDialog.getByRole('textbox', { name: 'Комментарий к передаче' }).fill('Егор, распечатай УПД.');
+  await senderDialog.getByRole('button', { name: 'Передать', exact: true }).click();
+  await expect(senderDialog).toHaveCount(0);
+  await expect(sender.getByRole('button', { name: 'Задача: Новая задача QA' })).toHaveCount(0);
+
+  const receiver = await egorContext.newPage();
+  await receiver.goto(`${base}/#work`);
+  await expect(receiver.getByRole('button', { name: 'Работа', exact: true }).locator('small')).toHaveText('1');
+  await receiver.getByRole('button', { name: 'Задача: Новая задача QA' }).click();
+  const receiverDialog = receiver.getByRole('dialog', { name: 'Задача' });
+  await receiverDialog.getByRole('button', { name: 'Комментарии' }).click();
+  await expect(receiverDialog.getByText('Егор, распечатай УПД.', { exact: true })).toBeVisible();
+  await expect(receiverDialog.getByText(zhenya.name, { exact: true })).toBeVisible();
+  await expect(receiverDialog.getByText(`Исполнители после передачи · ${egor.name}`)).toBeVisible();
+  await receiverDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
+  await receiver.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' }).click();
+  await expect(receiver.getByRole('button', { name: 'Работа', exact: true }).locator('small')).toHaveText('0');
+
   const latest = (await api('/api/work')).work.tasks.find(row => row.id === task.id);
   const payload = Buffer.alloc(3 * 1024 * 1024, 65).toString('base64');
   const withFile = (await api(`/api/work/tasks/${task.id}`, 'PATCH', {
@@ -130,7 +187,7 @@ try {
   })).entry;
   assert.equal(withFile.attachments[0].size, 3 * 1024 * 1024);
   assert.deepEqual(errors, []);
-  console.log('PASS Work editor on desktop and mobile, priority, subtasks, attachments, archive and restoration');
+  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, comments, archive handoff, today count and attachments');
 } finally {
   await browser?.close();
   if (server && server.exitCode === null) {

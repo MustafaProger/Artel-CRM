@@ -421,3 +421,43 @@ test('deferred Work response persists assignment before wakeup and dispatches du
     assert.equal(f.wakeups(), 1);
   } finally {await f.close();}
 });
+
+test('multiple task assignees get durable assignment and reminder events, with a new event on handoff', async () => {
+  const sent: { userId: string; body: string }[] = [];
+  const f = await fixture(async (device, payload) => { sent.push({ userId: device.userId, body: JSON.parse(payload).body }); }, true);
+  try {
+    const [director, manager] = f.users;
+    const password = randomUUID();
+    const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'Third employee' });
+    const { body: { user: colleague } } = await f.director('/api/auth/users', 'POST', {
+      login: 'push-colleague', name: 'Third employee', role: 'manager', managerId: employee.body.entry.id, password,
+    });
+    const client = f.client();
+    assert.equal((await client('/api/auth/login', 'POST', { login: 'push-colleague', password })).status, 200);
+    for (const request of [f.director, f.manager, client]) {
+      assert.equal((await request('/api/push/subscription', 'POST', { subscription: subscription(), explicit: true })).status, 200);
+    }
+    const created = await f.director('/api/work/tasks', 'POST', {
+      title: 'Prepare UPD', assigneeIds: [manager.id, colleague.id], reminderAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    assert.equal(created.status, 201);
+    const dispatch = async () => {
+      const result = await f.anon('/api/push/dispatch', 'GET', undefined, { Authorization: `Bearer ${f.cronSecret}` });
+      assert.equal(result.status, 200);
+    };
+    await dispatch();
+    assert.deepEqual(sent.map(row => row.userId).sort(), [manager.id, manager.id, colleague.id, colleague.id].sort());
+    assert.equal(new Set(sent.map(row => row.body)).size, 2);
+    await dispatch();
+    assert.equal(sent.length, 4);
+
+    const transferred = await f.manager(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', {
+      version: 1, assigneeIds: [colleague.id], handoff: true, comment: 'Print it',
+    });
+    assert.equal(transferred.status, 200);
+    await dispatch();
+    assert.equal(sent.length, 5);
+    assert.equal(sent[4].userId, colleague.id);
+    assert.equal(sent.some(row => row.userId === director.id), false);
+  } finally { await f.close(); }
+});

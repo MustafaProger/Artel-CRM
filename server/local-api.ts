@@ -39,7 +39,7 @@ import { apiSection, requireSection, requireTripSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
-import { readWork, mutateWork, workFile, workCompanyIds } from './work-operations';
+import { readWork, mutateWork, workFile, workCompanyIds, todayTaskCount } from './work-operations';
 import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-cleanup';
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
@@ -649,7 +649,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const shipmentCount = !actor || isAdministrator(actor) ? snapshot.shipments.length
           : hasSection(actor, 'shipments') || hasSection(actor, 'trips')
             ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).length : 0;
-        return write(response, 200, JSON.stringify({ shipmentCount }));
+        return write(response, 200, JSON.stringify({ shipmentCount, ...(actor && hasSection(actor, 'work') ? { todayTaskCount: todayTaskCount(requestData, actor) } : {}) }));
       }
       const executionMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/execution(?:\/(deliver|complete))?$/);
       if (executionMatch) {
@@ -981,11 +981,11 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const result=await transact(base.provenance.sourceSha256,data=>{
           const currentActor=authorized(data);
           const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
-          return {result,changed:result.changed};
+          return {result: { ...result, todayTaskCount: todayTaskCount(data, currentActor) },changed:result.changed};
         });
-        // A status-only edit cannot create an assignment; do not wait for the push queue.
-        const statusOnly = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status');
-        if (workMatch[1] === 'tasks' && result.entry && !statusOnly && pushReady(config)) {
+        // Status, archive and comment edits keep the assignment unchanged.
+        const keepsAssignment = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status' || key === 'archived' || key === 'comment');
+        if (workMatch[1] === 'tasks' && result.entry && !keepsAssignment && pushReady(config)) {
           if (options.workNotificationWakeup) {
             write(response,result.created?201:200,JSON.stringify(result));
             try { options.workNotificationWakeup(); } catch { /* Durable outbox is retried by the scheduler. */ }
