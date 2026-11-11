@@ -159,10 +159,18 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   const creator = previous?.createdBy ?? actor.id;
   const handoff = body.handoff === true;
   if (body.handoff !== undefined && (!handoff || !previous || !Array.isArray(body.assigneeIds) || !body.assigneeIds.length)) throw new ApiError(400, 'Укажите исполнителей для передачи задачи.');
+  const activeAssignee = (id: string) => users.some(user => user.id === id && user.active && !user.deletedAt && (kind !== 'tasks' || hasSection(user, 'work')));
+  let handoffTo: string[] | undefined;
   let assigneeIds: readonly string[];
   if (kind === 'tasks' && body.assigneeIds !== undefined) {
     if (body.assigneeId !== undefined || !validAssignees(body.assigneeIds)) throw new ApiError(400, 'Выберите исполнителей из списка сотрудников.');
-    assigneeIds = body.assigneeIds.length ? body.assigneeIds : [creator];
+    if (handoff) {
+      if (body.assigneeIds.some(id => id === actor.id || !activeAssignee(id))) throw new ApiError(400, 'Для передачи выберите действующих коллег.');
+      handoffTo = body.assigneeIds;
+      assigneeIds = [...new Set([...previousAssignees, ...handoffTo, ...(activeAssignee(creator) ? [creator] : [])])];
+    } else {
+      assigneeIds = body.assigneeIds.length ? body.assigneeIds : [creator];
+    }
   } else if (kind === 'tasks' && previous && body.assigneeId === undefined) {
     assigneeIds = previousAssignees;
   } else {
@@ -171,12 +179,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     assigneeIds = [assigneeId];
   }
   const assigneeId = assigneeIds[0];
-  const activeAssignee = (id: string) => users.some(user => user.id === id && user.active && !user.deletedAt && (kind !== 'tasks' || hasSection(user, 'work')));
   if (assigneeIds.some(id => !activeAssignee(id) && !previousAssignees.includes(id))) throw new ApiError(400, 'Выберите действующего сотрудника.');
-  if (handoff && (!assigneeIds.some(id => id !== actor.id) || assigneeIds.some(id => !activeAssignee(id)) ||
-    assigneeIds.length === previousAssignees.length && assigneeIds.every(id => previousAssignees.includes(id)))) {
-    throw new ApiError(400, 'Для передачи измените список исполнителей и выберите хотя бы одного коллегу.');
-  }
   if (kind !== 'tasks' && !previous && !isSupervisor(actor) && assigneeId !== actor.id) throw new ApiError(403, 'Создайте запись для себя. Затем её можно передать сотруднику.');
   const companyId = kind === 'notes' ? null : get('companyId', null);
   if (kind !== 'notes' && (companyId !== null || kind === 'companies') && (!identifier(companyId) || !snapshot.companies.some(company => company.id === companyId && (isWorkDirectoryCompany(company) || previous && 'companyId' in previous && previous.companyId === companyId)))) throw new ApiError(400, 'Выберите доступную компанию из справочника.');
@@ -215,7 +218,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
       const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
       if (comment || handoff) record.comments.push({
         id: `work-comment-${randomUUID()}`, text: comment || 'Задача передана', authorId: actor.id, createdAt: now,
-        ...(handoff ? { handoffTo: [...assigneeIds] } : {}),
+        ...(handoffTo ? { handoffTo } : {}),
       });
     }
     const files: WorkAttachment[] = [...(previousRecord?.attachments ?? [])];
@@ -247,6 +250,6 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];
   validateWorkData(work);
   data.work = work;
-  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor.id, handoff);
+  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor.id, handoffTo);
   return { entry: publicWorkEntry(entry), created: !previous, changed: true };
 }

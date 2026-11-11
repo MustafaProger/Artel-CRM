@@ -279,6 +279,10 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     onClose={() => setEditor(null)} onTaskCount={onTaskCount} onCommentSaved={entry => updateWorkList(editor, entry)}
     onSaved={(action, entry) => {
       updateWorkList(editor, entry);
+      if (action === 'handed-off' && view === 'archive') {
+        setListScope('all');
+        setView('board');
+      }
       setEditor(null);
       setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : action === 'handed-off' ? 'Задача передана.' : 'Сохранено.');
     }}/>;
@@ -432,7 +436,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const uploadAction = <label className="work-upload"><Paperclip size={14} aria-hidden="true"/><span>Добавить файл</span><input type="file" multiple aria-label="Добавить файл" disabled={saving} onChange={event => { const selected = [...files, ...Array.from(event.target.files ?? [])]; event.target.value = ''; if (selected.some(file => file.size > workFileLimit) || selected.reduce((sum, file) => sum + file.size, 0) + (record?.attachments ?? []).reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit || selected.length + (record?.attachments?.length ?? 0) > 20) { setError('Файл: до 20 МБ; в карточке не более 20 файлов и 20 МБ суммарно.'); return; } setFiles(selected); setError(''); }}/></label>;
   const taskFiles = editor.kind !== 'notes' && <section className="work-files" aria-label="Файлы">{fileRows}{uploadAction}</section>;
   const taskActivity = <>
-      {editor.kind === 'companies' && <section className="work-comments"><h3>Комментарии</h3>{record?.comments?.map(comment => <article key={comment.id}><small>{userName(comment.authorId)} · {dateLabel(comment.createdAt)}</small><p>{comment.text}</p></article>)}{input('Новый комментарий', 'comment', { multiline: true })}</section>}
+      {editor.kind === 'companies' && <section className="work-comments"><h3>Комментарии</h3>{record?.comments?.slice().reverse().map(comment => <article key={comment.id}><small>{userName(comment.authorId)} · {dateLabel(comment.createdAt)}</small><p>{comment.text}</p></article>)}{input('Новый комментарий', 'comment', { multiline: true })}</section>}
       {entry && <p className="work-hint">Изменено: {dateLabel(entry.updatedAt)} · {userName(entry.updatedBy)}</p>}
   </>;
   const details = <>
@@ -484,11 +488,11 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
       </section>}
       {editor.kind === 'tasks' && activity && <section id={activityId} className="work-task-activity" aria-label={activity === 'comments' ? 'Комментарии' : 'Передача задачи'}>
         {activity === 'comments' ? <>
-          {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.map(comment => <li key={comment.id}>
+          {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id}>
             <span className="work-activity-icon">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
             <article>
               <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
-              {comment.handoffTo && <small>Исполнители после передачи · {comment.handoffTo.map(userName).join(', ')}</small>}
+              {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}
               <p>{comment.text}</p>
             </article>
           </li>)}</ol>}

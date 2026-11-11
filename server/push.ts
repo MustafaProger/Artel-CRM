@@ -98,20 +98,20 @@ export function validatePush(value: PushData | undefined) {
   }
 }
 /** Store alongside the task mutation, so a committed assignment survives a failed immediate dispatch. */
-export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string, handoff = false): void {
+export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string, handoffTo?: readonly string[]): void {
   const id = task?.id ?? previous?.id;
   if (!id) return;
   const recipients = task && !task.archivedAt && task.status !== 'done' ? workAssigneeIds(task) : [];
-  const previousRecipients = previous && !handoff ? workAssigneeIds(previous) : [];
-  if (recipients.length === previousRecipients.length && recipients.every(recipient => previousRecipients.includes(recipient)) && recipients.length) return;
+  const previousRecipients = previous ? workAssigneeIds(previous) : [];
+  if (!handoffTo && recipients.length === previousRecipients.length && recipients.every(recipient => previousRecipients.includes(recipient)) && recipients.length) return;
 
   const existing = data.push?.taskAssignments;
   for (const [key, assignment] of Object.entries(existing ?? {})) {
-    if ((assignment.taskId ?? key) === id && (handoff || !recipients.includes(assignment.assigneeId))) delete existing![key];
+    if ((assignment.taskId ?? key) === id && (handoffTo?.includes(assignment.assigneeId) || !recipients.includes(assignment.assigneeId))) delete existing![key];
   }
   if (!task) return;
-  for (const assigneeId of recipients) {
-    if (assigneeId === actorId || previousRecipients.includes(assigneeId)) continue;
+  for (const assigneeId of handoffTo ?? recipients.filter(id => !previousRecipients.includes(id))) {
+    if (assigneeId === actorId) continue;
     const push = data.push ??= { devices: [], deliveries: {} };
     const assignments = push.taskAssignments ??= {};
     const key = Object.hasOwn(assignments, id) ? `assignment-${createHash('sha256').update(JSON.stringify([id, assigneeId])).digest('hex')}` : id;

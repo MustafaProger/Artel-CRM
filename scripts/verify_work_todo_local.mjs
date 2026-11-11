@@ -122,6 +122,9 @@ try {
   await expect(mobileDialog.getByRole('combobox', { name: 'Приоритет' })).toBeVisible();
   const description = mobileDialog.getByRole('textbox', { name: 'Описание' });
   await expect(description).toHaveValue(longDescription);
+  await description.focus();
+  await expect(description).toHaveCSS('border-top-width', '0px');
+  await expect(description.locator('..')).toHaveCSS('outline-style', 'none');
   assert.ok(await description.evaluate(element => element.scrollHeight <= element.clientHeight + 1), 'all description lines fit in the editor');
   await mobileDialog.getByRole('button', { name: 'Комментарии' }).click();
   await mobileDialog.getByRole('textbox', { name: 'Новый комментарий' }).fill('УПД подготовлен.');
@@ -165,7 +168,7 @@ try {
   await senderDialog.getByRole('textbox', { name: 'Комментарий к передаче' }).fill('Егор, распечатай УПД.');
   await senderDialog.getByRole('button', { name: 'Передать', exact: true }).click();
   await expect(senderDialog).toHaveCount(0);
-  await expect(sender.getByRole('button', { name: 'Задача: Новая задача QA' })).toHaveCount(0);
+  await expect(sender.getByRole('button', { name: 'Задача: Новая задача QA' })).toBeVisible();
 
   const receiver = await egorContext.newPage();
   await receiver.goto(`${base}/#work`);
@@ -175,7 +178,8 @@ try {
   await receiverDialog.getByRole('button', { name: 'Комментарии' }).click();
   await expect(receiverDialog.getByText('Егор, распечатай УПД.', { exact: true })).toBeVisible();
   await expect(receiverDialog.getByText(zhenya.name, { exact: true })).toBeVisible();
-  await expect(receiverDialog.getByText(`Исполнители после передачи · ${egor.name}`)).toBeVisible();
+  await expect(receiverDialog.getByText(`Передано · ${egor.name}`)).toBeVisible();
+  await expect(receiverDialog.locator('.work-activity-list article p')).toHaveText(['Егор, распечатай УПД.', 'УПД подготовлен.']);
   await receiverDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
   await receiver.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' }).click();
   await expect(receiver.getByRole('button', { name: 'Работа', exact: true }).locator('small')).toHaveText('0');

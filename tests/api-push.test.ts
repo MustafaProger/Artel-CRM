@@ -456,8 +456,9 @@ test('multiple task assignees get durable assignment and reminder events, with a
     });
     assert.equal(transferred.status, 200);
     await dispatch();
-    assert.equal(sent.length, 5);
-    assert.equal(sent[4].userId, colleague.id);
-    assert.equal(sent.some(row => row.userId === director.id), false);
+    assert.equal(sent.length, 6);
+    assert.equal(sent.filter(row => row.userId === colleague.id && row.body.includes('назначена')).length, 2);
+    assert.equal(sent.filter(row => row.userId === manager.id).length, 2);
+    assert.equal(sent.filter(row => row.userId === director.id && row.body.includes('Напоминание')).length, 1);
   } finally { await f.close(); }
 });

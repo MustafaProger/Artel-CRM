@@ -490,11 +490,6 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
   background: transparent;
   color: var(--text, #28332f);
 }
-.work-description-field:focus-within {
-  outline: 2px solid var(--accent, #176647);
-  outline-offset: 2px;
-  border-radius: 8px;
-}
 .work-task-actions {
   display: flex;
   align-items: center;
