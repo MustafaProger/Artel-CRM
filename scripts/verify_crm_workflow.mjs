@@ -135,7 +135,15 @@ try {
 
   await visit(d.page, 'directories', '.directory-tabs')
   const tabs = d.page.locator('.directory-tabs button')
-  await expect(tabs).toHaveText(['Поставщики', 'Нефтебазы', 'Сотрудники', 'Товары', 'Автомобили', 'Водители', 'Сервисы операторской'])
+  const directoryNames = ['Клиенты', 'Поставщики', 'Нефтебазы', 'Сотрудники', 'Товары', 'Автомобили', 'Водители', 'Места погрузки и доставки', 'Сервисы операторской']
+  await expect(tabs).toHaveText(directoryNames)
+  for (const [tabName, entry] of [['Клиенты', 'QA Клиент'], ['Поставщики', 'QA Поставщик'], ['Места погрузки и доставки', 'QA Выгрузка']]) {
+    await d.page.locator('.directory-tabs').getByRole('button', { name: tabName, exact: true }).click()
+    await expect(d.page.locator('.directory-record strong').getByText(entry, { exact: true })).toBeVisible()
+  }
+  await visit(a.page, 'directories', '.directory-tabs')
+  await expect(a.page.locator('.directory-tabs button')).toHaveText(['Клиенты', 'Места погрузки и доставки'])
+  await expect(a.page.locator('.directory-record strong').getByText('QA Клиент', { exact: true })).toBeVisible()
   for (const tab of await tabs.all()) {
     await tab.click()
     await d.page.getByRole('button', { name: 'Добавить', exact: true }).click()
@@ -156,7 +164,7 @@ try {
   await visit(d.page, 'accounts', '.account-management')
   await d.page.getByRole('button', { name: 'Добавить пользователя', exact: true }).click()
   await expect(d.page.getByRole('option', { name: 'Логист', exact: true, includeHidden: true })).toHaveCount(0)
-  console.log('PASS seven directory tabs, cancel, one-click deletion, retired role')
+  console.log('PASS nine directory tabs, cancel, one-click deletion, retired role')
 
   await visit(d.page, 'operator', '.operator-workspace')
   for (const name of [/Задания/, /^Возвраты/, /^Ожидают заправки/, 'Сверки', 'Операции']) {
@@ -184,7 +192,7 @@ try {
   await mobile.page.getByRole('button', { name: 'Заявки', exact: true }).click()
   await draft(mobile.page, 'Новая заявка', 'Комментарий', 'QA мобильная отмена')
   await visit(mobile.page, 'directories', '.directory-tabs')
-  await expect(mobile.page.locator('.directory-tabs button')).toHaveCount(7)
+  await expect(mobile.page.locator('.directory-tabs button')).toHaveText(directoryNames)
   assert.deepEqual(browserErrors, [])
   console.log('PASS mobile WebKit and no uncaught browser errors')
 } finally {

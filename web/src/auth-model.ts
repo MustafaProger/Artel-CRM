@@ -26,4 +26,10 @@ export const sharedDirectories = [
 export type SharedDirectory = typeof sharedDirectories[number]['id'];
 export const validDirectoryGrants = (value: unknown): value is SharedDirectory[] => Array.isArray(value) && new Set(value).size === value.length && value.every(id => sharedDirectories.some(row => row.id === id));
 export const hasDirectoryGrant = (user: AccountUser, kind: string) => hasSection(user, 'directories') && (isAdministrator(user) || user.directoryGrants?.includes(kind as SharedDirectory) === true);
-export const availableDirectoryTabs = (user: AccountUser) => hasSection(user, 'directories') ? [...sharedDirectories.filter(row => row.id !== 'paymentForms' && hasDirectoryGrant(user, row.id)).map(row => row.id)] : [];
+export const availableDirectoryTabs = (user: AccountUser) => {
+  if (!hasSection(user, 'directories')) return [];
+  const customerSections: SectionId[] = ['overview', 'shipments', 'trips'];
+  const customerTabs = customerSections.some(section => hasSection(user, section)) ? ['customers', 'addresses'] : [];
+  const sharedTabs = sharedDirectories.filter(row => row.id !== 'paymentForms' && hasDirectoryGrant(user, row.id)).map(row => row.id);
+  return [...customerTabs, ...sharedTabs];
+};
