@@ -13,10 +13,15 @@ const trip: ShipmentTrip = {
   customers: ['4000', '5500', '8000'].map((quantity, i) => ({ id: `delivery-${i}`, version: 1, paidAmount: '0', fields: { customer_id: String(i + 1), quantity_litres: quantity, sale_price_per_litre: ['70', '73', '72'][i], transport_amount: ['8000', '7000', '8000'][i] } })),
 }
 
-test('copies the requested multiline format with product and unabridged per-delivery amounts', () => {
-  const before = JSON.stringify({ trip, data })
-  assert.equal(tripCopyText(trip, data), '23.10\nКомплекс Ойл 77000\nДТ\n4000 л Ип Киртока 70,00\n5500 л ооо спс 73,00\n8000 л ао АиФ 72,00\nПётр 8000+7000+8000')
-  assert.equal(JSON.stringify({ trip, data }), before)
+test('copies the full trip summary without quotes and ООО or ИП labels', () => {
+  const directory = structuredClone(data)
+  directory.companies[0].name = 'ООО«Комплекс Ойл»'
+  directory.companies[1].name = 'ИП "Киртока"'
+  directory.companies[2].name = '"КИП" ооо'
+  directory.companies[3].name = 'АО „АиФ“'
+  const before = JSON.stringify({ trip, directory })
+  assert.equal(tripCopyText(trip, directory), '23.10\nКомплекс Ойл 77000\nДТ\n4000 л Киртока 70,00\n5500 л КИП 73,00\n8000 л АО АиФ 72,00\nПётр 8000+7000+8000')
+  assert.equal(JSON.stringify({ trip, directory }), before)
 })
 
 test('single delivery, decimal precision, zeroes and comma inputs', () => {
@@ -24,7 +29,7 @@ test('single delivery, decimal precision, zeroes and comma inputs', () => {
   value.customers = [value.customers[0]]
   Object.assign(value.customers[0].fields, { quantity_litres: '15048.125', sale_price_per_litre: '69,40', transport_amount: '0' })
   value.fields.purchase_price_unspecified_unit = '78 400,50'
-  assert.equal(tripCopyText(value, data), '23.10\nКомплекс Ойл 78400,5\nДТ\n15048,125 л Ип Киртока 69,40\nПётр 0')
+  assert.equal(tripCopyText(value, data), '23.10\nКомплекс Ойл 78400,5\nДТ\n15048,125 л Киртока 69,40\nПётр 0')
 })
 
 test('unknown values stay explicit instead of becoming zero or disappearing from the sum', () => {

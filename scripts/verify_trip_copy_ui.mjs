@@ -43,7 +43,7 @@ try {
     const card = panel.getByTestId('execution-trip').filter({ hasText: `Рейс №${created.trip.number}` });
     await expect(card).toContainText('Ждёт погрузки'); await expect(panel).not.toContainText('СВОБОДНАЯ777');
     const entry = card.locator('..'), copy = entry.locator('.execution-copy-summary');
-    const expectedText = '27.10\nСинтетический поставщик 50000\nДТ\n8000 л ИП ПолучательТестовый Тест 60,00\n6000 л ИП ПолучательТестовый Тест 60,00\nТест 1000+1000';
+    const expectedText = '27.10\nСинтетический поставщик 50000\nДТ\n8000 л ПолучательТестовый Тест 60,00\n6000 л ПолучательТестовый Тест 60,00\nТест 1000+1000';
     const beforeCopy = await rt.store.read(rt.source);
     if (engine === 'chromium') await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     else await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{ writeText:async text => { window.copiedTripText=text; } } }));

@@ -17,7 +17,11 @@ function amount(value: string | null | undefined, fixed = false): string {
 export function tripCopyText(trip: ShipmentTrip, data: DirectoryData): string {
   const fields = trip.fields
   const date = fields.date?.match(/^\d{4}-(\d{2})-(\d{2})(?:$|T)/)
-  const company = (id: string | null | undefined, fallback: string) => line(data.companies.find(row => row.id === id)?.name, fallback)
+  const company = (id: string | null | undefined, fallback: string) => {
+    const name = data.companies.find(row => row.id === id)?.name
+    const unquoted = line(name?.replace(/["«»„“”]/gu, ' '), '')
+    return unquoted.replace(/^(?:ООО|ИП)(?= |$)| (?:ООО|ИП)$/giu, '').trim() || fallback
+  }
   return [
     date ? `${date[2]}.${date[1]}` : 'Дата не указана',
     `${company(fields.supplier_id, 'Поставщик не указан')} ${amount(fields.purchase_price_unspecified_unit)}`,
