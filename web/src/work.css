@@ -157,12 +157,32 @@
 .work-compose-details > summary { cursor: pointer; width: fit-content; padding-block: 6px; color: var(--muted, #586b60); }
 .work-compose-details[open] > :not(summary) { margin-top: 12px; }
 
-.work-subtasks { min-width: 0; }
+.work-subtasks {
+  --work-subtask-duration: 200ms;
+  min-width: 0;
+}
+.work-subtasks-heading-frame {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--work-subtask-duration) var(--motion-ease),
+    opacity var(--work-subtask-duration) var(--motion-ease);
+}
+.work-subtasks-heading-frame[data-empty="true"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+.work-subtasks-heading-frame > div {
+  min-height: 0;
+  overflow: clip;
+}
+.work-subtask-item {
+  overflow: clip;
+}
 .work-subtasks-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .work-subtasks-heading h3 { font-size: 13px; margin: 0; }
-.work-subtasks-heading > span { color: var(--muted, #586b60); font-size: 12px; }
-.work-subtask-list { margin: 6px 0 0; padding: 0; list-style: none; }
-.work-subtask-list li {
+.work-subtasks-heading > span { margin-bottom: 6px; color: var(--muted, #586b60); font-size: 12px; }
+.work-subtask-list { margin: 0; padding: 0; list-style: none; }
+.work-subtask-list .work-subtask-row {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
@@ -227,7 +247,7 @@
 .work-editor:has(.work-editor-properties) .work-editor-content>.work-field:nth-child(2) textarea{height:48px}
 .work-editor:has(.work-editor-properties) .work-subtasks{margin-top:4px}
 .work-editor:has(.work-editor-properties) .work-subtasks-heading{padding-bottom:7px;border-bottom:1px solid var(--border,#cedbd2)}
-.work-editor:has(.work-editor-properties) .work-subtask-list li{min-height:38px}
+.work-editor:has(.work-editor-properties) .work-subtask-list .work-subtask-row{min-height:38px}
 .work-editor:has(.work-editor-properties) .work-subtask-list .work-subtask-title{padding:4px 6px}
 .work-editor:has(.work-editor-properties) .work-comments{margin-top:3px}
 .work-editor:has(.work-editor-properties) .work-comments .work-field textarea{min-height:45px}
@@ -258,7 +278,7 @@
 .work-page .work-editor.work-compose .work-compose-description{height:29px;min-height:29px;padding:4px 3px;font-size:12px;line-height:20px}
 .work-page .work-editor.work-compose .work-subtasks{margin-top:2px}
 .work-page .work-editor.work-compose .work-add-subtask{min-height:28px;padding:2px 3px}
-.work-page .work-editor.work-compose .work-subtask-list li{min-height:32px}
+.work-page .work-editor.work-compose .work-subtask-list .work-subtask-row{min-height:32px}
 .work-page .work-editor.work-compose .work-compose-date{margin-top:3px}
 .work-page .work-editor.work-compose .work-compose-date .work-field{gap:2px}
 .work-page .work-editor.work-compose .work-compose-date .work-field>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
@@ -274,7 +294,7 @@
 @media(max-width:650px){.work-page .work-editor.work-compose{width:calc(100% - 20px);margin:8px 10px 12px}.work-page .work-editor.work-compose .work-compose-advanced{width:min(430px,calc(100vw - 56px))}.work-page .work-editor.work-compose .work-editor-footer>.button{flex:1 1 auto}}
 
 .work-editor .work-subtasks-heading{border:0!important}
-.work-editor .work-subtask-list li{min-height:34px;border:0;grid-template-columns:28px minmax(0,1fr) 28px;gap:8px}
+.work-editor .work-subtask-list .work-subtask-row{min-height:34px;border:0;grid-template-columns:28px minmax(0,1fr) 28px;gap:8px}
 .work-editor .work-subtask-check{position:relative;width:28px;min-height:28px}
 .work-editor .work-subtask-check input{position:absolute;inset:0;width:28px;height:28px;margin:0;opacity:0;cursor:pointer}
 .work-editor .work-subtask-check-box{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid #87958e;border-radius:5px;background:#fff;color:#fff;pointer-events:none}
@@ -306,7 +326,7 @@
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child input{border:0;padding:2px 0;font-size:19px;font-weight:650;background:transparent}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtasks{margin-top:0}
-.work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtask-list li{min-height:34px}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-subtask-list .work-subtask-row{min-height:34px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-add-subtask{margin-top:1px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-task-toolbar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px 10px;margin-top:3px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-files{display:contents}
@@ -506,6 +526,7 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
   background: #e9f3ed;
 }
 .work-activity-frame {
+  --work-activity-duration: 280ms;
   position: relative;
   overflow: clip;
 }
@@ -515,7 +536,7 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
   padding-top: 8px;
   opacity: 0;
   visibility: hidden;
-  transition: opacity var(--motion-enter) var(--motion-ease), visibility var(--motion-enter);
+  transition: opacity var(--work-activity-duration) ease-in-out, visibility var(--work-activity-duration);
 }
 .work-activity-layer[data-active="true"] {
   position: relative;
@@ -536,6 +557,16 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
 }
 .work-task-activity .work-field textarea {
   min-height: 60px;
+}
+.work-activity-history {
+  max-height: min(300px, 35dvh);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.work-activity-history:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
 .work-activity-list {
   position: relative;

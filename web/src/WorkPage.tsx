@@ -22,6 +22,7 @@ const savedNotices = {
 };
 type SavedAction = keyof typeof savedNotices;
 type TaskActivity = 'comments' | 'handoff';
+type EditableSubtask = WorkSubtask & { removing?: true };
 type CalendarEvent = { id: string; day: string; title: string; reminder: boolean; priority?: WorkPriority; editor: Editor };
 const localDay = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 const addDays = (value: Date, days: number) => { const next = new Date(value); next.setDate(next.getDate() + days); return next; };
@@ -340,6 +341,8 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const focusSubtask = useRef<string | null>(null);
+  const addedSubtask = useRef<HTMLLIElement>(null);
+  const addSubtaskButton = useRef<HTMLButtonElement>(null);
   const errorMessage = useRef<HTMLParagraphElement>(null);
   const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
   const [requestId] = useState(() => crypto.randomUUID());
@@ -378,8 +381,8 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
     const end = parseFloat(styles.height);
     if (start !== end) {
       activityResize.current = frame.animate([{ height: `${start}px` }, { height: `${end}px` }], {
-        duration: parseFloat(styles.getPropertyValue('--motion-enter')),
-        easing: styles.getPropertyValue('--motion-ease').trim(),
+        duration: parseFloat(styles.getPropertyValue('--work-activity-duration')),
+        easing: 'ease-in-out',
       });
     }
   }, [activity, latestCommentId]);
@@ -412,21 +415,50 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const [fields, setFields] = useState(() => ({ title: task?.title ?? note?.title ?? '', description: task?.description ?? '', priority: String(task?.priority ?? 4), companyId: record?.companyId ?? '', assigneeId: entry?.assigneeId ?? actor.id, dueDate: task?.dueDate ?? editor.dueDate ?? '', reminderAt: localInputTime(record?.reminderAt), question: record && 'question' in record ? record.question : '', comment: '', content: note?.content ?? '' }));
   const [priorityChosen, setPriorityChosen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
-  const [subtasks, setSubtasks] = useState<WorkSubtask[]>(() => task?.subtasks ?? []);
+  const [subtasks, setSubtasks] = useState<EditableSubtask[]>(() => task?.subtasks ?? []);
+  const activeSubtasks = subtasks.filter(row => !row.removing);
   const archived = !!record?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState('');
   const [pendingAction, setPendingAction] = useState<SavedAction | 'comment' | null>(null);
   const motion = useDialogMotion(dialog, onDismiss);
   const onClose = motion.close;
 
-  const editSubtasks = (next: WorkSubtask[]) => {
-    setSubtasks(next);
-
-  };
   const addSubtask = () => {
     const id = crypto.randomUUID();
     focusSubtask.current = id;
-    editSubtasks([...subtasks, { id, title: '', done: false }]);
+    setSubtasks(current => [...current, { id, title: '', done: false }]);
+  };
+  useLayoutEffect(() => {
+    const row = addedSubtask.current;
+    if (!focusSubtask.current || !row) return;
+    focusSubtask.current = null;
+    const input = row.querySelector<HTMLInputElement>('.work-subtask-title');
+    input?.focus({ preventScroll: true });
+    input?.scrollIntoView({ block: 'nearest' });
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const styles = getComputedStyle(row);
+    row.animate([{ height: '0px', opacity: 0 }, { height: styles.height, opacity: 1 }], {
+      duration: parseFloat(styles.getPropertyValue('--work-subtask-duration')),
+      easing: styles.getPropertyValue('--motion-ease').trim(),
+    });
+  }, [subtasks]);
+  const removeSubtask = (id: string, button: HTMLButtonElement) => {
+    addSubtaskButton.current?.focus({ preventScroll: true });
+    const remove = () => setSubtasks(current => current.filter(row => row.id !== id));
+    const row = button.closest('li');
+    if (!row || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      remove();
+      return;
+    }
+
+    const styles = getComputedStyle(row);
+    const start = { height: styles.height, opacity: styles.opacity };
+    const duration = parseFloat(styles.getPropertyValue('--work-subtask-duration'));
+    const easing = styles.getPropertyValue('--motion-ease').trim();
+    row.getAnimations().forEach(animation => animation.cancel());
+    setSubtasks(current => current.map(row => row.id === id ? { ...row, removing: true } : row));
+    const exit = row.animate([start, { height: '0px', opacity: 0 }], { duration, easing, fill: 'forwards' });
+    void exit.finished.then(remove, remove);
   };
   useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }); } }, [error]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })) };
@@ -465,7 +497,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
             ...identity, ...recordFields,
             title: fields.title, description: fields.description,
             priority: Number(fields.priority), companyId: fields.companyId || null, dueDate: fields.dueDate || null,
-            ...(subtasks.length || task?.subtasks ? { subtasks } : {}),
+            ...(activeSubtasks.length || task?.subtasks ? { subtasks: activeSubtasks } : {}),
             ...(handingOff
               ? { handoff: true, assigneeIds: handoffTo }
               : { assigneeIds: assignees, status: nextStatus ?? task?.status ?? editor.status ?? 'todo', archived: nextArchived ?? archived }),
@@ -535,25 +567,30 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
           disabled={saving} onChange={event => update('description', event.target.value)}/>
       </div>}
       {editor.kind === 'tasks' && <section className="work-subtasks" aria-label="Подзадачи">
-        {subtasks.length > 0 && <div className="work-subtasks-heading">
-          <h3>Подзадачи</h3>
-          {subtasks.length > 0 && <span role="status">{subtasks.filter(row => row.done).length} из {subtasks.length} готово</span>}
-        </div>}
-        {subtasks.length > 0 && <ul className="work-subtask-list">{subtasks.map((row, index) => <li key={row.id} className={row.done ? 'is-done' : undefined}>
-          <label className="work-subtask-check">
-            <input type="checkbox" aria-label={`Выполнена подзадача: ${row.title || index + 1}`} checked={row.done} disabled={saving}
-              onChange={event => editSubtasks(subtasks.map(item => item.id === row.id ? { ...item, done: event.target.checked } : item))}/>
-            <span className="work-subtask-check-box" aria-hidden="true"><Check size={11}/></span>
-          </label>
-          <input className="work-subtask-title" aria-label={`Название подзадачи ${index + 1}`} placeholder="Название подзадачи"
-            ref={element => { if (element && focusSubtask.current === row.id) { focusSubtask.current = null; element.focus(); } }}
-            value={row.title} maxLength={200} required disabled={saving}
-            onChange={event => editSubtasks(subtasks.map(item => item.id === row.id ? { ...item, title: event.target.value } : item))}/>
-          <button type="button" className="icon-button" aria-label={`Удалить подзадачу ${index + 1}`} disabled={saving}
-            onClick={() => editSubtasks(subtasks.filter(item => item.id !== row.id))}><X size={16}/></button>
-        </li>)}</ul>}
+        <div className="work-subtasks-heading-frame" data-empty={!activeSubtasks.length} aria-hidden={!activeSubtasks.length}>
+          <div className="work-subtasks-heading">
+            <h3>Подзадачи</h3>
+            <span role="status">{activeSubtasks.filter(row => row.done).length} из {activeSubtasks.length} готово</span>
+          </div>
+        </div>
+        {subtasks.length > 0 && <ul className="work-subtask-list">{subtasks.map((row, index) => (
+          <li key={row.id} className="work-subtask-item" inert={row.removing} ref={focusSubtask.current === row.id ? addedSubtask : undefined}>
+            <div className={`work-subtask-row${row.done ? ' is-done' : ''}`}>
+              <label className="work-subtask-check">
+                <input type="checkbox" aria-label={`Выполнена подзадача: ${row.title || index + 1}`} checked={row.done} disabled={saving || row.removing}
+                  onChange={event => { const done = event.target.checked; setSubtasks(current => current.map(item => item.id === row.id ? { ...item, done } : item)); }}/>
+                <span className="work-subtask-check-box" aria-hidden="true"><Check size={11}/></span>
+              </label>
+              <input className="work-subtask-title" aria-label={`Название подзадачи ${index + 1}`} placeholder="Название подзадачи"
+                value={row.title} maxLength={200} required disabled={saving || row.removing}
+                onChange={event => { const title = event.target.value; setSubtasks(current => current.map(item => item.id === row.id ? { ...item, title } : item)); }}/>
+              <button type="button" className="icon-button" aria-label={`Удалить подзадачу ${index + 1}`} disabled={saving || row.removing}
+                onClick={event => removeSubtask(row.id, event.currentTarget)}><X size={16}/></button>
+            </div>
+          </li>
+        ))}</ul>}
         <div className="work-task-actions">
-          <button type="button" className="work-add-subtask" disabled={saving || subtasks.length >= workSubtaskLimit} onClick={addSubtask}>
+          <button ref={addSubtaskButton} type="button" className="work-add-subtask" disabled={saving || activeSubtasks.length >= workSubtaskLimit} onClick={addSubtask}>
             <Plus size={16}/>Добавить подзадачу
           </button>
           <button type="button" className="work-add-subtask" aria-expanded={activity === 'comments'} aria-controls={`${activityId}-comments`} disabled={saving}
@@ -568,14 +605,16 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
         <div ref={activityFrame} className="work-activity-frame">
           <div className="work-activity-layer" data-active={activity === 'comments'} inert={activity !== 'comments'}>
             <section id={`${activityId}-comments`} className="work-task-activity" aria-label="Комментарии">
-              {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id} className={comment.id === waitingCommentId ? 'is-awaiting-reveal' : comment.id === latestCommentId ? 'is-new' : undefined}>
-                <span ref={comment.id === waitingCommentId ? latestCommentAnchor : undefined} className="work-activity-icon" aria-hidden="true">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
-                <article>
-                  <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
-                  {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}
-                  <p>{comment.text}</p>
-                </article>
-              </li>)}</ol>}
+              {!!task?.comments?.length && <div className="work-activity-history" role="region" aria-label="История комментариев" tabIndex={0}>
+                <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id} className={comment.id === waitingCommentId ? 'is-awaiting-reveal' : comment.id === latestCommentId ? 'is-new' : undefined}>
+                  <span ref={comment.id === waitingCommentId ? latestCommentAnchor : undefined} className="work-activity-icon" aria-hidden="true">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
+                  <article>
+                    <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
+                    {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}
+                    <p>{comment.text}</p>
+                  </article>
+                </li>)}</ol>
+              </div>}
               {input('Новый комментарий', 'comment', { multiline: true, hideLabel: true, placeholder: 'Напишите комментарий' })}
               <span className="work-comment-status" role="status">
                 {latestCommentId && `Комментарий отправлен. Записей в истории: ${task?.comments?.length}.`}

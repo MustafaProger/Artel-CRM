@@ -51,6 +51,7 @@ try {
   })).entry;
 
   const useWebkit = process.argv.includes('--webkit');
+  const reduceMotion = process.argv.includes('--reduced-motion');
   browser = await (useWebkit ? webkit : chromium).launch({ headless: true, executablePath: process.env.ARTEL_QA_CHROMIUM });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce', ...(useWebkit ? { serviceWorkers: 'block' } : {}) });
   await context.request.post(`${base}/api/auth/login`, { data: { login: 'todo-qa', password } });
@@ -81,8 +82,27 @@ try {
   await expect(created).toBeVisible();
   await expect(page.getByRole('form', { name: 'Новая задача' })).toHaveCount(0);
   await expect(created.getByText('Добавить файл', { exact: true })).toBeVisible();
-  await created.getByRole('button', { name: 'Добавить подзадачу' }).click();
+  await page.emulateMedia({ reducedMotion: reduceMotion ? 'reduce' : 'no-preference' });
+  const addSubtask = created.getByRole('button', { name: 'Добавить подзадачу' });
+  const added = await addSubtask.evaluate(async button => {
+    button.click();
+    await new Promise(requestAnimationFrame);
+    const row = button.closest('.work-subtasks').querySelector('.work-subtask-item');
+    return { focused: row.contains(document.activeElement), animated: row.getAnimations().length > 0 };
+  });
+  assert.deepEqual(added, { focused: true, animated: !reduceMotion });
+  const removed = await created.getByRole('button', { name: 'Удалить подзадачу 1' }).evaluate(async button => {
+    const row = button.closest('li');
+    button.click();
+    await new Promise(requestAnimationFrame);
+    return { retained: row.isConnected, animated: row.getAnimations().length > 0, disabled: button.disabled };
+  });
+  assert.deepEqual(removed, { retained: !reduceMotion, animated: !reduceMotion, disabled: !reduceMotion });
+  await expect(created.locator('.work-subtask-item')).toHaveCount(0);
+  await expect(addSubtask).toBeFocused();
+  await addSubtask.click();
   await created.getByRole('textbox', { name: 'Название подзадачи 1' }).fill('Первый шаг');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await created.getByRole('textbox', { name: 'Название', exact: true }).fill('Новая задача QA');
   const assigneeChoice = created.getByRole('combobox', { name: 'Исполнители' });
   await assigneeChoice.click();
@@ -137,9 +157,19 @@ try {
   const handoffButton = mobileDialog.getByRole('button', { name: 'Передать задачу' });
   const commentField = mobileDialog.getByRole('textbox', { name: 'Новый комментарий' });
   const handoffField = mobileDialog.getByRole('textbox', { name: 'Комментарий к передаче' });
-  const reduceCommentMotion = process.argv.includes('--reduced-motion');
-  await page.emulateMedia({ reducedMotion: reduceCommentMotion ? 'reduce' : 'no-preference' });
-  await commentsButton.click();
+  await page.emulateMedia({ reducedMotion: reduceMotion ? 'reduce' : 'no-preference' });
+  const opening = await commentsButton.evaluate(async button => {
+    button.click();
+    await new Promise(requestAnimationFrame);
+    const frame = button.closest('.work-subtasks').querySelector('.work-activity-frame');
+    return frame.getAnimations().find(animation => animation.effect.getKeyframes().some(keyframe => keyframe.height))?.effect.getKeyframes().map(keyframe => keyframe.height) ?? null;
+  });
+  if (reduceMotion) {
+    assert.equal(opening, null);
+  } else {
+    assert.equal(opening?.[0], '0px');
+    assert.ok(parseFloat(opening[1]) < 560, `comments panel expands to a bounded height, got ${opening[1]}`);
+  }
   await commentField.fill('УПД подготовлен.');
   await handoffButton.click();
   await expect(commentField).toHaveCount(0);
@@ -153,8 +183,11 @@ try {
   await commentsButton.click();
   const sendComment = mobileDialog.getByRole('button', { name: 'Отправить комментарий' });
   await sendComment.scrollIntoViewIfNeeded();
+  const history = mobileDialog.getByRole('region', { name: 'История комментариев' });
+  assert.ok(await history.evaluate(element => element.clientHeight <= 300 && element.scrollHeight > element.clientHeight * 2));
+  await history.evaluate(element => { element.scrollTop = element.scrollHeight; });
   await expect(mobileDialog.locator('.work-activity-list > li').first()).not.toBeInViewport();
-  if (!reduceCommentMotion) {
+  if (!reduceMotion) {
     await mobileDialog.evaluate(dialog => {
       dialog.addEventListener('animationstart', event => {
         if (event.animationName !== 'work-comment-appear') return;
@@ -168,7 +201,7 @@ try {
   await sendComment.click();
   const postedComment = mobileDialog.locator('.work-activity-list > li').first();
   await expect(postedComment).toContainText('УПД подготовлен.');
-  if (reduceCommentMotion) {
+  if (reduceMotion) {
     await expect(postedComment).toBeInViewport({ ratio: 1 });
     await expect(postedComment).toHaveCSS('opacity', '1');
     await expect(postedComment).toHaveCSS('animation-name', 'none');
@@ -242,7 +275,7 @@ try {
   })).entry;
   assert.equal(withFile.attachments[0].size, 3 * 1024 * 1024);
   assert.deepEqual(errors, []);
-  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, animated panels, visible comment reveal, drafts, task outcomes, archive handoff, today count and attachments');
+  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, animated subtasks and panels, visible comment reveal, drafts, task outcomes, archive handoff, today count and attachments');
 } finally {
   await browser?.close();
   if (server && server.exitCode === null) {
