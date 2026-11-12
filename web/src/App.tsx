@@ -247,9 +247,9 @@ function positionSidebarCapsule(root: HTMLDivElement, capsule: HTMLSpanElement, 
   if (start && start.m42 !== y) {
     capsule.animate([
       { transform: `translateY(${start.m42}px) scale(${start.m11})` },
-      { transform: `translateY(${(start.m42 + y) / 2}px) scale(1.15)` },
+      { transform: `translateY(${(start.m42 + y) / 2}px) scale(1.2)` },
       { transform },
-    ], { duration: 250, easing: style.getPropertyValue('--motion-ease').trim() })
+    ], { duration: 400, easing: style.getPropertyValue('--motion-ease').trim() })
   }
 }
 
