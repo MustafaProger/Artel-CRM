@@ -11,3 +11,9 @@
 
 .trip-requests-empty h2{margin:20px 0 12px}
 .trip-creation-meta{display:block;margin-top:14px;color:var(--muted,#6e7683);font-size:12px;line-height:1.5}
+
+.trip-request-card .trip-creation-meta {
+  color: #17549b;
+  font-size: 16px;
+  font-weight: 700;
+}
