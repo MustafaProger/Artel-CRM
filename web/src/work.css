@@ -598,11 +598,17 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+.work-activity-list > .is-awaiting-reveal {
+  opacity: 0;
+}
+.work-activity-list > .is-awaiting-reveal .work-activity-icon {
+  scroll-margin-block: 12px;
+}
 .work-activity-list > .is-new {
   animation: work-comment-appear var(--motion-enter) var(--motion-ease) both;
 }
 @keyframes work-comment-appear {
-  from { opacity: 0; transform: translateY(5px); }
+  from { opacity: 0; transform: translateY(8px); }
 }
 .work-handoff {
   gap: 14px;
@@ -721,16 +727,7 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .work-activity-layer {
-    transition-duration: 90ms;
-  }
-  .work-activity-list > .is-new {
-    animation: work-comment-fade 90ms ease both;
-  }
   .work-task-actions button[aria-expanded]:not(:disabled):active {
     transform: none;
   }
-}
-@keyframes work-comment-fade {
-  from { opacity: 0; }
 }

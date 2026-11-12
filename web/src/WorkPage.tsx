@@ -352,6 +352,9 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const [handoffTo, setHandoffTo] = useState<string[]>([]);
   const [handoffComment, setHandoffComment] = useState('');
   const [latestCommentId, setLatestCommentId] = useState<string>();
+  const [revealedCommentId, setRevealedCommentId] = useState<string>();
+  const waitingCommentId = latestCommentId === revealedCommentId ? undefined : latestCommentId;
+  const latestCommentAnchor = useRef<HTMLSpanElement>(null);
   const activityId = useId();
   const activityFrame = useRef<HTMLDivElement>(null);
   const activityHeight = useRef<number | undefined>(undefined);
@@ -381,6 +384,25 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
     }
   }, [activity, latestCommentId]);
   useEffect(() => () => activityResize.current?.cancel(), []);
+  useEffect(() => {
+    const anchor = latestCommentAnchor.current;
+    const viewport = anchor?.closest('.work-editor-body');
+    if (activity !== 'comments' || !waitingCommentId || !anchor || !viewport) return;
+
+    // Watch the icon so a long comment can animate as soon as its top is visible.
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting || entry.intersectionRatio < 1) return;
+      observer.disconnect();
+      setRevealedCommentId(waitingCommentId);
+    }, { root: viewport, threshold: 1 });
+    observer.observe(anchor);
+    anchor.scrollIntoView({
+      block: 'nearest',
+      inline: 'nearest',
+      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+    });
+    return () => observer.disconnect();
+  }, [activity, waitingCommentId]);
   const taskUsers = users.filter(user => hasSection(user, 'work'));
   const handoffUsers = taskUsers.filter(user => user.id !== actor.id);
   const assigneeOptions = [
@@ -546,8 +568,8 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
         <div ref={activityFrame} className="work-activity-frame">
           <div className="work-activity-layer" data-active={activity === 'comments'} inert={activity !== 'comments'}>
             <section id={`${activityId}-comments`} className="work-task-activity" aria-label="Комментарии">
-              {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id} className={comment.id === latestCommentId ? 'is-new' : undefined}>
-                <span className="work-activity-icon" aria-hidden="true">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
+              {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id} className={comment.id === waitingCommentId ? 'is-awaiting-reveal' : comment.id === latestCommentId ? 'is-new' : undefined}>
+                <span ref={comment.id === waitingCommentId ? latestCommentAnchor : undefined} className="work-activity-icon" aria-hidden="true">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
                 <article>
                   <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
                   {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}

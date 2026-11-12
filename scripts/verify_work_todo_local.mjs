@@ -108,6 +108,13 @@ try {
   assert.equal(priorityTask.subtasks[0].title, 'Первый шаг');
   assert.equal(priorityTask.priority, 1);
   assert.deepEqual(priorityTask.assigneeIds, [zhenya.id, egor.id]);
+  const previousComments = Array.from({ length: 14 }, (_, index) => `Запись из истории №${index + 1}`);
+  let version = priorityTask.version;
+  for (const comment of previousComments) {
+    const { entry } = await api(`/api/work/tasks/${priorityTask.id}`, 'PATCH', { version, comment });
+    version = entry.version;
+  }
+  await page.reload();
   const sidebarCount = page.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Работа', exact: true }).locator('small');
   await expect(sidebarCount).toHaveText('1');
   const priorityCheck = page.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' });
@@ -130,7 +137,8 @@ try {
   const handoffButton = mobileDialog.getByRole('button', { name: 'Передать задачу' });
   const commentField = mobileDialog.getByRole('textbox', { name: 'Новый комментарий' });
   const handoffField = mobileDialog.getByRole('textbox', { name: 'Комментарий к передаче' });
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const reduceCommentMotion = process.argv.includes('--reduced-motion');
+  await page.emulateMedia({ reducedMotion: reduceCommentMotion ? 'reduce' : 'no-preference' });
   await commentsButton.click();
   await commentField.fill('УПД подготовлен.');
   await handoffButton.click();
@@ -143,10 +151,32 @@ try {
   await handoffButton.click();
   await expect(handoffField).toHaveValue('Черновик передачи');
   await commentsButton.click();
-  await mobileDialog.getByRole('button', { name: 'Отправить комментарий' }).click();
-  await expect(mobileDialog.getByText('УПД подготовлен.', { exact: true })).toBeVisible();
-  await expect(mobileDialog.locator('article time')).toHaveAttribute('datetime', /^\d{4}-/);
-  await expect(mobileDialog.getByText('Директор QA', { exact: true })).toBeVisible();
+  const sendComment = mobileDialog.getByRole('button', { name: 'Отправить комментарий' });
+  await sendComment.scrollIntoViewIfNeeded();
+  await expect(mobileDialog.locator('.work-activity-list > li').first()).not.toBeInViewport();
+  if (!reduceCommentMotion) {
+    await mobileDialog.evaluate(dialog => {
+      dialog.addEventListener('animationstart', event => {
+        if (event.animationName !== 'work-comment-appear') return;
+        const row = event.target;
+        const top = row.getBoundingClientRect().top;
+        const viewport = dialog.querySelector('.work-editor-body').getBoundingClientRect();
+        row.dataset.animationInView = String(top >= viewport.top - 1 && top + 24 <= viewport.bottom + 1);
+      });
+    });
+  }
+  await sendComment.click();
+  const postedComment = mobileDialog.locator('.work-activity-list > li').first();
+  await expect(postedComment).toContainText('УПД подготовлен.');
+  if (reduceCommentMotion) {
+    await expect(postedComment).toBeInViewport({ ratio: 1 });
+    await expect(postedComment).toHaveCSS('opacity', '1');
+    await expect(postedComment).toHaveCSS('animation-name', 'none');
+  } else {
+    await expect(postedComment).toHaveAttribute('data-animation-in-view', 'true');
+  }
+  await expect(postedComment.locator('time')).toHaveAttribute('datetime', /^\d{4}-/);
+  await expect(postedComment.getByText('Директор QA', { exact: true })).toBeVisible();
   await mobileDialog.screenshot({ path: '/tmp/artel-work-task-mobile-preview.png' });
   await mobileDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
   await expect(mobileDialog).toHaveCount(0);
@@ -200,7 +230,7 @@ try {
   await expect(receiverDialog.getByText('Егор, распечатай УПД.', { exact: true })).toBeVisible();
   await expect(receiverDialog.getByRole('region', { name: 'Комментарии' }).getByText(zhenya.name, { exact: true })).toBeVisible();
   await expect(receiverDialog.getByText(`Передано · ${egor.name}`)).toBeVisible();
-  await expect(receiverDialog.locator('.work-activity-list article p')).toHaveText(['Егор, распечатай УПД.', 'УПД подготовлен.']);
+  await expect(receiverDialog.locator('.work-activity-list article p')).toHaveText(['Егор, распечатай УПД.', 'УПД подготовлен.', ...previousComments.toReversed()]);
   await receiverDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
   await receiver.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' }).click();
   await expect(receiver.getByRole('button', { name: 'Работа', exact: true }).locator('small')).toHaveText('0');
@@ -212,7 +242,7 @@ try {
   })).entry;
   assert.equal(withFile.attachments[0].size, 3 * 1024 * 1024);
   assert.deepEqual(errors, []);
-  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, animated panels, drafts, task outcomes, archive handoff, today count and attachments');
+  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, animated panels, visible comment reveal, drafts, task outcomes, archive handoff, today count and attachments');
 } finally {
   await browser?.close();
   if (server && server.exitCode === null) {
