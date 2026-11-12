@@ -294,7 +294,8 @@
 @media(max-width:650px){.work-page .work-editor.work-compose{width:calc(100% - 20px);margin:8px 10px 12px}.work-page .work-editor.work-compose .work-compose-advanced{width:min(430px,calc(100vw - 56px))}.work-page .work-editor.work-compose .work-editor-footer>.button{flex:1 1 auto}}
 
 .work-editor .work-subtasks-heading{border:0!important}
-.work-editor .work-subtask-list .work-subtask-row{min-height:34px;border:0;grid-template-columns:28px minmax(0,1fr) 28px;gap:8px}
+.work-editor .work-subtask-list .work-subtask-row{min-height:34px;border:0;grid-template-columns:28px minmax(0,1fr) auto;gap:8px}
+.work-editor .work-subtask-row > .icon-button:focus-visible { outline-offset: -2px; }
 .work-editor .work-subtask-check{position:relative;width:28px;min-height:28px}
 .work-editor .work-subtask-check input{position:absolute;inset:0;width:28px;height:28px;margin:0;opacity:0;cursor:pointer}
 .work-editor .work-subtask-check-box{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid #87958e;border-radius:5px;background:#fff;color:#fff;pointer-events:none}
