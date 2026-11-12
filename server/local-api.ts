@@ -70,7 +70,7 @@ import { automaticSigningCapability } from './saby-auto-policy';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
 import { createTripSabyScheduler, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
-import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTripAssignments, pushConfig, pushDisplayBinding, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTaskCompletion, dispatchTripAssignments, pushConfig, pushDisplayBinding, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
 import { invoiceRequestBody, invoiceRouteAllowed, requireInvoiceAccount, type InvoiceBridge } from './invoice-bridge';
@@ -978,14 +978,15 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
         const body=await jsonBody(request, false, 28 * 1024 * 1024);
         const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
-        const result=await transact(base.provenance.sourceSha256,data=>{
+        const { response: result, completionQueued } = await transact(base.provenance.sourceSha256,data=>{
           const currentActor=authorized(data);
           const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
-          return {result: { ...result, todayTaskCount: todayTaskCount(data, currentActor) },changed:result.changed};
+          const { completionQueued, ...response } = result;
+          return {result: { response: { ...response, todayTaskCount: todayTaskCount(data, currentActor) }, completionQueued },changed:result.changed};
         });
         // Status, archive and comment edits keep the assignment unchanged.
         const keepsAssignment = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status' || key === 'archived' || key === 'comment');
-        if (workMatch[1] === 'tasks' && result.entry && !keepsAssignment && pushReady(config)) {
+        if (workMatch[1] === 'tasks' && result.entry && (completionQueued || !keepsAssignment) && pushReady(config)) {
           if (options.workNotificationWakeup) {
             write(response,result.created?201:200,JSON.stringify(result));
             try { options.workNotificationWakeup(); } catch { /* Durable outbox is retried by the scheduler. */ }
@@ -993,8 +994,9 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           }
           // Await the attempt within the request so serverless runtimes do not drop it.
           // The saved event remains available to the scheduler if delivery fails.
-          try { await dispatchTaskAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.entry.id); }
-          catch { console.error('Задача сохранена. Не удалось отправить уведомление о назначении; планировщик повторит попытку.'); }
+          const dispatch = completionQueued ? dispatchTaskCompletion : dispatchTaskAssignments;
+          try { await dispatch(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.entry.id); }
+          catch { console.error('Задача сохранена. Не удалось отправить уведомление; планировщик повторит попытку.'); }
         }
         return write(response,result.created?201:200,JSON.stringify(result));
       }

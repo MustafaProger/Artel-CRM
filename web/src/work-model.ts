@@ -40,6 +40,8 @@ export interface WorkTask extends WorkEntry {
   title: string;
   description: string;
   status: WorkStatus;
+  /** Set by the task author to receive a push when a colleague completes it. */
+  notifyOnCompletion?: boolean;
   /** Older tasks without a priority are treated as P4. */
   priority?: WorkPriority;
   companyId: string | null;

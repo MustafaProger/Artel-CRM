@@ -61,7 +61,10 @@ function extractWork(data: OperationsData, revision: number): WorkState {
 }
 function workAuthority(auth: AuthState) {
   const push = auth.push && { ...auth.push };
-  if (push) delete push.taskAssignments;
+  if (push) {
+    delete push.taskAssignments;
+    delete push.taskCompletions;
+  }
   const emptyPush = push && Object.keys(push).length === 2 && push.devices.length === 0 && Object.keys(push.deliveries).length === 0;
   return json({ ...auth, push: emptyPush ? undefined : push });
 }
@@ -201,10 +204,11 @@ export class AuthPartition {
       await performanceSpan('partition.recover', () => this.recover(source));
       const before = await this.auth(source), data = authView(before.value);
       const guard = json({ ...data, accounts: undefined, push: undefined });
-      const assignments = json(data.push?.taskAssignments);
+      const taskNotifications = () => json([data.push?.taskAssignments, data.push?.taskCompletions]);
+      const outbox = taskNotifications();
       const { result, changed } = await performanceSpan('partition.update', () => update(data));
       if (!changed) return result;
-      if (json({ ...data, accounts: undefined, push: undefined }) !== guard || json(data.push?.taskAssignments) !== assignments) throw new StoreError('Auth transaction tried to change another domain');
+      if (json({ ...data, accounts: undefined, push: undefined }) !== guard || taskNotifications() !== outbox) throw new StoreError('Auth transaction tried to change another domain');
       const auth = extractAuth(data, before.value.revision + 1); checkAuth(auth, source);
       const raw = seal(auth);
       const business = await Promise.all([this.corePath, this.workPath, ...(this.version === 2 ? [this.archivePath] : [])].map(path => stat(path)));

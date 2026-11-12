@@ -29,7 +29,7 @@ const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const json = (v: unknown) => JSON.stringify(v);
 export type Update<T> = (data: OperationsData) => { result: T; changed: boolean } | Promise<{ result: T; changed: boolean }>;
-interface WorkState { format: typeof format; sourceSha256: string; revision: number; work?: OperationsData['work']; taskAssignments?: PushData['taskAssignments']; pushPresent?: true }
+interface WorkState { format: typeof format; sourceSha256: string; revision: number; work?: OperationsData['work']; taskAssignments?: PushData['taskAssignments']; taskCompletions?: PushData['taskCompletions']; pushPresent?: true }
 
 /** Separate admission queues, with one consistency latch for reads/commits.
  * Interactive auth may pass queued background work, never the active holder;
@@ -81,23 +81,23 @@ function validateState(v: unknown, source: string): asserts v is WorkState {
   if (!object(v) || v.format !== format || v.sourceSha256 !== source || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0) throw new StoreError('Invalid Work partition');
   if (v.pushPresent !== undefined && v.pushPresent !== true) throw new StoreError('Invalid push presence');
   validateWorkData(v.work);
-  validatePush({ devices: [], deliveries: {}, ...(v.taskAssignments === undefined ? {} : { taskAssignments: v.taskAssignments as PushData['taskAssignments'] }) });
+  validatePush({ devices: [], deliveries: {}, taskAssignments: v.taskAssignments as PushData['taskAssignments'], taskCompletions: v.taskCompletions as PushData['taskCompletions'] });
 }
 function strip(data: OperationsData): OperationsData {
   const core = { ...data }; delete core.work;
   if (core.push) {
-    core.push = { ...core.push }; delete core.push.taskAssignments;
-    // Assignment creation can initialize the push shell; it is represented by
+    core.push = { ...core.push }; delete core.push.taskAssignments; delete core.push.taskCompletions;
+    // A Work notification can initialize the push shell; it is represented by
     // the outbox in work.json, not an unnecessary write to the core database.
     if (Object.keys(core.push).length === 2 && core.push.devices.length === 0 && Object.keys(core.push.deliveries).length === 0) delete core.push;
   }
   return core;
 }
 function extract(data: OperationsData, revision: number): WorkState {
-  return { format, sourceSha256: data.sourceSha256, revision, ...(data.work === undefined ? {} : { work: data.work }), ...(data.push?.taskAssignments === undefined ? {} : { taskAssignments: data.push.taskAssignments }), ...(data.push === undefined ? {} : { pushPresent: true }) };
+  return { format, sourceSha256: data.sourceSha256, revision, ...(data.work === undefined ? {} : { work: data.work }), ...(data.push?.taskAssignments === undefined ? {} : { taskAssignments: data.push.taskAssignments }), ...(data.push?.taskCompletions === undefined ? {} : { taskCompletions: data.push.taskCompletions }), ...(data.push === undefined ? {} : { pushPresent: true }) };
 }
 function compose(core: OperationsData, work: WorkState): OperationsData {
-  return { ...core, revision: core.revision + work.revision, ...(work.work === undefined ? {} : { work: work.work }), ...(work.pushPresent || work.taskAssignments !== undefined ? { push: { ...(core.push ?? { devices: [], deliveries: {} }), ...(work.taskAssignments === undefined ? {} : { taskAssignments: work.taskAssignments }) } } : {}) };
+  return { ...core, revision: core.revision + work.revision, ...(work.work === undefined ? {} : { work: work.work }), ...(work.pushPresent || work.taskAssignments !== undefined || work.taskCompletions !== undefined ? { push: { ...(core.push ?? { devices: [], deliveries: {} }), ...(work.taskAssignments === undefined ? {} : { taskAssignments: work.taskAssignments }), ...(work.taskCompletions === undefined ? {} : { taskCompletions: work.taskCompletions }) } } : {}) };
 }
 
 /** A tiny pointer replaces operations.json only on explicit offline migration.
@@ -134,7 +134,7 @@ export class WorkPartition {
     const journal = unseal(raw);
     if (!object(journal) || journal.sourceSha256 !== source || typeof journal.core !== 'string' || typeof journal.work !== 'string') throw new StoreError('Invalid partition commit journal');
     const core = decodeOperations(journal.core, source); const work = unseal(journal.work); validateState(work, source);
-    if (core.work !== undefined || core.push?.taskAssignments !== undefined) throw new StoreError('Duplicate Work in core journal');
+    if (core.work !== undefined || core.push?.taskAssignments !== undefined || core.push?.taskCompletions !== undefined) throw new StoreError('Duplicate Work in core journal');
     await atomicFile(this.core.path, journal.core); await atomicFile(this.workPath, journal.work);
     this.core.rememberCommittedEncoding(journal.core, source);
     await unlink(this.journalPath); await syncDirectory(this.directory);
@@ -146,7 +146,7 @@ export class WorkPartition {
     if (!coreStat.isFile()) throw new StoreError('Missing partition core');
     const core = await this.core.read(source); const workRaw = await boundedRead(this.workPath);
     const work = unseal(workRaw); validateState(work, source);
-    if (core.work !== undefined || core.push?.taskAssignments !== undefined) throw new StoreError('Work has more than one source');
+    if (core.work !== undefined || core.push?.taskAssignments !== undefined || core.push?.taskCompletions !== undefined) throw new StoreError('Work has more than one source');
     return { core, work, data: compose(core, work), coreSize: coreStat.size, workSize: Buffer.byteLength(workRaw) };
   }
   read(source: string) { return partitionLock(this.latch, async () => (await this.load(source)).data); }

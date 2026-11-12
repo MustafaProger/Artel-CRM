@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
+import { migrateArchiveStorage, migrateAuthStorage } from '../server/auth-partition';
+import { migrateWorkStorage } from '../server/work-partition';
 import { OperationsStore } from '../server/operations-store';
 import { dispatchReminders, dispatchTaskAssignments, type PushConfig, type PushSender } from '../server/push';
 import type { AccountUser } from '../web/src/auth-model';
@@ -224,5 +226,87 @@ test('concurrent request dispatch and scheduler dispatch claim a pending assignm
     assert.equal(sent[0].userId, f.users[1].id);
     await dispatchReminders(new OperationsStore(f.folder), source, config, sender, retryAt + 121000);
     assert.equal(sent.length, 1);
+  } finally { await f.close(); }
+});
+
+test('opted-in tasks notify their original author when a colleague marks them done', async t => {
+  for (const mode of ['legacy', 'work-partitioned', 'auth-archive-partitioned'] as const) {
+    await t.test(mode, async () => {
+      const sent: Notification[] = [];
+      let failCompletion = true;
+      const sender: PushSender = async (device, payload, pushConfig) => {
+        if (failCompletion && JSON.parse(payload).title === 'Ваша задача выполнена') throw new Error('Temporary push outage');
+        return capture(sent)(device, payload, pushConfig);
+      };
+      const f = await fixture(sender);
+      try {
+        if (mode === 'work-partitioned') await migrateWorkStorage(f.folder, source);
+        if (mode === 'auth-archive-partitioned') {
+          await migrateAuthStorage(f.folder, source);
+          await migrateArchiveStorage(f.folder, source);
+        }
+        const create = await f.alice('/api/work/tasks', 'POST', { title: 'Сверить итог', assigneeIds: [f.users[2].id], notifyOnCompletion: true });
+        assert.equal(create.status, 201);
+        const task = create.body.entry as WorkTask;
+        assert.equal(task.notifyOnCompletion, true);
+        const route = `/api/work/tasks/${task.id}`;
+        const forbidden = await f.bob(route, 'PATCH', { version: task.version, notifyOnCompletion: false });
+        assert.equal(forbidden.status, 403);
+
+        const done = await f.bob(route, 'PATCH', { version: task.version, status: 'done', archived: true });
+        assert.equal(done.status, 200);
+        assert.ok(done.body.entry.archivedAt);
+        assert.equal(done.body.entry.notifyOnCompletion, true);
+        assert.deepEqual(sent.map(row => row.userId), [f.users[2].id], 'Only the assignment succeeded so far');
+        const stale = await f.bob(route, 'PATCH', { version: task.version, status: 'done' });
+        assert.equal(stale.status, 409);
+
+        // A normal edit while done keeps the delivery identity. The stored
+        // event can still be retried after reloading the store.
+        const edited = await f.bob(route, 'PATCH', { version: done.body.entry.version, comment: 'Готово' });
+        assert.equal(edited.status, 200);
+        failCompletion = false;
+        const reopenedStore = new OperationsStore(f.folder);
+        const retryAt = Date.now() + 5 * 60_000;
+        await dispatchReminders(reopenedStore, source, config, sender, retryAt);
+        assert.deepEqual(sent.map(row => row.userId), [f.users[2].id, f.users[1].id]);
+        assert.equal(sent[1].body, 'Сотрудник Б · «Сверить итог»');
+        assert.equal(sent[1].url, `/?workKind=tasks&workId=${task.id}#work`);
+        assert.notEqual(sent[0].tag, sent[1].tag);
+        const myWork = await f.alice('/api/work?assigneeId=mine');
+        assert.ok(myWork.body.work.tasks.some((row: WorkTask) => row.id === task.id), 'The author can open the completed task without being an assignee');
+        await dispatchReminders(reopenedStore, source, config, sender, retryAt + 60_000);
+        assert.equal(sent.length, 2);
+      } finally { await f.close(); }
+    });
+  }
+});
+
+test('completion pushes are immediate and skip failed, opted-out and self-completed tasks', async () => {
+  const sent: Notification[] = [];
+  const f = await fixture(capture(sent));
+  try {
+    for (const { optIn, status, finish, expected } of [
+      { optIn: true, status: 'done', finish: f.bob, expected: true },
+      { optIn: false, status: 'done', finish: f.bob, expected: false },
+      { optIn: true, status: 'failed', finish: f.bob, expected: false },
+      { optIn: true, status: 'done', finish: f.alice, expected: false },
+    ]) {
+      const created = await f.alice('/api/work/tasks', 'POST', { title: 'Проверить документы', assigneeId: f.users[2].id });
+      assert.equal(created.status, 201);
+      const route = `/api/work/tasks/${created.body.entry.id}`;
+      const enabled = await f.alice(route, 'PATCH', { version: created.body.entry.version, notifyOnCompletion: true });
+      assert.equal(enabled.status, 200);
+      let version = enabled.body.entry.version;
+      if (!optIn) {
+        const disabled = await f.alice(route, 'PATCH', { version, notifyOnCompletion: false });
+        assert.equal(disabled.status, 200);
+        version = disabled.body.entry.version;
+      }
+      sent.length = 0;
+      const closed = await finish(route, 'PATCH', { version, status });
+      assert.equal(closed.status, 200);
+      assert.deepEqual(sent.map(row => row.userId), expected ? [f.users[1].id] : []);
+    }
   } finally { await f.close(); }
 });

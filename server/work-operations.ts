@@ -4,7 +4,7 @@ import type { Snapshot } from '../web/src/model';
 import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
-import { queueTaskAssignment } from './push';
+import { queueTaskAssignment, queueTaskCompletion } from './push';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const boundedText = (value: unknown, max: number, required = false): value is string => typeof value === 'string' && value.length <= max && (!required || !!value.trim());
@@ -46,6 +46,7 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
       ids.add(row.id);
       if (kind === 'tasks' && (!boundedText(row.title, 200, true) || !boundedText(row.description, 10000) || !workStatuses.some(status => status.id === row.status) || row.priority !== undefined && !workPriorities.includes(row.priority as 1 | 2 | 3 | 4) || row.companyId !== null && !identifier(row.companyId) || row.dueDate !== null && !date(row.dueDate) || row.reminderAt !== null && !instant(row.reminderAt))) throw new StoreError('Invalid work task');
       if (kind === 'tasks' && row.assigneeIds !== undefined && (!validAssignees(row.assigneeIds) || row.assigneeIds[0] !== row.assigneeId)) throw new StoreError('Invalid task assignees');
+      if (kind === 'tasks' && row.notifyOnCompletion !== undefined && typeof row.notifyOnCompletion !== 'boolean') throw new StoreError('Invalid task completion setting');
       if (kind === 'tasks' && row.subtasks !== undefined && !validSubtasks(row.subtasks)) throw new StoreError('Invalid work subtasks');
       if (kind === 'notes' && (!boundedText(row.title, 200, true) || !boundedText(row.content, 10000))) throw new StoreError('Invalid work note');
       if (kind !== 'notes') {
@@ -126,7 +127,7 @@ export function workFile(data: OperationsData, kind: string, id: string, fileId:
   if (!file) throw new ApiError(404, 'Файл не найден или недоступен.');
   return file;
 }
-export interface WorkMutationResult { entry?: AnyWorkEntry; deleted?: boolean; id?: string; created?: boolean; changed: boolean }
+export interface WorkMutationResult { entry?: AnyWorkEntry; deleted?: boolean; id?: string; created?: boolean; changed: boolean; completionQueued?: boolean }
 
 /** Called inside the existing storage transaction; both authorization and version checks are atomic. */
 export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: string, body: Record<string, unknown>, id: string | undefined, method: string, actor: AccountUser, users: AccountUser[]): WorkMutationResult {
@@ -146,10 +147,13 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     else if (key === 'companyRecords') work.companyRecords = work.companyRecords.filter(row => row.id !== id);
     else work.notes = work.notes.filter(row => row.id !== id);
     data.work = work;
-    if (kind === 'tasks') queueTaskAssignment(data, undefined, previous as WorkTask, actor);
+    if (kind === 'tasks') {
+      queueTaskAssignment(data, undefined, previous as WorkTask, actor);
+      queueTaskCompletion(data, undefined, previous as WorkTask, actor);
+    }
     return { deleted: true, id, changed: true };
   }
-  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks', 'assigneeIds', 'handoff'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
+  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks', 'assigneeIds', 'handoff', 'notifyOnCompletion'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
   if (Object.keys(body).some(key => !allowed.includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
   if (previous && body.requestId !== undefined || !previous && body.version !== undefined) throw new ApiError(400, 'Некорректные параметры создания или изменения.');
   if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId))) throw new ApiError(400, 'Некорректный идентификатор запроса.');
@@ -187,13 +191,16 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   const common = { id: id ?? `work-${kind}-${body.requestId ?? randomUUID()}`, version: (previous?.version ?? 0) + 1, assigneeId, createdAt: previous?.createdAt ?? now, updatedAt: now, createdBy: previous?.createdBy ?? actor.id, updatedBy: actor.id };
   let entry: AnyWorkEntry;
   if (kind === 'tasks') {
+    const notifyOnCompletion = body.notifyOnCompletion;
+    if (notifyOnCompletion !== undefined && typeof notifyOnCompletion !== 'boolean') throw new ApiError(400, 'Некорректная настройка уведомления о выполнении.');
+    if (notifyOnCompletion !== undefined && creator !== actor.id) throw new ApiError(403, 'Настроить уведомление о выполнении может только автор задачи.');
     const status = handoff ? 'todo' : get('status', 'todo');
     if (!workStatuses.some(row => row.id === status)) throw new ApiError(400, 'Неизвестное состояние задачи.');
     const priority = body.priority === undefined ? (previous as WorkTask | undefined)?.priority ?? 4 : body.priority;
     if (!workPriorities.includes(priority as 1 | 2 | 3 | 4)) throw new ApiError(400, 'Неизвестный приоритет задачи.');
     const subtasks = body.subtasks === undefined ? (previous as WorkTask | undefined)?.subtasks : body.subtasks;
     if (subtasks !== undefined && !validSubtasks(subtasks)) throw new ApiError(400, `Укажите названия подзадач. Допускается до ${workSubtaskLimit} подзадач по 200 символов.`);
-    entry = { ...common, ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
+    entry = { ...common, ...((notifyOnCompletion ?? (previous as WorkTask | undefined)?.notifyOnCompletion) ? { notifyOnCompletion: true } : {}), ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
   } else if (kind === 'companies') {
     const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
     const comments = [...((previous as WorkCompanyRecord | undefined)?.comments ?? [])];
@@ -252,6 +259,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];
   validateWorkData(work);
   data.work = work;
+  const completionQueued = kind === 'tasks' && queueTaskCompletion(data, entry as WorkTask, previous as WorkTask | undefined, actor);
   if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor, handoffTo);
-  return { entry: publicWorkEntry(entry), created: !previous, changed: true };
+  return { entry: publicWorkEntry(entry), created: !previous, changed: true, completionQueued };
 }
