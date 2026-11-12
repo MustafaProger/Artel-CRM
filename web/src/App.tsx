@@ -8,7 +8,7 @@ import { NotificationMenu } from './DriverNotifications'
 import './sidebar-notifications.css'
 import ScrollableSegments from './ScrollableSegments'
 import { useViewEntrance } from './useViewEntrance'
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
 const pageModules = {
@@ -188,9 +188,11 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
         </div>
         <a className="brand" href="#overview" aria-label="Артэль — обзор" onClick={() => setMenu(false)}><span className="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26 16 5l11 21h-7l-4-8-4 8Z" fill="currentColor"/></svg></span><span className="brand-name">Артэль</span></a>
       </div>
-      <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={p.id === 'shipments' ? shipmentCount : p.id === 'work' ? todayTaskCount : undefined}/>)}</nav>
-      <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
-      <nav aria-label="Управление">{availablePages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
+      <SidebarNavigation page={page} userVersion={user.version}>
+        <nav aria-label="Основная навигация">{availablePages.filter(p => p.section === 0).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)} count={p.id === 'shipments' ? shipmentCount : p.id === 'work' ? todayTaskCount : undefined}/>)}</nav>
+        <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
+        <nav aria-label="Управление">{availablePages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
+      </SidebarNavigation>
       <div className="sidebar-bottom"><div className="sidebar-profile sidebar-user-controls"><span title={user.name}>{user.name}</span>{notificationKind && <NotificationMenu userId={user.id} kind={notificationKind} sidebar/>}<button className="button sidebar-account-action" aria-label="Выйти" title="Выйти" onClick={onLogout}><LogOut size={18} aria-hidden="true"/></button></div>{page === 'shipments' && <button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button>}</div>
     </aside>
     <div className="workspace-main" inert={menu}>
@@ -219,6 +221,68 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     {toast && <div className="toast" role="status"><Check size={18}/>{toast}</div>}
   </div>
 }
+function positionSidebarCapsule(root: HTMLDivElement, capsule: HTMLSpanElement, animate: boolean) {
+  const active = root.querySelector<HTMLButtonElement>('button[aria-current="page"]')
+  if (!active?.offsetHeight) {
+    capsule.getAnimations().forEach(animation => animation.cancel())
+    capsule.hidden = true
+    return
+  }
+
+  const bounds = active.getBoundingClientRect()
+  const y = bounds.top - root.getBoundingClientRect().top
+  const transform = `translateY(${y}px) scale(1)`
+  const height = `${bounds.height}px`
+  if (!capsule.hidden && capsule.style.transform === transform && capsule.style.height === height) return
+
+  const shouldAnimate = animate && !capsule.hidden && !matchMedia('(prefers-reduced-motion: reduce)').matches
+  const style = getComputedStyle(capsule)
+  // Read the in-flight transform before cancelling so rapid navigation starts at the visible position.
+  const start = shouldAnimate ? new DOMMatrixReadOnly(style.transform) : null
+  capsule.getAnimations().forEach(animation => animation.cancel())
+  capsule.style.height = height
+  capsule.style.transform = transform
+  capsule.hidden = false
+
+  if (start && start.m42 !== y) {
+    capsule.animate([
+      { transform: `translateY(${start.m42}px) scale(${start.m11})` },
+      { transform: `translateY(${(start.m42 + y) / 2}px) scale(1.15)` },
+      { transform },
+    ], { duration: 250, easing: style.getPropertyValue('--motion-ease').trim() })
+  }
+}
+
+function SidebarNavigation({ page, userVersion, children }: { page: Page; userVersion: AccountUser['version']; children: ReactNode }) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const capsuleRef = useRef<HTMLSpanElement>(null)
+
+  useLayoutEffect(() => {
+    positionSidebarCapsule(rootRef.current!, capsuleRef.current!, true)
+  }, [page, userVersion])
+
+  useLayoutEffect(() => {
+    const root = rootRef.current!
+    const capsule = capsuleRef.current!
+    const observer = new ResizeObserver(() => positionSidebarCapsule(root, capsule, false))
+    observer.observe(root)
+    root.querySelectorAll('nav, .nav-label').forEach(element => observer.observe(element))
+    const motion = matchMedia('(prefers-reduced-motion: reduce)')
+    const cancelMotion = () => capsule.getAnimations().forEach(animation => animation.cancel())
+    motion.addEventListener('change', cancelMotion)
+    return () => {
+      observer.disconnect()
+      motion.removeEventListener('change', cancelMotion)
+      cancelMotion()
+    }
+  }, [])
+
+  return <div className="sidebar-navigation" ref={rootRef}>
+    <span className="sidebar-capsule" ref={capsuleRef} aria-hidden="true" hidden/>
+    {children}
+  </div>
+}
+
 function NavItem({title,icon:Icon,active,onClick,count}: {title:string;icon:LucideIcon;active:boolean;onClick:()=>void;count?:number}) {return <button className={`nav-item ${active?'active':''}`} aria-label={title} title={title} onClick={onClick} aria-current={active?'page':undefined}><Icon size={19} strokeWidth={1.7}/><span>{title}</span>{count !== undefined && <small>{number(count)}</small>}</button>}
 function Stat({label,value,unit,description,icon:Icon,trend}: {label:string;value:string;unit?:string;description?:string;icon:LucideIcon;trend?:number[]}) {return <div className="stat-card"><div className="stat-label">{label}<Icon size={18}/></div><div className="stat-value">{value}<span>{unit}</span></div>{(description || trend) && <div className="stat-bottom">{description && <span>{description}</span>}{trend && <Sparkline values={trend}/>}</div>}</div>}
 function Sparkline({values}: {values:number[]}) {const max = Math.max(...values,1),min=Math.min(...values,0);return <svg viewBox="0 0 84 26" className="sparkline" aria-hidden="true"><polyline points={values.map((v,i)=>`${i*84/Math.max(values.length-1,1)},${24-(v-min)/(max-min)*21}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/></svg>}
