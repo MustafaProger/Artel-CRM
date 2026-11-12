@@ -2,7 +2,7 @@ import { useDialogMotion } from './useDialogMotion'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bell, Check, ChevronDown, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, List, ListChecks, Plus, RefreshCw, Save, Send, Trash2, X } from 'lucide-react';
+import { Bell, Check, ChevronDown, LoaderCircle, MessageSquare, Paperclip, CalendarDays, ChevronLeft, ChevronRight, List, ListChecks, Plus, RefreshCw, Save, Send, Trash2, Undo2, X } from 'lucide-react';
 import { hasSection, isScopedEmployee, type AccountUser } from './auth-model';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
@@ -648,24 +648,33 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
       </div>
 
     </div>
-    <footer className="work-editor-footer">
+    <footer className={`work-editor-footer${editor.kind === 'tasks' ? ' work-task-editor-footer' : ''}`}>
       {error && <p ref={errorMessage} tabIndex={-1} className="shipment-error work-action-error" role="alert">{error}</p>}
-      {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => void save('DELETE')}><Trash2 size={16} aria-hidden="true"/>{pendingAction === 'deleted' ? 'Удаляем…' : 'Удалить'}</button>}
+      {entry && <button type="button" className="button work-delete" aria-label="Удалить" title="Удалить" disabled={saving} onClick={() => void save('DELETE')}>
+        {pendingAction === 'deleted' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Trash2 size={16} aria-hidden="true"/>}
+        <span className="work-footer-label">{pendingAction === 'deleted' ? 'Удаляем…' : 'Удалить'}</span>
+      </button>}
       {entry && editor.kind === 'companies' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextArchived: !archived })}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
       {task && <div className="work-task-outcome-actions">
         {archived || isClosedWorkStatus(task.status) ?
-          <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'todo', nextArchived: false })}>
-            {pendingAction === 'restored' ? 'Возвращаем…' : 'Вернуть в работу'}
+          <button type="button" className="button" aria-label="Вернуть в работу" title="Вернуть в работу" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'todo', nextArchived: false })}>
+            {pendingAction === 'restored' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Undo2 size={16} aria-hidden="true"/>}
+            <span className="work-footer-label">{pendingAction === 'restored' ? 'Возвращаем…' : 'Вернуть в работу'}</span>
           </button> : <>
-            <button type="button" className="button work-mark-failed" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'failed' })}>
-              <X size={16} aria-hidden="true"/>{pendingAction === 'failed' ? 'Сохраняем…' : 'Не выполнена'}
+            <button type="button" className="button work-mark-failed" aria-label="Не выполнена" title="Не выполнена" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'failed' })}>
+              {pendingAction === 'failed' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <X size={16} aria-hidden="true"/>}
+              <span className="work-footer-label">{pendingAction === 'failed' ? 'Сохраняем…' : 'Не выполнена'}</span>
             </button>
-            <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'done' })}>
-              <Check size={16} aria-hidden="true"/>{pendingAction === 'archived' ? 'Сохраняем…' : 'Выполнить'}
+            <button type="button" className="button" aria-label="Выполнить" title="Выполнить" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'done' })}>
+              {pendingAction === 'archived' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Check size={16} aria-hidden="true"/>}
+              <span className="work-footer-label">{pendingAction === 'archived' ? 'Сохраняем…' : 'Выполнить'}</span>
             </button>
           </>}
       </div>}
-      <button className="button primary" type="submit" disabled={saving}>{pendingAction === 'saved' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}{pendingAction === 'saved' ? 'Сохраняем…' : 'Сохранить'}</button>
+      <button className="button primary" type="submit" aria-label="Сохранить" title="Сохранить" disabled={saving}>
+        {pendingAction === 'saved' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}
+        <span className="work-footer-label">{pendingAction === 'saved' ? 'Сохраняем…' : 'Сохранить'}</span>
+      </button>
     </footer>
   </form>;
   return <dialog ref={dialog} className={`detail-dialog work-editor${isNote ? ' work-note-editor' : ''}`} aria-labelledby="work-editor-title" onCancel={event => { event.preventDefault(); close(); }}>{form}</dialog>;

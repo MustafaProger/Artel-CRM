@@ -645,6 +645,10 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
 .work-handoff {
   gap: 14px;
 }
+.work-handoff .work-field textarea {
+  /* Two lines, vertical padding and borders, plus 20px of writing space. */
+  height: calc(2lh + 42px);
+}
 .work-handoff-people {
   min-width: 0;
   margin: 0;
@@ -749,13 +753,25 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
 .work-editor-footer .work-mark-failed {
   color: #9b3026;
 }
-@media (max-width: 600px) {
-  .work-task-outcome-actions {
-    order: -1;
-    flex-basis: 100%;
+@media (max-width: 650px) {
+  .work-editor .work-task-editor-footer .button.button {
+    padding-inline: 12px;
   }
-  .work-editor-footer:has(.work-task-outcome-actions) > .work-action-error {
-    order: -2;
+}
+@media (max-width: 611px) {
+  .work-task-editor-footer .work-footer-label {
+    display: none;
+  }
+  .work-editor .work-task-editor-footer .button.button {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+  .work-task-editor-footer .work-task-outcome-actions {
+    flex-wrap: nowrap;
   }
 }
 @media (prefers-reduced-motion: reduce) {
