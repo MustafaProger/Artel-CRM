@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import webPush from 'web-push';
 import { ApiError } from './api-error';
 import { hasSection } from '../web/src/auth-model';
-import { workAssigneeIds, type WorkTask } from '../web/src/work-model';
+import { isClosedWorkStatus, workAssigneeIds, type WorkTask } from '../web/src/work-model';
 import type { Shipment } from '../web/src/model';
 import { sessionToken } from './auth';
 import type { OperationsData, OperationsStorage } from './operations-store';
@@ -101,7 +101,7 @@ export function validatePush(value: PushData | undefined) {
 export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string, handoffTo?: readonly string[]): void {
   const id = task?.id ?? previous?.id;
   if (!id) return;
-  const recipients = task && !task.archivedAt && task.status !== 'done' ? workAssigneeIds(task) : [];
+  const recipients = task && !task.archivedAt && !isClosedWorkStatus(task.status) ? workAssigneeIds(task) : [];
   const previousRecipients = previous ? workAssigneeIds(previous) : [];
   if (!handoffTo && recipients.length === previousRecipients.length && recipients.every(recipient => previousRecipients.includes(recipient)) && recipients.length) return;
 
@@ -153,13 +153,13 @@ export const sendPush: PushSender = (device, payload, config) => webPush.sendNot
 });
 function reminderCandidates(data: OperationsData, now: number) {
   const rows = [...(data.work?.tasks ?? []).map(row => ({ ...row, kind: 'tasks' })), ...(data.work?.companyRecords ?? []).map(row => ({ ...row, kind: 'companies' }))];
-  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || row.status !== 'done'))
+  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || !isClosedWorkStatus(row.status)))
     .flatMap(row => workAssigneeIds(row).filter(id => data.accounts?.users.some(user => user.id === id && hasSection(user, 'work')))
       .map(assigneeId => ({ ...row, assigneeId })));
 }
 const assignmentLifetime = 86400000;
 const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssignment, now: number) =>
-  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === (assignment.taskId ?? id) && workAssigneeIds(task).includes(assignment.assigneeId) && !task.archivedAt && task.status !== 'done');
+  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === (assignment.taskId ?? id) && workAssigneeIds(task).includes(assignment.assigneeId) && !task.archivedAt && !isClosedWorkStatus(task.status));
 const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssignment, now: number) => {
   if (assignment.at <= now - assignmentLifetime || data.directories?.deletedEntries?.drivers?.includes(assignment.driverId) || !data.directories?.drivers.some(driver => driver.id === assignment.driverId)) return false;
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);

@@ -265,7 +265,7 @@ test('push probe data validates optional legacy storage and receipt traffic is r
   } finally { await f.close(); }
 });
 
-test('push dispatch persists deliveries, routes to the current assignee, skips done/archive/future/inactive, and excludes duplicate concurrent sends', async () => {
+test('push dispatch persists deliveries, routes to the current assignee, skips closed/archive/future/inactive, and excludes duplicate concurrent sends', async () => {
   const f = await fixture();
   try {
     const a = subscription(), b = subscription();
@@ -273,7 +273,11 @@ test('push dispatch persists deliveries, routes to the current assignee, skips d
     await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: b });
     const tasks = [];
     for (const [name, fields] of [
-      ['due', { assigneeId: f.users[1].id }], ['done', { status: 'done' }], ['archive', { archived: true }], ['future', { reminderAt: new Date(now + 3600000).toISOString() }],
+      ['due', { assigneeId: f.users[1].id }],
+      ['done', { status: 'done' }],
+      ['failed', { status: 'failed' }],
+      ['archive', { archived: true }],
+      ['future', { reminderAt: new Date(now + 3600000).toISOString() }],
     ] as const) {
       const result = await f.director('/api/work/tasks', 'POST', { title: name, reminderAt: new Date(now - 10000).toISOString(), ...fields });
       assert.equal(result.status, 201); tasks.push(result.body.entry);

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { hasSection, isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
-import { isWorkDirectoryCompany, emptyWork, isMyWork, workAssigneeIds, workToday, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
 import { queueTaskAssignment } from './push';
@@ -104,7 +104,7 @@ export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSe
 
 export function todayTaskCount(data: OperationsData, actor: AccountUser): number {
   const today = workToday();
-  return data.work?.tasks.filter(task => task.dueDate === today && !task.archivedAt && task.status !== 'done' && isMyWork(task, actor.id)).length ?? 0;
+  return data.work?.tasks.filter(task => task.dueDate === today && !task.archivedAt && !isClosedWorkStatus(task.status) && isMyWork(task, actor.id)).length ?? 0;
 }
 
 const stringField = (value: unknown, label: string, max: number, required = false) => {
@@ -210,8 +210,8 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (kind === 'tasks') {
       const task = entry as WorkTask;
       if (body.archived === false && body.status === undefined) task.status = 'todo';
-      if (task.status === 'done' && (body.status === 'done' || !previous)) record.archivedAt = previousRecord?.archivedAt ?? now;
-      if (body.status !== undefined && task.status !== 'done' && body.archived !== true) record.archivedAt = null;
+      if (isClosedWorkStatus(task.status) && (body.status !== undefined || !previous)) record.archivedAt = previousRecord?.archivedAt ?? now;
+      if (body.status !== undefined && !isClosedWorkStatus(task.status) && body.archived !== true) record.archivedAt = null;
     }
     if (kind === 'tasks') {
       record.comments = [...(previousRecord?.comments ?? [])];
@@ -237,14 +237,16 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     if (duplicate) {
       // A lost POST response can be retried without producing a second task or comment.
       if (!canAccess(actor, duplicate) || duplicate.createdBy !== actor.id) throw new ApiError(409, 'Идентификатор запроса уже использован.');
-      const comparable = (row: AnyWorkEntry) => Object.fromEntries(Object.entries(row).filter(([key]) => !['version', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'comments', 'attachments'].includes(key)));
+      const comparable = (row: AnyWorkEntry) => Object.fromEntries(Object.entries(row)
+        .filter(([key]) => !['version', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'comments', 'attachments'].includes(key))
+        .map(([key, value]) => [key, key === 'archivedAt' ? Boolean(value) : value]));
       const originalComment = (duplicate as WorkCompanyRecord).comments?.[0]?.text ?? '';
       if (JSON.stringify(comparable(duplicate)) !== JSON.stringify(comparable(entry)) || kind !== 'notes' && originalComment !== String(body.comment ?? '').trim()) throw new ApiError(409, 'Запрос уже сохранён с другими значениями. Обновите список.');
       if (JSON.stringify(('attachments' in duplicate ? duplicate.attachments : [])?.map(file => ({name:file.name,data:file.data}))) !== JSON.stringify(('attachments' in entry ? entry.attachments : [])?.map(file => ({name:file.name,data:file.data})))) throw new ApiError(409, 'Запрос уже сохранён с другими файлами.');
       return { entry: publicWorkEntry(duplicate), created: false, changed: false };
     }
   }
-  if (!assigneeIds.some(activeAssignee) && kind !== 'notes' && !('archivedAt' in entry && entry.archivedAt) && !('status' in entry && entry.status === 'done')) throw new ApiError(400, 'Чтобы вернуть запись в работу, выберите действующего сотрудника.');
+  if (!assigneeIds.some(activeAssignee) && kind !== 'notes' && !('archivedAt' in entry && entry.archivedAt) && !('status' in entry && isClosedWorkStatus(entry.status))) throw new ApiError(400, 'Чтобы вернуть запись в работу, выберите действующего сотрудника.');
   if (key === 'tasks') work.tasks = [...work.tasks.filter(row => row.id !== entry.id), entry as WorkTask];
   else if (key === 'companyRecords') work.companyRecords = [...work.companyRecords.filter(row => row.id !== entry.id), entry as WorkCompanyRecord];
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];

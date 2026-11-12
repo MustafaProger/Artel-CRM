@@ -9,8 +9,11 @@ export const workStatuses = [
   { id: 'todo', name: 'К работе' },
   { id: 'doing', name: 'В работе' },
   { id: 'done', name: 'Готово' },
+  { id: 'failed', name: 'Не выполнена' },
 ] as const;
 export type WorkStatus = (typeof workStatuses)[number]['id'];
+export const isClosedWorkStatus = (status: WorkStatus): status is 'done' | 'failed' =>
+  status === 'done' || status === 'failed';
 export const workPriorities = [1, 2, 3, 4] as const;
 export type WorkPriority = (typeof workPriorities)[number];
 export type WorkKind = 'tasks' | 'companies' | 'notes';

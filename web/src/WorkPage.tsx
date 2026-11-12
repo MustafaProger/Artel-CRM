@@ -6,13 +6,22 @@ import { Bell, Check, ChevronDown, LoaderCircle, MessageSquare, Paperclip, Calen
 import { hasSection, isScopedEmployee, type AccountUser } from './auth-model';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
-import { isWorkDirectoryCompany, isMyWork, workAssigneeIds, workToday, workStatuses, workFileLimit, workFilesTotalLimit, workSubtaskLimit, type WorkPriority, type WorkSubtask, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkStatus, type WorkTask } from './work-model';
+import { isWorkDirectoryCompany, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workStatuses, workFileLimit, workFilesTotalLimit, workSubtaskLimit, type WorkPriority, type WorkSubtask, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkStatus, type WorkTask } from './work-model';
 import './work.css';
 import ScrollableSegments from './ScrollableSegments';
 import { useViewEntrance } from './useViewEntrance';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry; dueDate?: string; status?: WorkStatus };
-type SavedAction = 'saved' | 'archived' | 'restored' | 'deleted' | 'handed-off';
+const savedNotices = {
+  saved: 'Сохранено.',
+  archived: 'Задача перенесена в архив.',
+  failed: 'Задача отмечена как невыполненная и перенесена в архив.',
+  restored: 'Задача возвращена в работу.',
+  deleted: 'Запись удалена.',
+  'handed-off': 'Задача передана.',
+};
+type SavedAction = keyof typeof savedNotices;
+type TaskActivity = 'comments' | 'handoff';
 type CalendarEvent = { id: string; day: string; title: string; reminder: boolean; priority?: WorkPriority; editor: Editor };
 const localDay = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 const addDays = (value: Date, days: number) => { const next = new Date(value); next.setDate(next.getDate() + days); return next; };
@@ -23,6 +32,10 @@ const localInputTime = (value: string | null | undefined) => {
   const date = new Date(value);
   return `${localDay(date)}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 };
+
+function TaskOutcome({ status }: { status: 'done' | 'failed' }) {
+  return <span className={`work-task-outcome is-${status}`}>{status === 'done' ? 'Выполнена' : 'Не выполнена'}</span>;
+}
 
 function SubtaskCount({ subtasks }: { subtasks?: WorkSubtask[] }) {
   if (!subtasks?.length) return null;
@@ -170,13 +183,13 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
   }, [data]);
   const toggleTask = async (task: WorkTask) => {
     if (completing.current.has(task.id)) return;
-    const status = task.status === 'done' ? 'todo' : 'done';
+    const status = isClosedWorkStatus(task.status) ? 'todo' : 'done';
     completing.current.add(task.id);
     request.current?.abort(); setLoading(false);
     setPendingTasks(previous => ({ ...previous, [task.id]: status }));
     setTaskErrors(previous => { const next = { ...previous }; delete next[task.id]; return next; });
     try {
-      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: status === 'done' }), signal: AbortSignal.timeout(20000) });
+      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: isClosedWorkStatus(status) }), signal: AbortSignal.timeout(20000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
       if (active.current) {
@@ -196,7 +209,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     setMovingTask(task.id); setError('');
     request.current?.abort(); setLoading(false);
     try {
-      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: status === 'done' }), signal: AbortSignal.timeout(20000) });
+      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: isClosedWorkStatus(status) }), signal: AbortSignal.timeout(20000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось изменить состояние задачи.');
       if (active.current) {
@@ -243,16 +256,18 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     const pending = Object.hasOwn(pendingTasks, row.id);
     const status = task ? pendingTasks[row.id] ?? task.status : null;
     return <div key={row.id} className={task ? `work-task-row${status === 'done' ? ' is-done' : ''}${pending ? ' is-saving' : ''}` : 'work-record-row'}>
-      {task && <label className={`work-task-check work-priority-${task.priority ?? 4}`} title={status === 'done' ? 'Вернуть в работу' : 'Выполнить задачу'}>
+      {task && (task.status === 'failed' ? <button type="button" className="work-task-check work-task-reopen" aria-label={`Вернуть в работу: ${task.title}`} title="Вернуть в работу" disabled={pending} onClick={() => void toggleTask(task)}>
+        <span className="work-task-check-box" aria-hidden="true"><X size={15} strokeWidth={2.5}/></span>
+      </button> : <label className={`work-task-check work-priority-${task.priority ?? 4}`} title={status === 'done' ? 'Вернуть в работу' : 'Выполнить задачу'}>
         <input type="checkbox" aria-label={`Выполнена: ${task.title}`} checked={status === 'done'} disabled={pending} onChange={() => void toggleTask(task)}/>
         <span className="work-task-check-box" aria-hidden="true"><Check size={16} strokeWidth={3}/></span>
-      </label>}
+      </label>)}
       <div className="work-task-content">
         <button className={task ? 'work-task-open' : 'work-company-row'} disabled={pending} onClick={() => openEditor(item)} aria-label={task ? `Задача: ${task.title}` : `Работа с компанией: ${companyName(row.companyId)}`}>
           <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
           {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
           {task?.description && <span className="work-task-description">{task.description}</span>}
-          <span className="work-task-meta"><span>{assigneeNames(row)}</span><SubtaskCount subtasks={task?.subtasks}/>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
+          <span className="work-task-meta">{status && isClosedWorkStatus(status) && <TaskOutcome status={status}/>}<span>{assigneeNames(row)}</span><SubtaskCount subtasks={task?.subtasks}/>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
         </button>
         {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
       </div>
@@ -284,7 +299,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
         setView('board');
       }
       setEditor(null);
-      setNotice(action === 'deleted' ? 'Запись удалена.' : action === 'archived' ? 'Задача перенесена в архив.' : action === 'restored' ? 'Задача возвращена в работу.' : action === 'handed-off' ? 'Задача передана.' : 'Сохранено.');
+      setNotice(savedNotices[action]);
     }}/>;
   return <div className="work-page">
     <div className="work-view-toolbar">
@@ -301,9 +316,9 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       <div className="work-layout view-entrance">
         <section ref={workMain} className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
           {view === 'kanban' ? <div className="work-board" aria-label="Канбан состояний задач">{workStatuses.map(status => {
-            const tasks = (work?.tasks ?? []).filter(task => task.status === status.id && (status.id === 'done' || !task.archivedAt)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+            const tasks = (work?.tasks ?? []).filter(task => task.status === status.id && (isClosedWorkStatus(status.id) || !task.archivedAt)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
             return <section key={status.id} className={`work-lane work-lane-${status.id}${dropStatus === status.id ? ' work-lane-drop' : ''}`} aria-label={status.name} onDragOver={event => { if (draggedTask && !movingTask) { event.preventDefault(); setDropStatus(status.id); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropStatus(null); }} onDrop={event => { event.preventDefault(); const task = work?.tasks.find(row => row.id === draggedTask); if (task) void moveTask(task, status.id); }}>
-              <header><h2>{status.name}</h2><span>{tasks.length}</span></header><div className="work-cards">{tasks.map(task => <div key={task.id} className={`work-kanban-card${movingTask === task.id ? ' is-moving' : ''}`} draggable={!movingTask} onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', task.id); setDraggedTask(task.id); }} onDragEnd={() => { setDraggedTask(null); setDropStatus(null); }}><button className="work-card" onClick={() => openEditor({ kind: 'tasks', entry: task })}><strong>{task.title}</strong>{task.description && <p>{task.description}</p>}<SubtaskCount subtasks={task.subtasks}/><small>{companyName(task.companyId) || 'Без компании'} · {assigneeNames(task)}</small>{task.dueDate && <span className={`work-card-footer${task.dueDate < today && task.status !== 'done' ? ' work-overdue' : ''}`}><CalendarDays size={13}/>{dateLabel(task.dueDate)}</span>}</button><select aria-label={`Состояние задачи: ${task.title}`} value={task.status} disabled={!!movingTask} onChange={event => void moveTask(task, event.target.value as WorkStatus)}>{workStatuses.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>)}{!tasks.length && <p className="work-empty-lane">Перетащите задачу сюда</p>}{<button className="work-add-lane" onClick={() => openEditor({ kind: 'tasks', status: status.id })}><Plus size={16}/>Добавить задачу</button>}</div>
+              <header><h2>{status.name}</h2><span>{tasks.length}</span></header><div className="work-cards">{tasks.map(task => <div key={task.id} className={`work-kanban-card${movingTask === task.id ? ' is-moving' : ''}`} draggable={!movingTask} onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', task.id); setDraggedTask(task.id); }} onDragEnd={() => { setDraggedTask(null); setDropStatus(null); }}><button className="work-card" onClick={() => openEditor({ kind: 'tasks', entry: task })}><strong>{task.title}</strong>{task.description && <p>{task.description}</p>}<SubtaskCount subtasks={task.subtasks}/><small>{companyName(task.companyId) || 'Без компании'} · {assigneeNames(task)}</small>{task.dueDate && <span className={`work-card-footer${task.dueDate < today && !isClosedWorkStatus(task.status) ? ' work-overdue' : ''}`}><CalendarDays size={13}/>{dateLabel(task.dueDate)}</span>}</button><select aria-label={`Состояние задачи: ${task.title}`} value={task.status} disabled={!!movingTask} onChange={event => void moveTask(task, event.target.value as WorkStatus)}>{workStatuses.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select></div>)}{!tasks.length && <p className="work-empty-lane">Перетащите задачу сюда</p>}{<button className="work-add-lane" onClick={() => openEditor({ kind: 'tasks', status: status.id })}><Plus size={16}/>Добавить задачу</button>}</div>
             </section>;
           })}</div> : view !== 'calendar' ? <section className="panel work-companies"><header className="work-section-heading"><div><h2>{view === 'archive' ? 'Архив задач' : listScope === 'today' ? 'Сегодня' : listScope === 'upcoming' ? 'Предстоящие' : 'Задачи'}</h2></div>{view !== 'archive' && <button className="button primary mobile-icon-action" aria-label="Новая задача" title="Новая задача" onClick={() => openEditor({ kind: 'tasks', dueDate: listScope === 'today' ? today : undefined })}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Новая задача</span></button>}</header>
             {view === 'board' && <div className="work-list-controls"><ScrollableSegments className="work-list-scopes" label="Период задач" value={listScope}><button type="button" aria-pressed={listScope === 'all'} onClick={() => { if (listScope !== 'all') navigate(() => setListScope('all')); }}>Все</button><button type="button" aria-pressed={listScope === 'today'} onClick={() => { if (listScope !== 'today') navigate(() => setListScope('today')); }}>Сегодня</button><button type="button" aria-pressed={listScope === 'upcoming'} onClick={() => { if (listScope !== 'upcoming') navigate(() => { setListScope('upcoming'); setSelectedWeek(weekStart(new Date())); }); }}>Предстоящие</button></ScrollableSegments></div>}
@@ -333,15 +348,46 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const record = editor.kind === 'companies' ? entry as WorkCompanyRecord | undefined : task;
   const note = entry as WorkNote | undefined;
   const [assignees, setAssignees] = useState(() => task ? [...workAssigneeIds(task)] : []);
-  const [activity, setActivity] = useState<'comments' | 'handoff' | null>(null);
+  const [activity, setActivity] = useState<TaskActivity | null>(null);
   const [handoffTo, setHandoffTo] = useState<string[]>([]);
+  const [handoffComment, setHandoffComment] = useState('');
+  const [latestCommentId, setLatestCommentId] = useState<string>();
   const activityId = useId();
+  const activityFrame = useRef<HTMLDivElement>(null);
+  const activityHeight = useRef<number | undefined>(undefined);
+  const activityResize = useRef<Animation | null>(null);
+  const measureActivity = () => {
+    const frame = activityFrame.current;
+    activityHeight.current = frame ? parseFloat(getComputedStyle(frame).height) : undefined;
+  };
+  const toggleActivity = (panel: TaskActivity) => {
+    measureActivity();
+    setActivity(current => current === panel ? null : panel);
+  };
+  useLayoutEffect(() => {
+    const frame = activityFrame.current;
+    const start = activityHeight.current;
+    activityHeight.current = undefined;
+    activityResize.current?.cancel();
+    activityResize.current = null;
+    if (!frame || start === undefined || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const styles = getComputedStyle(frame);
+    const end = parseFloat(styles.height);
+    if (start !== end) {
+      activityResize.current = frame.animate([{ height: `${start}px` }, { height: `${end}px` }], {
+        duration: parseFloat(styles.getPropertyValue('--motion-enter')),
+        easing: styles.getPropertyValue('--motion-ease').trim(),
+      });
+    }
+  }, [activity, latestCommentId]);
+  useEffect(() => () => activityResize.current?.cancel(), []);
   const taskUsers = users.filter(user => hasSection(user, 'work'));
+  const handoffUsers = taskUsers.filter(user => user.id !== actor.id);
   const assigneeOptions = [
     ...assignees.filter(id => !taskUsers.some(user => user.id === id)).map(id => ({ value: id, name: `${userName(id)} · доступ отключён` })),
     ...taskUsers.map(user => ({ value: user.id, name: `${user.name}${user.id === actor.id ? ' (я)' : ''}` })),
   ];
-  const [fields, setFields] = useState(() => ({ title: task?.title ?? note?.title ?? '', description: task?.description ?? '', status: task?.status ?? editor.status ?? 'todo', priority: String(task?.priority ?? 4), companyId: record?.companyId ?? '', assigneeId: entry?.assigneeId ?? actor.id, dueDate: task?.dueDate ?? editor.dueDate ?? '', reminderAt: localInputTime(record?.reminderAt), question: record && 'question' in record ? record.question : '', comment: '', content: note?.content ?? '' }));
+  const [fields, setFields] = useState(() => ({ title: task?.title ?? note?.title ?? '', description: task?.description ?? '', priority: String(task?.priority ?? 4), companyId: record?.companyId ?? '', assigneeId: entry?.assigneeId ?? actor.id, dueDate: task?.dueDate ?? editor.dueDate ?? '', reminderAt: localInputTime(record?.reminderAt), question: record && 'question' in record ? record.question : '', comment: '', content: note?.content ?? '' }));
   const [priorityChosen, setPriorityChosen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [subtasks, setSubtasks] = useState<WorkSubtask[]>(() => task?.subtasks ?? []);
@@ -363,13 +409,23 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   useEffect(() => { if (error) { errorMessage.current?.focus({ preventScroll: true }); errorMessage.current?.scrollIntoView({ block: 'nearest' }); } }, [error]);
   const update = (key: keyof typeof fields, value: string) => { setFields(previous => ({ ...previous, [key]: value })) };
   const close = () => { if (!inFlight.current) onClose(); };
-  const save = async (method: 'POST' | 'PATCH' | 'DELETE', nextArchived?: boolean, activityAction?: 'comment' | 'handed-off') => {
+  const save = async (method: 'POST' | 'PATCH' | 'DELETE', { nextArchived, activityAction, nextStatus }: {
+    nextArchived?: boolean;
+    activityAction?: 'comment' | 'handed-off';
+    nextStatus?: WorkStatus;
+  } = {}) => {
     const postingComment = activityAction === 'comment';
     const handingOff = activityAction === 'handed-off';
     if (inFlight.current) return;
     if (method !== 'DELETE' && !postingComment && !formRef.current?.reportValidity()) return;
     inFlight.current = true; onSaving(true); setSaving(true); setError('');
-    const action = activityAction ?? (method === 'DELETE' ? 'deleted' : nextArchived === true ? 'archived' : nextArchived === false ? 'restored' : 'saved');
+    const action = activityAction ?? (
+      method === 'DELETE' ? 'deleted'
+        : nextStatus === 'failed' ? 'failed'
+        : nextStatus === 'done' || nextArchived === true ? 'archived'
+        : nextArchived === false ? 'restored'
+        : 'saved'
+    );
     setPendingAction(action);
     try {
       let body: Record<string, unknown> = { version: entry?.version };
@@ -381,7 +437,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
           : fields.reminderAt ? new Date(fields.reminderAt).toISOString() : null;
         const addAttachments = await Promise.all(files.map(async file => ({ name: file.name, data: await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл.')); reader.readAsDataURL(file); }) })));
         const identity = entry ? { version: entry.version } : { requestId };
-        const recordFields = { comment: fields.comment, addAttachments, reminderAt };
+        const recordFields = { comment: handingOff ? handoffComment : fields.comment, addAttachments, reminderAt };
         if (editor.kind === 'tasks') {
           body = {
             ...identity, ...recordFields,
@@ -390,7 +446,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
             ...(subtasks.length || task?.subtasks ? { subtasks } : {}),
             ...(handingOff
               ? { handoff: true, assigneeIds: handoffTo }
-              : { assigneeIds: assignees, status: fields.status, archived }),
+              : { assigneeIds: assignees, status: nextStatus ?? task?.status ?? editor.status ?? 'todo', archived: nextArchived ?? archived }),
           };
         } else if (editor.kind === 'companies') {
           body = { ...identity, ...recordFields, assigneeId: fields.assigneeId, companyId: fields.companyId, question: fields.question, archived: nextArchived ?? archived };
@@ -403,6 +459,8 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
       if (!response.ok) throw new Error(result.error || (method === 'DELETE' ? 'Не удалось удалить запись.' : 'Не удалось сохранить запись.'));
       onTaskCount(result.todayTaskCount);
       if (postingComment) {
+        measureActivity();
+        setLatestCommentId((result.entry as WorkTask).comments?.at(-1)?.id);
         setEntry(result.entry);
         update('comment', '');
         onCommentSaved(result.entry);
@@ -445,7 +503,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
       {editor.kind !== 'notes' && taskParameters}{taskFiles}{taskActivity}
   </>;
   const form = <form ref={formRef} aria-busy={saving} onSubmit={event => { event.preventDefault(); void save(entry ? 'PATCH' : 'POST'); }}>
-    <header className="work-editor-heading"><h2 id="work-editor-title">{heading}</h2><button type="button" className="icon-button" aria-label="Закрыть рабочую запись" disabled={saving} onClick={close}><X size={20}/></button></header>
+    <header className="work-editor-heading"><div className="work-editor-title"><h2 id="work-editor-title">{heading}</h2>{task && isClosedWorkStatus(task.status) && <TaskOutcome status={task.status}/>}</div><button type="button" className="icon-button" aria-label="Закрыть рабочую запись" disabled={saving} onClick={close}><X size={20}/></button></header>
     <div className="work-editor-body">
       <div className="work-editor-content">
       {editor.kind !== 'companies' && input('Название', 'title', { required: true, hideLabel: isNote, placeholder: isNote ? 'Название' : editor.kind === 'tasks' ? 'Название задачи' : undefined })}
@@ -476,45 +534,53 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
           <button type="button" className="work-add-subtask" disabled={saving || subtasks.length >= workSubtaskLimit} onClick={addSubtask}>
             <Plus size={16}/>Добавить подзадачу
           </button>
-          <button type="button" className="work-add-subtask" aria-expanded={activity === 'comments'} aria-controls={activity === 'comments' ? activityId : undefined}
-            onClick={() => setActivity(activity === 'comments' ? null : 'comments')}>
+          <button type="button" className="work-add-subtask" aria-expanded={activity === 'comments'} aria-controls={`${activityId}-comments`} disabled={saving}
+            onClick={() => toggleActivity('comments')}>
             <MessageSquare size={16}/>Комментарии{task?.comments?.length ? ` (${task.comments.length})` : ''}
           </button>
-          {task && <button type="button" className="work-add-subtask" aria-expanded={activity === 'handoff'} aria-controls={activity === 'handoff' ? activityId : undefined}
-            onClick={() => setActivity(activity === 'handoff' ? null : 'handoff')}>
+          {task && <button type="button" className="work-add-subtask" aria-expanded={activity === 'handoff'} aria-controls={`${activityId}-handoff`} disabled={saving}
+            onClick={() => toggleActivity('handoff')}>
             <Send size={16}/>Передать задачу
           </button>}
         </div>
-      </section>}
-      {editor.kind === 'tasks' && activity && <section id={activityId} className="work-task-activity" aria-label={activity === 'comments' ? 'Комментарии' : 'Передача задачи'}>
-        {activity === 'comments' ? <>
-          {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id}>
-            <span className="work-activity-icon">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
-            <article>
-              <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
-              {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}
-              <p>{comment.text}</p>
-            </article>
-          </li>)}</ol>}
-          {input('Новый комментарий', 'comment', { multiline: true, hideLabel: true, placeholder: 'Напишите комментарий' })}
-          {task && <button type="button" className="button primary" disabled={saving || !fields.comment.trim()} onClick={() => void save('PATCH', undefined, 'comment')}>
-            {pendingAction === 'comment' ? 'Отправляем…' : 'Отправить комментарий'}
-          </button>}
-        </> : <>
-          <fieldset className="work-handoff-people" disabled={saving}>
-            <legend>Кому передать</legend>
-            {taskUsers.filter(user => user.id !== actor.id).map(user => <label key={user.id}>
-              <input type="checkbox" checked={handoffTo.includes(user.id)}
-                onChange={() => setHandoffTo(current => current.includes(user.id) ? current.filter(id => id !== user.id) : [...current, user.id])}/>
-              {user.name}
-            </label>)}
-          </fieldset>
-          <label className="work-field"><span>Комментарий к передаче</span><textarea rows={2} value={fields.comment} maxLength={10000} disabled={saving}
-            placeholder="Что осталось сделать?" onChange={event => update('comment', event.target.value)}/></label>
-          <button type="button" className="button primary" disabled={saving || !handoffTo.length} onClick={() => void save('PATCH', undefined, 'handed-off')}>
-            {pendingAction === 'handed-off' ? 'Передаём…' : 'Передать'}
-          </button>
-        </>}
+        <div ref={activityFrame} className="work-activity-frame">
+          <div className="work-activity-layer" data-active={activity === 'comments'} inert={activity !== 'comments'}>
+            <section id={`${activityId}-comments`} className="work-task-activity" aria-label="Комментарии">
+              {!!task?.comments?.length && <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id} className={comment.id === latestCommentId ? 'is-new' : undefined}>
+                <span className="work-activity-icon" aria-hidden="true">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
+                <article>
+                  <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
+                  {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}
+                  <p>{comment.text}</p>
+                </article>
+              </li>)}</ol>}
+              {input('Новый комментарий', 'comment', { multiline: true, hideLabel: true, placeholder: 'Напишите комментарий' })}
+              <span className="work-comment-status" role="status">
+                {latestCommentId && `Комментарий отправлен. Записей в истории: ${task?.comments?.length}.`}
+              </span>
+              {task && <button type="button" className="button primary work-activity-submit" disabled={saving || !fields.comment.trim()} onClick={() => void save('PATCH', { activityAction: 'comment' })}>
+                {pendingAction === 'comment' ? <><LoaderCircle size={16} className="spin" aria-hidden="true"/>Отправляем…</> : <><Send size={16} aria-hidden="true"/>Отправить комментарий</>}
+              </button>}
+            </section>
+          </div>
+          {task && <div className="work-activity-layer" data-active={activity === 'handoff'} inert={activity !== 'handoff'}>
+            <section id={`${activityId}-handoff`} className="work-task-activity work-handoff" aria-label="Передача задачи">
+              <fieldset className="work-handoff-people" disabled={saving}>
+                <legend>Кому передать</legend>
+                {handoffUsers.length ? <div className="work-handoff-options">{handoffUsers.map(user => <label key={user.id}>
+                  <input type="checkbox" checked={handoffTo.includes(user.id)}
+                    onChange={() => setHandoffTo(current => current.includes(user.id) ? current.filter(id => id !== user.id) : [...current, user.id])}/>
+                  <span>{user.name}</span>
+                </label>)}</div> : <p className="work-hint">Нет доступных сотрудников.</p>}
+              </fieldset>
+              <label className="work-field"><span>Комментарий к передаче <small aria-hidden="true">необязательно</small></span><textarea rows={2} value={handoffComment} maxLength={10000} disabled={saving}
+                placeholder="Что осталось сделать?" onChange={event => setHandoffComment(event.target.value)}/></label>
+              <button type="button" className="button primary work-activity-submit" disabled={saving || !handoffTo.length} onClick={() => void save('PATCH', { activityAction: 'handed-off' })}>
+                {pendingAction === 'handed-off' ? <><LoaderCircle size={16} className="spin" aria-hidden="true"/>Передаём…</> : <><Send size={16} aria-hidden="true"/>Передать</>}
+              </button>
+            </section>
+          </div>}
+        </div>
       </section>}
       {editor.kind === 'tasks' && <><div className="work-task-toolbar" role="group" aria-label="Параметры задачи" tabIndex={0}>{taskParameters}{uploadAction}</div>{(record?.attachments?.length || files.length) ? <section className="work-files work-task-file-list" aria-label="Файлы задачи">{fileRows}</section> : null}</>}
       {editor.kind === 'tasks' ? taskActivity : details}
@@ -524,7 +590,20 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
     <footer className="work-editor-footer">
       {error && <p ref={errorMessage} tabIndex={-1} className="shipment-error work-action-error" role="alert">{error}</p>}
       {entry && <button type="button" className="button work-delete" disabled={saving} onClick={() => void save('DELETE')}><Trash2 size={16} aria-hidden="true"/>{pendingAction === 'deleted' ? 'Удаляем…' : 'Удалить'}</button>}
-      {entry && editor.kind === 'companies' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', !archived)}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
+      {entry && editor.kind === 'companies' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextArchived: !archived })}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
+      {task && <div className="work-task-outcome-actions">
+        {archived || isClosedWorkStatus(task.status) ?
+          <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'todo', nextArchived: false })}>
+            {pendingAction === 'restored' ? 'Возвращаем…' : 'Вернуть в работу'}
+          </button> : <>
+            <button type="button" className="button work-mark-failed" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'failed' })}>
+              <X size={16} aria-hidden="true"/>{pendingAction === 'failed' ? 'Сохраняем…' : 'Не выполнена'}
+            </button>
+            <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'done' })}>
+              <Check size={16} aria-hidden="true"/>{pendingAction === 'archived' ? 'Сохраняем…' : 'Выполнить'}
+            </button>
+          </>}
+      </div>}
       <button className="button primary" type="submit" disabled={saving}>{pendingAction === 'saved' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}{pendingAction === 'saved' ? 'Сохраняем…' : 'Сохранить'}</button>
     </footer>
   </form>;

@@ -126,8 +126,23 @@ try {
   await expect(description).toHaveCSS('border-top-width', '0px');
   await expect(description.locator('..')).toHaveCSS('outline-style', 'none');
   assert.ok(await description.evaluate(element => element.scrollHeight <= element.clientHeight + 1), 'all description lines fit in the editor');
-  await mobileDialog.getByRole('button', { name: 'Комментарии' }).click();
-  await mobileDialog.getByRole('textbox', { name: 'Новый комментарий' }).fill('УПД подготовлен.');
+  const commentsButton = mobileDialog.getByRole('button', { name: 'Комментарии' });
+  const handoffButton = mobileDialog.getByRole('button', { name: 'Передать задачу' });
+  const commentField = mobileDialog.getByRole('textbox', { name: 'Новый комментарий' });
+  const handoffField = mobileDialog.getByRole('textbox', { name: 'Комментарий к передаче' });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await commentsButton.click();
+  await commentField.fill('УПД подготовлен.');
+  await handoffButton.click();
+  await expect(commentField).toHaveCount(0);
+  await handoffField.fill('Черновик передачи');
+  await commentsButton.click();
+  await expect(commentField).toHaveValue('УПД подготовлен.');
+  await commentsButton.click();
+  await expect(commentField).toHaveCount(0);
+  await handoffButton.click();
+  await expect(handoffField).toHaveValue('Черновик передачи');
+  await commentsButton.click();
   await mobileDialog.getByRole('button', { name: 'Отправить комментарий' }).click();
   await expect(mobileDialog.getByText('УПД подготовлен.', { exact: true })).toBeVisible();
   await expect(mobileDialog.locator('article time')).toHaveAttribute('datetime', /^\d{4}-/);
@@ -135,6 +150,7 @@ try {
   await mobileDialog.screenshot({ path: '/tmp/artel-work-task-mobile-preview.png' });
   await mobileDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
   await expect(mobileDialog).toHaveCount(0);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   const toggle = async () => {
     const [response] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith('/api/work/tasks/' + priorityTask.id) && response.request().method() === 'PATCH'),
@@ -159,10 +175,15 @@ try {
   }
   const sender = await zhenyaContext.newPage();
   await sender.goto(`${base}/#work`);
-  await sender.getByRole('checkbox', { name: 'Выполнена: Новая задача QA' }).click();
-  await sender.getByRole('button', { name: 'Архив задач', exact: true }).click();
-  await sender.getByRole('button', { name: 'Задача: Новая задача QA' }).click();
+  const senderTask = sender.getByRole('button', { name: 'Задача: Новая задача QA' });
   const senderDialog = sender.getByRole('dialog', { name: 'Задача' });
+  await senderTask.click();
+  await senderDialog.getByRole('button', { name: 'Не выполнена', exact: true }).click();
+  await expect(senderTask).toHaveCount(0);
+  await sender.getByRole('button', { name: 'Архив задач', exact: true }).click();
+  await expect(senderTask).toContainText('Не выполнена');
+  await senderTask.click();
+  await expect(senderDialog.getByRole('button', { name: 'Вернуть в работу' })).toBeVisible();
   await senderDialog.getByRole('button', { name: 'Передать задачу' }).click();
   await senderDialog.getByRole('checkbox', { name: egor.name }).check();
   await senderDialog.getByRole('textbox', { name: 'Комментарий к передаче' }).fill('Егор, распечатай УПД.');
@@ -177,7 +198,7 @@ try {
   const receiverDialog = receiver.getByRole('dialog', { name: 'Задача' });
   await receiverDialog.getByRole('button', { name: 'Комментарии' }).click();
   await expect(receiverDialog.getByText('Егор, распечатай УПД.', { exact: true })).toBeVisible();
-  await expect(receiverDialog.getByText(zhenya.name, { exact: true })).toBeVisible();
+  await expect(receiverDialog.getByRole('region', { name: 'Комментарии' }).getByText(zhenya.name, { exact: true })).toBeVisible();
   await expect(receiverDialog.getByText(`Передано · ${egor.name}`)).toBeVisible();
   await expect(receiverDialog.locator('.work-activity-list article p')).toHaveText(['Егор, распечатай УПД.', 'УПД подготовлен.']);
   await receiverDialog.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
@@ -191,7 +212,7 @@ try {
   })).entry;
   assert.equal(withFile.attachments[0].size, 3 * 1024 * 1024);
   assert.deepEqual(errors, []);
-  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, comments, archive handoff, today count and attachments');
+  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, animated panels, drafts, task outcomes, archive handoff, today count and attachments');
 } finally {
   await browser?.close();
   if (server && server.exitCode === null) {

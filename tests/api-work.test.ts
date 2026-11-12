@@ -139,9 +139,19 @@ test('multiple assignees, authored comments, handoff from archive and today coun
     assert.ok(received.comments?.every(row => Number.isFinite(Date.parse(row.createdAt))));
     assert.equal(await count(f.bob), 1);
     assert.equal(await count(f.director), 1);
-    assert.equal((await f.bob(path, 'PATCH', { version: 4, status: 'done' })).status, 200);
+    const failed = await f.bob(path, 'PATCH', { version: 4, status: 'failed' });
+    assert.equal(failed.status, 200);
+    assert.equal(failed.body.entry.status, 'failed');
+    assert.ok(failed.body.entry.archivedAt);
+    assert.equal((await myTasks(f.director))[0].status, 'failed');
     assert.equal(await count(f.bob), 0);
     assert.equal(await count(f.director), 0);
+
+    const restored = await f.bob(path, 'PATCH', { version: 5, archived: false });
+    assert.equal(restored.status, 200);
+    assert.equal(restored.body.entry.status, 'todo');
+    assert.equal(restored.body.entry.archivedAt, null);
+    assert.equal(await count(f.bob), 1);
   } finally { await f.close(); }
 });
 
