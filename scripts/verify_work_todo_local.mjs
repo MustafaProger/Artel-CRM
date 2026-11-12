@@ -29,6 +29,7 @@ try {
   });
   assert.equal(setup.status, 200);
   const cookie = setup.headers.get('set-cookie').split(';')[0];
+  const directorId = (await setup.json()).user.id;
   const api = async (path, method = 'GET', body) => {
     const response = await fetch(base + path, {
       method, headers: { Cookie: cookie, ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -105,8 +106,10 @@ try {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await created.getByRole('textbox', { name: 'Название', exact: true }).fill('Новая задача QA');
   const assigneeChoice = created.getByRole('combobox', { name: 'Исполнители' });
+  await expect(assigneeChoice).toHaveText('Директор QA (я)');
   await assigneeChoice.click();
   await expect(created.getByRole('listbox', { name: 'Исполнители' })).toBeVisible();
+  await expect(created.getByRole('option', { name: 'Директор QA (я)', exact: true })).toHaveAttribute('aria-selected', 'true');
   await created.getByRole('option', { name: zhenya.name }).click();
   await created.getByRole('option', { name: egor.name }).click();
   await expect(created.getByRole('option', { name: zhenya.name })).toHaveAttribute('aria-selected', 'true');
@@ -127,7 +130,7 @@ try {
   const priorityTask = (await api('/api/work')).work.tasks.find(row => row.title === 'Новая задача QA');
   assert.equal(priorityTask.subtasks[0].title, 'Первый шаг');
   assert.equal(priorityTask.priority, 1);
-  assert.deepEqual(priorityTask.assigneeIds, [zhenya.id, egor.id]);
+  assert.deepEqual(priorityTask.assigneeIds, [directorId, zhenya.id, egor.id]);
   const previousComments = Array.from({ length: 14 }, (_, index) => `Запись из истории №${index + 1}`);
   let version = priorityTask.version;
   for (const comment of previousComments) {
@@ -274,8 +277,30 @@ try {
     version: latest.version, addAttachments: [{ name: 'three-megabytes.txt', data: payload }],
   })).entry;
   assert.equal(withFile.attachments[0].size, 3 * 1024 * 1024);
+  const background = page.locator('.work-page');
+  const backgroundTop = () => background.evaluate(element => element.getBoundingClientRect().top);
+  await background.evaluate(element => { element.style.minHeight = '2200px'; });
+  for (const [button, heading] of [
+    [page.getByRole('button', { name: 'Новая задача', exact: true }), 'Новая задача'],
+    [page.getByRole('button', { name: 'Задача: Проверка редактора', exact: true }), 'Задача'],
+  ]) {
+    await page.evaluate(() => window.scrollTo(0, 310));
+    const initialTop = await backgroundTop();
+    await button.evaluate(element => element.click());
+    const modal = page.getByRole('dialog', { name: heading, exact: true });
+    await expect(modal).toBeVisible();
+    await page.mouse.move(2, 400);
+    await page.mouse.wheel(0, 450);
+    await page.evaluate(() => window.scrollBy(0, 450));
+    assert.equal(await backgroundTop(), initialTop);
+    await modal.getByRole('button', { name: 'Закрыть рабочую запись' }).click();
+    await expect(modal).toHaveCount(0);
+    assert.equal(await backgroundTop(), initialTop);
+    await page.evaluate(() => window.scrollBy(0, 100));
+    assert.equal(await backgroundTop(), initialTop - 100);
+  }
   assert.deepEqual(errors, []);
-  console.log('PASS Work editor on desktop and mobile, full description, multiple assignees, animated subtasks and panels, visible comment reveal, drafts, task outcomes, archive handoff, today count and attachments');
+  console.log('PASS Work editor on desktop and mobile, full description, default and multiple assignees, background scroll lock, animated subtasks and panels, visible comment reveal, drafts, task outcomes, archive handoff, today count and attachments');
 } finally {
   await browser?.close();
   if (server && server.exitCode === null) {

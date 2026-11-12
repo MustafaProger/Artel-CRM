@@ -322,7 +322,7 @@
 .work-editor:not(.work-compose):has(.work-task-toolbar){width:min(910px,calc(100vw - 24px));max-height:88dvh;font-family:Inter,system-ui,sans-serif}
 .work-editor:not(.work-compose):has(.work-task-toolbar) form{max-height:88dvh}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-heading{padding:10px 16px}
-.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-body{display:block;padding:0;overflow:auto;min-height:0}
+.work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-body{display:block;padding:0;overflow:auto;overscroll-behavior:contain;min-height:0}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content{padding:14px 18px;gap:9px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-content>.work-field:first-child input{border:0;padding:2px 0;font-size:19px;font-weight:650;background:transparent}

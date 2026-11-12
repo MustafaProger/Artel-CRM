@@ -60,7 +60,9 @@ function WorkChoice({ label, value, options, onChange, disabled = false, priorit
   const menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, width: 0, maxHeight: 0, above: true });
-  const selected = options.filter(option => selectedValues ? selectedValues.includes(option.value) : option.value === value);
+  const selected = selectedValues
+    ? selectedValues.map(id => options.find(option => option.value === id)).filter(option => option !== undefined)
+    : options.filter(option => option.value === value);
   useLayoutEffect(() => {
     if (!open || !portalMenu) return;
     const place = () => {
@@ -350,7 +352,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const task = editor.kind === 'tasks' ? entry as WorkTask | undefined : undefined;
   const record = editor.kind === 'companies' ? entry as WorkCompanyRecord | undefined : task;
   const note = entry as WorkNote | undefined;
-  const [assignees, setAssignees] = useState(() => task ? [...workAssigneeIds(task)] : []);
+  const [assignees, setAssignees] = useState(() => task ? [...workAssigneeIds(task)] : [actor.id]);
   const [activity, setActivity] = useState<TaskActivity | null>(null);
   const [handoffTo, setHandoffTo] = useState<string[]>([]);
   const [handoffComment, setHandoffComment] = useState('');
@@ -420,6 +422,23 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const archived = !!record?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState('');
   const [pendingAction, setPendingAction] = useState<SavedAction | 'comment' | null>(null);
+  useLayoutEffect(() => {
+    const body = document.body.style;
+    const { position, top, left, width } = body;
+    const { scrollX, scrollY, innerWidth } = window;
+    const scrollbar = innerWidth - document.documentElement.clientWidth;
+    // Overflow locking alone still lets focus and scrollIntoView move the page.
+    Object.assign(body, {
+      position: 'fixed',
+      top: `${-scrollY}px`,
+      left: `${-scrollX}px`,
+      width: `calc(100% - ${scrollbar}px)`,
+    });
+    return () => {
+      Object.assign(body, { position, top, left, width });
+      window.scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' });
+    };
+  }, []);
   const motion = useDialogMotion(dialog, onDismiss);
   const onClose = motion.close;
 
