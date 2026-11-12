@@ -1,5 +1,6 @@
 import { useDirectAction } from './useDirectAction'
 import { useViewEntrance } from './useViewEntrance'
+import { watchVisibleRefresh } from './visible-refresh'
 import TransportPricingSettings from './TransportPricingSettings'
 import { readTransportPricing } from './transport-pricing'
 import AddressReceiversEditor from './AddressReceiversEditor'
@@ -36,7 +37,7 @@ const bankFields = new Set(['bankName','settlementAccount','correspondentAccount
 const editablePayload = (payload:Record<string,unknown>) => isLogisticsWorkspace() ? Object.fromEntries(Object.entries(payload).filter(([key])=>!bankFields.has(key))) : payload
 const vehicleName = (vehicle: Vehicle) => vehicle.name || vehicle.plate
 const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== vehicle.plate ? vehicle.plate : '', vehicle.capacityLitres ? `${Number(vehicle.capacityLitres).toLocaleString('ru-RU')} л` : '', vehicle.compartmentsLitres?.length ? `Секции: ${vehicle.compartmentsLitres.join(' + ')} л` : ''].filter(Boolean).join(' · ')
-type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager?:string;managerId?:string;addresses?:string;roles?:string[];kind?:'managers'|'drivers';accountRoles?:AccountRole[]}
+type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager?:string;managerId?:string;addresses?:string;roles?:string[];kind?:'managers'|'drivers';accountRoles?:AccountRole[];online?:boolean}
 
 export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=true,canManageTab,canViewAccounts=false,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;canManageTab?:(tab:DirectoryTab)=>boolean;canViewAccounts?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
   const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
@@ -55,6 +56,7 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
     setNotice('Запись удалена из справочника')
   })
   const [accessUsers,setAccessUsers] = useState<AccountUser[]|null>(null), [accessError,setAccessError] = useState(''), [accessRevision,setAccessRevision] = useState(0)
+  const [onlineUsers,setOnlineUsers] = useState<Set<string>>(() => new Set())
   const [roleFilter,setRoleFilter] = useState<RoleFilterValue>('all')
   const viewEntrance = useViewEntrance<HTMLElement>(`${tab}:${roleFilter}`, '.directory-record-count, .directory-record, .directory-empty', 6)
   const personnel = tab === 'managers' && canViewAccounts && !isLogisticsWorkspace()
@@ -65,6 +67,27 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
     void fetch('/api/auth/users',{cache:'no-store'}).then(async response=>{const result=await response.json();if(!response.ok)throw new Error(result.error||'Не удалось загрузить полномочия.');if(!cancelled)setAccessUsers(result.users)}).catch(reason=>{if(!cancelled)setAccessError(reason.message)})
     return()=>{cancelled=true}
   },[personnel,data.directories,accessRevision])
+  useEffect(() => {
+    if (!personnel) return
+    const controller = new AbortController()
+    let inFlight = false
+    const refresh = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const response = await fetch('/api/auth/users?online=1', { cache: 'no-store', signal: controller.signal })
+        const result = response.ok ? await response.json() as { userIds: string[] } : null
+        if (!controller.signal.aborted) setOnlineUsers(new Set(result?.userIds))
+      } catch {
+        if (!controller.signal.aborted) setOnlineUsers(new Set())
+      } finally {
+        inFlight = false
+      }
+    }
+    void refresh()
+    const stop = watchVisibleRefresh(() => { void refresh() }, 30000)
+    return () => { stop(); controller.abort(); setOnlineUsers(new Set()) }
+  }, [personnel])
   const catalog = data.directories!
   const operatorCatalog = readOperatorCatalog(catalog)
   const rows: DirectoryRow[] = companyTab(tab) ? data.companies.filter(company => !company.directoryArchived && company.roles.includes(tabRole(tab))).map(company => ({
@@ -83,7 +106,7 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
   const personnelRows: DirectoryRow[] = personnel ? ([...catalog.managers.map(row=>({...row,kind:'managers' as const})),...catalog.drivers.filter(row=>!catalog.deletedEntries?.drivers?.includes(row.id)).map(row=>({...row,kind:'drivers' as const}))]).map(row=>{
     const linked=accessUsers?.filter(user=>!user.deletedAt&&(row.kind==='drivers'?user.role==='driver'&&user.driverId===row.id:user.role!=='driver'&&user.managerId===row.id))??[]
     const accountRoles=[...new Set(linked.map(user=>user.role))]
-    return {...row,accountRoles,detail:accessUsers?accountRoles.length?accountRoles.map(role=>roleNames[role]).join(', ')+(linked.some(user=>user.active)?'':' · Доступ отключён'):(row.kind==='drivers'?'Водитель':'Сотрудник')+' · Доступ не выдан':'Полномочия недоступны'}
+    return {...row,accountRoles,online:linked.some(user=>user.active&&onlineUsers.has(user.id)),detail:accessUsers?accountRoles.length?accountRoles.map(role=>roleNames[role]).join(', ')+(linked.some(user=>user.active)?'':' · Доступ отключён'):(row.kind==='drivers'?'Водитель':'Сотрудник')+' · Доступ не выдан':'Полномочия недоступны'}
   }) : rows
   const roleRows=personnel&&roleFilter!=='all'?personnelRows.filter(row=>accessUsers&&(roleFilter==='none'?!row.accountRoles?.length:row.accountRoles?.includes(roleFilter))):personnelRows
   const visible = roleRows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
@@ -101,7 +124,7 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
       {personnel&&<><RoleFilter value={roleFilter} onChange={value=>{setRoleFilter(value);setPage(0)}} includeUnlinked disabled={!accessUsers} counts={{all:personnelRows.length,none:personnelRows.filter(row=>!row.accountRoles?.length).length,...Object.fromEntries(Object.keys(roleNames).map(role=>[role,personnelRows.filter(row=>row.accountRoles?.includes(role as AccountRole)).length]))}}/>{!accessUsers&&!accessError&&<p role="status">Загружаем полномочия…</p>}{accessError&&<p className="shipment-error" role="alert">{accessError} <button type="button" className="button" onClick={()=>setAccessRevision(value=>value+1)}>Повторить загрузку полномочий</button></p>}</>}
       <div className="directory-record-count">Записей: {visible.length}</div>
       <div className="directory-records">{visible.slice(currentPage*30,(currentPage+1)*30).map(row=><div className="directory-record" key={`${row.kind??tab}:${row.id}`}>
-        <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind==='managers'||row.kind==='drivers'?row.kind:undefined})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><strong>{tab === 'operatorServices' ? <OperatorServiceBadge service={row.name} serviceId={row.id} backgroundColor={operatorCatalog.services.find(item=>item.id===row.id)?.backgroundColor} part="name"/> : row.name}</strong>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
+        <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind==='managers'||row.kind==='drivers'?row.kind:undefined})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><span className="directory-record-title"><strong>{tab === 'operatorServices' ? <OperatorServiceBadge service={row.name} serviceId={row.id} backgroundColor={operatorCatalog.services.find(item=>item.id===row.id)?.backgroundColor} part="name"/> : row.name}</strong>{row.online && <span className="directory-online">В сети</span>}</span>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
           {row.manager !== undefined && <span className="directory-record-manager"><small>Менеджер</small><span>{row.manager}</span></span>}{canManage&&<Pencil size={17}/>}</button>
         {canManage&&tab!=='operatorServices'&&<button className="icon-button directory-delete" aria-label={`Удалить: ${row.name}`} disabled={!!removal.pending} onClick={()=>void remove(row)}>{removal.pending === row.id ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}</button>}
       </div>)}</div>

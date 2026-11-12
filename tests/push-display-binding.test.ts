@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { createSnapshotMiddleware } from '../server/local-api';
+import { persistentSessionExpiry } from '../server/auth';
 import { OperationsStore } from '../server/operations-store';
 import { dispatchReminders, pushDisplayBinding, type PushConfig } from '../server/push';
 import { migrateWorkStorage } from '../server/work-partition';
@@ -54,6 +55,26 @@ for (const partitioned of [false, true]) test(`push display binding follows the 
     assert.equal((await request('/api/push/config', undefined, `artel_session=${firstConfig.displayBinding}`)).status, 401, 'Display binding is never an authentication token');
     const sub = subscription();
     assert.equal((await request('/api/push/subscription', { subscription: sub, explicit: true }, cookie)).status, 200);
+    assert.match(setup.headers.get('set-cookie')!, /Max-Age=34560000/);
+    // Simulate a valid cookie issued before this release and a second, expired session.
+    const expiredToken = 'd'.repeat(64), oldExpiry = Date.now() + 60_000;
+    await store.mutate(source, data => {
+      data.accounts!.sessions[0].expiresAt = oldExpiry;
+      data.accounts!.sessions.push({ userId: owner.id, hash: hash(expiredToken), expiresAt: Date.now() - 1 });
+      return { result: null, changed: true };
+    });
+    const stale = await request('/api/auth/session?refresh=1', undefined, `artel_session=${expiredToken}`);
+    assert.equal((await stale.json()).user, null);
+    assert.equal(stale.headers.get('set-cookie'), null);
+    const refreshed = await request('/api/auth/session?refresh=1', undefined, cookie);
+    assert.match(refreshed.headers.get('set-cookie')!, /Max-Age=34560000/);
+    assert.equal(refreshed.headers.get('set-cookie')!.split(';')[0], cookie);
+    assert.equal((await refreshed.json()).user.id, owner.id);
+    const updated = await store.read(source);
+    assert.equal(updated.accounts!.sessions[0].expiresAt, persistentSessionExpiry);
+    assert.equal(updated.push!.devices[0].sessionHash, sessionHash);
+    assert.deepEqual(await (await request('/api/auth/users?online=1', undefined, cookie)).json(), { userIds: [owner.id] });
+    assert.equal((await request('/api/auth/users?online=1')).status, 401);
     assert.equal((await request('/api/push/test', { endpoint: sub.endpoint }, cookie)).status, 200);
     assert.equal(payloads.length, 1); assert.equal(payloads[0].displayBinding, firstConfig.displayBinding);
     const probe = payloads[0].probe!;

@@ -66,7 +66,12 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
     const timer = window.setTimeout(() => controller.abort(), 15000);
     setChecking(true);
     try {
-      const response = await fetch('/api/auth/session', { cache: 'no-store', signal: controller.signal });
+      const send = () => fetch(logistics ? '/api/auth/session' : '/api/auth/session?refresh=1', { cache: 'no-store', signal: controller.signal });
+      // The CRM session check can refresh the shared cookie. Coordinate it with
+      // login and logout so an older response cannot overwrite a newer cookie.
+      const response = !logistics && navigator.locks
+        ? await navigator.locks.request(`artel:auth-mutation:${audience}`, { mode: 'shared', signal: controller.signal }, send)
+        : await send();
       if (generation !== sessionRequest.current) return;
       if (!response.ok) {
         if (response.status === 401) clearSession();
@@ -83,7 +88,7 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
       if (sessionController.current === controller) sessionController.current = null;
       if (generation === sessionRequest.current) setChecking(false);
     }
-  }, [applySession, clearSession]);
+  }, [applySession, audience, clearSession, logistics]);
 
   useEffect(() => {
     void refresh();

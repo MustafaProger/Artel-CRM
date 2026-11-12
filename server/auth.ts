@@ -23,6 +23,10 @@ export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name
 export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt && user.role !== 'driver').map(publicUser);
 export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+// Keep the existing integer field so live sessions and push bindings need no storage migration.
+export const persistentSessionExpiry = Number.MAX_SAFE_INTEGER;
+const crmCookieAge = 400 * 24 * 60 * 60;
+const logisticsCookieAge = 8 * 60 * 60;
 export const cookieName = 'artel_session';
 export const logisticsCookieName = 'artel_logistics_session';
 export const logisticsRequest = (request: Pick<IncomingMessage, 'url'>) => request.url?.split('?')[0].startsWith('/api/logistics/') === true;
@@ -39,14 +43,26 @@ export function driverAccountAvailable(data: OperationsData, user: AccountUser) 
   const flags = entry as (typeof entry & { archived?: boolean; directoryArchived?: boolean; deletedAt?: string }) | undefined;
   return !!entry && !flags?.archived && !flags?.directoryArchived && !flags?.deletedAt && !data.directories?.deletedEntries?.drivers?.includes(entry.id);
 }
-export function authenticate(data: OperationsData, request: IncomingMessage): AccountUser | null {
+export function findSession(data: OperationsData, request: IncomingMessage) {
   const token = sessionToken(request);
   const audience = logisticsRequest(request) ? 'logistics' : undefined;
-  const session = token && data.accounts?.sessions.find(row=>row.hash===hash(token) && row.expiresAt>Date.now() && row.audience === audience);
+  if (!token) return undefined;
+  const sessionHash = hash(token);
+  const now = Date.now();
+  return data.accounts?.sessions.find(row => row.hash === sessionHash && row.expiresAt > now && row.audience === audience);
+}
+export function authenticate(data: OperationsData, request: IncomingMessage): AccountUser | null {
+  const audience = logisticsRequest(request) ? 'logistics' : undefined;
+  const session = findSession(data, request);
   const user = session && data.accounts?.users.find(row=>row.id===session.userId && row.active && !row.deletedAt);
   return user && driverAccountAvailable(data, user) && (!audience || user.role === 'driver' || hasSection(user, 'trips')) ? publicUser(user) : null;
 }
-export function sessionCookie(token: string, secure: boolean, audience?: 'logistics') { return `${audience ? logisticsCookieName : cookieName}=${token}; Path=${audience ? '/api/logistics' : '/'}; HttpOnly; SameSite=Strict; Max-Age=${token?28800:0}${secure?'; Secure':''}`; }
+export function sessionCookie(token: string, secure: boolean, audience?: 'logistics') {
+  const name = audience ? logisticsCookieName : cookieName;
+  const path = audience ? '/api/logistics' : '/';
+  const age = audience ? logisticsCookieAge : crmCookieAge;
+  return `${name}=${token}; Path=${path}; HttpOnly; SameSite=Strict; Max-Age=${token ? age : 0}${secure ? '; Secure' : ''}`;
+}
 export function requireUser(data: OperationsData, request: IncomingMessage) { const user=authenticate(data,request); if(!user)throw new ApiError(401,'Войдите в приложение.');return user; }
 export function requireAccounts(user: AccountUser) { if (!hasSection(user, 'accounts')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.'); }
 export function requireManage(user: AccountUser) { if(!canManage(user))throw new ApiError(403,'Действие доступно директору и администратору.'); }
@@ -213,8 +229,15 @@ function finishLogin(data:OperationsData,name:string,identity:string|null,verifi
   if(accounts.attempts[key]){delete accounts.attempts[key];onChanged();}
   if (audience && user.role !== 'driver' && !hasSection(user, 'trips')) return { error: 'Раздел рейсов недоступен. Обратитесь к администратору.', status: 403 };
   const token=randomBytes(32).toString('hex');
-  accounts.sessions=accounts.sessions.filter(s=>s.expiresAt>now).slice(-499);
-  accounts.sessions.push({hash:hash(token),userId:user.id,expiresAt:now+28800000,...(audience ? { audience } : {})});
+  const sessions = accounts.sessions.filter(session => session.expiresAt > now);
+  const persistent = sessions.filter(session => !session.audience && session.expiresAt === persistentSessionExpiry);
+  const temporary = sessions.filter(session => session.audience || session.expiresAt !== persistentSessionExpiry);
+  accounts.sessions = [...persistent, ...temporary.slice(audience ? -499 : -500)];
+  accounts.sessions.push({
+    hash: hash(token), userId: user.id,
+    expiresAt: audience ? now + logisticsCookieAge * 1000 : persistentSessionExpiry,
+    ...(audience ? { audience } : {}),
+  });
   onChanged();
   return {token,user:publicUser(user),status:200};
 }

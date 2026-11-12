@@ -29,7 +29,7 @@ import { hasSection, isAdministrator, type AccountUser } from '../web/src/auth-m
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
 import { decryptAccountPassword } from './account-passwords';
-import { activeUsers, authenticate, deleteUser, login, prepareLogin, logout, logisticsRequest, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie } from './auth';
+import { activeUsers, authenticate, deleteUser, findSession, login, prepareLogin, logout, logisticsRequest, persistentSessionExpiry, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie, sessionToken } from './auth';
 import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
 import { readTripExecution, recordTripExecution } from './trip-execution';
 import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
@@ -399,6 +399,20 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
   });
   const yandexTiles = createYandexTiles({ environment: options.yandexTilesEnvironment, fetcher: options.fetcher });
   const limitPushReceipt = createPushReceiptLimiter();
+  // Presence is based on visible CRM tabs and carries no durable storage writes.
+  const presenceWindowMs = 150_000;
+  const lastSeenBySession = new Map<string, number>();
+  let lastPresenceCleanup = 0;
+  const markPresent = (sessionHash: string) => {
+    const now = Date.now();
+    if (now - lastPresenceCleanup >= presenceWindowMs) {
+      for (const [key, lastSeen] of lastSeenBySession) {
+        if (now - lastSeen >= presenceWindowMs) lastSeenBySession.delete(key);
+      }
+      lastPresenceCleanup = now;
+    }
+    lastSeenBySession.set(sessionHash, now);
+  };
   let pendingLogins = 0;
   const gateLogin = async <T>(isLogin: boolean, action: () => Promise<T>): Promise<T> => {
     if (!isLogin) return action();
@@ -453,7 +467,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       // Driver sessions never reach generic routes (including bank/auth subrouters).
       // One fresh view covers the synchronous routing/authorization chain. Reuse it
       // only before yielding; body/provider awaits and mutation callbacks read afresh.
-      const authOnly = ['/api/auth/session', '/api/push/config'].includes(pathname) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST';
+      const onlineUsersOnly = !logistics && pathname === '/api/auth/users' && url.searchParams.get('online') === '1';
+      const authOnly = (onlineUsersOnly || ['/api/auth/session', '/api/push/config'].includes(pathname)) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST';
       const requestData = await performanceSpan(authOnly ? 'request.read-auth' : 'request.read-full', () => authOnly && operations.readAuth ? operations.readAuth(base.provenance.sourceSha256) : operations.read(base.provenance.sourceSha256));
       const boundaryUser = authenticate(requestData, request);
       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
@@ -502,13 +517,39 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         const userId = pathname.match(/^\/api\/auth\/users\/([^/]+)$/)?.[1];
         if (request.method === 'GET' && pathname === '/api/auth/session') {
-          const data = requestData;
-          return write(response, 200, JSON.stringify({ user: authenticate(data, request), needsSetup: !logistics && !data.accounts?.users.length, setupTokenRequired: !logistics && secure }));
+          let user = boundaryUser;
+          if (!logistics && user) {
+            const session = findSession(requestData, request);
+            if (session && url.searchParams.get('refresh') === '1') {
+              if (session.expiresAt !== persistentSessionExpiry) {
+                const mutateAuth = operations.mutateAuth?.bind(operations) ?? operations.mutate.bind(operations);
+                user = await mutateAuth(base.provenance.sourceSha256, fresh => {
+                  const currentUser = authenticate(fresh, request);
+                  const currentSession = currentUser && findSession(fresh, request);
+                  if (!currentSession || currentSession.expiresAt === persistentSessionExpiry) return { result: currentUser, changed: false };
+                  currentSession.expiresAt = persistentSessionExpiry;
+                  return { result: currentUser, changed: true };
+                });
+              }
+              if (user) response.setHeader('Set-Cookie', sessionCookie(sessionToken(request)!, secure));
+            }
+            if (user && session) markPresent(session.hash);
+          }
+          return write(response, 200, JSON.stringify({ user, needsSetup: !logistics && !requestData.accounts?.users.length, setupTokenRequired: !logistics && secure }));
         }
         if (request.method === 'GET' && pathname === '/api/auth/users') {
           const data = requestData;
           const actor = requireUser(data, request);
           requireAccounts(actor);
+          if (onlineUsersOnly) {
+            const now = Date.now();
+            const cutoff = now - presenceWindowMs;
+            const online = new Set((data.accounts?.sessions ?? []).filter(session =>
+              !session.audience && session.expiresAt > now && (lastSeenBySession.get(session.hash) ?? 0) > cutoff,
+            ).map(session => session.userId));
+            const userIds = (data.accounts?.users ?? []).filter(user => user.active && !user.deletedAt && online.has(user.id)).map(user => user.id);
+            return write(response, 200, JSON.stringify({ userIds }));
+          }
           const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(user => ({ ...publicUser(user), passwordAvailable: !!user.passwordCiphertext }));
           const directories = currentShipmentAccess(base, data).directories!;
           const staff = { managers: directories.managers.map(({ id, name }) => ({ id, name })), drivers: directories.drivers.filter(driver => !directories.deletedEntries?.drivers?.includes(driver.id)).map(({ id, name }) => ({ id, name })) };
@@ -562,7 +603,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey)},changed:true};
         });
         });
-        if ('token' in result && typeof result.token === 'string') response.setHeader('Set-Cookie',sessionCookie(result.token,secure,logistics ? 'logistics' : undefined));
+        if ('token' in result && typeof result.token === 'string') {
+          response.setHeader('Set-Cookie', sessionCookie(result.token, secure, logistics ? 'logistics' : undefined));
+          if (result.token && !logistics) markPresent(createHash('sha256').update(result.token).digest('hex'));
+        }
         const {token:_token,...safeResult}=result as typeof result & {token?:string};
         void _token;
         return write(response,result.status,JSON.stringify(safeResult));

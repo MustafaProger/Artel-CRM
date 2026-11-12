@@ -35,3 +35,29 @@
 @media (max-width: 600px) {
   .directory-delete-dialog .directory-editor-footer > .button { flex: 1; justify-content: center; }
 }
+
+.directory-record-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.directory-online {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #edf6f0;
+  color: #246c4e;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.directory-online::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
