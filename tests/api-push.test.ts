@@ -290,7 +290,7 @@ test('push dispatch persists deliveries, routes to the current assignee, skips c
     assert.equal(JSON.parse(sent[0].payload).body.includes('due'), false);
     const persisted = decodeOperations(encodeOperations(await f.store.read(base.provenance.sourceSha256)), base.provenance.sourceSha256);
     assert.equal(persisted.push!.deliveries[JSON.parse(sent[0].payload).tag].sent, true);
-    assert.equal(Object.values(persisted.push!.deliveries).filter(row => row.sent).length, 2, 'Immediate assignment and due reminder have separate persisted deliveries');
+    assert.equal(Object.values(persisted.push!.deliveries).filter(row => row.sent).length, 3, 'Immediate assignment, completion and due reminder have separate persisted deliveries');
     await dispatchReminders(new OperationsStore(resolve(f.store.path, '..')), base.provenance.sourceSha256, config, sender, now + 60000);
     assert.equal(sent.length, 1);
     const reassign = await f.director(`/api/work/tasks/${tasks[0].id}`, 'PATCH', { version: tasks[0].version, assigneeId: f.users[0].id });
@@ -409,11 +409,13 @@ test('async notification probe acknowledges before a slow provider and persists 
 });
 
 
-test('deferred Work response persists assignment before wakeup and dispatches durably after restart without duplicates', async () => {
+test('deferred Work responses persist assignments and completions before wakeup and dispatch without duplicates after restart', async () => {
   let sent = 0;
   const f = await fixture(async () => { sent++; }, true);
   try {
-    assert.equal((await f.manager('/api/push/subscription', 'POST', {subscription: subscription(), explicit: true})).status, 200);
+    for (const subscribeDevice of [f.director, f.manager]) {
+      assert.equal((await subscribeDevice('/api/push/subscription', 'POST', {subscription: subscription(), explicit: true})).status, 200);
+    }
     const created = await f.director('/api/work/tasks', 'POST', {title:'Задача без ожидания push', assigneeId:f.users[1].id, requestId:randomUUID()});
     assert.equal(created.status, 201); assert.equal(sent, 0); assert.equal(f.wakeups(), 1);
     const reloaded = new OperationsStore(resolve(f.store.path, '..'));
@@ -422,7 +424,18 @@ test('deferred Work response persists assignment before wakeup and dispatches du
     assert.equal(sent, 1);
     await dispatchReminders(reloaded, base.provenance.sourceSha256, config, async () => {sent++;}); assert.equal(sent, 1);
     assert.equal((await f.manager(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', {version:1,status:'done'})).status, 200);
-    assert.equal(f.wakeups(), 1);
+    assert.equal(sent, 1);
+    assert.equal(f.wakeups(), 2);
+    const afterCompletion = new OperationsStore(resolve(f.store.path, '..'));
+    assert.equal((await afterCompletion.read(base.provenance.sourceSha256)).push?.taskCompletions?.[created.body.entry.id].version, 2);
+    const completionSender: PushSender = async (device, payload) => {
+      assert.equal(device.userId, f.users[0].id);
+      assert.equal(JSON.parse(payload).title, 'Ваша задача выполнена');
+      sent++;
+    };
+    assert.equal((await dispatchReminders(afterCompletion, base.provenance.sourceSha256, config, completionSender)).sent, 1);
+    assert.equal((await dispatchReminders(afterCompletion, base.provenance.sourceSha256, config, completionSender)).sent, 0);
+    assert.equal(sent, 2);
   } finally {await f.close();}
 });
 
