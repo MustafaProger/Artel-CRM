@@ -146,7 +146,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
     else if (key === 'companyRecords') work.companyRecords = work.companyRecords.filter(row => row.id !== id);
     else work.notes = work.notes.filter(row => row.id !== id);
     data.work = work;
-    if (kind === 'tasks') queueTaskAssignment(data, undefined, previous as WorkTask, actor.id);
+    if (kind === 'tasks') queueTaskAssignment(data, undefined, previous as WorkTask, actor);
     return { deleted: true, id, changed: true };
   }
   const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks', 'assigneeIds', 'handoff'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
@@ -252,6 +252,6 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   else work.notes = [...work.notes.filter(row => row.id !== entry.id), entry as WorkNote];
   validateWorkData(work);
   data.work = work;
-  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor.id, handoffTo);
+  if (kind === 'tasks') queueTaskAssignment(data, entry as WorkTask, previous as WorkTask | undefined, actor, handoffTo);
   return { entry: publicWorkEntry(entry), created: !previous, changed: true };
 }

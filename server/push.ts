@@ -3,7 +3,7 @@ import { createHash, ECDH, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import webPush from 'web-push';
 import { ApiError } from './api-error';
-import { hasSection } from '../web/src/auth-model';
+import { hasSection, type AccountUser } from '../web/src/auth-model';
 import { isClosedWorkStatus, workAssigneeIds, type WorkTask } from '../web/src/work-model';
 import type { Shipment } from '../web/src/model';
 import { sessionToken } from './auth';
@@ -14,7 +14,8 @@ export interface PushDevice {
   keys: { p256dh: string; auth: string }; createdAt: number; testAt?: number;
 }
 interface Delivery { deviceId: string; at: number; attempts: number; retryAt: number; lease?: string; sent?: boolean }
-interface TaskAssignment { taskId?: string; version: number; assigneeId: string; at: number }
+interface TaskHandoff { title: string; senderName: string }
+interface TaskAssignment { taskId?: string; version: number; assigneeId: string; at: number; handoff?: TaskHandoff }
 interface TripAssignment { token: string; driverId: string; at: number }
 export interface PushProbe {
   userId: string; deviceId: string; tokenHash: string; createdAt: number; expiresAt: number;
@@ -80,6 +81,9 @@ export function validatePush(value: PushData | undefined) {
     if (!value.taskAssignments || typeof value.taskAssignments !== 'object' || Array.isArray(value.taskAssignments)) throw new Error('Invalid task assignments');
     for (const [id, row] of Object.entries(value.taskAssignments)) {
       if (!id || !row || row.taskId !== undefined && (typeof row.taskId !== 'string' || !row.taskId) || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.assigneeId !== 'string' || !row.assigneeId || !Number.isSafeInteger(row.at) || row.at < 0) throw new Error('Invalid task assignment');
+      const handoff = row.handoff;
+      if (handoff !== undefined && (!handoff || typeof handoff.title !== 'string' || !handoff.title.trim()
+        || typeof handoff.senderName !== 'string' || !handoff.senderName.trim())) throw new Error('Invalid task handoff');
     }
   }
   if (value.tripAssignments !== undefined) {
@@ -98,7 +102,7 @@ export function validatePush(value: PushData | undefined) {
   }
 }
 /** Store alongside the task mutation, so a committed assignment survives a failed immediate dispatch. */
-export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actorId: string, handoffTo?: readonly string[]): void {
+export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actor: Pick<AccountUser, 'id' | 'name'>, handoffTo?: readonly string[]): void {
   const id = task?.id ?? previous?.id;
   if (!id) return;
   const recipients = task && !task.archivedAt && !isClosedWorkStatus(task.status) ? workAssigneeIds(task) : [];
@@ -110,12 +114,13 @@ export function queueTaskAssignment(data: OperationsData, task: WorkTask | undef
     if ((assignment.taskId ?? key) === id && (handoffTo?.includes(assignment.assigneeId) || !recipients.includes(assignment.assigneeId))) delete existing![key];
   }
   if (!task) return;
+  const handoff = handoffTo ? { title: task.title, senderName: actor.name.trim() || 'Сотрудник CRM' } : undefined;
   for (const assigneeId of handoffTo ?? recipients.filter(id => !previousRecipients.includes(id))) {
-    if (assigneeId === actorId) continue;
+    if (assigneeId === actor.id) continue;
     const push = data.push ??= { devices: [], deliveries: {} };
     const assignments = push.taskAssignments ??= {};
     const key = Object.hasOwn(assignments, id) ? `assignment-${createHash('sha256').update(JSON.stringify([id, assigneeId])).digest('hex')}` : id;
-    assignments[key] = { ...(key === id ? {} : { taskId: id }), version: task.version, assigneeId, at: Date.now() };
+    assignments[key] = { ...(key === id ? {} : { taskId: id }), version: task.version, assigneeId, at: Date.now(), ...(handoff ? { handoff } : {}) };
   }
 }
 /** Called in the same transaction as the complete trip; retries and ordinary edits preserve the event. */
@@ -165,13 +170,13 @@ const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssign
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);
   return rows.length > 0 && rows.every(row => row.fields.driver_id === assignment.driverId);
 };
-interface PushCandidate { kind: string; id: string; assigneeId: string; token: string; event: 'reminder' | 'assignment' | 'trip-assignment' | 'invoice-ready' | 'operator-plan'; occurredAt?: number }
+interface PushCandidate { kind: string; id: string; assigneeId: string; token: string; event: 'reminder' | 'assignment' | 'trip-assignment' | 'invoice-ready' | 'operator-plan'; occurredAt?: number; handoff?: TaskHandoff }
 function candidates(data: OperationsData, now: number): PushCandidate[] {
   const reminders: PushCandidate[] = reminderCandidates(data, now).map(row => ({ kind: row.kind, id: row.id, assigneeId: row.assigneeId, token: row.reminderAt!, event: 'reminder' }));
   const assignments: PushCandidate[] = [];
   for (const [id, assignment] of Object.entries(data.push?.taskAssignments ?? {})) {
     if (assignmentTask(data, id, assignment, now) && data.accounts?.users.some(user => user.id === assignment.assigneeId && hasSection(user, 'work'))) {
-      assignments.push({ kind: 'tasks', id: assignment.taskId ?? id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment' });
+      assignments.push({ kind: 'tasks', id: assignment.taskId ?? id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment', handoff: assignment.handoff });
     }
   }
   for (const [id, assignment] of Object.entries(data.push?.tripAssignments ?? {})) {
@@ -265,8 +270,21 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
         const completed = item.kind === 'operator-plan-completed';
         const trip = item.event === 'trip-assignment';
         const invoice = item.event === 'invoice-ready';
-        const body = operator ? (completed ? 'Ваше задание выполнено оператором. Откройте операторскую, чтобы посмотреть результат.' : 'Добавлено новое задание. Откройте операторскую, чтобы посмотреть подробности.') : invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».' : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.' : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.' : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
-        await sender(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль') : trip ? 'Новый рейс · Артэль' : 'Артэль CRM', body, tag: item.key, url: operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator` : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices` : trip ? `/#driver-trip/${encodeURIComponent(item.id)}` : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work` }), config);
+        const { handoff } = item;
+        const title = handoff ? 'Вам передали задачу'
+          : operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль')
+          : trip ? 'Новый рейс · Артэль' : 'Артэль CRM';
+        const body = handoff ? `${handoff.senderName} · «${handoff.title}»`
+          : operator ? (completed ? 'Ваше задание выполнено оператором. Откройте операторскую, чтобы посмотреть результат.' : 'Добавлено новое задание. Откройте операторскую, чтобы посмотреть подробности.')
+          : invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».'
+          : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.'
+          : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.'
+          : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.';
+        const url = operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator`
+          : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices`
+          : trip ? `/#driver-trip/${encodeURIComponent(item.id)}`
+          : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work`;
+        await sender(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title, body, tag: item.key, url }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });
       } catch (error) {
         const status = (error as { statusCode?: number }).statusCode;

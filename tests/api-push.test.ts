@@ -427,8 +427,11 @@ test('deferred Work response persists assignment before wakeup and dispatches du
 });
 
 test('multiple task assignees get durable assignment and reminder events, with a new event on handoff', async () => {
-  const sent: { userId: string; body: string }[] = [];
-  const f = await fixture(async (device, payload) => { sent.push({ userId: device.userId, body: JSON.parse(payload).body }); }, true);
+  const sent: { userId: string; title: string; body: string; url: string }[] = [];
+  const f = await fixture(async (device, payload) => {
+    const { title, body, url } = JSON.parse(payload);
+    sent.push({ userId: device.userId, title, body, url });
+  }, true);
   try {
     const [director, manager] = f.users;
     const password = randomUUID();
@@ -455,14 +458,32 @@ test('multiple task assignees get durable assignment and reminder events, with a
     await dispatch();
     assert.equal(sent.length, 4);
 
-    const transferred = await f.manager(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', {
+    const taskId = created.body.entry.id;
+    const path = `/api/work/tasks/${taskId}`;
+    const transferred = await f.manager(path, 'PATCH', {
       version: 1, assigneeIds: [colleague.id], handoff: true, comment: 'Print it',
     });
     assert.equal(transferred.status, 200);
+    const renamed = await f.manager(path, 'PATCH', { version: transferred.body.entry.version, title: 'Print UPD' });
+    assert.equal(renamed.status, 200);
     await dispatch();
+
+    const handoffs = () => sent.filter(row => row.title === 'Вам передали задачу');
+    const url = `/?workKind=tasks&workId=${encodeURIComponent(taskId)}#work`;
+    assert.deepEqual(handoffs(), [{ userId: colleague.id, title: 'Вам передали задачу', body: `${manager.name} · «Prepare UPD»`, url }]);
     assert.equal(sent.length, 6);
-    assert.equal(sent.filter(row => row.userId === colleague.id && row.body.includes('назначена')).length, 2);
+    assert.equal(sent.filter(row => row.userId === colleague.id && row.body.includes('назначена')).length, 1);
     assert.equal(sent.filter(row => row.userId === manager.id).length, 2);
     assert.equal(sent.filter(row => row.userId === director.id && row.body.includes('Напоминание')).length, 1);
+
+    const secondTransfer = await f.director(path, 'PATCH', {
+      version: renamed.body.entry.version, assigneeIds: [manager.id, colleague.id], handoff: true,
+    });
+    assert.equal(secondTransfer.status, 200);
+    await dispatch();
+    await dispatch();
+    const secondHandoffs = handoffs().slice(1);
+    assert.deepEqual(secondHandoffs.map(row => row.userId).sort(), [manager.id, colleague.id].sort());
+    assert.ok(secondHandoffs.every(row => row.body === `${director.name} · «Print UPD»` && row.url === url));
   } finally { await f.close(); }
 });
