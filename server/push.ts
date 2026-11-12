@@ -6,6 +6,8 @@ import { ApiError } from './api-error';
 import { hasSection, type AccountUser } from '../web/src/auth-model';
 import { isClosedWorkStatus, workAssigneeIds, type WorkTask } from '../web/src/work-model';
 import type { Shipment } from '../web/src/model';
+import type { TripRequest } from '../web/src/trip-request-model';
+import { canAccessTripRequest } from './trip-requests';
 import { sessionToken } from './auth';
 import type { OperationsData, OperationsStorage } from './operations-store';
 
@@ -18,12 +20,18 @@ interface TaskHandoff { title: string; senderName: string }
 interface TaskAssignment { taskId?: string; version: number; assigneeId: string; at: number; handoff?: TaskHandoff }
 interface TaskCompletion { version: number; at: number; completedByName: string }
 interface TripAssignment { token: string; driverId: string; at: number }
+interface TripRequestNotification { at: number; recipientIds: string[] }
+const pushSources = ['tasks', 'companies', 'tripRequests', 'tripAssignments', 'invoices', 'operator'] as const;
+type PushSource = typeof pushSources[number];
+type SourcePreferences = Partial<Record<PushSource, { enabled: boolean; since: number }>>;
+const isPushSource = (key: string): key is PushSource => pushSources.some(source => source === key);
+const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 export interface PushProbe {
   userId: string; deviceId: string; tokenHash: string; createdAt: number; expiresAt: number;
   failure?: 'expired_subscription' | 'provider_unavailable';
   providerAcceptedAt?: number; notificationCreatedAt?: number;
 }
-export interface PushData { operatorPlanEvents?: Record<string, OperatorPlanEvent>; devices: PushDevice[]; deliveries: Record<string, Delivery>; taskAssignments?: Record<string, TaskAssignment>; taskCompletions?: Record<string, TaskCompletion>; tripAssignments?: Record<string, TripAssignment>; probes?: Record<string, PushProbe>; lastRunAt?: number; invoiceEvents?: Record<string, { userId: string; jobId: string; occurredAt: number }>; invoiceRevocations?: Record<string, number> }
+export interface PushData { operatorPlanEvents?: Record<string, OperatorPlanEvent>; devices: PushDevice[]; deliveries: Record<string, Delivery>; taskAssignments?: Record<string, TaskAssignment>; taskCompletions?: Record<string, TaskCompletion>; tripAssignments?: Record<string, TripAssignment>; tripRequestNotifications?: Record<string, TripRequestNotification>; preferences?: Record<string, SourcePreferences>; probes?: Record<string, PushProbe>; lastRunAt?: number; invoiceEvents?: Record<string, { userId: string; jobId: string; occurredAt: number }>; invoiceRevocations?: Record<string, number> }
 export interface PushConfig { publicKey: string; privateKey: string; subject: string; schedule: boolean }
 export type PushSender = (device: PushDevice, payload: string, config: PushConfig) => Promise<unknown>;
 export const pushConfig = (): PushConfig => ({ publicKey: process.env.VAPID_PUBLIC_KEY ?? '', privateKey: process.env.VAPID_PRIVATE_KEY ?? '', subject: process.env.VAPID_SUBJECT ?? '', schedule: process.env.PUSH_SCHEDULE_ENABLED === 'true' });
@@ -60,6 +68,23 @@ export function validatePush(value: PushData | undefined) {
   if (value === undefined) return;
   if (!value || !Array.isArray(value.devices) || value.devices.length > 1000 || !value.deliveries || typeof value.deliveries !== 'object' || Array.isArray(value.deliveries)) throw new Error('Invalid push storage');
   validateOperatorPlanEvents(value.operatorPlanEvents);
+  if (value.preferences !== undefined) {
+    if (!object(value.preferences)) throw new Error('Invalid notification preferences');
+    for (const [userId, sources] of Object.entries(value.preferences)) {
+      if (!userId || !object(sources)) throw new Error('Invalid notification preferences');
+      for (const [source, row] of Object.entries(sources)) {
+        if (!isPushSource(source) || !object(row) || typeof row.enabled !== 'boolean' || !Number.isSafeInteger(row.since) || Number(row.since) < 0) throw new Error('Invalid notification preference');
+      }
+    }
+  }
+  if (value.tripRequestNotifications !== undefined) {
+    if (!object(value.tripRequestNotifications)) throw new Error('Invalid trip request notifications');
+    for (const [id, row] of Object.entries(value.tripRequestNotifications)) {
+      if (!/^trip-request-[a-f0-9-]{36}$/.test(id) || !object(row) || !Number.isSafeInteger(row.at) || Number(row.at) < 0
+        || !Array.isArray(row.recipientIds) || !row.recipientIds.length || new Set(row.recipientIds).size !== row.recipientIds.length
+        || row.recipientIds.some(id => typeof id !== 'string' || !id)) throw new Error('Invalid trip request notification');
+    }
+  }
   const ids = new Set(), endpoints = new Set();
   for (const device of value.devices) {
     parseSubscription(device);
@@ -108,6 +133,42 @@ export function validatePush(value: PushData | undefined) {
     }
   }
 }
+export function readPushPreferences(data: OperationsData, userId: string) {
+  const saved = data.push?.preferences?.[userId];
+  return Object.fromEntries(pushSources.map(source => [source, saved?.[source]?.enabled ?? true])) as Record<PushSource, boolean>;
+}
+
+export function savePushPreferences(data: OperationsData, userId: string, input: Record<string, unknown>, now = Date.now()) {
+  const updates = Object.entries(input);
+  if (!updates.length || updates.some(([source, enabled]) => !isPushSource(source) || typeof enabled !== 'boolean')) {
+    throw new ApiError(400, 'Укажите известные источники уведомлений и их состояние.');
+  }
+  const preferences = readPushPreferences(data, userId);
+  const changed = pushSources.filter(source => typeof input[source] === 'boolean' && input[source] !== preferences[source]);
+  if (changed.length) {
+    const push = data.push ??= { devices: [], deliveries: {} };
+    const sources = (push.preferences ??= {})[userId] ??= {};
+    for (const source of changed) {
+      preferences[source] = input[source] as boolean;
+      sources[source] = { enabled: preferences[source], since: now };
+    }
+  }
+  return { result: { preferences }, changed: changed.length > 0 };
+}
+
+function canReceiveTripRequest(user: AccountUser, request: TripRequest) {
+  return user.id !== request.ownerUserId && user.role === 'director' && canAccessTripRequest(user, request);
+}
+
+/** Commit the event with the new request. Existing requests and idempotent replays never enqueue. */
+export function queueTripRequestNotification(data: OperationsData, request: TripRequest) {
+  const recipientIds = (data.accounts?.users ?? []).filter(user => canReceiveTripRequest(user, request)).map(user => user.id);
+  if (!recipientIds.length) return false;
+  const push = data.push ??= { devices: [], deliveries: {} };
+  (push.tripRequestNotifications ??= {})[request.id] = { at: Date.parse(request.createdAt), recipientIds };
+  return true;
+}
+
 /** Store alongside the task mutation, so a committed assignment survives a failed immediate dispatch. */
 export function queueTaskAssignment(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actor: Pick<AccountUser, 'id' | 'name'>, handoffTo?: readonly string[]): void {
   const id = task?.id ?? previous?.id;
@@ -190,13 +251,38 @@ const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssign
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);
   return rows.length > 0 && rows.every(row => row.fields.driver_id === assignment.driverId);
 };
-interface PushCandidate { kind: string; id: string; assigneeId: string; token: string; event: 'reminder' | 'assignment' | 'task-completion' | 'trip-assignment' | 'invoice-ready' | 'operator-plan'; occurredAt?: number; handoff?: TaskHandoff; completionBody?: string }
+interface PushCandidate {
+  kind: string; id: string; assigneeId: string; token: string;
+  event: 'reminder' | 'assignment' | 'task-completion' | 'trip-assignment' | 'trip-request' | 'invoice-ready' | 'operator-plan';
+  occurredAt?: number; preferenceAt?: number; handoff?: TaskHandoff; completionBody?: string; tripRequestBody?: string;
+}
+function activeRequestForNotification(data: OperationsData, id: string, event: TripRequestNotification, now: number) {
+  const request = data.tripRequests?.[id];
+  return event.at > now - assignmentLifetime && request?.status === 'active' ? request : undefined;
+}
+
+function notificationSource(candidate: PushCandidate): PushSource {
+  switch (candidate.event) {
+    case 'trip-assignment': return 'tripAssignments';
+    case 'trip-request': return 'tripRequests';
+    case 'invoice-ready': return 'invoices';
+    case 'operator-plan': return 'operator';
+    default: return candidate.kind === 'companies' ? 'companies' : 'tasks';
+  }
+}
+
+function notificationSourceEnabled(data: OperationsData, candidate: PushCandidate) {
+  const preference = data.push?.preferences?.[candidate.assigneeId]?.[notificationSource(candidate)];
+  if (!preference) return true;
+  const at = candidate.preferenceAt ?? candidate.occurredAt;
+  return preference.enabled && (at === undefined || at >= preference.since);
+}
 function candidates(data: OperationsData, now: number): PushCandidate[] {
-  const reminders: PushCandidate[] = reminderCandidates(data, now).map(row => ({ kind: row.kind, id: row.id, assigneeId: row.assigneeId, token: row.reminderAt!, event: 'reminder' }));
+  const reminders: PushCandidate[] = reminderCandidates(data, now).map(row => ({ kind: row.kind, id: row.id, assigneeId: row.assigneeId, token: row.reminderAt!, event: 'reminder', preferenceAt: Date.parse(row.reminderAt!) }));
   const assignments: PushCandidate[] = [];
   for (const [id, assignment] of Object.entries(data.push?.taskAssignments ?? {})) {
     if (assignmentTask(data, id, assignment, now) && data.accounts?.users.some(user => user.id === assignment.assigneeId && hasSection(user, 'work'))) {
-      assignments.push({ kind: 'tasks', id: assignment.taskId ?? id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment', handoff: assignment.handoff });
+      assignments.push({ kind: 'tasks', id: assignment.taskId ?? id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment', preferenceAt: assignment.at, handoff: assignment.handoff });
     }
   }
   for (const [id, event] of Object.entries(data.push?.taskCompletions ?? {})) {
@@ -209,7 +295,22 @@ function candidates(data: OperationsData, now: number): PushCandidate[] {
   for (const [id, assignment] of Object.entries(data.push?.tripAssignments ?? {})) {
     if (!assignmentTrip(data, id, assignment, now)) continue;
     for (const user of data.accounts?.users ?? []) if (user.active && !user.deletedAt && user.role === 'driver' && user.driverId === assignment.driverId) {
-      assignments.push({ kind: 'driver-trips', id, assigneeId: user.id, token: assignment.token, event: 'trip-assignment' });
+      assignments.push({ kind: 'driver-trips', id, assigneeId: user.id, token: assignment.token, event: 'trip-assignment', preferenceAt: assignment.at });
+    }
+  }
+  const users = new Map((data.accounts?.users ?? []).map(user => [user.id, user]));
+  for (const [id, event] of Object.entries(data.push?.tripRequestNotifications ?? {})) {
+    const request = activeRequestForNotification(data, id, event, now);
+    if (!request) continue;
+    const client = request.companyName.trim().slice(0, 180);
+    const [whole, fraction] = request.quantityLitres.split('.');
+    const litres = whole.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + (fraction ? `,${fraction}` : '');
+    for (const assigneeId of event.recipientIds) {
+      const user = users.get(assigneeId);
+      if (user && canReceiveTripRequest(user, request)) assignments.push({
+        kind: 'trip-requests', id, assigneeId, token: String(event.at), event: 'trip-request', occurredAt: event.at,
+        tripRequestBody: `${client} · ${litres} л`,
+      });
     }
   }
   for (const [id, event] of Object.entries(data.push?.invoiceEvents ?? {})) {
@@ -218,8 +319,8 @@ function candidates(data: OperationsData, now: number): PushCandidate[] {
   return [...reminders, ...assignments, ...operatorPlanCandidates(data, now)];
 }
 function notificationDeviceAvailable(data: OperationsData, row: PushCandidate, device: PushDevice, now: number) {
-  return row.occurredAt === undefined || device.createdAt <= row.occurredAt
-    && !!data.accounts?.sessions.some(session => session.hash === device.sessionHash && session.userId === device.userId && !session.audience && session.expiresAt > now);
+  return notificationSourceEnabled(data, row) && (row.occurredAt === undefined || device.createdAt <= row.occurredAt
+    && !!data.accounts?.sessions.some(session => session.hash === device.sessionHash && session.userId === device.userId && !session.audience && session.expiresAt > now));
 }
 const deliveryKey = (kind: string, id: string, reminderAt: string, deviceId: string) => hash(`${kind}:${id}:${reminderAt}:${deviceId}`);
 const candidateKey = (row: PushCandidate, deviceId: string) => deliveryKey(row.event === 'assignment' ? 'task-assignment' : row.event === 'task-completion' ? row.event : row.kind, row.id, row.token, deviceId);
@@ -246,6 +347,9 @@ export async function dispatchTaskCompletion(store: OperationsStorage, source: s
 export async function dispatchTripAssignments(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), tripId?: string) {
   return dispatchNotifications(store, source, config, sender, now, false, { event: 'trip-assignment', id: tripId });
 }
+export async function dispatchTripRequestNotifications(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), requestId?: string) {
+  return dispatchNotifications(store, source, config, sender, now, false, { event: 'trip-request', id: requestId });
+}
 export async function dispatchOperatorNotifications(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now()) {
   return dispatchNotifications(store, source, config, sender, now, false, { event: 'operator-plan' });
 }
@@ -266,11 +370,14 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
     for (const [id, assignment] of Object.entries(push.tripAssignments ?? {})) {
       if (!assignmentTrip(data, id, assignment, now)) { delete push.tripAssignments![id]; changed = true; }
     }
+    for (const [id, event] of Object.entries(push.tripRequestNotifications ?? {})) {
+      if (!activeRequestForNotification(data, id, event, now)) { delete push.tripRequestNotifications![id]; changed = true; }
+    }
     for (const [key, event] of Object.entries(push.operatorPlanEvents ?? {})) {
       if (!validOperatorPlanEvent(data, event, now)) { delete push.operatorPlanEvents![key]; changed = true; }
     }
     const pending: (PushCandidate & { key: string; device: PushDevice })[] = [];
-    const counts = { reminder: 0, assignment: 0, 'task-completion': 0, 'trip-assignment': 0, 'invoice-ready': 0, 'operator-plan': 0 };
+    const counts = { reminder: 0, assignment: 0, 'task-completion': 0, 'trip-assignment': 0, 'trip-request': 0, 'invoice-ready': 0, 'operator-plan': 0 };
     const relevant = new Set<string>();
     for (const row of candidates(data, now)) for (const device of push.devices.filter(device => device.userId === row.assigneeId)) {
       if (!notificationDeviceAvailable(data, row, device, now)) continue;
@@ -296,27 +403,30 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
     const availableCandidates = candidates(current, now);
     await Promise.all(claimed.slice(offset, offset + 5).map(async item => {
       const device = current.push?.devices.find(device => device.id === item.device.id && device.userId === item.device.userId);
-      const available = device && current.push?.deliveries[item.key]?.lease === lease && availableCandidates.some(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.event === item.event && row.token === item.token && notificationDeviceAvailable(current, row, device, Date.now()));
+      const available = device && current.push?.deliveries[item.key]?.lease === lease && availableCandidates.find(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.event === item.event && row.token === item.token && notificationDeviceAvailable(current, row, device, Date.now()));
       if (!available) { results.push({ key: item.key, deviceId: item.device.id, sent: false, expired: false, cancelled: true }); return; }
       try {
         const operator = item.event === 'operator-plan';
         const completed = item.kind === 'operator-plan-completed';
         const trip = item.event === 'trip-assignment';
         const invoice = item.event === 'invoice-ready';
-        const { handoff, completionBody } = item;
+        const { handoff, completionBody, tripRequestBody } = available;
         const title = completionBody ? 'Ваша задача выполнена'
+          : tripRequestBody ? 'Новая заявка на рейс'
           : handoff ? 'Вам передали задачу'
           : operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль')
           : trip ? 'Новый рейс · Артэль' : 'Артэль CRM';
-        const body = completionBody ?? (handoff ? `${handoff.senderName} · «${handoff.title}»`
+        const body = completionBody ?? tripRequestBody ?? (handoff ? `${handoff.senderName} · «${handoff.title}»`
           : operator ? (completed ? 'Ваше задание выполнено оператором. Откройте операторскую, чтобы посмотреть результат.' : 'Добавлено новое задание. Откройте операторскую, чтобы посмотреть подробности.')
           : invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».'
           : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.'
           : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.'
+          : item.kind === 'companies' ? 'Напоминание по работе с компанией. Откройте CRM, чтобы посмотреть подробности.'
           : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.');
         const url = operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator`
           : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices`
           : trip ? `/#driver-trip/${encodeURIComponent(item.id)}`
+          : tripRequestBody ? '/#trips'
           : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work`;
         await sender(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title, body, tag: item.key, url }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });

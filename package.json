@@ -45,11 +45,13 @@
     "@vercel/blob": "^2.8.0",
     "decimal.js": "^10.6.0",
     "jose": "^6.2.12",
+    "jpeg-js": "0.4.4",
     "lucide-react": "^0.468.0",
+    "ol": "10.11.0",
+    "pdfjs-dist": "6.5.438",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "web-push": "^3.6.7",
-    "ol": "10.11.0"
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

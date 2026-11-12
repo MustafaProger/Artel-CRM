@@ -18,7 +18,7 @@ import { configuredInvoiceBridge, syncInvoiceEvents } from './invoice-bridge';
 type Environment = Record<string, string | undefined>;
 const pausedBankMessage = 'Обновление банков на этом сервере пока выключено. Сохранённые данные доступны.';
 const contentTypes: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json; charset=utf-8', '.woff': 'font/woff', '.woff2': 'font/woff2',
@@ -114,7 +114,7 @@ async function serveStatic(request: IncomingMessage, response: ServerResponse, r
     file = await realpath(resolve(root, `.${assetPath}`));
     if (!within(root, file) || !(await stat(file)).isFile()) return json(response, 404, { error: 'Файл не найден.' });
     const bytes = await readFile(file);
-    const immutable = /^\/assets\/.+-[A-Za-z0-9_-]{8,}\.(js|css|woff2?|png|jpe?g|svg|webp)$/.test(assetPath);
+    const immutable = /^\/assets\/.+-[A-Za-z0-9_-]{8,}\.(m?js|css|woff2?|png|jpe?g|svg|webp)$/.test(assetPath);
     response.writeHead(200, {
       'Content-Type': contentTypes[extname(assetPath)], 'Content-Length': bytes.length,
       'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',

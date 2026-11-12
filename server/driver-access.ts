@@ -94,9 +94,12 @@ export async function createMissingDriverAccounts(data: OperationsData, snapshot
 /** Closed driver boundary, run before ANY application route including bank/auth routers. */
 export function requireDriverRoute(actor: AccountUser, path: string, method: string) {
   if (actor.role !== 'driver') return;
+  if (path === '/api/auth/profile' && method === 'PATCH') return;
+  if (/^\/api\/auth\/avatars\/[^/]+$/.test(path) && method === 'GET') return;
   if (path === '/api/auth/session' && method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(path) && method === 'POST') return;
   if (/^\/api\/driver\/trips(?:\/[^/]+)?$/.test(path) && method === 'GET') return;
   if (/^\/api\/driver\/trips\/[^/]+\/(arrive|depart|deliver|complete)$/.test(path) && method === 'POST') return;
+  if (path === '/api/push/preferences' && ['GET', 'PATCH'].includes(method)) return;
   if (['/api/push/config', '/api/push/test-status'].includes(path) && method === 'GET' || path === '/api/push/subscription' && ['POST', 'DELETE'].includes(method) || path === '/api/push/test' && method === 'POST') return;
   throw new ApiError(403, 'Водителю доступны только назначенные рейсы и их разрешённые действия.');
 }

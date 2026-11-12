@@ -64,6 +64,7 @@ try {
       const request = route.request(), url = new URL(request.url());
       if (url.origin !== runtime.base) return route.abort();
       if (url.pathname.startsWith('/api/push/')) {
+        if (url.pathname === '/api/push/preferences') return route.continue();
         if (url.pathname === '/api/push/subscription' && request.method() === 'POST') {
           assert.equal(request.headers()['x-artel-account'], expectedOwner);
           const body = request.postDataJSON(); pushPosts.push(body);
@@ -146,22 +147,24 @@ try {
     await expect(page.getByRole('tablist', { name: 'Раздел счетов' })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'История счетов', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Уведомления о счетах', exact: true })).toHaveCount(0);
-    const notifications = page.locator('.sidebar-user-controls').getByRole('button', { name: 'Уведомления', exact: true });
+    const notifications = page.locator('.sidebar-settings-link');
     await expect(notifications).toHaveCount(1);
     await expect(page.locator('.invoice-action-toolbar')).toHaveCount(0);
     await expect(page.locator('.invoice-topbar .invoice-toolbar')).toBeVisible();
     await expect(page.locator('.bottom-nav,.brand-header')).toHaveCount(0);
     await notifications.click();
-    const notificationDialog = page.getByRole('dialog', { name: 'Уведомления', exact: true });
-    await expect(notificationDialog).toBeVisible();
-    await expect(notificationDialog).toContainText('Уведомления включаются сразу для всех доступных вам разделов: работы, счетов и операторской.');
+    await expect(page).toHaveURL(/#settings$/);
+    const notificationSettings = page.getByRole('region', { name: 'Уведомления', exact: true });
+    await expect(notificationSettings.getByRole('switch', { name: 'Счета (уведомления о готовности)', exact: true })).toBeVisible();
+    const connect = notificationSettings.getByRole('button', { name: 'Подключить этот браузер', exact: true });
+    await expect(connect).toBeEnabled();
     await expect(page.getByText('Подтвердите включение уведомлений для текущего пользователя.', { exact: true })).toBeVisible();
     assert.ok(pushPosts.length > 0 && pushPosts.every(body => body.explicit === false));
-    await notificationDialog.getByRole('button', { name: 'Включить для всех разделов', exact: true }).click();
+    await connect.click();
     await expect.poll(() => pushPosts.some(body => body.explicit === true)).toBe(true);
     check(`${engine}: automatic push binding requires consent and explicit enable carries user confirmation`);
-    await expect(notificationDialog).toBeHidden();
-    check(`${engine}: native CRM shell, single heading and toolbar, common notification menu, no second login`);
+    await expect(notificationSettings).toBeVisible();
+    check(`${engine}: native CRM shell, single heading and toolbar, common settings page, no second login`);
 
     await page.evaluate(() => { location.hash = '#operator'; });
     await expect(page.getByRole('button', { name: 'Новая операция', exact: true })).toBeVisible();

@@ -1,0 +1,13 @@
+:is(.account-panel .account-form, .notification-sources) input.account-toggle { appearance: none; -webkit-appearance: none; width: 34px; height: 21px; padding: 0; min-width: 34px; border: 0; border-radius: 20px; background: #d9dce1; position: relative; cursor: pointer; transition: background .16s ease; box-shadow: none; }
+:is(.account-panel .account-form, .notification-sources) input.account-toggle::after { content: ''; position: absolute; width: 17px; height: 17px; top: 2px; left: 2px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0002; transition: transform .16s ease; }
+:is(.account-panel .account-form, .notification-sources) input.account-toggle:checked { background: #237553; }
+:is(.account-panel .account-form, .notification-sources) input.account-toggle:checked::after { transform: translateX(13px); }
+:is(.account-panel .account-form, .notification-sources) input.account-toggle:disabled { opacity: .45; cursor: not-allowed; }
+.notification-sources input.account-toggle:focus-visible { outline: 2px solid #176647; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.account-panel .account-form, .notification-sources) input.account-toggle,
+  :is(.account-panel .account-form, .notification-sources) input.account-toggle::after { transition: none; }
+}
+@media (prefers-contrast: more) {
+  :is(.account-panel .account-form, .notification-sources) input.account-toggle { outline: 1px solid #555; }
+}

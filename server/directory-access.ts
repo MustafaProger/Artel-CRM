@@ -4,25 +4,28 @@ import { ownCustomerIds } from './auth-scope';
 import { ApiError } from './api-error';
 import { normalizeName } from './directory-operations';
 
-/** Catalog grants never replace the per-record check at the storage transaction. */
-export function canEditDirectoryCompany(actor: AccountUser, company: Company, snapshot: Snapshot): boolean {
-  if (isAdministrator(actor)) return true;
-  if (!hasSection(actor, 'directories')) return false;
-  const businessRoles = company.roles.filter(role => ['customer', 'supplier', 'carrier', 'other'].includes(role));
-  return !!businessRoles.length && businessRoles.every(role => role === 'customer' ? ownCustomerIds(snapshot, actor).has(company.id)
-    : role === 'supplier' ? hasDirectoryGrant(actor, 'suppliers')
-    : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots')
-    : hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'));
-}
+const companyRoles = ['customer', 'supplier', 'carrier', 'other'] as const;
+type CompanyRole = typeof companyRoles[number];
+const isCompanyRole = (role: unknown): role is CompanyRole => companyRoles.some(value => value === role);
 
 export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: string, body: Record<string, unknown>, id?: string, deleting = false): Record<string, unknown> {
   if (isAdministrator(actor)) return body;
   if (!hasSection(actor, 'directories') || !actor.managerId) throw new ApiError(403, 'Справочник недоступен.');
   const deny = (): never => { throw new ApiError(403, 'Нет права изменять эту запись справочника.'); };
-  const company = (companyId: unknown) => {
+  const ownCompanies = ownCustomerIds(snapshot, actor);
+  const roleGrant = (role: CompanyRole, entry?: Company): boolean => {
+    if (role === 'customer') return !entry || ownCompanies.has(entry.id);
+    if (role === 'supplier') return hasDirectoryGrant(actor, 'suppliers');
+    if (role === 'other') return hasDirectoryGrant(actor, 'oilDepots');
+    return hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers');
+  };
+  const company = (companyId: unknown, allowOwnedCard = true) => {
     const entry = snapshot.companies.find(row => row.id === companyId);
-    if (!entry || !canEditDirectoryCompany(actor, entry, snapshot)) deny();
-    return entry!;
+    if (!entry) return deny();
+    const roles = entry.roles.filter(isCompanyRole);
+    const ownsCard = allowOwnedCard && ownCompanies.has(entry.id);
+    if (!roles.length || (!ownsCard && !roles.every(role => roleGrant(role, entry)))) return deny();
+    return entry;
   };
   const checkReferences = (input: Record<string, unknown>, previous?: object) => {
     for (const key of ['companyId', 'ownerCompanyId', 'loadingActorCompanyId', 'infrastructureOwnerCompanyId', 'carrierId']) {
@@ -30,26 +33,37 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
     }
   };
   if (['companies', 'customers', 'suppliers', 'carriers'].includes(kind)) {
-    const previous = id ? company(id) : undefined;
-    // A POST may restore an archived identity or add a role to an existing company.
-    // Authorize that identity before saveCompany can merge it.
-    if (!id) for (const match of snapshot.companies.filter(row => typeof body.inn === 'string' && body.inn.trim() ? row.inn === body.inn.trim() : !row.inn && typeof body.name === 'string' && normalizeName(row.name) === normalizeName(body.name))) company(match.id);
-    if (deleting) return body;
-    if (!Array.isArray(body.roles)) return body; // Existing schema validation returns 400.
-    for (const role of body.roles) {
-      if (role === 'customer') { if (previous && !ownCustomerIds(snapshot, actor).has(previous.id)) deny(); }
-      else if (role === 'supplier') { if (!hasDirectoryGrant(actor, 'suppliers')) deny(); }
-      else if (role === 'other') { if (!hasDirectoryGrant(actor, 'oilDepots')) deny(); }
-      else if (role === 'carrier') { if (!hasDirectoryGrant(actor, 'vehicles') && !hasDirectoryGrant(actor, 'drivers')) deny(); }
+    const previous = id ? company(id, !deleting) : undefined;
+    // Restoring or merging a hidden identity still requires the shared catalog grants.
+    if (!id) {
+      const inn = typeof body.inn === 'string' ? body.inn.trim() : '';
+      const name = typeof body.name === 'string' ? normalizeName(body.name) : '';
+      const matches = snapshot.companies.filter(row => inn ? row.inn === inn : !row.inn && name && normalizeName(row.name) === name);
+      for (const match of matches) {
+        company(match.id, false);
+        const assignment = snapshot.directories?.customerManagers?.find(row => row.companyId === match.id);
+        if (assignment && assignment.managerId !== actor.managerId && Array.isArray(body.roles) && body.roles.includes('customer')) deny();
+      }
     }
+    if (deleting) return body;
+    if (!Array.isArray(body.roles) || !body.roles.length || !body.roles.every(isCompanyRole)) throw new ApiError(400, 'Выберите тип компании.');
+
+    const existingRoles = previous?.roles.filter(isCompanyRole) ?? [];
+    for (const role of body.roles) {
+      if (!existingRoles.includes(role) && !roleGrant(role, previous)) deny();
+    }
+    // Editing an assigned card must neither grant a new shared role nor drop an
+    // existing one the actor has no right to manage.
+    const roles = [...new Set([...body.roles, ...existingRoles.filter(role => !roleGrant(role, previous))])];
     const previousManager = snapshot.directories?.customerManagers?.find(row => row.companyId === previous?.id)?.managerId ?? null;
-    const managerId = body.roles.includes('customer') ? actor.managerId : previousManager;
-    if (body.managerId && body.managerId !== managerId) deny();
+    const managerId = previous ? previousManager : roles.includes('customer') ? actor.managerId : null;
+    // Employee forms show the signed-in manager. Saving a card must preserve its actual assignment.
+    if (body.managerId && body.managerId !== managerId && !(previous && body.managerId === actor.managerId)) deny();
     if (Array.isArray(body.addresses)) for (const address of body.addresses) if (address && typeof address === 'object') {
       const prior = snapshot.directories?.addresses.find(row => row.id === address.id && row.companyId === previous?.id);
       checkReferences(address, prior);
     }
-    return { ...body, managerId };
+    return { ...body, roles, managerId };
   }
   if (kind === 'customerManagers') deny(); // Reassignment remains an administrative operation.
   if (kind === 'addresses') {

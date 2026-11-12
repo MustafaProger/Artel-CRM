@@ -306,3 +306,73 @@ test('automatic push synchronization cannot create or transfer an endpoint witho
     assert.equal((await f.store.read(f.source)).push!.devices[0].userId, 'other-user');
   } finally { await f.close(); }
 });
+
+
+test('invoice source preference suppresses only invoice notifications until enabled', async () => {
+  const f = await fixture(async () => { throw new Error('External invoice requests are forbidden'); });
+  try {
+    const path = '/api/push/preferences';
+    const setPreference = (enabled: boolean) => f.request(path, { method: 'PATCH', body: { invoices: enabled } });
+    assert.equal((await setPreference(false)).status, 200);
+    const key = createECDH('prime256v1'); key.generateKeys();
+    const device = { endpoint: 'https://fcm.googleapis.com/fcm/send/synthetic', keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
+    const saveEvent = (occurredAt = Date.now()) => f.store.mutate(f.source, data => {
+      const jobId = randomUUID();
+      (data.push!.invoiceEvents ??= {})[`invoice-ready:${jobId}`] = { jobId, userId: 'invoice-user', occurredAt };
+      return { result: null, changed: true };
+    });
+    await f.store.mutate(f.source, data => ({ result: null, changed: subscribe(data, device, 'invoice-user', hash(f.token)) }));
+    await saveEvent();
+    const sent: string[] = [];
+    const dispatch = () => dispatchReminders(f.store, f.source, push, async (_device, payload) => { sent.push(payload); });
+    assert.equal((await dispatch()).sent, 0);
+    assert.equal((await setPreference(true)).status, 200);
+    assert.equal((await dispatch()).sent, 0);
+    await saveEvent();
+    assert.equal((await dispatch()).sent, 1);
+    assert.match(sent[0], /#invoices/);
+  } finally { await f.close(); }
+});
+
+test('queued invoice notification requires the current section grant even with an active subscribed employee', async () => {
+  const f = await fixture(async () => { throw new Error('External invoice requests are forbidden'); });
+  try {
+    const userId = 'other-user';
+    const account = { account: userId, session: f.otherToken };
+    const setSections = (sections: ('invoices' | 'work')[]) => f.store.mutate(f.source, data => {
+      data.accounts!.users.find(user => user.id === userId)!.sections = sections;
+      return { result: null, changed: true };
+    });
+    await setSections(['work', 'invoices']);
+    const key = createECDH('prime256v1');
+    key.generateKeys();
+    const subscription = {
+      endpoint: 'https://fcm.googleapis.com/fcm/send/invoice-grant-test',
+      keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') },
+    };
+    assert.equal((await f.request('/api/push/subscription', { ...account, method: 'POST', body: { subscription, explicit: true } })).status, 200);
+    const jobId = randomUUID();
+    await f.store.mutate(f.source, data => {
+      (data.push!.invoiceEvents ??= {})[`invoice-ready:${jobId}`] = { jobId, userId, occurredAt: Date.now() };
+      return { result: null, changed: true };
+    });
+
+    // Preserve the account, session and subscription so only the section grant can block delivery.
+    await setSections(['work']);
+    const preferences = await f.request('/api/push/preferences', account);
+    assert.equal(preferences.status, 200);
+    assert.equal((await preferences.json()).preferences.invoices, true);
+    const recipients: string[] = [];
+    const dispatch = () => dispatchReminders(f.store, f.source, push, async (device, payload) => {
+      assert.equal(device.endpoint, subscription.endpoint);
+      assert.equal(JSON.parse(payload).url, `/?invoiceView=history&invoiceJob=${jobId}#invoices`);
+      recipients.push(device.userId);
+    });
+    assert.equal((await dispatch()).sent, 0);
+    assert.deepEqual(recipients, []);
+
+    await setSections(['work', 'invoices']);
+    assert.equal((await dispatch()).sent, 1);
+    assert.deepEqual(recipients, [userId]);
+  } finally { await f.close(); }
+});

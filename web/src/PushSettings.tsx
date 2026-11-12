@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { applicationKey, formatPushDiagnostics, pushRequest, readPushCapabilities, registerPushWorker, subscribePushDevice, waitForPush } from './push-client';
 import './push-diagnostics.css';
 
 interface Config { enabled: boolean; publicKey: string; lastRunAt: number | null; intervalSeconds: number }
-export default function PushSettings({ userId, kind: audience = 'work', operatorPlanId, onEnabledChange, onEnabled }: { userId: string; kind?: 'work' | 'driver' | 'invoices' | 'operator'; operatorPlanId?: string; onEnabledChange?: (enabled: boolean) => void; onEnabled?: () => void }) {
+export default function PushSettings({ userId, kind: audience = 'work', operatorPlanId, onEnabledChange, onEnabled, children }: { userId: string; kind?: 'work' | 'driver' | 'invoices' | 'operator' | 'trips'; operatorPlanId?: string; onEnabledChange?: (enabled: boolean) => void; onEnabled?: () => void; children: ReactNode }) {
   const [checking, setChecking] = useState(true);
   const [connectionCheck, setConnectionCheck] = useState(0);
   const [config, setConfig] = useState<Config | null>(null);
@@ -129,7 +129,7 @@ export default function PushSettings({ userId, kind: audience = 'work', operator
         setNotice('Сохраняем подключение устройства…');
         await pushRequest('subscription', 'POST', { subscription: current.toJSON(), explicit: true }, userId);
         setSubscription(current); setRegistered(true);
-        setNotice(audience === 'driver' ? 'Уведомления о новых рейсах включены на этом устройстве.' : 'Уведомления всех доступных вам разделов включены в этом браузере.');
+        setNotice(audience === 'driver' ? 'Уведомления о новых рейсах включены на этом устройстве.' : 'Этот браузер подключён к уведомлениям.');
         onEnabled?.();
       } else if (kind === 'disable' && subscription) {
         await pushRequest('subscription', 'DELETE', { endpoint: subscription.endpoint }, userId);
@@ -160,29 +160,40 @@ export default function PushSettings({ userId, kind: audience = 'work', operator
     }
   }
   const enabled = registered && !!subscription && permission === 'granted' && !!config?.enabled;
+  const canConnect = capabilities.secureContext && supported && (!ios || installed);
   return <div className="work-push-settings">
-    {audience !== 'driver' && <p>Уведомления включаются сразу для всех доступных вам разделов: работы, счетов и операторской. Достаточно включить их один раз в этом браузере на этом устройстве. Выключение тоже действует на все разделы.</p>}
-    {!capabilities.secureContext ? <p>Для уведомлений откройте CRM по защищённому адресу, который начинается с https://.</p>
-      : ios && !installed ? <p>На iPhone/iPad с iOS 16.4 или новее откройте меню «Поделиться» → «На экран Домой», запустите CRM с её значка и включите уведомления здесь.</p>
-      : !supported ? <>
-        <p>{capabilities.browserName === 'Huawei Browser' ? 'Huawei Browser на этом устройстве не предоставляет нужные возможности для уведомлений CRM. Начните с диагностики ниже; знать модель телефона для этого не нужно.' : 'В этом браузере уведомления CRM недоступны. Если вы открыли ссылку внутри другого приложения, откройте её в обычном браузере и проверьте снова.'}</p>
-        <p>Скопируйте диагностику ниже — она покажет, какие возможности недоступны на этом устройстве.</p>
-      </> : <>
-
-      {config && !config.enabled && <p>Серверная отправка ещё не настроена.</p>}
-      {config?.enabled && config.lastRunAt && Date.now() - config.lastRunAt > 20 * 60000 && <p role="status">Проверка напоминаний задерживается. Последняя проверка: {new Date(config.lastRunAt).toLocaleString('ru-RU')}.</p>}
-      {subscription && !enabled && !checking && <p role="status">Подключение устройства не подтверждено. Включите уведомления повторно.</p>}
-      {permission === 'denied' && <p>Разрешите уведомления для CRM в настройках браузера или устройства.</p>}
-      {enabled && <p role="status">{audience === 'driver' ? 'Уведомления о новых рейсах включены.' : 'Уведомления всех доступных вам разделов включены в этом браузере.'}</p>}
-      <div className="work-push-actions">{checking ? <p role="status">Проверяем подключение уведомлений…</p> : enabled ? <><button className="button" disabled={busy || !!probeId || !config?.enabled} onClick={() => void action('test')}>Проверить уведомление</button><button className="button" disabled={busy} onClick={() => void action('disable')}>{audience === 'driver' ? 'Выключить' : 'Выключить для всех разделов'}</button></> : <button className="button" disabled={busy || !config?.enabled || permission === 'denied'} onClick={() => void action('enable')}>{busy ? 'Подключение…' : audience === 'driver' ? 'Включить уведомления' : 'Включить для всех разделов'}</button>}</div>
-
-    </>}
-    {error && <><p role="alert">{error}</p><button type="button" className="button" disabled={busy || checking || !!probeId} onClick={() => setConnectionCheck(value => value + 1)}>Повторить проверку подключения</button></>}{notice && <p role="status">{notice}</p>}
-    <details className="push-diagnostics">
-      <summary>Проверка этого устройства</summary>
-      <textarea aria-label="Диагностика уведомлений" readOnly rows={9} value={diagnosticText}/>
-      <button type="button" className="button" onClick={() => void copyDiagnostics()}>Скопировать диагностику</button>
-      {copyNotice && <p role="status">{copyNotice}</p>}
-    </details>
+    {children}
+    <div className="personal-notifications-results">
+      {!capabilities.secureContext ? <p>Для уведомлений откройте CRM по защищённому адресу, который начинается с https://.</p>
+        : ios && !installed ? <p>На iPhone/iPad с iOS 16.4 или новее откройте меню «Поделиться» → «На экран Домой», запустите CRM с её значка и включите уведомления здесь.</p>
+        : !supported ? <>
+          <p>{capabilities.browserName === 'Huawei Browser' ? 'Huawei Browser на этом устройстве не предоставляет нужные возможности для уведомлений CRM. Начните с диагностики ниже; знать модель телефона для этого не нужно.' : 'В этом браузере уведомления CRM недоступны. Если вы открыли ссылку внутри другого приложения, откройте её в обычном браузере и проверьте снова.'}</p>
+          <p>Скопируйте диагностику ниже — она покажет, какие возможности недоступны на этом устройстве.</p>
+        </> : <>
+          {config?.enabled && config.lastRunAt && Date.now() - config.lastRunAt > 20 * 60000 && <p role="status">Проверка напоминаний задерживается. Последняя проверка: {new Date(config.lastRunAt).toLocaleString('ru-RU')}.</p>}
+          {subscription && !enabled && !checking && <p role="status">Подключение устройства не подтверждено. Включите уведомления повторно.</p>}
+          {permission === 'denied' && <p>Разрешите уведомления для CRM в настройках браузера или устройства.</p>}
+          {enabled && <p role="status">Этот браузер подключён к уведомлениям.</p>}
+        </>}
+      {error && <>
+        <p role="alert">{error}</p>
+        <button type="button" className="button" disabled={busy || checking || !!probeId}
+          onClick={() => setConnectionCheck(value => value + 1)}>Повторить проверку подключения</button>
+      </>}
+      {notice && <p role="status">{notice}</p>}
+      {canConnect && <div className="work-push-actions">
+        {checking ? <p role="status">Проверяем подключение уведомлений…</p> : enabled ? <>
+          <button type="button" className="button" disabled={busy || !!probeId} onClick={() => void action('test')}>Проверить уведомление</button>
+          <button type="button" className="button" disabled={busy} onClick={() => void action('disable')}>Отключить этот браузер</button>
+        </> : <button type="button" className="button" disabled={busy || !config?.enabled || permission === 'denied'}
+          onClick={() => void action('enable')}>{busy ? 'Подключение…' : 'Подключить этот браузер'}</button>}
+      </div>}
+      <details className="push-diagnostics">
+        <summary>Проверка этого устройства</summary>
+        <textarea aria-label="Диагностика уведомлений" readOnly rows={9} value={diagnosticText}/>
+        <button type="button" className="button" onClick={() => void copyDiagnostics()}>Скопировать диагностику</button>
+        {copyNotice && <p role="status">{copyNotice}</p>}
+      </details>
+    </div>
   </div>;
 }

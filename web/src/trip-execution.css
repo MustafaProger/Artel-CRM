@@ -63,3 +63,10 @@
 }
 
 @media(max-width:1000px) { .execution-context { grid-template-columns:minmax(0,1fr) }.execution-help { max-width:640px; justify-self:end }.execution-context>span { padding-top:0 } }
+
+.execution-shared-trip > .execution-trip > summary { padding-right:20px }
+.execution-timeline-time { display:block; line-height:1.55 }
+@media(max-width:700px) {
+  .execution-shared-trip > .execution-trip > summary { padding-right:14px }
+  .execution-shared-trip .execution-trip-identity { padding-right:0; min-height:0 }
+}

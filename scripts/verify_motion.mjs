@@ -108,7 +108,14 @@ try {
       const page = await context.newPage();
       page.on('pageerror', error => report.errors.push(`${label}: ${error.message}`));
       let visits = 0;
-      const visit = async (route, selector) => { await page.goto(runtime.base + '/?motion=' + ++visits + '#' + route); await page.locator(selector).waitFor(); await finishAnimations(page); };
+      const visit = async (route, selector) => {
+        await page.goto(runtime.base + '/?motion=' + ++visits + '#' + route);
+        if (route === 'trips') {
+          await page.getByRole('group', { name: 'Разделы рейсов', exact: true }).getByRole('button', { name: 'Рейсы', exact: true }).click();
+        }
+        await page.locator(selector).waitFor();
+        await finishAnimations(page);
+      };
 
       await visit('trips', '.trips-list');
       const addTrip = page.getByRole('button', { name: 'Новый рейс', exact: true });
@@ -160,8 +167,8 @@ try {
       dialog = await openDialog(page, addDirectory, '.directory-editor');
       await closeDialog(page, dialog, addDirectory);
       const removeDirectory = page.getByRole('button', { name: 'Удалить: QA Клиент', exact: true });
-      dialog = await openDialog(page, removeDirectory, '.directory-delete-dialog');
-      await closeDialog(page, dialog, removeDirectory);
+      await removeDirectory.click();
+      await expect(page.getByRole('alert')).toContainText('Нельзя удалить «QA Клиент»');
       const segments = page.locator('.directory-tabs');
       await segments.getByRole('button', { name: 'Поставщики', exact: true }).evaluate(element => element.click());
       const segment = await segments.locator('.scrollable-segments-selection').evaluate(element => {
@@ -172,7 +179,7 @@ try {
         const transform = getComputedStyle(element).transform; animation.finish(); return { animated: true, transform };
       });
       assert.ok(segment.animated, `${label}: selected segment physically transitions`);
-      pass(`${label}: directory dialogs and segment selection`);
+      pass(`${label}: directory editor, protected one-click deletion and segment selection`);
 
       await visit('work', '.work-layout');
       const task = page.getByRole('button', { name: 'Новая задача', exact: true });
@@ -202,7 +209,7 @@ try {
       await closeDialog(page, dialog, reminder);
       await expect(page.locator('.driver-notifications-dialog')).toHaveCount(1);
       dialog = await openDialog(page, reminder, '.driver-notifications-dialog');
-      await closeDialog(page, dialog, reminder, 'Закрыть настройки уведомлений');
+      await closeDialog(page, dialog, reminder, 'Закрыть настройки');
       pass(`${label}: work editor and persistent reminder dialog`);
 
       await visit('china', '.china-table');
@@ -274,17 +281,15 @@ try {
     assert.ok(driverLabels[0].includes('QA-newest') && driverLabels[1].includes('QA-middle') && driverLabels[2].includes('QA-old'), `${engine}: driver newest-first`);
     await finishAnimations(drivePage);
     const screenshot = resolve(output, `${engine}-mobile-driver-list.png`); await drivePage.screenshot({ path: screenshot, fullPage: true }); report.screenshots.push(screenshot);
-    const bell = drivePage.getByRole('button', { name: /^Настройки уведомлений/ });
-    let dialog = await openDialog(drivePage, bell, '.driver-notifications-dialog');
-    await closeDialog(drivePage, dialog, bell);
-    dialog = await openDialog(drivePage, bell, '.driver-notifications-dialog');
-    await closeDialog(drivePage, dialog, bell, 'Закрыть настройки уведомлений');
-    await expect(drivePage.locator('.driver-notifications-dialog')).toHaveCount(1);
-    await drivePage.locator('.driver-notifications-dialog').evaluate(element => { element.dataset.qaPersistent = 'yes'; });
+    await drivePage.locator('.driver-settings-link').click();
+    await expect(drivePage).toHaveURL(/#settings$/);
+    await expect(drivePage.locator('.personal-settings-page')).toBeVisible();
+    await expect(drivePage.locator('dialog[open]')).toHaveCount(0);
+    await drivePage.getByRole('link', { name: 'Мои рейсы', exact: true }).click();
+    await expect(drivePage.locator('.driver-trip-card')).toHaveCount(3);
     await drivePage.getByRole('button', { name: 'Архивные', exact: true }).evaluate(element => element.click());
     await frames(drivePage.locator('.driver-route-content'), 'surface-appear');
-    await expect(drivePage.locator('.driver-notifications-dialog')).toHaveAttribute('data-qa-persistent', 'yes');
-    pass(`${engine}: driver newest-first and persistent notification modal motion on mobile`);
+    pass(`${engine}: driver newest-first, settings navigation and archive motion on mobile`);
     await driver.close(); await browser.close(); browser = undefined;
   }
 

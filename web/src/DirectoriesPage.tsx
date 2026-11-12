@@ -40,11 +40,25 @@ const vehicleDetail = (vehicle: Vehicle) => [vehicle.name && vehicle.name !== ve
 type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager?:string;managerId?:string;addresses?:string;roles?:string[];kind?:'managers'|'drivers';accountRoles?:AccountRole[];online?:boolean}
 
 export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=true,canManageTab,canViewAccounts=false,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;canManageTab?:(tab:DirectoryTab)=>boolean;canViewAccounts?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
+  const hasScopedSuppliers = Boolean(
+    !hideTabs && allowedTabs && !allowedTabs.includes('suppliers') && data.directories?.currentEmployeeId &&
+    data.companies.some(company => !company.directoryArchived && company.roles.includes('supplier'))
+  )
   const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
   useEffect(() => {
-    if (allowedTabs && !allowedTabs.includes(tab)) {setTab(allowedTabs[0] ?? 'operatorServices'); setEditor(null)}
-  }, [allowedTabs, tab])
-  const canManage = baseCanManage && (!canManageTab || canManageTab(tab))
+    if (allowedTabs && !allowedTabs.includes(tab) && !(hasScopedSuppliers && tab === 'suppliers')) {
+      setTab(allowedTabs[0] ?? (hasScopedSuppliers ? 'suppliers' : 'operatorServices'))
+      setEditor(null)
+    }
+  }, [allowedTabs, hasScopedSuppliers, tab])
+  const canAdd = baseCanManage && (!canManageTab || canManageTab(tab))
+  const canManage = canAdd || baseCanManage && hasScopedSuppliers && tab === 'suppliers'
+  const canChangeSupplierRole = canManageTab?.('suppliers') !== false
+  const canRemove = (row: DirectoryRow) => canAdd && tab !== 'operatorServices' && !row.roles?.some(role =>
+    role === 'supplier' ? !canChangeSupplierRole
+      : role === 'carrier' ? canManageTab?.('vehicles') === false && canManageTab('drivers') === false
+      : role === 'other' && canManageTab?.('oilDepots') === false
+  )
   const [editor,setEditor] = useState<{id?:string;kind?:'managers'|'drivers'} | null>(null), [notice,setNotice] = useState('')
   const removal = useDirectAction()
   const remove = (row: DirectoryRow) => removal.run(row.id, async () => {
@@ -111,27 +125,27 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
   const roleRows=personnel&&roleFilter!=='all'?personnelRows.filter(row=>accessUsers&&(roleFilter==='none'?!row.accountRoles?.length:row.accountRoles?.includes(roleFilter))):personnelRows
   const visible = roleRows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
   const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
-  if (allowedTabs && !allowedTabs.length) return <p className="empty-state">Нет доступных справочников. Обратитесь к администратору.</p>
+  if (allowedTabs && !allowedTabs.length && !hasScopedSuppliers) return <p className="empty-state">Нет доступных справочников. Обратитесь к администратору.</p>
   return <div className="directories-page">
-    {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id))).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setRoleFilter('all');setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
+    {!hideTabs && <ScrollableSegments className="directory-tabs" label="Справочники" value={tab}>{tabs.filter(item => !['paymentForms','customerManagers'].includes(item.id) && (!allowedTabs || allowedTabs.includes(item.id) || hasScopedSuppliers && item.id === 'suppliers')).map(item => <button className={`button ${item.id===tab?'primary':''}`} aria-pressed={item.id===tab} key={item.id} onClick={()=>{setTab(item.id);setQuery('');setPage(0);setRoleFilter('all');setNotice('')}}>{item.name}</button>)}</ScrollableSegments>}
     {removal.error && <p className="shipment-error" role="alert">{removal.error}</p>}
     {notice && <p className="directory-notice" role="status">{notice}</p>}
     {tab==='vehicles'&&<TransportPricingSettings value={catalog.transportPricing} canManage={canManage && !isLogisticsWorkspace()} onChanged={onChanged}/>}
     <section ref={viewEntrance} className="panel directory-list">
       <div className="directory-toolbar search-add-toolbar"><label className="shipment-search"><Search size={17}/><input aria-label="Поиск в справочнике" placeholder={companyTab(tab) ? 'Компания, ИНН, менеджер или адрес…' : 'Найти запись…'} value={query} onChange={event=>{setQuery(event.target.value);setPage(0)}}/>{query && <button type="button" className="icon-button" aria-label="Очистить поиск в справочнике" onClick={()=>{setQuery('');setPage(0)}}><X size={16}/></button>}</label>
-        {canManage&&<button className="button primary mobile-icon-action" aria-label="Добавить" title="Добавить" onClick={()=>setEditor(personnel&&roleFilter==='driver'?{kind:'drivers'}:{})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Добавить</span></button>}
+        {canAdd&&<button className="button primary mobile-icon-action" aria-label="Добавить" title="Добавить" onClick={()=>setEditor(personnel&&roleFilter==='driver'?{kind:'drivers'}:{})}><Plus size={17} aria-hidden="true"/><span className="mobile-action-label">Добавить</span></button>}
       </div>
       {personnel&&<><RoleFilter value={roleFilter} onChange={value=>{setRoleFilter(value);setPage(0)}} includeUnlinked disabled={!accessUsers} counts={{all:personnelRows.length,none:personnelRows.filter(row=>!row.accountRoles?.length).length,...Object.fromEntries(Object.keys(roleNames).map(role=>[role,personnelRows.filter(row=>row.accountRoles?.includes(role as AccountRole)).length]))}}/>{!accessUsers&&!accessError&&<p role="status">Загружаем полномочия…</p>}{accessError&&<p className="shipment-error" role="alert">{accessError} <button type="button" className="button" onClick={()=>setAccessRevision(value=>value+1)}>Повторить загрузку полномочий</button></p>}</>}
       <div className="directory-record-count">Записей: {visible.length}</div>
       <div className="directory-records">{visible.slice(currentPage*30,(currentPage+1)*30).map(row=><div className="directory-record" key={`${row.kind??tab}:${row.id}`}>
         <button className="directory-record-open" onClick={()=>setEditor({id:row.id,kind:row.kind==='managers'||row.kind==='drivers'?row.kind:undefined})} disabled={!canManage} aria-label={`Редактировать: ${row.name}`}><span className="directory-record-main"><span className="directory-record-title"><strong>{tab === 'operatorServices' ? <OperatorServiceBadge service={row.name} serviceId={row.id} backgroundColor={operatorCatalog.services.find(item=>item.id===row.id)?.backgroundColor} part="name"/> : row.name}</strong>{row.online && <span className="directory-online">В сети</span>}</span>{row.detail && <small>{row.detail}</small>}{row.addresses && <small>{row.addresses}</small>}</span>
           {row.manager !== undefined && <span className="directory-record-manager"><small>Менеджер</small><span>{row.manager}</span></span>}{canManage&&<Pencil size={17}/>}</button>
-        {canManage&&tab!=='operatorServices'&&<button className="icon-button directory-delete" aria-label={`Удалить: ${row.name}`} disabled={!!removal.pending} onClick={()=>void remove(row)}>{removal.pending === row.id ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}</button>}
+        {canRemove(row)&&<button className="icon-button directory-delete" aria-label={`Удалить: ${row.name}`} disabled={!!removal.pending} onClick={()=>void remove(row)}>{removal.pending === row.id ? <LoaderCircle size={17} className="spin"/> : <Trash2 size={17}/>}</button>}
       </div>)}</div>
-      {!visible.length && (!personnel||accessUsers) && <p className="directory-empty">{query||personnel&&roleFilter!=='all' ? 'По выбранным фильтрам ничего не найдено.' : canManage ? 'Записей пока нет. Нажмите «Добавить», чтобы создать первую.' : 'Записей пока нет.'}</p>}
+      {!visible.length && (!personnel||accessUsers) && <p className="directory-empty">{query||personnel&&roleFilter!=='all' ? 'По выбранным фильтрам ничего не найдено.' : canAdd ? 'Записей пока нет. Нажмите «Добавить», чтобы создать первую.' : 'Записей пока нет.'}</p>}
       <div className="directory-pagination"><span>{visible.length ? `${currentPage*30+1}–${Math.min((currentPage+1)*30,visible.length)} из ${visible.length}` : '0 записей'}</span><div><button className="icon-button" aria-label="Предыдущая страница справочника" disabled={!currentPage} onClick={()=>setPage(currentPage-1)}><ChevronLeft size={18}/></button><span>{currentPage+1} / {lastPage+1}</span><button className="icon-button" aria-label="Следующая страница справочника" disabled={currentPage===lastPage} onClick={()=>setPage(currentPage+1)}><ChevronRight size={18}/></button></div></div>
     </section>
-    {editor && canManage && <DirectoryEditor tab={editor.kind??tab} id={editor.id} data={data} onChanged={onChanged} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice(editor.id ? 'Изменения сохранены' : 'Запись добавлена')}}/>}
+    {editor && canManage && <DirectoryEditor tab={editor.kind??tab} id={editor.id} data={data} canChangeSupplierRole={canChangeSupplierRole} onChanged={onChanged} onClose={()=>setEditor(null)} onSaved={()=>{setEditor(null);setNotice(editor.id ? 'Изменения сохранены' : 'Запись добавлена')}}/>}
   </div>
 }
 
@@ -142,7 +156,7 @@ function formatConflictValue(value:unknown,depots:Record<string,string>={},dista
   return String(value)
 }
 
-function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab:EditorTab;id?:string;data:DirectoryData;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void|Promise<void>}) {
+function DirectoryEditor({tab,id,data,canChangeSupplierRole=true,onClose: onDismiss,onSaved,onChanged}:{tab:EditorTab;id?:string;data:DirectoryData;canChangeSupplierRole?:boolean;onClose:()=>void;onSaved:(company?:Company)=>void;onChanged:()=>void|Promise<void>}) {
   const catalog = data.directories!, dialog = useRef<HTMLDialogElement>(null)
   const errorMessage = useRef<HTMLParagraphElement>(null)
   const [baseline,setBaseline] = useState(data)
@@ -199,7 +213,7 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
         let outgoing={...payload}
         if(updating) {
           const snapshot=await fetchDirectoryData(), current=directoryEntry(snapshot,tab,id)
-          if(!current)throw new Error('Запись удалена из справочника. Ваш ввод сохранён в форме.')
+          if(!current)throw new Error('Запись больше недоступна в справочнике. Ваш ввод сохранён в форме.')
           const base=editablePayload(directoryPayload(tab,directoryDraft(baseline,tab,id))),latest=editablePayload(directoryPayload(tab,directoryDraft(snapshot,tab,id)))
           const {merged,conflicts}=mergeDirectoryPayload(base,payload,latest)
           if(conflicts.length) {setConflict({snapshot,merged,latest,keys:conflicts,choices:{}});return}
@@ -265,7 +279,7 @@ function DirectoryEditor({tab,id,data,onClose: onDismiss,onSaved,onChanged}:{tab
   return <><dialog ref={dialog} className="detail-dialog directory-editor" aria-label={`${id?'Карточка':'Добавление'} ${titles[tab]}`} onCancel={event=>{event.preventDefault();close()}}><form aria-busy={saving} onSubmit={save}>
     <div className="directory-editor-heading"><h2>{id?'Карточка':'Добавление'} {titles[tab]}</h2><button type="button" className="icon-button" aria-label="Закрыть карточку справочника" disabled={saving||lookupBusy} onClick={close}><X size={20}/></button></div>
     <div className="directory-editor-body"><fieldset className="directory-edit-fields" disabled={!!conflict}><div className="shipment-field-grid">
-      {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id)}} disabled={saving||lookupBusy||!!catalog.currentEmployeeId}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role))}}/>{label}</label>)}</fieldset></>}</>
+      {companyTab(tab)?<><div className="form-field-wide">{input('Наименование','name',true)}</div>{input('ИНН','inn')}<div className="company-lookup-actions"><button className="button" type="button" disabled={saving||lookupBusy||!fields.inn?.trim()} onClick={()=>void lookup()}>{lookupBusy?<LoaderCircle size={17} className="spin"/>:<Search size={17}/>}Заполнить из Чекко</button></div>{tab!=='loadingParty'&&<><DirectorySelect label="Менеджер компании" entries={catalog.managers} value={managerId} onChange={id=>{setManagerId(id)}} disabled={saving||lookupBusy||!!catalog.currentEmployeeId}/><fieldset className="company-role-options"><legend>Тип компании</legend>{Object.entries(roleLabels).filter(([role]) => role !== 'supplier' || canChangeSupplierRole || roles.includes(role)).map(([role,label])=><label key={role}><input type="checkbox" checked={roles.includes(role)} disabled={saving||lookupBusy||role==='supplier'&&!canChangeSupplierRole} onChange={event=>{setRoles(old=>event.target.checked?[...old,role]:old.filter(value=>value!==role))}}/>{label}</label>)}</fieldset></>}</>
       :tab==='oilDepots'?<>
         <section className="directory-form-section form-field-wide" aria-labelledby="oil-depot-location-title"><div className="directory-form-section-heading"><h3 id="oil-depot-location-title">Место погрузки</h3><p>Название и фактический адрес нефтебазы.</p></div><div className="shipment-field-grid">
           <div className="form-field-wide">{input('Наименование нефтебазы','name',true)}</div>{input('Фактический адрес места погрузки / пункта подачи','address')}

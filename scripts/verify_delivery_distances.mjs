@@ -75,7 +75,7 @@ try {
       }
       await route.continue();
     };
-    await page.route('**/api/snapshot?shipments=omit', holdSnapshot);
+    await page.route('**/api/snapshot?shipments=omit&context=directories', holdSnapshot);
     try {
       await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
       await expect.poll(() => refreshBlocked).toBe(true);
@@ -83,12 +83,12 @@ try {
       // The dialog must still be open and prevent reopening from stale props.
       await page.waitForTimeout(500);
       await expect(dialog).toBeVisible();
-      await expect(dialog.getByRole('button', { name: 'Сохранить', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Сохраняем…', exact: true })).toBeDisabled();
     } finally {
       releaseRefresh();
       if (refreshBlocked) await refreshHandled;
       page.off('request', patchListener);
-      await page.unroute('**/api/snapshot?shipments=omit', holdSnapshot);
+      await page.unroute('**/api/snapshot?shipments=omit&context=directories', holdSnapshot);
     }
     await expect(dialog).toHaveCount(0); dialog = await open();
     await expect(distance(dialog)).toHaveValue('12.75'); await expect(distance(dialog, 1)).toHaveValue('0'); await expect(distance(dialog, 0, 2)).toHaveValue('89');

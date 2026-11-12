@@ -23,7 +23,7 @@ const pages: { id: LogisticsPage; title: string; description: string; icon: Luci
 const pageFromHash = (): LogisticsPage => pages.find(item => `#${item.id}` === location.hash)?.id ?? 'trips'
 
 export default function LogisticsApp() {
-  return <AuthGate workspace="logistics">{(user, onLogout) => user.role === 'driver' ? <DriverWorkspace key={user.id} user={user} onLogout={onLogout}/> : <LogisticsWorkspace key={`${user.id}:${user.version}`} user={user} onLogout={onLogout}/>}</AuthGate>
+  return <AuthGate workspace="logistics">{(user, onLogout, onUserChanged) => user.role === 'driver' ? <DriverWorkspace key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged} settingsAvailable={false}/> : <LogisticsWorkspace key={`${user.id}:${user.version}`} user={user} onLogout={onLogout}/>}</AuthGate>
 }
 
 function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: () => void }) {

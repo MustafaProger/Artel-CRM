@@ -16,8 +16,8 @@ export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Pick<S
   const assignments = snapshot.directories.customerManagers?.filter(link => link.companyId === row.customerId) ?? [];
   return !assignments.length || assignments.some(link => link.managerId === actor.managerId);
 }
-/** Explicit customer assignments include clients with no shipments yet. Historical
- * shipment ownership is a fallback only while the client remains unassigned. */
+/** Explicit company assignments also cover supplier and other directory cards.
+ * Historical shipment ownership is a fallback only for unassigned clients. */
 export function ownCustomerIds(snapshot: Snapshot, actor: AccountUser): Set<string> {
   if (canManage(actor)) return new Set(snapshot.companies.filter(company => company.roles.includes('customer')).map(company => company.id));
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId)) return new Set();
@@ -54,7 +54,7 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
     .filter(company => sharedCompany(company) || directoryCompanyIds.has(company.id) || canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || context !== 'directories' && company.roles.some(role => role === 'supplier' || role === 'carrier'))
     .map(company => ({
     ...(directoryAccess && (customerIds.has(company.id) || sharedCompany(company)) ? company : companyLookup(company)),
-    roles: company.roles.filter(role => role === 'customer' ? customerIds.has(company.id) || requestCustomerIds.has(company.id) : role === 'supplier' ? context !== 'directories' || hasDirectoryGrant(actor, 'suppliers') : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots') : role === 'carrier' && (context !== 'directories' || hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))),
+    roles: context === 'directories' && directoryAccess && customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'customer' ? customerIds.has(company.id) || requestCustomerIds.has(company.id) : role === 'supplier' ? context !== 'directories' || hasDirectoryGrant(actor, 'suppliers') : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots') : role === 'carrier' && (context !== 'directories' || hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))),
     shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: [], managerLabels: [], flags: [],
   }));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };

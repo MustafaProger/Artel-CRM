@@ -117,3 +117,23 @@ test('failed saves cannot queue notifications and malformed stored events are re
     assert.throws(() => validatePush({ devices: [], deliveries: {}, tripAssignments: { bad: { token: 'bad', driverId: 'driver', at: 0 } } }));
   } finally { await f.close(); }
 });
+
+
+test('driver can mute new trip assignments without changing another driver’s preference', async () => {
+  const sent: Notice[] = [], f = await fixture(capture(sent));
+  try {
+    const [first, second] = f.drivers;
+    const path = '/api/push/preferences';
+    assert.equal((await first.call(path, 'PATCH', { tripAssignments: false })).body.preferences.tripAssignments, false);
+    assert.equal((await second.call(path)).body.preferences.tripAssignments, true);
+    const created = await f.admin('/api/shipment-trips', 'POST', tripBody(f.trip));
+    assert.equal(created.status, 201);
+    assert.equal(sent.length, 0);
+    const moved = await f.admin(`/api/shipment-trips/${created.body.trip.id}`, 'PATCH', tripBody(created.body.trip, 'driver-other', true));
+    assert.equal(moved.status, 200);
+    assert.deepEqual(sent.map(row => row.userId), [second.userId]);
+    assert.equal((await first.call(path, 'PATCH', { tripAssignments: true })).body.preferences.tripAssignments, true);
+    assert.equal((await f.admin(`/api/shipment-trips/${created.body.trip.id}`, 'PATCH', tripBody(moved.body.trip, 'driver', true))).status, 200);
+    assert.deepEqual(sent.map(row => row.userId), [second.userId, first.userId]);
+  } finally { await f.close(); }
+});

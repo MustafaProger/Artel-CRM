@@ -11,18 +11,23 @@ import { ApiError } from './api-error';
 import { queueInvoiceRevocations } from './invoice-bridge';
 
 import { encryptAccountPassword, validPasswordCiphertext } from './account-passwords';
+import { parseProfileAvatar, profileAvatarProjection, sameAvatar, validStoredAvatar, type StoredAvatar } from './profile-avatars';
 
 const scrypt = promisify(derive);
-export interface StoredUser extends AccountUser { passwordHash: string; salt: string; passwordCiphertext?: string; deletedBy?: string }
+export interface StoredUser extends AccountUser { passwordHash: string; salt: string; passwordCiphertext?: string; deletedBy?: string; avatar?: StoredAvatar }
 export interface AccountsData {
   users: StoredUser[];
   sessions: { hash: string; userId: string; expiresAt: number; audience?: 'logistics' }[];
   attempts: Record<string, { count: number; until: number }>;
 }
-export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role === 'logistician' ? 'employee' : user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
+export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role === 'logistician' ? 'employee' : user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...profileAvatarProjection(user.id, user.avatar), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
 export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt && user.role !== 'driver').map(publicUser);
 export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+const accountLoginPattern = /^[a-z0-9._-]{3,64}$/;
+const normalizeAccountLogin = (value: unknown) => typeof value === 'string' ? value.trim().toLowerCase() : '';
+const loginAttemptKey = (login: string) => hash(`artel:auth:user:${login}`);
+const legacyGlobalLoginKey = hash('artel-global-login-limit');
 // Keep the existing integer field so live sessions and push bindings need no storage migration.
 export const persistentSessionExpiry = Number.MAX_SAFE_INTEGER;
 const crmCookieAge = 400 * 24 * 60 * 60;
@@ -70,11 +75,12 @@ export function validateAccounts(value: AccountsData) {
   if(!value || !Array.isArray(value.users) || !Array.isArray(value.sessions) || !value.attempts || typeof value.attempts!=='object')throw new Error('Invalid accounts');
   const ids=new Set<string>(), logins=new Set<string>(), driverIds=new Set<string>();
   for(const u of value.users){
+    if (u.avatar !== undefined && !validStoredAvatar(u.avatar)) throw new Error('Invalid profile avatar');
     if (u.passwordCiphertext !== undefined && !validPasswordCiphertext(u.passwordCiphertext)) throw new Error('Invalid password ciphertext');
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
     if (u.directoryGrants !== undefined && !validDirectoryGrants(u.directoryGrants)) throw new Error('Invalid directory grants');
     if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
-    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !/^[a-z0-9._-]{3,64}$/.test(u.login) || logins.has(u.login) || !['director','admin','employee','manager','logistician','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
+    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !accountLoginPattern.test(u.login) || logins.has(u.login) || !['director','admin','employee','manager','logistician','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
     if (u.role === 'driver') {
       if (typeof u.driverId !== 'string' || !u.driverId || driverIds.has(u.driverId) || u.managerId !== null || !Array.isArray(u.sections) || u.sections.length) throw new Error('Invalid driver account');
       driverIds.add(u.driverId);
@@ -86,10 +92,42 @@ export function validateAccounts(value: AccountsData) {
   for(const [key,row] of Object.entries(value.attempts))if(!/^[a-f0-9]{64}$/.test(key) || !row || !Number.isSafeInteger(row.count) || row.count<0 || !Number.isSafeInteger(row.until))throw new Error('Invalid login attempt');
 }
 function text(input: Record<string,unknown>, key:string, max=120) { const v=input[key];if(typeof v!=='string' || !v.trim() || v.trim().length>max)throw new ApiError(400,`Проверьте поле «${key}».`);return v.trim(); }
+function parseAccountLogin(value: unknown) {
+  const login = normalizeAccountLogin(value);
+  if (!accountLoginPattern.test(login)) throw new ApiError(400, 'Логин: 3–64 латинских буквы, цифры, точка, дефис или подчёркивание.');
+  return login;
+}
+
+function requireAvailableLogin(accounts: AccountsData, login: string, currentId?: string) {
+  if (accounts.users.some(user => user.login === login && user.id !== currentId)) throw new ApiError(409, 'Этот логин уже используется.');
+}
+
+function moveLoginThrottle(accounts: AccountsData, previous: string, next: string) {
+  const now = Date.now();
+  const previousKeys = [loginAttemptKey(previous), hash(previous)].filter(key => key !== legacyGlobalLoginKey);
+  const nextKeys = [loginAttemptKey(next), hash(next)].filter(key => key !== legacyGlobalLoginKey);
+  const active = [...previousKeys, ...nextKeys].flatMap(key => {
+    const attempt = accounts.attempts[key];
+    return attempt && attempt.until > now ? [attempt] : [];
+  });
+  for (const key of previousKeys) delete accounts.attempts[key];
+  if (active.length) accounts.attempts[loginAttemptKey(next)] = {
+    count: Math.min(5, Math.max(...active.map(attempt => attempt.count))),
+    until: Math.max(...active.map(attempt => attempt.until)),
+  };
+}
+
+function checkPasswordLength(input: unknown): asserts input is string {
+  if (typeof input !== 'string' || input.length < 12 || input.length > 256) throw new ApiError(400, 'Пароль должен содержать от 12 до 256 символов.');
+}
+async function derivePasswordFields(password: string) {
+  const salt = randomBytes(16).toString('hex');
+  const derived = await scrypt(password, salt, 64) as Buffer;
+  return { salt, passwordHash: derived.toString('hex') };
+}
 export async function passwordFields(input: unknown, passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
-  if(typeof input!=='string' || input.length<12 || input.length>256)throw new ApiError(400,'Пароль должен содержать от 12 до 256 символов.');
-  const salt=randomBytes(16).toString('hex');
-  const fields = { salt, passwordHash: (await scrypt(input,salt,64) as Buffer).toString('hex') };
+  checkPasswordLength(input);
+  const fields = await derivePasswordFields(input);
   return { ...fields, passwordCiphertext: passwordKey === undefined ? undefined : encryptAccountPassword(input, fields, passwordKey) };
 }
 export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false,passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
@@ -99,9 +137,8 @@ export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Recor
   if (previous?.role === 'driver') throw new ApiError(403, 'Управляйте доступом водителя в разделе «Сотрудники и доступ».');
   if(id && (!previous || previous.deletedAt))throw new ApiError(404,'Пользователь не найден.');
   if(previous && input.version!==previous.version)throw new ApiError(409,'Пользователь уже изменён. Обновите список.');
-  const name=text(input,'name'),login=text(input,'login',64).toLowerCase();
-  if(!/^[a-z0-9._-]{3,64}$/.test(login))throw new ApiError(400,'Логин: 3–64 латинских буквы, цифры, точка, дефис или подчёркивание.');
-  if(accounts.users.some(u=>u.login===login && u.id!==id))throw new ApiError(409,'Этот логин уже используется.');
+  const name = text(input, 'name'), login = parseAccountLogin(input.login);
+  requireAvailableLogin(accounts, login, id);
   const role=setup?'director':input.role;
   if(!['director','admin','employee','manager'].includes(String(role)))throw new ApiError(400,'Выберите роль пользователя.');
   const managerId=input.managerId || null;
@@ -149,6 +186,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   if (tasks || companies) throw new ApiError(409, `У сотрудника есть незавершённые записи: задачи — ${tasks}, работа с компаниями — ${companies}. В разделе «Работа» передайте их другому сотруднику или завершите и архивируйте, затем повторите удаление.`);
   if (hasSection(user, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
   user.active = false;
+  delete user.avatar;
   user.deletedAt = new Date().toISOString();
   user.deletedBy = actor.id;
   user.version += 1;
@@ -156,6 +194,7 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   if (data.push) {
     const deviceIds = new Set(data.push.devices.filter(device => device.userId === id).map(device => device.id));
     data.push.devices = data.push.devices.filter(device => device.userId !== id);
+    if (data.push.preferences) delete data.push.preferences[id];
     for (const [key, delivery] of Object.entries(data.push.deliveries)) if (deviceIds.has(delivery.deviceId)) delete data.push.deliveries[key];
     for (const [key, probe] of Object.entries(data.push.probes ?? {})) if (probe.userId === id) delete data.push.probes![key];
     for (const [key, assignment] of Object.entries(data.push.taskAssignments ?? {})) if (assignment.assigneeId === id) delete data.push.taskAssignments![key];
@@ -163,11 +202,106 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   return { id, deleted: true, changed: true };
 }
 interface LoginResult { status: number; token?: string; user?: AccountUser; error?: string }
-const loginName = (input: Record<string, unknown>) => typeof input.login === 'string' ? input.login.trim().toLowerCase().slice(0, 64) : '';
+const loginName = (input: Record<string, unknown>) => normalizeAccountLogin(input.login).slice(0, 64);
 const loginIdentity = (user: StoredUser | undefined): string | null => user ? JSON.stringify([
   user.id, user.login, user.passwordHash, user.salt, user.version, user.active, user.deletedAt,
   user.role, user.managerId, user.driverId, user.sections, user.directoryGrants,
 ]) : null;
+
+const profileAttemptLimit = 5;
+const profileAttemptWindow = 15 * 60 * 1000;
+const profileThrottled = () => new ApiError(429, 'Слишком много попыток смены пароля. Повторите через 15 минут.');
+const profileConflict = () => new ApiError(409, 'Профиль уже изменён. Обновите страницу.');
+
+function profileAccount(data: OperationsData, request: IncomingMessage) {
+  const actor = requireUser(data, request);
+  const accountHeader = request.headers['x-artel-account'];
+  if (accountHeader !== undefined && accountHeader !== actor.id) throw new ApiError(401, 'Пользователь изменился. Обновите страницу.');
+  const accounts = data.accounts!;
+  const session = findSession(data, request);
+  if (!session) throw new ApiError(401, 'Войдите в приложение.');
+  return { accounts, user: accounts.users.find(row => row.id === actor.id)!, session };
+}
+
+function revokeOtherProfileSessions(data: OperationsData, accounts: AccountsData, user: StoredUser, keepHash: string) {
+  const revoked = accounts.sessions.filter(session => session.userId === user.id && session.hash !== keepHash);
+  if (hasSection(user, 'invoices')) queueInvoiceRevocations(data, revoked.filter(session => !session.audience).map(session => session.hash));
+  accounts.sessions = accounts.sessions.filter(session => session.userId !== user.id || session.hash === keepHash);
+  if (data.push) {
+    const revokedDevices = new Set(data.push.devices.filter(device => device.userId === user.id && device.sessionHash !== keepHash).map(device => device.id));
+    data.push.devices = data.push.devices.filter(device => !revokedDevices.has(device.id));
+    for (const [key, delivery] of Object.entries(data.push.deliveries)) if (revokedDevices.has(delivery.deviceId)) delete data.push.deliveries[key];
+    for (const [key, probe] of Object.entries(data.push.probes ?? {})) if (revokedDevices.has(probe.deviceId)) delete data.push.probes![key];
+  }
+}
+
+/** Prepare credentials outside the write lock. A fresh session, account
+ * version and credential identity must still match when committing. */
+export async function prepareProfileUpdate(data: OperationsData, request: IncomingMessage, input: Record<string, unknown>) {
+  const { accounts, user, session } = profileAccount(data, request);
+  const { version, currentPassword, newPassword } = input;
+  const changingPassword = Object.hasOwn(input, 'currentPassword') || Object.hasOwn(input, 'newPassword');
+  if (Object.keys(input).some(key => !['version', 'name', 'login', 'currentPassword', 'newPassword', 'avatar'].includes(key)) || !Number.isSafeInteger(version) || Number(version) < 1) {
+    throw new ApiError(400, 'Передайте текущую версию и поля своего профиля.');
+  }
+  if (version !== user.version) throw profileConflict();
+  const name = Object.hasOwn(input, 'name') ? text(input, 'name') : undefined;
+  const login = Object.hasOwn(input, 'login') ? parseAccountLogin(input.login) : undefined;
+  const avatar = Object.hasOwn(input, 'avatar') ? parseProfileAvatar(input.avatar) : undefined;
+  if (name === undefined && login === undefined && !changingPassword && avatar === undefined) throw new ApiError(400, 'Укажите имя, логин, новый пароль или аватар.');
+
+  const identity = loginIdentity(user);
+  const accountId = user.id;
+  const sessionHash = session.hash;
+  const attemptKey = hash(`artel:auth:profile-password:${accountId}`);
+  let credentials: Awaited<ReturnType<typeof derivePasswordFields>> | undefined;
+  if (changingPassword) {
+    if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 256) throw new ApiError(400, 'Введите текущий пароль.');
+    checkPasswordLength(newPassword);
+    if (currentPassword === newPassword) throw new ApiError(400, 'Новый пароль должен отличаться от текущего.');
+    const previousAttempt = accounts.attempts[attemptKey];
+    if (previousAttempt && previousAttempt.until > Date.now() && previousAttempt.count >= profileAttemptLimit) throw profileThrottled();
+    const { salt, passwordHash } = user;
+    const actual = await performanceSpan('auth.kdf', () => scrypt(currentPassword, salt, 64)) as Buffer;
+    if (timingSafeEqual(actual, Buffer.from(passwordHash, 'hex'))) credentials = await derivePasswordFields(newPassword);
+  }
+
+  return (fresh: OperationsData) => {
+    const current = profileAccount(fresh, request);
+    if (current.user.id !== accountId || current.session.hash !== sessionHash) throw new ApiError(401, 'Пользователь изменился. Обновите страницу.');
+    if (loginIdentity(current.user) !== identity) throw profileConflict();
+    if (login !== undefined) requireAvailableLogin(current.accounts, login, current.user.id);
+    if (changingPassword) {
+      const now = Date.now(), previous = current.accounts.attempts[attemptKey];
+      const attempt = previous && previous.until > now ? previous : undefined;
+      if (attempt && attempt.count >= profileAttemptLimit) throw profileThrottled();
+      if (!credentials) {
+        current.accounts.attempts[attemptKey] = { count: (attempt?.count ?? 0) + 1, until: attempt?.until ?? now + profileAttemptWindow };
+        return { result: { status: 403, error: 'Текущий пароль неверный.' }, changed: true };
+      }
+      Object.assign(current.user, credentials);
+      // A self-chosen password can be verified but cannot be read back.
+      delete current.user.passwordCiphertext;
+      delete current.accounts.attempts[attemptKey];
+      revokeOtherProfileSessions(fresh, current.accounts, current.user, sessionHash);
+    }
+    const avatarChanged = avatar !== undefined && !sameAvatar(current.user.avatar, avatar);
+    const loginChanged = login !== undefined && login !== current.user.login;
+    const changed = loginChanged || avatarChanged || changingPassword || name !== undefined && name !== current.user.name;
+    if (name !== undefined) current.user.name = name;
+    if (loginChanged) {
+      // Sessions, push and directory links belong to the stable account ID.
+      moveLoginThrottle(current.accounts, current.user.login, login);
+      current.user.login = login;
+    }
+    if (avatarChanged) {
+      if (avatar) current.user.avatar = avatar;
+      else delete current.user.avatar;
+    }
+    if (changed) current.user.version++;
+    return { result: { status: 200, user: publicUser(current.user) }, changed };
+  };
+}
 
 /** Credential work has no authority to create a session. The returned completion
  * is scoped to one mutate call and must recheck fresh transaction identity,
@@ -197,7 +331,7 @@ export async function login(data: OperationsData, input: Record<string, unknown>
 function finishLogin(data:OperationsData,name:string,identity:string|null,verified:boolean,audience:'logistics'|undefined,onChanged:()=>void):LoginResult {
   const accounts=data.accounts;
   if(!accounts?.users.length)throw new ApiError(403,'Сначала создайте учётную запись директора.');
-  const now=Date.now(), key=hash(`artel:auth:user:${name}`), globalKey=hash('artel:auth:global-login-limit:v2');
+  const now=Date.now(), key=loginAttemptKey(name), globalKey=hash('artel:auth:global-login-limit:v2');
   for(const [k,a] of Object.entries(accounts.attempts))if(a.until<=now){delete accounts.attempts[k];onChanged();}
   // Preserve existing throttles when separating user keys from the old global
   // sentinel, which was also a legal account login. No password or session changes.
@@ -209,11 +343,10 @@ function finishLogin(data:OperationsData,name:string,identity:string|null,verifi
     if (remove) delete accounts.attempts[oldKey];
     onChanged();
   };
-  const legacyGlobalKey=hash('artel-global-login-limit');
-  migrateAttempt(legacyGlobalKey,globalKey,50,false);
-  for(const account of accounts.users)migrateAttempt(hash(account.login),hash(`artel:auth:user:${account.login}`),5,hash(account.login)!==legacyGlobalKey);
-  if(accounts.attempts[legacyGlobalKey]){delete accounts.attempts[legacyGlobalKey];onChanged();}
-  if(/^[a-z0-9._-]{3,64}$/.test(name))migrateAttempt(hash(name),key,5);
+  migrateAttempt(legacyGlobalLoginKey,globalKey,50,false);
+  for(const account of accounts.users)migrateAttempt(hash(account.login),loginAttemptKey(account.login),5,hash(account.login)!==legacyGlobalLoginKey);
+  if(accounts.attempts[legacyGlobalLoginKey]){delete accounts.attempts[legacyGlobalLoginKey];onChanged();}
+  if(accountLoginPattern.test(name))migrateAttempt(hash(name),key,5);
   const limited = {error:'Слишком много попыток. Повторите через 15 минут.',status:429};
   const userLimited=(accounts.attempts[key]?.count??0)>=5;
   const globalLimited=(accounts.attempts[globalKey]?.count??0)>=50;

@@ -17,7 +17,7 @@ export function validPasswordCiphertext(value: unknown): value is string {
   return typeof value === 'string' && /^v1\.[a-f0-9]{24}\.[a-f0-9]{32}\.(?:[a-f0-9]{2}){12,1024}$/.test(value);
 }
 export function decryptAccountPassword(record: PasswordRecord, secret: string | undefined) {
-  if (!record.passwordCiphertext) throw new ApiError(409, 'Пароль задан до включения просмотра и недоступен. Он остаётся действующим.');
+  if (!record.passwordCiphertext) throw new ApiError(409, 'Пароль недоступен для просмотра. Он остаётся действующим.');
   const encryptionKey = key(secret);
   try {
     if (!validPasswordCiphertext(record.passwordCiphertext)) throw new Error('Invalid envelope');

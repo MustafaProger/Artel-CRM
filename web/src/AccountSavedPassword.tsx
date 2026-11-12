@@ -16,7 +16,7 @@ export default function AccountSavedPassword({ userId, version, available }: { u
     const timer = window.setTimeout(hide, 30_000);
     return () => window.clearTimeout(timer);
   }, [password]);
-  if (!available) return <small className="account-password-unavailable">Пароль недоступен для просмотра: задан ранее.</small>;
+  if (!available) return <small className="account-password-unavailable">Пароль недоступен для просмотра.</small>;
   const reveal = async () => {
     if (pending.current) return;
     const controller = new AbortController(); pending.current = controller; setBusy(true); setError('');

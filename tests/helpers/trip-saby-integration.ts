@@ -39,7 +39,7 @@ export async function integrationRuntime() {
   // Explicit test-only layout selection; production never auto-migrates.
   if (authLayoutVersion !== null) await migrateTestAuthStorage(resolve(directory, 'store'), source);
   const facts = () => ({ arrivedAt: '2025-04-01T09:01', departedAt: '2025-04-01T10:03', deliveries: Object.fromEntries(created.trip.customers.map((row, index) => [row.id, { grossMassTonnes: index ? '5.2' : '7', massMethod: '02' }])) });
-  return { directory, snapshotDirectory, source, base, store, tripId: created.trip.id, trip: created.trip, prepare: integrationPrepare, authorize: () => undefined, facts, close: () => rm(directory, { recursive: true, force: true }) };
+  return { directory, snapshotDirectory, source, base, store, tripId: created.trip.id, trip: created.trip, prepare: integrationPrepare, authorize: () => undefined, facts, close: () => rm(directory, { recursive: true, force: true, maxRetries: 3 }) };
 }
 export type IntegrationRpc = { method: string; params: Record<string, SabyObject>; id: number };
 export function integrationApi() {

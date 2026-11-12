@@ -37,35 +37,46 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
     assert.equal((await context.request.post(origin + '/api/auth/login', { data: { login: driver.login, password: driver.password } })).status(), 200);
     const page = await context.newPage(); page.on('pageerror', error => report.browserErrors.push(error.message));
     await page.goto(origin + '/#driver-trips');
-    const bell = page.getByRole('button', { name: /^Настройки уведомлений/ });
-    const dialog = page.getByRole('dialog', { name: 'Уведомления о рейсах', exact: true });
-    const close = page.getByRole('button', { name: 'Закрыть настройки уведомлений', exact: true });
-    const enable = page.getByRole('button', { name: 'Включить уведомления', exact: true });
-    await expect(bell).toBeVisible(); await expect(dialog).not.toBeVisible();
+    const gear = page.locator('.driver-settings-link');
+    const settings = page.locator('.personal-settings-page');
+    const notifications = page.getByRole('region', { name: 'Уведомления', exact: true });
+    const goToTrips = async () => {
+      await page.getByRole('link', { name: 'Мои рейсы', exact: true }).click();
+      await expect(page).toHaveURL(/#driver-trips$/);
+      await expect(settings).not.toBeVisible();
+    };
+    const openNotifications = async () => {
+      await gear.click();
+      await expect(page).toHaveURL(/#settings$/);
+      await expect(notifications).toBeVisible();
+    };
+    const enable = notifications.getByRole('button', { name: 'Подключить этот браузер', exact: true });
+    await expect(gear).toBeVisible();
     assert.equal(await page.evaluate(() => window.qaPermissionRequests), 0);
     for (const width of [1440, 760, 390, 375, 320]) {
       await page.setViewportSize({ width, height: 585 });
       const size = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth }));
       assert.ok(size.scroll <= size.width + 1, `${name} overflow at ${width}`);
-      await expect(bell).toBeInViewport(); await expect(page.locator('.driver-search')).toBeInViewport();
+      await expect(gear).toBeInViewport(); await expect(page.locator('.driver-search')).toBeInViewport();
       await expect(page.locator('.driver-trip-card').first()).toBeInViewport();
       await page.screenshot({ path: resolve(output, `${name}-${width}.png`) });
-      await bell.click(); await expect(dialog).toBeVisible(); await expect(enable).toBeEnabled();
-      const bounds = await dialog.boundingBox(); assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y >= 0 && bounds.y + bounds.height <= 586);
-      assert.deepEqual((await new AxeBuilder({ page }).include('.driver-notifications-dialog').analyze()).violations, []);
-      if (width === 375) await page.screenshot({ path: resolve(output, `${name}-settings-375.png`) });
-      await page.keyboard.press('Escape'); await expect(dialog).not.toBeVisible(); await expect(bell).toBeFocused();
+      await openNotifications(); await expect(enable).toBeEnabled();
+      await expect(settings.getByRole('heading', { name: 'Профиль', exact: true })).toBeVisible();
+      const bounds = await settings.boundingBox(); assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1);
+      assert.deepEqual((await new AxeBuilder({ page }).include('.personal-settings-page').analyze()).violations, []);
+      if (width === 375) await page.screenshot({ path: resolve(output, `${name}-settings-375.png`), fullPage: true });
+      await goToTrips();
     }
-    pass(`${name}: compact bell and visible trips at 5 widths; modal accessibility, Escape and focus restoration`);
-    await bell.click(); await enable.click(); await expect(dialog).not.toBeVisible();
-    await expect(bell).toHaveAccessibleName('Настройки уведомлений, включены'); await expect(bell).toBeFocused();
+    pass(`${name}: settings navigation and accessible profile and notification sections at 5 widths`);
+    await openNotifications(); await enable.click();
+    const testNotification = notifications.getByRole('button', { name: 'Проверить уведомление', exact: true });
+    await expect(testNotification).toBeVisible();
+    await expect(page).toHaveURL(/#settings$/);
     assert.equal((await f.store.read(f.source)).push.devices[0].userId, driver.userId);
-    await page.reload(); await expect(dialog).not.toBeVisible();
-    await expect(bell).toHaveAccessibleName('Настройки уведомлений, включены');
+    await page.reload(); await expect(testNotification).toBeVisible();
     assert.equal(await page.evaluate(() => window.qaPermissionRequests), 0);
-    await bell.click(); await expect(page.getByRole('button', { name: 'Проверить уведомление', exact: true })).toBeVisible();
-    await close.click(); await expect(dialog).not.toBeVisible();
-    pass(`${name}: successful enable auto-closes settings; subscription and compact indicator survive reload without prompting`);
+    await goToTrips();
+    pass(`${name}: browser subscription stays on settings and survives reload without prompting`);
     const created = await f.admin('/api/shipment-trips', 'POST', tripBody(f.trip)); assert.equal(created.status, 201);
     assert.equal(sent.length, 1); assert.equal(sent[0].userId, driver.userId);
     // A worker message refreshes the visible list immediately, without a manual reload.
@@ -73,35 +84,39 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
     await expect(page.locator('.driver-trip-card')).toHaveCount(2);
     await page.goto(origin + sent[0].url);
     await expect(page.locator('.driver-trip-detail')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Погрузка', exact: true })).toBeVisible();
-    await bell.click();
+    await expect(page.getByRole('heading', { name: 'Место погрузки', exact: true })).toBeVisible();
+    await openNotifications();
     await page.getByRole('button', { name: 'Проверить уведомление', exact: true }).click();
-    await expect(page.getByText('Сервис принял проверку. Ожидаем подтверждение браузера…')).toBeVisible();
-    const probe = sent.at(-1).probe; assert.ok(probe);
-    await close.click(); await expect(dialog).not.toBeVisible();
+    await expect(page.getByText('Проверка создана. Ожидаем подтверждение браузера…')).toBeVisible();
+    await expect.poll(() => sent.at(-1)?.probe?.id).toBeTruthy();
+    const probe = sent.at(-1).probe;
+    await goToTrips();
     assert.equal((await f.request('/api/push/test-receipt', 'POST', { probeId: probe.id, token: probe.token })).status, 200);
     await expect.poll(async () => (await driver.call(`/api/push/test-status?probeId=${probe.id}`)).body.status).toBe('confirmed');
-    await bell.click();
+    await openNotifications();
     await expect(page.getByText('Браузер получил тестовое уведомление.')).toBeVisible();
-    await page.getByRole('button', { name: 'Выключить', exact: true }).click(); await expect(enable).toBeEnabled();
+    await page.getByRole('button', { name: 'Отключить этот браузер', exact: true }).click(); await expect(enable).toBeEnabled();
     assert.equal((await f.store.read(f.source)).push.devices.length, 0);
-    await expect(bell).toHaveAccessibleName('Настройки уведомлений');
     pass(`${name}: real HTTP subscription, trip assignment, immediate list refresh, exact trip link, pending/confirmed receipt and unsubscribe (simulated PushManager)`);
     await page.evaluate(() => { Notification.permission = 'default'; Notification.requestPermission = async () => { Notification.permission = 'denied'; return 'denied'; }; });
     await enable.click(); await expect(page.getByText('Разрешите уведомления для CRM в настройках браузера или устройства.')).toBeVisible();
-    await expect(enable).toBeDisabled(); await expect(dialog).toBeVisible();
-    await close.click(); await expect(dialog).not.toBeVisible();
-    await expect(page.locator('.driver-trip-detail')).toBeVisible();
+    await expect(enable).toBeDisabled(); await expect(settings).toBeVisible();
+    await goToTrips();
+    await expect(page.locator('.driver-trip-card')).toHaveCount(2);
+    const notificationSession = await context.cookies(origin);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'userAgent', {
+        configurable: true, value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile Safari/604.1',
+      });
+    });
+    await openNotifications();
+    await expect(page.getByText(/На iPhone\/iPad.*откройте меню/)).toBeVisible();
     await context.close();
-    const ios = await browser.newContext({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile Safari/604.1' });
-    await ios.request.post(origin + '/api/auth/login', { data: { login: driver.login, password: driver.password } });
-    const phone = await ios.newPage(); await phone.goto(origin + '/#driver-trips');
-    await phone.getByRole('button', { name: /^Настройки уведомлений/ }).click();
-    await expect(phone.getByText(/На iPhone\/iPad откройте меню/)).toBeVisible(); await ios.close();
-    pass(`${name}: denied permission and iPhone installation guidance`);
+    pass(`${name}: denied permission and iPhone installation guidance with an emulated user agent`);
     if (name === 'chromium') {
       const real = await browser.newContext({ permissions: ['notifications'] });
-      await real.request.post(origin + '/api/auth/login', { data: { login: driver.login, password: driver.password } });
+      // The notification body is bound to the session that registered the device.
+      await real.addCookies(notificationSession);
       const tab = await real.newPage(); await tab.goto(origin + '/#driver-trips');
       await tab.evaluate(async () => { await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; });
       const worker = real.serviceWorkers()[0]; assert.ok(worker);
@@ -118,10 +133,16 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
       assert.equal(shown?.title, 'Новый рейс · Артэль'); assert.equal(shown?.url, sent[0].url);
       pass('chromium: actual service worker creates the new-trip notification with the CRM tab closed (synthetic PushEvent)');
       const probeSub = subscription();
-      assert.equal((await driver.call('/api/push/subscription', 'POST', { explicit: true, subscription: probeSub })).status, 200);
-      const probeResult = await driver.call('/api/push/test', 'POST', { endpoint: probeSub.endpoint }); assert.equal(probeResult.status, 200);
+      const device = await real.request.post(origin + '/api/push/subscription', { data: { explicit: true, subscription: probeSub } });
+      assert.equal(device.status(), 200);
+      const probeResult = await real.request.post(origin + '/api/push/test', { data: { endpoint: probeSub.endpoint } });
+      assert.equal(probeResult.status(), 200);
+      const { probeId } = await probeResult.json();
       await worker.evaluate(payload => self.dispatchEvent(new PushEvent('push', { data: JSON.stringify(payload) })), sent.at(-1));
-      await expect.poll(async () => (await driver.call(`/api/push/test-status?probeId=${probeResult.body.probeId}`)).body.status).toBe('confirmed');
+      await expect.poll(async () => {
+        const response = await real.request.get(origin + `/api/push/test-status?probeId=${probeId}`);
+        return (await response.json()).status;
+      }).toBe('confirmed');
       await worker.evaluate(async () => { for (const notification of await self.registration.getNotifications()) notification.close(); });
       pass('chromium: actual service worker acknowledges notification creation through the real receipt API with no CRM tab open');
       await real.close();

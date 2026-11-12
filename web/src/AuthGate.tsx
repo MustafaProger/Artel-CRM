@@ -17,7 +17,7 @@ function AuthBrand({ logistics = false }: { logistics?: boolean }) {
   </div>;
 }
 
-export default function AuthGate({ children, workspace }: { children: (user: AccountUser, onLogout: () => void) => ReactNode; workspace?: 'logistics' }) {
+export default function AuthGate({ children, workspace }: { children: (user: AccountUser, onLogout: () => void, onUserChanged: (user: AccountUser) => void) => ReactNode; workspace?: 'logistics' }) {
   const logistics = workspace === 'logistics';
   const [session, setSession] = useState<SessionState | null>(null);
   const [error, setError] = useState('');
@@ -213,8 +213,16 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
     }
   };
 
+  const onUserChanged = (user: AccountUser) => {
+    const current = currentSession.current;
+    if (operationRef.current || current?.user?.id !== user.id || current.user.version > user.version) return;
+    invalidateReads();
+    applySession({ ...current, user });
+    setChecking(false);
+  };
+
   if (session?.user) return <>
-    <div className="auth-session-workspace" inert={operation === 'logout'}>{children(session.user, () => { void logout(); })}</div>
+    <div className="auth-session-workspace" inert={operation === 'logout'}>{children(session.user, () => { void logout(); }, onUserChanged)}</div>
     {operation === 'logout' ? <div className="auth-session-notice" role="status"><LoaderCircle className="auth-spinner" size={20} aria-hidden="true"/><span>Завершаем сеанс…</span></div>
       : (logoutError || error) && <div className="auth-session-notice auth-session-error" role="alert"><span>{logoutError || error}</span><button type="button" className="button" onClick={() => logoutError ? void logout() : void refresh()}>{logoutError ? 'Повторить выход' : 'Проверить доступ'}</button><button type="button" className="button" onClick={() => { setError(''); setLogoutError(''); }}>Закрыть</button></div>}
   </>;

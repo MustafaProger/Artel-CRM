@@ -19,6 +19,7 @@ export default defineConfig(({ mode }) => {
   build: { cssCodeSplit: false, outDir: '../app-dist', emptyOutDir: true, rollupOptions: {
     input: { crm: directory('./web/index.html') },
     output: { manualChunks(id) {
+      if (id.includes('/pdfjs-dist/')) return 'avatar-pdf'
       if (id.includes('/node_modules/') && !id.includes('/ol/') && !id.includes('/rbush/') && !id.includes('/quickselect/')) return 'vendor'
       if (/\/web\/src\/(utils|auth-model|useDialogMotion|ScrollableSegments|page-access|page-catalog|push-client|workspace-api)\.tsx?$/.test(id)) return 'crm-shared'
     } },

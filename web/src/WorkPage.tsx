@@ -6,10 +6,11 @@ import { Bell, Check, ChevronDown, LoaderCircle, MessageSquare, Paperclip, Calen
 import { hasSection, isScopedEmployee, type AccountUser } from './auth-model';
 import DirectorySelect from './DirectorySelect';
 import type { Company } from './model';
-import { isWorkDirectoryCompany, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workStatuses, workFileLimit, workFilesTotalLimit, workSubtaskLimit, type WorkPriority, type WorkSubtask, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkResponse, type WorkStatus, type WorkTask } from './work-model';
+import { isWorkDirectoryCompany, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workStatuses, workFileLimit, workFilesTotalLimit, workSubtaskLimit, type WorkPriority, type WorkSubtask, type AnyWorkEntry, type WorkCompanyRecord, type WorkKind, type WorkNote, type WorkPerson, type WorkResponse, type WorkStatus, type WorkTask } from './work-model';
 import './work.css';
 import ScrollableSegments from './ScrollableSegments';
 import { useViewEntrance } from './useViewEntrance';
+import UserAvatar from './UserAvatar';
 
 type Editor = { kind: WorkKind; entry?: AnyWorkEntry; dueDate?: string; status?: WorkStatus };
 const savedNotices = {
@@ -33,6 +34,16 @@ const localInputTime = (value: string | null | undefined) => {
   const date = new Date(value);
   return `${localDay(date)}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 };
+
+const unavailablePerson = 'Сотрудник недоступен';
+
+function WorkPersonName({ person, strong = false, title }: { person?: WorkPerson; strong?: boolean; title?: string }) {
+  const name = person?.name ?? unavailablePerson;
+  return <span className="work-person-name" title={title}>
+    <UserAvatar name={person?.name ?? ''} avatarUrl={person?.avatarUrl}/>
+    {strong ? <strong>{name}</strong> : <span>{name}</span>}
+  </span>;
+}
 
 function TaskOutcome({ status }: { status: 'done' | 'failed' }) {
   return <span className={`work-task-outcome is-${status}`}>{status === 'done' ? 'Выполнена' : 'Не выполнена'}</span>;
@@ -223,7 +234,8 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       if (active.current) setError(reason instanceof Error ? reason.message : 'Не удалось подтвердить изменение. Обновите список.');
     } finally { completing.current.delete(task.id); if (active.current) { setMovingTask(null); setDraggedTask(null); setDropStatus(null); } }
   };
-  const userName = (id: string) => [...(data?.users ?? []), ...(data?.historicalUsers ?? [])].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
+  const people = new Map([...(data?.historicalUsers ?? []), ...(data?.users ?? [])].map(person => [person.id, person]));
+  const userName = (id: string) => people.get(id)?.name ?? unavailablePerson;
   const assigneeNames = (row: AnyWorkEntry) => workAssigneeIds(row).map(userName).join(', ');
   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
   const isManager = !!data && isScopedEmployee(data.currentUser);
@@ -258,6 +270,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     const task = 'title' in row ? row : null;
     const pending = Object.hasOwn(pendingTasks, row.id);
     const status = task ? pendingTasks[row.id] ?? task.status : null;
+    const otherAssignees = task ? workAssigneeIds(task).filter(id => id !== task.createdBy) : [];
     return <div key={row.id} className={task ? `work-task-row${status === 'done' ? ' is-done' : ''}${pending ? ' is-saving' : ''}` : 'work-record-row'}>
       {task && (task.status === 'failed' ? <button type="button" className="work-task-check work-task-reopen" aria-label={`Вернуть в работу: ${task.title}`} title="Вернуть в работу" disabled={pending} onClick={() => void toggleTask(task)}>
         <span className="work-task-check-box" aria-hidden="true"><X size={15} strokeWidth={2.5}/></span>
@@ -270,7 +283,19 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
           <strong>{task ? task.title : (row as WorkCompanyRecord).question}</strong>
           {row.companyId && <span className="work-task-company">{companyName(row.companyId)}</span>}
           {task?.description && <span className="work-task-description">{task.description}</span>}
-          <span className="work-task-meta">{status && isClosedWorkStatus(status) && <TaskOutcome status={status}/>}<span>{assigneeNames(row)}</span><SubtaskCount subtasks={task?.subtasks}/>{!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}{!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}{row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}</span>
+          <span className="work-task-meta">
+            {status && isClosedWorkStatus(status) && <TaskOutcome status={status}/>}
+            {task
+              ? <WorkPersonName person={people.get(task.createdBy)} title="Автор задачи"/>
+              : <span>{assigneeNames(row)}</span>}
+            {otherAssignees.length > 0 && <span className="work-task-assignees">
+              {otherAssignees.length === 1 ? 'Исполнитель' : 'Исполнители'}: {otherAssignees.map(userName).join(', ')}
+            </span>}
+            <SubtaskCount subtasks={task?.subtasks}/>
+            {!!row.comments?.length && <span><MessageSquare size={13}/>Комментарии: {row.comments.length}</span>}
+            {!!row.attachments?.length && <span><Paperclip size={13}/>Файлы: {row.attachments.length}</span>}
+            {row.reminderAt && <span><Bell size={13}/>{dateLabel(row.reminderAt)}</span>}
+          </span>
         </button>
         {taskErrors[row.id] && <p className="work-task-error" role="alert">{taskErrors[row.id]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
       </div>
@@ -339,14 +364,15 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
   </div>;
 }
 
-function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; users: AccountUser[]; historicalUsers: Pick<AccountUser, 'id' | 'name'>[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void; onCommentSaved: (entry: WorkTask) => void; onTaskCount: (count: number) => void }) {
+function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; users: AccountUser[]; historicalUsers: WorkPerson[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void; onCommentSaved: (entry: WorkTask) => void; onTaskCount: (count: number) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const focusSubtask = useRef<string | null>(null);
   const addedSubtask = useRef<HTMLLIElement>(null);
   const addSubtaskButton = useRef<HTMLButtonElement>(null);
   const errorMessage = useRef<HTMLParagraphElement>(null);
-  const userName = (id: string) => [...users, ...historicalUsers].find(user => user.id === id)?.name ?? 'Сотрудник недоступен';
+  const people = new Map([...historicalUsers, ...users].map(person => [person.id, person]));
+  const userName = (id: string) => people.get(id)?.name ?? unavailablePerson;
   const [requestId] = useState(() => crypto.randomUUID());
   const [entry, setEntry] = useState(editor.entry);
   const task = editor.kind === 'tasks' ? entry as WorkTask | undefined : undefined;
@@ -567,7 +593,10 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const uploadAction = <label className="work-upload"><Paperclip size={14} aria-hidden="true"/><span>Добавить файл</span><input type="file" multiple aria-label="Добавить файл" disabled={saving} onChange={event => { const selected = [...files, ...Array.from(event.target.files ?? [])]; event.target.value = ''; if (selected.some(file => file.size > workFileLimit) || selected.reduce((sum, file) => sum + file.size, 0) + (record?.attachments ?? []).reduce((sum, file) => sum + file.size, 0) > workFilesTotalLimit || selected.length + (record?.attachments?.length ?? 0) > 20) { setError('Файл: до 20 МБ; в карточке не более 20 файлов и 20 МБ суммарно.'); return; } setFiles(selected); setError(''); }}/></label>;
   const taskFiles = editor.kind !== 'notes' && <section className="work-files" aria-label="Файлы">{fileRows}{uploadAction}</section>;
   const taskActivity = <>
-      {editor.kind === 'companies' && <section className="work-comments"><h3>Комментарии</h3>{record?.comments?.slice().reverse().map(comment => <article key={comment.id}><small>{userName(comment.authorId)} · {dateLabel(comment.createdAt)}</small><p>{comment.text}</p></article>)}{input('Новый комментарий', 'comment', { multiline: true })}</section>}
+      {editor.kind === 'companies' && <section className="work-comments"><h3>Комментарии</h3>{record?.comments?.slice().reverse().map(comment => <article key={comment.id}><small className="work-company-comment-meta">
+        <WorkPersonName person={people.get(comment.authorId)}/>
+        <time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time>
+      </small><p>{comment.text}</p></article>)}{input('Новый комментарий', 'comment', { multiline: true })}</section>}
       {entry && <p className="work-hint">Изменено: {dateLabel(entry.updatedAt)} · {userName(entry.updatedBy)}</p>}
   </>;
   const details = <>
@@ -628,7 +657,7 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
                 <ol className="work-activity-list">{task.comments.slice().reverse().map(comment => <li key={comment.id} className={comment.id === waitingCommentId ? 'is-awaiting-reveal' : comment.id === latestCommentId ? 'is-new' : undefined}>
                   <span ref={comment.id === waitingCommentId ? latestCommentAnchor : undefined} className="work-activity-icon" aria-hidden="true">{comment.handoffTo ? <Send size={15}/> : <MessageSquare size={15}/>}</span>
                   <article>
-                    <header><strong>{userName(comment.authorId)}</strong><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
+                    <header><WorkPersonName person={people.get(comment.authorId)} strong/><time dateTime={comment.createdAt}>{dateLabel(comment.createdAt)}</time></header>
                     {comment.handoffTo && <small>Передано · {comment.handoffTo.map(userName).join(', ')}</small>}
                     <p>{comment.text}</p>
                   </article>

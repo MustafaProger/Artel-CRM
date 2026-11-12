@@ -67,11 +67,13 @@ export interface WorkData {
   notes: WorkNote[];
 }
 export type AnyWorkEntry = WorkTask | WorkCompanyRecord | WorkNote;
+export type WorkPerson = Pick<AccountUser, 'id' | 'name' | 'avatarUrl'>;
+
 export interface WorkResponse {
   work: WorkData;
   users: AccountUser[];
-  /** Names referenced by visible records, including former employees. Never used for new assignments. */
-  historicalUsers: Pick<AccountUser, 'id' | 'name'>[];
+  /** Identities referenced by visible records, including former employees. Never used for new assignments. */
+  historicalUsers: WorkPerson[];
   companies: Company[];
   currentUser: AccountUser;
   revision: number;

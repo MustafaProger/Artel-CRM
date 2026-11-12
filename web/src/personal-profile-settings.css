@@ -1,0 +1,121 @@
+.personal-profile {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.personal-profile-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.personal-profile-identity-fields { display: grid; gap: 3px; min-width: 0; }
+.personal-profile-identity[data-editing="false"] .personal-profile-identity-fields {
+  align-content: center;
+  gap: 1px;
+  min-height: 64px;
+}
+.personal-profile-identity input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 31px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  font-family: inherit;
+  color: inherit;
+  text-overflow: ellipsis;
+  transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+.personal-profile-identity .personal-profile-identity-login { font-size: 18px; font-weight: 650; }
+.personal-profile-identity .personal-profile-identity-name { font-size: 13px; color: var(--muted, #54695d); }
+.personal-profile-identity[data-editing="false"] input { height: 25px; padding-inline: 4px; }
+.personal-profile-identity[data-editing="true"] input { border-color: var(--border, #cfcfd6); background: #fff; }
+.personal-profile-identity[data-editing="false"] input:focus { outline: none; box-shadow: none; }
+.personal-profile-identity[data-editing="true"] input:focus {
+  border-color: #47866e;
+  box-shadow: 0 0 0 2px #18664717;
+  outline: none;
+}
+.personal-profile-identity-actions { display: grid; }
+.personal-profile-identity-actions .icon-button { width: 36px; height: 36px; }
+.personal-profile-identity-actions .personal-profile-pencil { color: var(--muted, #54695d); }
+.personal-profile-identity-actions .personal-profile-identity-save { color: var(--accent, #176647); }
+.personal-profile-identity-save:disabled { opacity: .55; cursor: default; }
+.personal-profile-identity > .personal-profile-feedback { grid-column: 1 / -1; }
+
+@media (max-width: 760px) {
+  .personal-profile-identity[data-editing="true"] .personal-profile-identity-name { font-size: 16px; }
+  .personal-profile-identity-actions .icon-button { width: 40px; height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .personal-profile-identity input { transition: none; }
+}
+
+.personal-profile-form {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.personal-profile > .personal-profile-form {
+  padding-top: 25px;
+  border-top: 1px solid var(--border, #dce5de);
+}
+
+.personal-profile-form h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.personal-profile-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.personal-profile-field + .personal-profile-field,
+.personal-profile-hint + .personal-profile-field { margin-top: 8px; }
+
+.personal-profile-field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 11px;
+  border: 1px solid var(--border, #cfcfd6);
+  border-radius: 9px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.personal-profile-field input[aria-invalid='true'] { border-color: #a14136; }
+.personal-profile-field input:focus-visible { outline: 2px solid var(--accent, #176647); outline-offset: 2px; }
+
+.personal-profile .personal-profile-feedback,
+.personal-profile-form .personal-profile-hint,
+.personal-profile-form .personal-profile-session-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.personal-profile-form .personal-profile-session-note { margin-bottom: 20px; color: var(--muted, #54695d); }
+.personal-profile-form .personal-profile-hint { margin-top: -6px; color: var(--muted, #54695d); }
+.personal-profile .personal-profile-feedback { color: var(--accent, #176647); }
+.personal-profile .personal-profile-feedback[role='alert'],
+.personal-profile-form .personal-profile-mismatch { color: #923d33; }
+
+.personal-profile-form > .button { justify-self: end; margin-top: 15px; }
+.personal-profile-login { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); }

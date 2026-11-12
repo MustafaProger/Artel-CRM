@@ -10,6 +10,7 @@ import { createSnapshotMiddleware, loadSnapshot } from '../server/local-api';
 import { OperationsStore, encodeOperations, decodeOperations } from '../server/operations-store';
 import { defaultEmployeeSections, type AccountUser, type SharedDirectory } from '../web/src/auth-model';
 import type { Shipment, Company } from '../web/src/model';
+import { directoryDraft, directoryPayload } from '../web/src/directory-editor-data';
 import { writeTripsQaSnapshot } from '../scripts/qa-trips-runtime.mjs';
 
 async function fixture() {
@@ -110,6 +111,99 @@ test('directory grants: own customer creation binds the actor and cannot claim, 
     assert.equal((await f.a('/api/companies/from-inn', 'POST', {inn:'7707083893'})).status, 403);
     assert.equal(await readFile(f.store.path, 'utf8'), before);
     assert.equal((await f.a('/api/directories/customers/' + id, 'DELETE', {version:changed.body.entry.version})).status, 200);
+  } finally { await f.close(); }
+});
+
+test('directory grants: own dual-role client saves from both tabs without changing shared roles or exposing foreign suppliers', async () => {
+  const f = await fixture();
+  try {
+    const created = await f.admin('/api/directories', 'POST', {
+      kind: 'companies', name: 'Dual-role assigned company QA', roles: ['customer', 'supplier'],
+      managerId: f.users[0].managerId, addresses: [{ name: 'Assigned delivery QA', kind: 'delivery' }],
+    });
+    assert.equal(created.status, 201);
+    const id = created.body.entry.id, path = '/api/directories/companies/' + id;
+    const directory = (await f.a('/api/snapshot?context=directories')).body;
+    assert.ok(!directory.companies.some((row: Company) => row.id === f.supplier.id));
+    assert.deepEqual(directory.companies.find((row: Company) => row.id === id).roles, ['customer', 'supplier']);
+    const clientDraft = directoryDraft(directory, 'customers', id);
+    clientDraft.fields.name = 'Dual-role assigned company edited QA';
+    clientDraft.addresses[0].name = 'Assigned delivery edited QA';
+    const clientPayload = directoryPayload('customers', clientDraft);
+    const edited = await f.a(path, 'PATCH', { ...clientPayload, version: created.body.entry.version });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+
+    const refreshed = (await f.a('/api/directories')).body;
+    const supplierDraft = directoryDraft(refreshed, 'suppliers', id);
+    supplierDraft.fields.name = 'Dual-role assigned company renamed QA';
+    const payload = directoryPayload('suppliers', supplierDraft);
+    const version = edited.body.entry.version;
+    const before = await readFile(f.store.path, 'utf8');
+    assert.equal((await f.b(path, 'PATCH', { ...payload, version })).status, 403);
+    assert.equal((await f.a(path, 'PATCH', { ...payload, version, managerId: f.users[1].managerId })).status, 403);
+    assert.equal((await f.a(path, 'PATCH', { ...payload, version, roles: ['customer', 'supplier', 'carrier'] })).status, 403);
+    assert.equal((await f.a('/api/directories/suppliers/' + id, 'DELETE', { version })).status, 403);
+    assert.equal((await f.a('/api/directories/companies/' + f.supplier.id, 'PATCH', { ...payload, version })).status, 403);
+    assert.equal(await readFile(f.store.path, 'utf8'), before);
+
+    // Older open cards send only the visible client role.
+    const saved = await f.a(path, 'PATCH', { ...payload, version, roles: ['customer'] });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body.entry.roles, ['customer', 'supplier']);
+    const after = (await f.admin('/api/directories')).body;
+    assert.ok(after.directories.addresses.some((row: {companyId: string; name: string}) => row.companyId === id && row.name === 'Assigned delivery edited QA'));
+    assert.deepEqual(after.directories.customerManagers.find((row: {companyId: string}) => row.companyId === id), { companyId: id, managerId: f.users[0].managerId });
+  } finally { await f.close(); }
+});
+
+test('directory grants: an assigned supplier and its addresses are editable until reassignment', async () => {
+  const f = await fixture();
+  try {
+    const created = await f.admin('/api/directories', 'POST', {
+      kind: 'companies', name: 'Assigned supplier QA', roles: ['supplier'], managerId: f.users[0].managerId, addresses: [],
+    });
+    assert.equal(created.status, 201);
+    const id = created.body.entry.id, path = '/api/directories/companies/' + id;
+    const address = await f.a('/api/directories', 'POST', {
+      kind: 'addresses', companyId: id, addressKind: 'loading', name: 'Own supplier loading QA',
+    });
+    assert.equal(address.status, 201, JSON.stringify(address.body));
+    const directory = (await f.a('/api/directories')).body;
+    assert.deepEqual(directory.companies.filter((row: Company) => row.roles.includes('supplier')).map((row: Company) => row.id), [id]);
+    const draft = directoryDraft(directory, 'suppliers', id);
+    draft.fields.name = 'Assigned supplier edited QA';
+    const payload = directoryPayload('suppliers', draft);
+    const edited = await f.a(path, 'PATCH', { ...payload, version: created.body.entry.version });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+
+    const addressPath = '/api/directories/addresses/' + address.body.entry.id;
+    assert.equal((await f.a(addressPath, 'PATCH', { companyId: f.supplier.id, name: 'Moved QA', addressKind: 'loading', version: 0 })).status, 403);
+    assert.equal((await f.a('/api/directories', 'POST', { kind: 'companies', name: 'Unassigned supplier QA', roles: ['supplier'], addresses: [] })).status, 403);
+    assert.equal((await f.admin('/api/directories', 'POST', { kind: 'customerManagers', companyId: id, managerId: f.users[1].managerId })).status, 201);
+    const before = await readFile(f.store.path, 'utf8');
+    assert.equal((await f.a(path, 'PATCH', { ...payload, version: edited.body.entry.version })).status, 403);
+    assert.equal((await f.a(addressPath, 'PATCH', { companyId: id, name: 'Forbidden QA', addressKind: 'loading', version: 0 })).status, 403);
+    assert.equal(await readFile(f.store.path, 'utf8'), before);
+    assert.ok(!(await f.a('/api/directories')).body.companies.some((row: Company) => row.id === id));
+    assert.ok((await f.b('/api/directories')).body.companies.some((row: Company) => row.id === id));
+  } finally { await f.close(); }
+});
+
+test('directory grants: editing a historical own client does not assign the company to the editor', async () => {
+  const f = await fixture();
+  try {
+    const id = f.customers[0].id;
+    const removed = await f.admin('/api/directories/customerManagers/' + id, 'DELETE', { managerId: f.users[0].managerId });
+    assert.equal(removed.status, 200);
+    const directory = (await f.a('/api/directories')).body;
+    const draft = directoryDraft(directory, 'customers', id);
+    draft.fields.name = 'Historical client edited QA';
+    const payload = directoryPayload('customers', draft);
+    assert.equal(payload.managerId, f.users[0].managerId);
+    const edited = await f.a('/api/directories/companies/' + id, 'PATCH', { ...payload, version: f.customers[0].version });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    const assignments = (await f.admin('/api/directories')).body.directories.customerManagers;
+    assert.ok(!assignments.some((row: { companyId: string }) => row.companyId === id));
   } finally { await f.close(); }
 });
 

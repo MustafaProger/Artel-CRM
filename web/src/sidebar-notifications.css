@@ -4,3 +4,4 @@
 @media (min-width: 761px) {
   .sidebar-collapsed:not(.shipments-focus) .sidebar-user-controls { flex-direction: column; }
 }
+.sidebar .sidebar-settings-link[aria-current="page"] { background: #e3efe8; color: #176647; border-color: #cce1d3; }

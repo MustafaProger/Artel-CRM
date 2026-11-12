@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, ChevronLeft, ChevronRight, ClipboardList, Map as MapIcon, Pencil, Plus, Search, Send, Truck } from 'lucide-react'
 import type { ShipmentTrip, DirectoryData, Company, ShipmentAddress } from './model'
 import type { TripRequest } from './trip-request-model'
+import type { SharedTripTimeline } from './trip-process-model'
 import ScrollableSegments from './ScrollableSegments'
 import TripRequestsPanel from './TripRequestsPanel'
 type RequestsMapComponent = typeof import('./TripRequestsMap').default
@@ -60,6 +61,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   const [tripsLoaded, setTripsLoaded] = useState(false), [requestsLoaded, setRequestsLoaded] = useState(false)
   const [requests, setRequests] = useState<TripRequest[]>([]), [requestsLoading, setRequestsLoading] = useState(true), [requestsError, setRequestsError] = useState('')
   const [requestCompanies, setRequestCompanies] = useState<Company[]>([]), [requestAddresses, setRequestAddresses] = useState<ShipmentAddress[]>([])
+  const [sharedTrips, setSharedTrips] = useState<SharedTripTimeline[]>([])
   const [trips, setTrips] = useState<ShipmentTrip[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0), [requestRefresh, setRequestRefresh] = useState(0), [query, setQuery] = useState(''), [page, setPage] = useState(0)
   const [editor, setEditor] = useState<{ id?: string } | null>(null), [sabyIds, setSabyIds] = useState<ReadonlySet<string>>(() => new Set()), [notice, setNotice] = useState('')
@@ -74,13 +76,23 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
       const versions = new Map(issueVersions.current)
       if (!background) { setLoading(true); setError('') }
       try {
-        const response = await fetch('/api/shipment-trips', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]) })
+        const path = view === 'process' ? '/api/shipment-trips?view=process' : '/api/shipment-trips'
+        const response = await fetch(path, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]) })
         const result = await response.json()
-        if (!response.ok) { if ([401, 403].includes(response.status) && !controller.signal.aborted) { setTrips([]); setTripsLoaded(false); setError(result.error || 'Доступ к рейсам недоступен.') } throw new Error(result.error || 'Не удалось загрузить рейсы') }
+        if (!response.ok) {
+          if ([401, 403].includes(response.status) && !controller.signal.aborted) {
+            setTrips([])
+            setSharedTrips([])
+            setTripsLoaded(false)
+            setError(result.error || 'Доступ к рейсам недоступен.')
+          }
+          throw new Error(result.error || 'Не удалось загрузить рейсы')
+        }
         if (controller.signal.aborted) return
         const indicatorsOnly = background && hasList && view === 'trips'
         hasList = true
         setTripsLoaded(true)
+        if (view === 'process') setSharedTrips(result.sharedTrips ?? [])
         setTrips(previous => {
           const fresh = new Map((result.trips as ShipmentTrip[]).map(trip => [trip.id, trip]))
           // Updating indicators must not reorder cards, unmount open panels or
@@ -157,7 +169,7 @@ export default function TripsPage({ data, canManagePlaces, onChanged, allowDelet
   const lastPage = Math.max(0, Math.ceil(filtered.length / 20) - 1), currentPage = Math.min(page, lastPage)
   return <div ref={viewEntrance} className={`trips-page${view === 'map' ? ' trips-page-map' : ''}`}>
     <ScrollableSegments className="trips-section-tabs" label="Разделы рейсов" value={view}>{([{ id: 'requests', name: 'Заявки', icon: ClipboardList }, { id: 'map', name: 'Карта', icon: MapIcon }, { id: 'trips', name: 'Рейсы', icon: Truck }, { id: 'process', name: 'В процессе', icon: Activity }] as const).map(item => <button type="button" className={`button ${item.id === view ? 'primary' : ''}`} key={item.id} aria-pressed={item.id === view} onClick={() => { if (item.id === view) return; setView(item.id); setNotice(''); reloadRequests() }}><item.icon size={17} aria-hidden="true"/>{item.name}</button>)}</ScrollableSegments>
-    {view === 'process' && <TripProcessPanel trips={trips} data={data} loading={loading} loaded={tripsLoaded} error={error} onReload={() => setRefresh(value => value + 1)}/>}
+    {view === 'process' && <TripProcessPanel trips={trips} sharedTrips={sharedTrips} data={data} loading={loading} loaded={tripsLoaded} error={error} onReload={() => setRefresh(value => value + 1)}/>}
     {view === 'requests' && <TripRequestsPanel requests={requests} loading={requestsLoading} loaded={requestsLoaded} error={requestsError} companies={requestCompanies} directories={{ ...directories, addresses: requestAddresses, assignedCustomerIds: undefined }} onReload={reloadRequests} onSaved={requestSaved} onDeleted={requestDeleted}/>}
     {view === 'map' && <section aria-label="Карта заявок">
       {requestsError && <div className="shipment-error" role="alert">{requestsError}<button className="button" onClick={reloadRequests}>Повторить загрузку</button></div>}

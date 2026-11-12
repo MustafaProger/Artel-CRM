@@ -5,6 +5,7 @@ import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAs
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
 import { queueTaskAssignment, queueTaskCompletion } from './push';
+import { profileAvatarProjection } from './profile-avatars';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const boundedText = (value: unknown, max: number, required = false): value is string => typeof value === 'string' && value.length <= max && (!required || !!value.trim());
@@ -78,6 +79,19 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
   }
 }
 
+function workPersonIds(row: AnyWorkEntry) {
+  const ids = [...workAssigneeIds(row), row.createdBy, row.updatedBy];
+  if ('comments' in row) for (const comment of row.comments ?? []) ids.push(comment.authorId, ...comment.handoffTo ?? []);
+  if ('attachments' in row) for (const file of row.attachments ?? []) ids.push(file.authorId);
+  return ids;
+}
+
+export function canReadHistoricalWorkPerson(data: OperationsData, actor: AccountUser, userId: string) {
+  if (!hasSection(actor, 'work') || !data.work) return false;
+  const { tasks, companyRecords, notes } = data.work;
+  return [...tasks, ...companyRecords, ...notes].some(row => canAccess(actor, row) && workPersonIds(row).includes(userId));
+}
+
 export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSearchParams, actor: AccountUser, users: AccountUser[]): WorkResponse {
   if (!isSupervisor(actor) && !isScopedEmployee(actor)) throw new ApiError(403, 'Нет доступа к рабочему пространству.');
   const requested = params.get('assigneeId');
@@ -87,18 +101,11 @@ export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSe
   const visibleWork = { tasks: work.tasks.filter(visible).map(publicWorkEntry), companyRecords: work.companyRecords.filter(visible).map(publicWorkEntry), notes: work.notes.filter(visible) };
   // Old links keep their labels without making unrelated companies selectable.
   const referencedCompanies = new Set([...visibleWork.tasks, ...visibleWork.companyRecords].flatMap(row => row.companyId ? [row.companyId] : []));
-  const referenced = new Set<string>();
-  for (const row of [...visibleWork.tasks, ...visibleWork.companyRecords, ...visibleWork.notes]) {
-    for (const id of [...workAssigneeIds(row), row.createdBy, row.updatedBy]) referenced.add(id);
-    if ('comments' in row) for (const comment of row.comments ?? []) {
-      for (const id of [comment.authorId, ...comment.handoffTo ?? []]) referenced.add(id);
-    }
-    if ('attachments' in row) for (const file of row.attachments ?? []) referenced.add(file.authorId);
-  }
+  const referenced = new Set([...visibleWork.tasks, ...visibleWork.companyRecords, ...visibleWork.notes].flatMap(workPersonIds));
   return {
     work: visibleWork,
     todayTaskCount: todayTaskCount(data, actor),
-    historicalUsers: (data.accounts?.users ?? []).filter(user => referenced.has(user.id) && !users.some(active => active.id === user.id)).map(({ id, name }) => ({ id, name })),
+    historicalUsers: (data.accounts?.users ?? []).filter(user => referenced.has(user.id) && !users.some(active => active.id === user.id)).map(({ id, name, avatar }) => ({ id, name, ...profileAvatarProjection(id, avatar) })),
     users: isSupervisor(actor) ? users : users.map(user => ({ ...user, login: '' })), companies: snapshot.companies.filter(company => isWorkDirectoryCompany(company) || referencedCompanies.has(company.id)), currentUser: actor, revision: data.revision,
   };
 }

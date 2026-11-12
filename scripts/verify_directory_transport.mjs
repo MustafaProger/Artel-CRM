@@ -21,8 +21,8 @@ try {
   const tabs=page.getByRole('group',{name:'Справочники',exact:true});
   for(const name of ['Компании','Перевозчики'])await expect(tabs.getByRole('button',{name,exact:true})).toHaveCount(0);
   await expect(page.getByRole('button',{name:'Очистка справочников',exact:true})).toHaveCount(0);
-  await expect(tabs.getByRole('button')).toHaveCount(8);
-  console.log('PASS eight directory tabs; no global companies, carriers or cleanup control');
+  await expect(tabs.getByRole('button')).toHaveCount(9);
+  console.log('PASS nine directory tabs; no global companies, carriers or cleanup control');
   const tab=async name=>page.getByRole('group',{name:'Справочники',exact:true}).getByRole('button',{name,exact:true}).click();
   const add=async()=>{await page.getByRole('button',{name:'Добавить',exact:true}).click();return page.getByRole('dialog');};
   const save=async dialog=>{await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(dialog).toHaveCount(0);};
@@ -116,11 +116,11 @@ try {
   console.log('PASS concurrent write after preflight retries safely within the same save');
 
   dialog=await edit('QA машина 991');await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-OFFLINE');
-  await page.route('**/api/snapshot?shipments=omit',route=>route.abort());
+  await page.route('**/api/snapshot?shipments=omit&context=directories',route=>route.abort());
   await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();
   await expect(dialog.getByRole('alert')).toBeVisible();await expect(dialog.getByLabel('Номер договора',{exact:true})).toHaveValue('QA-OFFLINE');
   assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-RACE');
-  await page.unroute('**/api/snapshot?shipments=omit');await save(dialog);
+  await page.unroute('**/api/snapshot?shipments=omit&context=directories');await save(dialog);
   assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-OFFLINE');
   console.log('PASS failed read preserves input and allows retry');
 
@@ -146,15 +146,15 @@ try {
   await dialog.getByLabel('Наименование',{exact:true}).fill('QA получатель');
   await dialog.locator('.company-address-group').getByRole('button',{name:'Добавить адрес'}).click();
   await dialog.getByLabel('Адрес отгрузки клиента 1',{exact:true}).fill('QA площадка');
-  await dialog.getByLabel('Приёмщик адреса 1',{exact:true}).fill('Тестовый Приёмщик');
-  await dialog.getByLabel('Телефон приёмщика адреса 1',{exact:true}).fill('+7 (900) 000-00-00');
+  await dialog.getByLabel('Имя приёмщика 1: адрес 1',{exact:true}).fill('Тестовый Приёмщик');
+  await dialog.getByLabel('Телефон приёмщика 1: адрес 1',{exact:true}).fill('+7 (900) 000-00-00');
   await save(dialog);
   await tab('Места погрузки и доставки');dialog=await edit('QA площадка');
-  await expect(dialog.getByLabel('Приёмщик',{exact:true})).toHaveValue('Тестовый Приёмщик');
-  await dialog.getByLabel('Телефон приёмщика',{exact:true}).fill('+7 (900) 000-00-01');
+  await expect(dialog.getByLabel('Имя приёмщика 1: адрес',{exact:true})).toHaveValue('Тестовый Приёмщик');
+  await dialog.getByLabel('Телефон приёмщика 1: адрес',{exact:true}).fill('+7 (900) 000-00-01');
   await save(dialog);
   await page.reload();await tab('Клиенты');dialog=await edit('QA получатель');
-  await expect(dialog.getByLabel('Телефон приёмщика адреса 1',{exact:true})).toHaveValue('+7 (900) 000-00-01');
+  await expect(dialog.getByLabel('Телефон приёмщика 1: адрес 1',{exact:true})).toHaveValue('+7 (900) 000-00-01');
   await page.setViewportSize({width:390,height:844});
   assert.ok(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth+1),'Company form overflows on mobile');
   await dialog.getByRole('button',{name:'Отмена',exact:true}).click();
@@ -246,8 +246,8 @@ try {
   assert.equal(driver.vehicleId,vehicle.id);assert.equal(driver.phone,'+7 (900) 000-00-02');assert.ok(!driver.carrierId);
   assert.deepEqual(withDriver.companies,companiesBeforeDriver);
   await page.getByRole('button',{name:'Удалить: QA водитель',exact:true}).click();
-  await page.getByRole('dialog',{name:'Удаление записи',exact:true}).getByRole('button',{name:'Удалить',exact:true}).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);await page.reload();await tab('Водители');
+  await expect(page.getByRole('button',{name:'Редактировать: QA водитель',exact:true})).toHaveCount(0);
+  await page.reload();await tab('Водители');
   await expect(page.getByRole('button',{name:'Редактировать: QA водитель',exact:true})).toHaveCount(0);
   const afterDriver=(await request('/api/snapshot')).body;
   assert.ok(!afterDriver.directories.drivers.some(row=>row.id===driver.id));

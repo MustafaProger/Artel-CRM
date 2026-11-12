@@ -29,9 +29,11 @@ import { hasSection, isAdministrator, type AccountUser } from '../web/src/auth-m
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
 import { decryptAccountPassword } from './account-passwords';
-import { activeUsers, authenticate, deleteUser, findSession, login, prepareLogin, logout, logisticsRequest, persistentSessionExpiry, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie, sessionToken } from './auth';
+import { avatarUploadLimit } from './profile-avatars';
+import { activeUsers, authenticate, deleteUser, findSession, login, prepareLogin, prepareProfileUpdate, logout, logisticsRequest, persistentSessionExpiry, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie, sessionToken } from './auth';
 import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
 import { readTripExecution, recordTripExecution } from './trip-execution';
+import { readSharedTripTimelines } from './trip-process';
 import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
 import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
 import { scopeSnapshot, ownsShipment, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
@@ -39,7 +41,7 @@ import { apiSection, requireSection, requireTripSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
-import { readWork, mutateWork, workFile, workCompanyIds, todayTaskCount } from './work-operations';
+import { canReadHistoricalWorkPerson, readWork, mutateWork, workFile, workCompanyIds, todayTaskCount } from './work-operations';
 import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-cleanup';
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
@@ -70,7 +72,7 @@ import { automaticSigningCapability } from './saby-auto-policy';
 import { prepareTripSaby } from './trip-saby-preparation';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
 import { createTripSabyScheduler, refreshTripSabyDelivery, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
-import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTaskCompletion, dispatchTripAssignments, pushConfig, pushDisplayBinding, pushReady, pushSessionHash, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
+import { dispatchOperatorNotifications, dispatchReminders, dispatchTaskAssignments, dispatchTaskCompletion, dispatchTripAssignments, dispatchTripRequestNotifications, pushConfig, pushDisplayBinding, pushReady, pushSessionHash, queueTripRequestNotification, readPushPreferences, savePushPreferences, sendPush, subscribe, unsubscribe, validCron, type PushConfig, type PushSender } from './push';
 import { validPushWorkflow } from './push-cron-auth';
 import { acceptPushProbeReceipt, createPushProbe, createPushReceiptLimiter, markPushProbeAccepted, mutatePushProbe, readPushProbe } from './push-probe';
 import { invoiceRequestBody, invoiceRouteAllowed, requireInvoiceAccount, type InvoiceBridge } from './invoice-bridge';
@@ -467,8 +469,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       // Driver sessions never reach generic routes (including bank/auth subrouters).
       // One fresh view covers the synchronous routing/authorization chain. Reuse it
       // only before yielding; body/provider awaits and mutation callbacks read afresh.
+      const avatarUserId = pathname.match(/^\/api\/auth\/avatars\/([^/]+)$/)?.[1];
       const onlineUsersOnly = !logistics && pathname === '/api/auth/users' && url.searchParams.get('online') === '1';
-      const authOnly = (onlineUsersOnly || ['/api/auth/session', '/api/push/config'].includes(pathname)) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST';
+      const authOnly = (onlineUsersOnly || avatarUserId || ['/api/auth/session', '/api/push/config', '/api/push/preferences'].includes(pathname)) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST'
+        || pathname === '/api/auth/profile' && request.method === 'PATCH';
       const requestData = await performanceSpan(authOnly ? 'request.read-auth' : 'request.read-full', () => authOnly && operations.readAuth ? operations.readAuth(base.provenance.sourceSha256) : operations.read(base.provenance.sourceSha256));
       const boundaryUser = authenticate(requestData, request);
       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
@@ -502,6 +506,50 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       const secure = options.secureCookies ?? !isLocalHost(request.headers.host);
       if (pathname.startsWith('/api/auth/')) {
+        if (avatarUserId) {
+          if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+          if (!boundaryUser) throw new ApiError(401, 'Войдите в приложение.');
+          const notFound = () => new ApiError(404, 'Фото профиля не найдено.');
+          let id: string;
+          try { id = decodeURIComponent(avatarUserId); } catch { throw notFound(); }
+          let target = requestData.accounts?.users.find(user => user.id === id && !user.deletedAt);
+          if (!target) throw notFound();
+          if (boundaryUser.id !== id && !hasSection(boundaryUser, 'accounts')) {
+            if (!hasSection(boundaryUser, 'work')) throw notFound();
+            // Work lists all active staff and only the former staff linked to visible records.
+            if (!target.active || target.role === 'driver') {
+              const full = await operations.read(base.provenance.sourceSha256);
+              const actor = requireUser(full, request);
+              if (!canReadHistoricalWorkPerson(full, actor, id)) throw notFound();
+              target = full.accounts?.users.find(user => user.id === id && !user.deletedAt);
+            }
+          }
+          const avatar = target?.avatar;
+          if (!avatar || !('image' in avatar) || url.searchParams.get('v') !== avatar.version) throw notFound();
+          const etag = `"${avatar.version}"`;
+          const headers = { ETag: etag, Vary: 'Cookie', 'Cache-Control': 'private, no-cache',
+            'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' };
+          if (request.headers['if-none-match'] === etag) {
+            response.writeHead(304, headers);
+            response.end();
+            return;
+          }
+          const bytes = Buffer.from(avatar.image, 'base64');
+          response.writeHead(200, { ...headers, 'Content-Type': 'image/jpeg', 'Content-Length': bytes.length });
+          response.end(bytes);
+          return;
+        }
+        if (pathname === '/api/auth/profile') {
+          if (request.method !== 'PATCH') throw new ApiError(405, 'Метод не поддерживается.');
+          if (!boundaryUser) throw new ApiError(401, 'Войдите в приложение.');
+          const body = await jsonBody(request, false, 4 * Math.ceil(avatarUploadLimit / 3) + 4096);
+          const mutateAuth = operations.mutateAuth?.bind(operations) ?? operations.mutate.bind(operations);
+          const { status, ...result } = await gateLogin(Object.hasOwn(body, 'newPassword'), async () => {
+            const finish = await prepareProfileUpdate(requestData, request, body);
+            return mutateAuth<{ status: number; user?: AccountUser; error?: string }>(base.provenance.sourceSha256, finish);
+          });
+          return write(response, status, JSON.stringify(result));
+        }
         const passwordUserId = pathname.match(/^\/api\/auth\/users\/([^/]+)\/password$/)?.[1];
         if (passwordUserId) {
           if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
@@ -665,8 +713,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (logistics) requireTripSection(user, true);
         if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
-        if (pathname.startsWith('/api/push/') && user.role !== 'driver') {
-          if (!hasSection(user, 'work') && !hasSection(user, 'invoices') && !hasSection(user, 'operator')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
+        if (pathname.startsWith('/api/push/')) {
+          if (user.role !== 'driver' && !hasSection(user, 'work') && !hasSection(user, 'invoices') && !hasSection(user, 'operator') && !hasSection(user, 'trips')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
           if (request.headers['x-artel-account'] !== undefined && request.headers['x-artel-account'] !== user.id) throw new ApiError(401, 'Пользователь изменился. Обновите страницу.');
         }
         if (section && !(user.role === 'driver' && pathname.startsWith('/api/push/')) && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
@@ -811,18 +859,29 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (!(id ? ['PATCH', 'DELETE'] : ['POST']).includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request, request.method === 'DELETE');
         const mutateRequest = operations.mutateTripRequests?.bind(operations) ?? operations.mutate.bind(operations);
-        const saved = await mutateRequest<Record<string, unknown>>(base.provenance.sourceSha256, async data => {
+        const { saved, notificationQueued } = await mutateRequest<{ saved: Record<string, unknown>; notificationQueued: boolean }>(base.provenance.sourceSha256, async data => {
           const currentActor = actor ? authorized(data) : null;
           const snapshot = currentTripRequestSnapshot(base, data);
-          if (request.method === 'DELETE') return { result: cancelTripRequest(data, snapshot, currentActor, id!, body), changed: true };
+          if (request.method === 'DELETE') return { result: { saved: cancelTripRequest(data, snapshot, currentActor, id!, body), notificationQueued: false }, changed: true };
           const place = !id && snapshot.directories?.addresses.find(row => row.id === body.addressId && row.companyId === body.companyId && row.kind === 'delivery');
           const known = place ? await locations.read(typeof body.address === 'string' ? body.address : place.address || place.name) : null;
           const result = saveTripRequest(data, snapshot, currentActor, body, id, known?.status === 'found' ? known : undefined);
           const target = result.request.status === 'active' ? tripRequestGeocodeTarget(data, snapshot, currentActor, { requestId: result.request.id }) : { address: result.request.address, location: tripRequestExplicitCoordinates(result.request) };
-          return { result: { request: { ...result.request, createdByName: data.accounts?.users.find(user => user.id === result.request.ownerUserId)?.name, location: target.location ?? await locations.read(target.address) }, created: result.created }, changed: result.changed };
+          const notificationQueued = !!currentActor && result.created && queueTripRequestNotification(data, result.request);
+          const saved = { request: { ...result.request, createdByName: data.accounts?.users.find(user => user.id === result.request.ownerUserId)?.name, location: target.location ?? await locations.read(target.address) }, created: result.created };
+          return { result: { saved, notificationQueued }, changed: result.changed };
         });
         const savedRequest = saved.request as import('../web/src/trip-request-model').TripRequest | undefined;
         if (savedRequest?.status === 'active' && savedRequest.location?.status === 'pending') void locations.resolve(savedRequest.address, 'background').catch(() => undefined);
+        if (notificationQueued && savedRequest && pushReady(config)) {
+          if (options.workNotificationWakeup) {
+            write(response, 201, JSON.stringify(saved));
+            try { options.workNotificationWakeup(); } catch { /* Durable outbox is retried by the scheduler. */ }
+            return;
+          }
+          try { await dispatchTripRequestNotifications(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), savedRequest.id); }
+          catch { console.error('Заявка сохранена. Не удалось отправить уведомление; планировщик повторит попытку.'); }
+        }
         return write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(saved));
       }
       if (logistics && pathname === '/api/context') {
@@ -845,6 +904,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const data = requestData;
           return write(response, 200, JSON.stringify({ enabled: pushReady(config), publicKey: config.publicKey, lastRunAt: data.push?.lastRunAt ?? null, intervalSeconds: options.pushIntervalSeconds ?? 300, displayBinding: pushDisplayBinding(pushSessionHash(request)) }));
         }
+        if (pathname === '/api/push/preferences') {
+          if (request.method === 'GET') return write(response, 200, JSON.stringify({ preferences: readPushPreferences(requestData, actor.id) }));
+          if (request.method !== 'PATCH') throw new ApiError(405, 'Метод не поддерживается.');
+          const body = await jsonBody(request, false, 1024);
+          const transact = operations.mutateAuth?.bind(operations) ?? operations.mutate.bind(operations);
+          const result = await transact(base.provenance.sourceSha256, data => savePushPreferences(data, authorized(data).id, body));
+          return write(response, 200, JSON.stringify(result));
+        }
         if (pathname === '/api/push/test-status') {
           if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
           const data = requestData;
@@ -857,10 +924,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (pathname === '/api/push/test') {
           const { device, probeId, token, targetUrl } = await mutatePushProbe(operations, base.provenance.sourceSha256, data => {
             const user = authorized(data);
-            let targetUrl = user.role === 'driver' ? '/#driver-trips' : hasSection(user, 'work') ? '/#work' : hasSection(user, 'invoices') ? '/#invoices' : '/#operator';
+            let targetUrl = user.role === 'driver' ? '/#driver-trips' : hasSection(user, 'work') ? '/#work' : hasSection(user, 'invoices') ? '/#invoices' : hasSection(user, 'operator') ? '/#operator' : '/#trips';
             if (body.kind !== undefined) {
-              if (typeof body.kind !== 'string' || !['work', 'driver', 'invoices', 'operator'].includes(body.kind)) throw new ApiError(400, 'Неизвестный раздел проверки уведомлений.');
-              if (body.kind === 'driver' ? user.role !== 'driver' : !hasSection(user, body.kind as 'work' | 'invoices' | 'operator')) throw new ApiError(403, 'Раздел проверки уведомлений недоступен.');
+              if (typeof body.kind !== 'string' || !['work', 'driver', 'invoices', 'operator', 'trips'].includes(body.kind)) throw new ApiError(400, 'Неизвестный раздел проверки уведомлений.');
+              if (body.kind === 'driver' ? user.role !== 'driver' : !hasSection(user, body.kind as 'work' | 'invoices' | 'operator' | 'trips')) throw new ApiError(403, 'Раздел проверки уведомлений недоступен.');
               targetUrl = body.kind === 'driver' ? '/#driver-trips' : `/#${body.kind}`;
             }
             if (body.operatorPlanId !== undefined) {
@@ -1220,7 +1287,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { ...trip, createdAt: creator?.createdAt ?? trip.createdAt, createdByName: names.get(creator?.actorId ?? ''), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id, { snapshot: fullSnapshot, trip: getShipmentTrip(fullSnapshot, id, numbers), config }) };
           }).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
-          return write(response, 200, JSON.stringify({ trips, automation }));
+          const sharedTrips = currentActor && !logistics && url.searchParams.get('view') === 'process'
+            ? readSharedTripTimelines(fullSnapshot, stored, currentActor, numbers, new Set(trips.map(trip => trip.id)))
+            : undefined;
+          return write(response, 200, JSON.stringify({ trips, automation, sharedTrips }));
         }
         if (tripIdMatch) {
           const id = decodeURIComponent(tripIdMatch[1]);

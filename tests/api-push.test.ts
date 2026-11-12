@@ -14,6 +14,7 @@ import { ApiError } from '../server/api-error';
 import { dispatchReminders, parseSubscription, subscribe, validPushEndpoint, type PushConfig, type PushSender } from '../server/push';
 import { validPushWorkflow } from '../server/push-cron-auth';
 import { createPushReceiptLimiter } from '../server/push-probe';
+import { authLayoutVersion, migrateTestAuthStorage } from './helpers/auth-layout';
 
 const base = await loadSnapshot();
 const config: PushConfig = { publicKey: 'test-public', privateKey: 'test-private', subject: 'https://artel-crm.vercel.app', schedule: true };
@@ -498,5 +499,43 @@ test('multiple task assignees get durable assignment and reminder events, with a
     const secondHandoffs = handoffs().slice(1);
     assert.deepEqual(secondHandoffs.map(row => row.userId).sort(), [manager.id, colleague.id].sort());
     assert.ok(secondHandoffs.every(row => row.body === `${director.name} · «Print UPD»` && row.url === url));
+  } finally { await f.close(); }
+});
+
+
+test('muting tasks is personal, persists, and keeps company reminders enabled', async () => {
+  const sent: { userId: string; url: string }[] = [];
+  const sender: PushSender = async (device, payload) => { sent.push({ userId: device.userId, url: JSON.parse(payload).url }); };
+  const f = await fixture(sender, true);
+  try {
+    const [director, manager] = f.users;
+    if (authLayoutVersion) await migrateTestAuthStorage(resolve(f.store.path, '..'), base.provenance.sourceSha256);
+    const path = '/api/push/preferences';
+    const defaults = { tasks: true, companies: true, tripRequests: true, tripAssignments: true, invoices: true, operator: true };
+    assert.equal((await f.anon(path)).status, 401);
+    assert.deepEqual((await f.manager(path)).body, { preferences: defaults });
+    assert.equal((await f.manager(path, 'PATCH', { tasks: false }, { 'X-Artel-Account': director.id })).status, 401);
+    assert.equal((await f.manager(path, 'PATCH', { tasks: 'false' })).status, 400);
+    assert.equal((await f.manager(path, 'PATCH', { tasks: false, userId: director.id })).status, 400);
+    assert.deepEqual((await f.manager(path, 'PATCH', { tasks: false })).body, { preferences: { ...defaults, tasks: false } });
+    assert.deepEqual((await f.director(path)).body, { preferences: defaults });
+    for (const client of [f.director, f.manager]) {
+      assert.equal((await client('/api/push/subscription', 'POST', { subscription: subscription(), explicit: true })).status, 200);
+    }
+    const due = new Date(Date.now() - 1000).toISOString();
+    const task = await f.director('/api/work/tasks', 'POST', { title: 'Тестовая задача', reminderAt: due, assigneeIds: [director.id, manager.id] });
+    assert.equal(task.status, 201);
+    const companyId = (await f.director('/api/snapshot')).body.companies[0].id;
+    const company = await f.director('/api/work/companies', 'POST', { companyId, question: 'Компания QA', assigneeId: manager.id, reminderAt: due });
+    assert.equal(company.status, 201);
+    const reloaded = new OperationsStore(resolve(f.store.path, '..'));
+    const dispatch = () => dispatchReminders(reloaded, base.provenance.sourceSha256, config, sender);
+    assert.deepEqual((await dispatch()).sent, 2);
+    assert.deepEqual(sent.map(row => [row.userId, new URL(row.url, 'https://example.invalid').searchParams.get('workKind')]).sort(), [[director.id, 'tasks'], [manager.id, 'companies']].sort());
+    assert.deepEqual((await f.manager(path, 'PATCH', { tasks: true })).body, { preferences: defaults });
+    assert.equal((await dispatch()).sent, 0, 'Muted task assignments and reminders stay suppressed after enabling');
+    assert.equal((await f.director('/api/work/tasks', 'POST', { title: 'Новая задача', assigneeId: manager.id })).status, 201);
+    assert.equal((await dispatch()).sent, 1);
+    assert.equal(sent.at(-1)?.userId, manager.id);
   } finally { await f.close(); }
 });

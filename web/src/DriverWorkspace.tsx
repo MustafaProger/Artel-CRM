@@ -7,15 +7,16 @@ import { tripLabel } from './trip-identity'
 import { mapLink } from './map-link'
 import './trip-identity.css'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, ChevronRight, LogOut, MapPin, RefreshCw, Route, Search, Truck, X } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, ChevronRight, LogOut, MapPin, RefreshCw, Route, Search, Settings, Truck, X } from 'lucide-react'
 import type { AccountUser } from './auth-model'
 import { apiFetch } from './workspace-api'
-import DriverNotifications from './DriverNotifications'
+import PersonalSettings from './PersonalSettings'
 import DriverLoadingActions from './DriverLoadingActions'
 import type { DriverTrip } from './driver-trip-model'
 import { driverDateTimeLabel } from './driver-trip-model'
 import { compareTripsNewestFirst } from './trip-order'
 import './driver.css'
+import './driver-notifications.css'
 import './driver-flow.css'
 
 const dateLabel = (value: string | null) => {
@@ -34,13 +35,14 @@ function Address({ address, mapUrl }: { address: string | null; mapUrl: string |
   return <div className="driver-address"><MapPin size={17}/><div><span>{address || 'Адрес пока не указан'}</span>{link && <a href={link.href} target="_blank" rel="noreferrer">{link.label} <ArrowUpRight size={14}/></a>}</div></div>
 }
 
-export default function DriverWorkspace({ user, onLogout }: { user: AccountUser; onLogout: () => void }) {
+export default function DriverWorkspace({ user, onLogout, onUserChanged, settingsAvailable = true }: { user: AccountUser; onLogout: () => void; onUserChanged: (user: AccountUser) => void; settingsAvailable?: boolean }) {
   const [trips, setTrips] = useState<DriverTrip[]>([])
   const [loading, setLoading] = useState(true), [tripsLoaded, setTripsLoaded] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [section, setSection] = useState<'active' | 'archive'>('active')
   const viewEntrance = useViewEntrance<HTMLDivElement>(section, '.driver-count, .driver-trip-list, .driver-empty')
+  const [settings, setSettings] = useState(() => settingsAvailable && location.hash === '#settings')
   const [selectedId, setSelectedId] = useState<string | null>(tripFromHash)
   const [selected, setSelected] = useState<DriverTrip | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -66,9 +68,8 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
   }, [])
 
   useEffect(() => {
-    document.title = 'Мои рейсы — Артэль'
     refresh()
-    const navigate = () => { setSelectedId(tripFromHash()); window.scrollTo({ top: 0, behavior: 'instant' }) }
+    const navigate = () => { setSettings(settingsAvailable && location.hash === '#settings'); setSelectedId(tripFromHash()); window.scrollTo({ top: 0, behavior: 'instant' }) }
     window.addEventListener('hashchange', navigate)
     const focused = () => refresh()
     window.addEventListener('focus', focused)
@@ -76,7 +77,9 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
     navigator.serviceWorker?.addEventListener('message', notified)
     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') refresh() }, 60000)
     return () => { controller.current?.abort(); sequence.current++; window.clearInterval(timer); window.removeEventListener('hashchange', navigate); window.removeEventListener('focus', focused); navigator.serviceWorker?.removeEventListener('message', notified) }
-  }, [refresh])
+  }, [refresh, settingsAvailable])
+
+  useEffect(() => { document.title = settings ? 'Настройки — Артэль' : 'Мои рейсы — Артэль' }, [settings])
 
   useEffect(() => {
     const generation = ++detailSequence.current
@@ -107,7 +110,10 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
     <a className="skip-link" href="#driver-content" onClick={event => { event.preventDefault(); document.getElementById('driver-content')?.focus() }}>К содержимому</a>
     <header className="driver-topbar"><a href="#driver-trips" className="driver-brand"><Route size={24}/><span>Артэль<small>Кабинет водителя</small></span></a><button className="button" onClick={onLogout}><LogOut size={17}/><span>Выйти</span></button></header>
     <main id="driver-content" tabIndex={-1} className="driver-content">
-      <div className="driver-heading"><div><p>{user.name}</p><h1>Мои рейсы</h1></div><div className="driver-heading-actions"><DriverNotifications userId={user.id}/><button className="button driver-refresh" aria-label="Обновить мои рейсы" disabled={loading || detailLoading} onClick={refresh}><RefreshCw size={17} className={loading ? 'spin' : ''}/><span>Обновить</span></button></div></div>
+      {settings && <div className="personal-settings-driver-heading"><a className="button driver-back" href="#driver-trips"><ArrowLeft size={16}/>Мои рейсы</a><h1>Настройки</h1></div>}
+      {settingsAvailable && <PersonalSettings user={user} onUserChanged={onUserChanged} visible={settings}/>}
+      <div hidden={settings}>
+      <div className="driver-heading"><div><p>{user.name}</p><h1>Мои рейсы</h1></div><div className="driver-heading-actions">{settingsAvailable && <a className="button driver-settings-link" href="#settings" aria-label="Настройки" title="Настройки"><Settings size={19} aria-hidden="true"/></a>}<button className="button driver-refresh" aria-label="Обновить мои рейсы" disabled={loading || detailLoading} onClick={refresh}><RefreshCw size={17} className={loading ? 'spin' : ''}/><span>Обновить</span></button></div></div>
       <p className="driver-intro">Рейсы и доставки, назначенные вам логистом.</p>
       <div ref={viewEntrance} key={selectedId ?? "list"} className="driver-route-content">
       {selectedId ? <>
@@ -132,6 +138,7 @@ export default function DriverWorkspace({ user, onLogout }: { user: AccountUser;
           {!visible.length && !error && <div className="driver-empty"><Truck size={30}/><h2>{query ? 'Ничего не найдено' : section === 'archive' ? 'Архивных рейсов пока нет' : 'Активных рейсов пока нет'}</h2><p>{query ? 'Попробуйте другой адрес, дату или имя клиента.' : section === 'archive' ? 'Здесь появятся рейсы после всех доставок и подтверждения «Рейс выполнен».' : 'Когда логист назначит вам рейс, он появится здесь.'}</p></div>}
         </>}
       </>}
+      </div>
       </div>
     </main>
   </div>

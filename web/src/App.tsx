@@ -4,12 +4,12 @@ import { pageCatalog, enabledPages, type PageId } from './page-catalog'
 import { apiFetch as fetch } from './workspace-api'
 import { hasPageAccess } from './page-access'
 import { lockPageScroll, useDialogMotion } from './useDialogMotion'
-import { NotificationMenu } from './DriverNotifications'
+import PersonalSettings from './PersonalSettings'
 import './sidebar-notifications.css'
 import ScrollableSegments from './ScrollableSegments'
 import { useViewEntrance } from './useViewEntrance'
 import { Component, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LogOut, Menu, PackageCheck, Route, Search, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LogOut, Menu, PackageCheck, Route, Search, Settings, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment } from './model'
 const pageModules = {
   invoices: () => import('./InvoicePage'),
@@ -42,10 +42,10 @@ import { hasSection, hasDirectoryGrant, availableDirectoryTabs, isAdministrator,
 const AccountManagement = lazy(pageModules.accounts)
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
-type Page = PageId
+type Page = PageId | 'settings'
 const pageIcons = { FileText, LayoutDashboard, ClipboardList, Truck, Route, Wallet, Landmark, PackageCheck, Globe, Headphones, Banknote, UsersRound, BookOpen }
 const pages = pageCatalog.map(page => ({ ...page, icon: pageIcons[page.icon] }))
-const getPage = (): Page => location.hash === '#companies' ? 'shipments' : enabledPages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : /^\/invoices(?:\/|$)/.test(location.pathname) ? 'invoices' : 'overview'
+const getPage = (): Page => location.hash === '#settings' ? 'settings' : location.hash === '#companies' ? 'shipments' : enabledPages.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) as Page : /^\/invoices(?:\/|$)/.test(location.pathname) ? 'invoices' : 'overview'
 type Detail = {kind:'company'; item: Company} | {kind:'shipment'; item: Shipment} | {kind:'payment'; item: Payment} | {kind:'about'}
 
 function invoiceHistoryLocation(event: MessageEvent) {
@@ -65,7 +65,7 @@ export default function App(){
     navigator.serviceWorker?.addEventListener('message', rememberInvoice)
     return () => navigator.serviceWorker?.removeEventListener('message', rememberInvoice)
   }, [])
-  return <AuthGate>{(user,onLogout)=><PageLoadBoundary><Suspense fallback={<PageLoading/>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
+  return <AuthGate>{(user,onLogout,onUserChanged)=><PageLoadBoundary><Suspense fallback={<PageLoading/>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
 class PageLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
@@ -74,7 +74,7 @@ class PageLoadBoundary extends Component<{ children: ReactNode }, { failed: bool
     return this.props.children
   }
 }
-function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
+function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:()=>void;onUserChanged:(user: AccountUser)=>void}) {
   const canManage=isAdministrator(user)
   const availablePages = pages.filter(item => hasPageAccess(user, item.id))
   const [data,setData] = useState<Snapshot | null>(null)
@@ -83,6 +83,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   const [shipmentCount,setShipmentCount] = useState<number | undefined>(undefined)
   const [error,setError] = useState('')
   const [page,setPage] = useState<Page>(() => location.hash || /^\/invoices(?:\/|$)/.test(location.pathname) ? getPage() : availablePages[0]?.id ?? 'overview')
+  const pageAllowed = page === 'settings' || hasPageAccess(user, page)
   const [menu,setMenu] = useState(false)
   const [mobile,setMobile] = useState(() => matchMedia('(max-width: 760px)').matches)
   useEffect(() => { const media = matchMedia('(max-width: 760px)'); const change = () => {setMobile(media.matches);setMenu(false)}; media.addEventListener('change', change); return () => media.removeEventListener('change', change) }, [])
@@ -118,11 +119,11 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
     return () => navigator.serviceWorker?.removeEventListener('message', openInvoice)
   }, [user])
   useEffect(() => {
-    if (!hasPageAccess(user, page) || !(page in pageModules)) return
+    if (!pageAllowed || !(page in pageModules)) return
     // Load the selected module alongside its prerequisite data, not after it.
     // Suspense/ErrorBoundary still owns import errors when the page renders.
     void pageModules[page as keyof typeof pageModules]().catch(() => {})
-  }, [page, user.version])
+  }, [page, pageAllowed, user.version])
   const activeView = useRef({ page, userVersion: user.version })
   activeView.current = { page, userVersion: user.version }
   const snapshotRequest = useRef(0)
@@ -144,7 +145,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   }
   useEffect(() => {
     setError(''); setSnapshotPage(null)
-    if (!hasPageAccess(user, page)) return
+    if (!pageAllowed) return
     if (requiresSnapshot) void fetchData()
     if (requiresSnapshot && !hasSection(user, 'work')) return () => snapshotController.current?.abort()
     // These pages fetch their own scoped data. The sidebar count must neither
@@ -159,7 +160,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       })
       .catch(() => { if (!controller.signal.aborted && !requiresSnapshot) setShipmentCount(undefined) })
     return () => { controller.abort(); if (requiresSnapshot) snapshotController.current?.abort() }
-  }, [page, user.version])
+  }, [page, pageAllowed, user.version])
   useEffect(() => {
     const handle = () => {
       const replacement = location.hash === '#companies' ? '#shipments' : location.hash === '#settlements' ? '#overview' : null
@@ -173,8 +174,8 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''),3200); return () => clearTimeout(timer) },[toast])
   useEffect(() => { const key = (event: KeyboardEvent) => {if(event.key === 'Escape' && !document.querySelector('dialog[open]')) setMenu(false)};window.addEventListener('keydown',key);return () => window.removeEventListener('keydown',key) },[])
   const navigate = (id: Page) => {location.hash = id;setPage(id);setMenu(false);window.scrollTo({top:0,behavior:'instant'})}
-  const notificationKind = hasPageAccess(user, 'work') ? 'work' : hasPageAccess(user, 'invoices') ? 'invoices' : hasPageAccess(user, 'operator') ? 'operator' : null
-  const active = pages.find(p => p.id === page)!
+  const active = page === 'settings' ? { title: 'Настройки' } : pages.find(p => p.id === page)!
+  useEffect(() => { document.title = `${active.title} — Артэль CRM` }, [active.title])
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
   const shipmentLoadingHeader = <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>
   return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : page === 'operator' ? 'operator-shell' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
@@ -193,12 +194,23 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
         <div className="nav-label second-label">УПРАВЛЕНИЕ</div>
         <nav aria-label="Управление">{availablePages.filter(p => p.section === 1).map(p => <NavItem key={p.id} {...p} active={page === p.id} onClick={() => navigate(p.id)}/>)}</nav>
       </SidebarNavigation>
-      <div className="sidebar-bottom"><div className="sidebar-profile sidebar-user-controls"><span title={user.name}>{user.name}</span>{notificationKind && <NotificationMenu userId={user.id} kind={notificationKind} sidebar/>}<button className="button sidebar-account-action" aria-label="Выйти" title="Выйти" onClick={onLogout}><LogOut size={18} aria-hidden="true"/></button></div>{page === 'shipments' && <button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button>}</div>
+      <div className="sidebar-bottom">
+        <div className="sidebar-profile sidebar-user-controls">
+          <span title={user.name}>{user.name}</span>
+          <a className="button sidebar-account-action sidebar-settings-link" href="#settings" title="Настройки" aria-label="Настройки"
+            aria-current={page === 'settings' ? 'page' : undefined} onClick={() => { setMenu(false); window.scrollTo({ top: 0, behavior: 'instant' }) }}>
+            <Settings size={18} aria-hidden="true"/>
+          </a>
+          <button className="button sidebar-account-action" aria-label="Выйти" title="Выйти" onClick={onLogout}><LogOut size={18} aria-hidden="true"/></button>
+        </div>
+        {page === 'shipments' && <button className="nav-item" aria-label="О приложении" title="О приложении" onClick={()=>setDetail({kind:'about'})}><CircleHelp size={19}/><span>О приложении</span></button>}
+      </div>
     </aside>
     <div className="workspace-main" inert={menu}>
-      <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'invoices' || !hasPageAccess(user, page)) && (page !== 'overview' || !hasPageAccess(user, page)) && <div key={`heading:${page}`} className="page-heading page-heading-compact view-entrance-heading"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
-      {page === 'shipments' && (!snapshotReady || !hasPageAccess(user, page)) && shipmentLoadingHeader}
-      {!hasPageAccess(user, page) ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error && !snapshotReady ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error} Проверьте соединение и попробуйте снова.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : requiresSnapshot && !snapshotReady ? <PageLoading/> : <PageLoadBoundary key={page}><Suspense fallback={page === 'shipments' ? <>{shipmentLoadingHeader}<PageLoading/></> : <PageLoading title={['overview', 'invoices'].includes(page) ? active.title : undefined} onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}><div key={page} className="page-content">{requiresSnapshot && error && snapshotReady && <div className="soft-notice" role="alert">{error} Показаны ранее загруженные данные. <button className="button" onClick={fetchData}>Повторить загрузку</button></div>}
+      <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'invoices' || !pageAllowed) && (page !== 'overview' || !pageAllowed) && <div key={`heading:${page}`} className="page-heading page-heading-compact view-entrance-heading"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
+      <PersonalSettings user={user} onUserChanged={onUserChanged} visible={page === 'settings'}/>
+      {page === 'shipments' && (!snapshotReady || !pageAllowed) && shipmentLoadingHeader}
+      {page !== 'settings' && (!pageAllowed ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error && !snapshotReady ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error} Проверьте соединение и попробуйте снова.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : requiresSnapshot && !snapshotReady ? <PageLoading/> : <PageLoadBoundary key={page}><Suspense fallback={page === 'shipments' ? <>{shipmentLoadingHeader}<PageLoading/></> : <PageLoading title={['overview', 'invoices'].includes(page) ? active.title : undefined} onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}><div key={page} className="page-content">{requiresSnapshot && error && snapshotReady && <div className="soft-notice" role="alert">{error} Показаны ранее загруженные данные. <button className="button" onClick={fetchData}>Повторить загрузку</button></div>}
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'stock' && <section className="blank-workspace" aria-label={`${active.title}: рабочее пространство`}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
@@ -213,7 +225,7 @@ function WorkspaceApp({user,onLogout}:{user:AccountUser;onLogout:()=>void}) {
       {page === 'directories' && data && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => canManage || ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={canManage} data={data} onChanged={fetchData}/>}
       {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} allowDelete={canManage} canManagePlaces={canManage && hasSection(user, 'directories')}/>}
       {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
-      </div></Suspense></PageLoadBoundary>}
+      </div></Suspense></PageLoadBoundary>)}
       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}
       </main>
     </div>

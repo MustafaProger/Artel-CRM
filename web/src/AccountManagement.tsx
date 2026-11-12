@@ -7,6 +7,7 @@ import { availablePagesFor } from './page-access';
 import { useEffect, useRef, useState } from 'react';
 import { Plus, Search, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 import './accounts.css';
+import './account-toggle.css';
 import { effectiveSections, isAdministrator, isScopedEmployee, defaultEmployeeSections, roleNames, selectableRoles, type AccountRole, type AccountUser, type SectionId, type SharedDirectory } from './auth-model';
 import type { Directories } from './model';
 import DriverAccess from './DriverAccess';

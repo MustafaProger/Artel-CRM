@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { dirname } from 'node:path';
@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { createSnapshotMiddleware, type LocalApiOptions } from '../server/local-api';
 import { OperationsStore } from '../server/operations-store';
+import { dispatchReminders, type PushConfig, type PushSender } from '../server/push';
 import { integrationRuntime } from './helpers/trip-saby-integration';
 import type { TripRequest } from '../web/src/trip-request-model';
 import type { ShipmentTrip } from '../web/src/model';
@@ -15,7 +16,7 @@ import { AuthPartition, mergeAuthStorage } from '../server/auth-partition';
 import { authLayoutVersion, migrateTestAuthStorage } from './helpers/auth-layout';
 const authLayout = authLayoutVersion !== null;
 
-async function fixture(options: Pick<LocalApiOptions, 'tripRequestGeocoder'> = {}) {
+async function fixture(options: Pick<LocalApiOptions, 'tripRequestGeocoder' | 'pushConfig' | 'workNotificationWakeup'> = {}) {
   const rt = await integrationRuntime();
   await rt.store.mutate(rt.source, data => {
     data.companies.find(row => row.id === 'customer')!.bankName = 'PRIVATE-OTHER-CUSTOMER-BANK';
@@ -311,6 +312,118 @@ test('request queue isolates owners and admins; only directors see everyone, wit
     const forged = editing(trip); forged.customers[0].fields.unloading_address_id = 'delivery-2';
     assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'PATCH', forged, f.two.cookie)).status, 400);
     assert.equal((await f.request(`/api/shipment-trips/${trip.id}`, 'PATCH', editing(trip), f.two.cookie)).status, 200);
+  } finally { await f.close(); }
+});
+
+test('process timelines follow current request ownership while whole-trip data and changes remain restricted', async () => {
+  const f = await fixture({ tripRequestGeocoder: async () => ({ status: 'not_found' }) });
+  try {
+    const createTrip = async (sources: TripRequest[], managerIds: string[], intermediate = false) => {
+      const body = f.tripBody(sources);
+      const response = await f.request('/api/shipment-trips', 'POST', {
+        ...body,
+        fields: { ...body.fields, trip_notes: 'PRIVATE-ROUTE-NOTE' },
+        customers: body.customers.map((row, index) => ({
+          ...row,
+          fields: {
+            ...row.fields,
+            manager_id: managerIds[index],
+            ...(intermediate && index === 0 && {
+              intermediate_stops_after: JSON.stringify([{ id: 'service-stop', name: 'Контрольная остановка', address: 'Адрес остановки' }]),
+            }),
+          },
+        })),
+      }, f.admin);
+      assert.equal(response.status, 201, JSON.stringify(response.body));
+      return response.body.trip as ShipmentTrip;
+    };
+    const [own, foreign, outside, singleOwn, allOwnSource, removed, remaining] = await Promise.all([
+      f.create(0), f.create(1, f.two.cookie), f.create(2, f.two.cookie), f.create(3),
+      f.create(4), f.create(5), f.create(6, f.two.cookie),
+    ]);
+    const mixed = await createTrip([own, foreign], ['manager', 'other-manager'], true);
+    const detached = await createTrip([removed, remaining], ['manager', 'other-manager']);
+    const single = await createTrip([singleOwn], ['other-manager']);
+    const full = await createTrip([allOwnSource], ['manager']);
+    // Assignment alone on one row of a mixed trip does not broaden access.
+    const assignedOnly = await createTrip([outside, await f.create(7, f.two.cookie)], ['manager', 'other-manager']);
+
+    const path = '/api/shipment-trips?view=process';
+    const response = await f.request(path, 'GET', undefined, f.one.cookie);
+    assert.equal(response.status, 200);
+    assert.deepEqual(new Set(response.body.trips.map((row: ShipmentTrip) => row.id)), new Set([full.id, f.tripId]));
+    assert.deepEqual(new Set(response.body.sharedTrips.map((row: { id: string }) => row.id)), new Set([mixed.id, detached.id, single.id]));
+    const firstTimeline = response.body.sharedTrips.find((row: { id: string }) => row.id === mixed.id);
+    assert.equal(firstTimeline.stage, 'planned');
+    assert.deepEqual(firstTimeline.stops.map((row: { kind: string; address: string; fromOwnRequest?: boolean }) => [row.kind, row.address, row.fromOwnRequest]), [
+      ['delivery', own.address, true], ['intermediate', 'Адрес остановки', undefined], ['delivery', foreign.address, false],
+    ]);
+    assert.equal(firstTimeline.loading.plannedAt, '2027-04-01T10:00');
+    assert.doesNotMatch(JSON.stringify(firstTimeline), /price|payment|supplier|quantity|PRIVATE-ROUTE-NOTE|Комментарий|sourceRequest|transport|bank|manager|version/i);
+    const ordinary = (await f.request('/api/shipment-trips', 'GET', undefined, f.one.cookie)).body;
+    assert.deepEqual(new Set(ordinary.trips.map((row: ShipmentTrip) => row.id)), new Set([full.id, f.tripId]));
+    assert.equal(ordinary.sharedTrips, undefined);
+    assert.equal((await f.request('/api/trip-requests', 'GET', undefined, f.one.cookie)).body.requests.length, 0);
+
+    const anotherEmployee = await f.employee('process-outside', 'no-trips-manager');
+    await f.store.mutate(f.source, data => {
+      data.directories!.managers.push({ id: 'process-denied-manager', name: 'Менеджер без раздела рейсов' });
+      return { changed: true, result: null };
+    });
+    const withoutTripAccess = await f.employee('process-denied', 'process-denied-manager', ['shipments']);
+    assert.deepEqual((await f.request(path, 'GET', undefined, anotherEmployee.cookie)).body.sharedTrips, []);
+    assert.equal((await f.request(path, 'GET', undefined, withoutTripAccess.cookie)).status, 403);
+    assert.equal((await f.request(path)).status, 401);
+    assert.ok((await f.request(path, 'GET', undefined, f.admin)).body.trips.some((row: ShipmentTrip) => row.id === assignedOnly.id));
+    assert.equal((await f.request(`/api/shipment-trips/${mixed.id}`, 'GET', undefined, f.one.cookie)).status, 403);
+    assert.equal((await f.request(`/api/shipment-trips/${mixed.id}`, 'PATCH', editing(mixed), f.one.cookie)).status, 403);
+    assert.equal((await f.request(`/api/shipment-trips/${mixed.id}/execution`, 'GET', undefined, f.one.cookie)).status, 403);
+    assert.equal((await f.request(`/api/shipment-trips/${single.id}`, 'GET', undefined, f.one.cookie)).status, 404);
+
+    const edited = editing(detached);
+    edited.customers = edited.customers.slice(1);
+    const removal = await f.request(`/api/shipment-trips/${detached.id}`, 'PATCH', edited, f.admin);
+    assert.equal(removal.status, 200, JSON.stringify(removal.body));
+    const stored = await f.store.read(f.source);
+    assert.equal(stored.tripRequests![removed.id].status, 'consumed');
+    assert.deepEqual(new Set((await f.request(path, 'GET', undefined, f.one.cookie)).body.sharedTrips.map((row: { id: string }) => row.id)), new Set([mixed.id, single.id]));
+
+    const access = await f.request('/api/drivers/driver/access', 'POST', { version: 0, action: 'issue' }, f.admin);
+    assert.equal(access.status, 200, JSON.stringify(access.body));
+    const driver = await f.request('/api/auth/login', 'POST', {
+      login: access.body.access.login, password: access.body.temporaryPassword,
+    });
+    assert.equal(driver.status, 200);
+    const driverPath = `/api/driver/trips/${mixed.id}`;
+    const arrived = await f.request(`${driverPath}/arrive`, 'POST', { versions: editing(mixed).versions }, driver.cookie);
+    assert.equal(arrived.status, 200, JSON.stringify(arrived.body));
+    const departed = await f.request(`${driverPath}/depart`, 'POST', {
+      versions: arrived.body.trip.versions,
+      masses: mixed.customers.map(delivery => ({ deliveryId: delivery.id, netTonnes: '1' })),
+    }, driver.cookie);
+    assert.equal(departed.status, 200, JSON.stringify(departed.body));
+    const staffDeliveryPath = `/api/shipment-trips/${mixed.id}/execution/deliver`;
+    const delivery = { versions: departed.body.trip.versions, executionVersion: 0, deliveryId: mixed.customers[1].id };
+    assert.equal((await f.request(staffDeliveryPath, 'POST', delivery, f.one.cookie)).status, 403);
+    const recorded = await f.request(`${driverPath}/deliver`, 'POST', delivery, driver.cookie);
+    assert.equal(recorded.status, 200, JSON.stringify(recorded.body));
+    const readTimeline = async () => (await f.request(path, 'GET', undefined, f.one.cookie)).body.sharedTrips.find((row: { id: string }) => row.id === mixed.id);
+    const underway = await readTimeline();
+    assert.equal(underway.stage, 'delivering');
+    assert.equal(underway.loading.arrivedAt, arrived.body.trip.arrivedAt);
+    assert.equal(underway.loading.departedAt, departed.body.trip.departedAt);
+    assert.deepEqual(underway.stops[2].event, {
+      at: recorded.body.trip.execution.deliveries[mixed.customers[1].id].at,
+      kind: 'arrival',
+    });
+    const finished = await f.request(staffDeliveryPath, 'POST', {
+      ...delivery, executionVersion: 1, deliveryId: mixed.customers[0].id,
+    }, f.admin);
+    assert.equal(finished.status, 200, JSON.stringify(finished.body));
+    const completed = await readTimeline();
+    assert.equal(completed.stage, 'completed');
+    assert.equal(completed.completedAt, finished.body.execution.completed.at);
+    assert.deepEqual(completed.stops[0].event, { at: finished.body.execution.completed.at });
   } finally { await f.close(); }
 });
 
@@ -878,5 +991,52 @@ test('deletion restores requests from earlier removed deliveries and never relea
     const data = await f.store.read(f.source);
     assert.equal(data.tripRequests![first.id].status, 'active'); assert.equal(data.tripRequests![second.id].status, 'active');
     assert.deepEqual(data.tripRequests![other.id], otherBefore);
+  } finally { await f.close(); }
+});
+
+
+test('new request notifications persist once, respect access and preferences, and exclude cancelled requests and pricing', async () => {
+  const config: PushConfig = { publicKey: 'test-public', privateKey: 'test-private', subject: 'mailto:test@example.invalid', schedule: true };
+  let wakes = 0;
+  const f = await fixture({ pushConfig: config, workNotificationWakeup: () => { wakes++; } });
+  try {
+    const password = randomUUID();
+    const staff = await f.request('/api/auth/users', 'POST', { name: 'Второй директор', login: 'requests-second-director', password, role: 'director', managerId: 'no-trips-manager' }, f.admin);
+    assert.equal(staff.status, 201);
+    const secondDirector = (await f.request('/api/auth/login', 'POST', { login: 'requests-second-director', password })).cookie!;
+    const director = (await f.request('/api/auth/session', 'GET', undefined, f.admin)).body.user;
+    if (authLayout) await migrateTestAuthStorage(dirname(f.store.path), f.source);
+    for (const cookie of [f.admin, secondDirector, f.one.cookie, f.two.cookie]) {
+      const key = createECDH('prime256v1'); key.generateKeys();
+      const subscription = { endpoint: `https://fcm.googleapis.com/fcm/send/${randomUUID()}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } };
+      assert.equal((await f.request('/api/push/subscription', 'POST', { subscription, explicit: true }, cookie)).status, 200);
+    }
+    assert.equal((await f.request('/api/push/preferences', 'PATCH', { tripRequests: false }, secondDirector)).status, 200);
+    const submit = (fields: Record<string, unknown>, cookie = f.one.cookie) => f.request('/api/trip-requests', 'POST', { companyId: 'customer', addressId: 'delivery', quantityLitres: '1200.25', salePricePerLitre: '93.84', ...fields }, cookie);
+    const key = randomUUID();
+    const [one, replay] = await Promise.all([submit({ idempotencyKey: key }), submit({ idempotencyKey: key })]);
+    assert.equal(one.status, 201); assert.equal(replay.status, 201);
+    assert.equal(one.body.request.id, replay.body.request.id);
+    assert.deepEqual([one.body.created, replay.body.created].sort(), [false, true]);
+    assert.equal(wakes, 1);
+    const abandoned = await submit({ quantityLitres: '5' });
+    assert.equal((await f.request(`/api/trip-requests/${abandoned.body.request.id}`, 'DELETE', { version: 1 }, f.one.cookie)).status, 200);
+    assert.equal(wakes, 2);
+    const reloaded = new OperationsStore(dirname(f.store.path));
+    const sent: { userId: string; body: string; title: string; url: string }[] = [];
+    const sender: PushSender = async (device, payload) => { sent.push({ userId: device.userId, ...JSON.parse(payload) }); };
+    const dispatch = () => dispatchReminders(reloaded, f.source, config, sender);
+    assert.equal((await dispatch()).sent, 1);
+    assert.equal(sent[0].userId, director.id);
+    assert.equal(sent[0].title, 'Новая заявка на рейс');
+    assert.equal(sent[0].url, '/#trips');
+    assert.equal(sent[0].body, `${one.body.request.companyName} · 1\u00a0200,25 л`);
+    assert.doesNotMatch(JSON.stringify(sent[0]), /93[.,]84/);
+    assert.equal((await f.request('/api/push/preferences', 'PATCH', { tripRequests: true }, secondDirector)).status, 200);
+    assert.equal((await dispatch()).sent, 0, 'Muted requests are not replayed after enabling');
+    assert.equal((await submit({ quantityLitres: '16' }, f.admin)).status, 201);
+    assert.equal((await dispatch()).sent, 1);
+    assert.equal(sent[1].userId, staff.body.user.id, 'A director creating a request is excluded from their own notification');
+    assert.equal((await dispatch()).sent, 0);
   } finally { await f.close(); }
 });

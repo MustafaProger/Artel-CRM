@@ -779,3 +779,23 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
     transform: none;
   }
 }
+
+.work-person-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.work-task-assignees {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.work-company-comment-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}

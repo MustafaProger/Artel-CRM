@@ -69,51 +69,96 @@ try {
       return route.continue();
     });
     const page = await context.newPage(); page.on('pageerror', error => report.errors.push(`${engine}: ${error.message}`));
+    const settingsPage = page.locator('.personal-settings-page');
+    const notifications = settingsPage.getByRole('region', { name: 'Уведомления', exact: true });
+    const profileHeading = settingsPage.getByRole('heading', { name: 'Профиль', exact: true });
+    const profileCard = settingsPage.getByRole('region', { name: 'Профиль', exact: true });
+    const gear = page.locator('.sidebar-settings-link');
     const openMenu = async () => {
-      const bell = page.locator('.sidebar-user-controls .driver-notification-button');
-      if (!await bell.isVisible() || await page.locator('#app-navigation').evaluate(el => el.inert)) await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
-      return bell;
+      if (!await gear.isVisible() || await page.locator('#app-navigation').evaluate(el => el.inert)) {
+        await page.getByRole('button', { name: 'Открыть меню', exact: true }).click();
+      }
     };
-    const open = async section => {
-      if (await page.locator('#app-navigation.is-open').count()) { await page.keyboard.press('Escape'); await expect(page.locator('#app-navigation.is-open')).toHaveCount(0); }
+    const go = async section => {
+      if (await page.locator('#app-navigation.is-open').count()) {
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#app-navigation.is-open')).toHaveCount(0);
+      }
       await page.evaluate(section => { location.hash = section; }, section);
       await expect(page.locator('#app-navigation .nav-item[aria-current="page"]')).toContainText({work:'Работа',operator:'Операторская',invoices:'Счета',shipments:'Отгрузки'}[section]);
-      const bell = await openMenu(); await bell.click();
-      const dialog = page.getByRole('dialog', { name: 'Уведомления', exact: true });
-      await expect(dialog).toBeVisible(); await expect(dialog).toContainText('Достаточно включить их один раз');
-      return dialog;
+    };
+    const readySettings = async () => {
+      await expect(page).toHaveURL(/#settings$/);
+      await expect(page.getByRole('heading', { name: 'Настройки', level: 1 })).toBeVisible();
+      await expect(profileHeading).toBeVisible();
+      await expect(notifications.getByRole('switch', { name: 'Задачи', exact: true })).toBeVisible();
+      await expect(page.locator('dialog[open]')).toHaveCount(0);
+    };
+    const open = async section => {
+      await go(section);
+      await openMenu();
+      await gear.click();
+      await readySettings();
     };
     await page.goto(base + '/#work');
-    let dialog = await open('work');
-    await dialog.getByRole('button', { name: 'Включить для всех разделов', exact: true }).click();
-    await expect(dialog).toBeHidden();
+    await open('work');
+    const tasks = notifications.getByRole('switch', { name: 'Задачи', exact: true });
+    await expect(tasks).toHaveClass('account-toggle');
+    await expect(page.locator('.sidebar-user-controls .sidebar-settings-link')).toHaveCount(1);
+    const settingsActions = await page.locator('.sidebar-user-controls .sidebar-account-action').evaluateAll(actions =>
+      actions.map(action => ({ left: action.getBoundingClientRect().left, top: action.getBoundingClientRect().top }))
+    );
+    assert.equal(settingsActions.length, 2);
+    assert.ok(settingsActions[1].left > settingsActions[0].left && Math.abs(settingsActions[1].top - settingsActions[0].top) < 1);
+    const editProfile = settingsPage.getByRole('button', { name: 'Изменить имя и логин' });
+    await editProfile.click();
+    const profileSaves = await settingsPage.locator('.personal-profile-form > button[type="submit"], .personal-profile-identity button[type="submit"]').evaluateAll(buttons =>
+      buttons.map(button => Math.abs(button.getBoundingClientRect().right - button.closest('form').getBoundingClientRect().right))
+    );
+    assert.equal(profileSaves.length, 2);
+    assert.ok(profileSaves.every(gap => gap < 1));
+    await settingsPage.getByRole('button', { name: 'Отменить редактирование' }).click();
+    const requests = notifications.getByRole('switch', { name: 'Заявки на рейс', exact: true });
+    if (!await tasks.isChecked()) { await tasks.click(); await expect(tasks).toBeChecked(); }
+    await expect(tasks).toBeChecked();
+    await tasks.click(); await expect(tasks).not.toBeChecked();
+    await expect(requests).toBeChecked();
+    assert.equal(writes, 0, 'Changing account preferences does not subscribe this device');
+    await page.reload(); await readySettings();
+    await expect(tasks).not.toBeChecked();
+    await expect(notifications.getByRole('switch', { name: 'Работа с компаниями — (напоминания)', exact: true })).toBeChecked();
+    const notificationActions = notifications.locator('.personal-notifications-results .work-push-actions');
+    const connect = notificationActions.getByRole('button', { name: 'Подключить этот браузер', exact: true });
+    const disconnect = notificationActions.getByRole('button', { name: 'Отключить этот браузер', exact: true });
+    await connect.click();
+    await expect(disconnect).toBeVisible();
+    await expect(notificationActions.getByRole('button', { name: 'Проверить уведомление', exact: true })).toBeEnabled();
+    await expect(page).toHaveURL(/#settings$/);
     for (const section of ['operator', 'invoices', 'work']) {
-      dialog = await open(section);
-      await expect(dialog.getByRole('button', { name: 'Выключить для всех разделов', exact: true })).toBeVisible();
-      await expect(dialog.getByRole('button', { name: 'Включить для всех разделов', exact: true })).toHaveCount(0);
-      const audit = await new AxeBuilder({ page }).include('.driver-notifications-dialog').analyze();
+      await open(section);
+      await expect(disconnect).toBeVisible();
+      await expect(connect).toHaveCount(0);
+      const audit = await new AxeBuilder({ page }).include('.personal-settings-page').analyze();
       report.axe.push({ engine, section, violations: audit.violations }); assert.deepEqual(audit.violations, []);
-      await page.keyboard.press('Escape');
     }
     assert.equal(explicit, 1); assert.deepEqual(await page.evaluate(() => window.qaPush), { requests: 1, subscribes: 1 });
     let devices; if (!built) { devices = (await store.read(source)).push.devices.filter(d => d.endpoint === fake.endpoint); assert.equal(devices.length, 1); assert.equal(devices[0].userId, admin.user.id); }
-    await page.reload(); dialog = await open('invoices');
-    await expect(dialog.getByRole('button', { name: 'Выключить для всех разделов', exact: true })).toBeVisible(); assert.equal(explicit, 1);
-    await page.screenshot({ path: resolve(output, `${engine}-shared-enabled.png`) });
-    await dialog.getByRole('button', { name: 'Выключить для всех разделов', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: 'Включить для всех разделов', exact: true })).toBeVisible(); await page.keyboard.press('Escape');
+    await page.reload(); await readySettings();
+    await expect(disconnect).toBeVisible(); assert.equal(explicit, 1);
+    await page.screenshot({ path: resolve(output, `${engine}-shared-enabled.png`), fullPage: true });
+    await disconnect.click();
+    await expect(connect).toBeVisible();
     for (const section of ['work', 'operator']) {
-      dialog = await open(section); await expect(dialog.getByRole('button', { name: 'Включить для всех разделов', exact: true })).toBeEnabled(); await page.keyboard.press('Escape');
+      await open(section); await expect(connect).toBeEnabled();
     }
     if (!built) { devices = (await store.read(source)).push.devices.filter(d => d.endpoint === fake.endpoint); assert.equal(devices.length, 0); } assert.equal(deletion, 1); assert.equal(explicit, 1);
+
     // Desktop, narrow mobile, drawer-only shipments and collapsed sidebar.
     for (const width of [320,390,600,760,761,1024,1470,1920]) {
       await page.setViewportSize({ width, height: 950 });
       for (const section of ['work','invoices','operator','shipments']) {
-        dialog = await open(section);
         if (section === 'operator') {
-          await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
-          if (await page.locator('#app-navigation.is-open').count()) await page.keyboard.press('Escape');
+          await go(section);
           await page.getByRole('tab',{name:/^Задания/}).click();
           const statuses = page.locator('.operator-controls .operator-plan-heading .button');
           await expect(statuses).toHaveCount(2);
@@ -122,28 +167,35 @@ try {
           await statuses.nth(1).click(); await expect(statuses.nth(1)).toHaveAttribute('aria-pressed','true');
           await statuses.nth(0).click();
           if ([320,390,600,1470].includes(width)) await page.screenshot({path:resolve(output,`${engine}-operator-status-${width}.png`)});
-          dialog = await open(section);
         }
+        await open(section);
         await expect(page.locator('.workspace-main .driver-notification-button')).toHaveCount(0);
-        await expect(page.locator('.sidebar-user-controls .driver-notification-button')).toHaveCount(1);
+        await expect(gear).toHaveCount(1);
         await expect(page.locator('.sidebar-user-controls button[aria-label="Выйти"]')).toHaveText('');
-        const geometry = await dialog.boundingBox(); assert.ok(geometry.x >= 0 && geometry.x + geometry.width <= width + 1);
+        const geometry = await settingsPage.boundingBox(); assert.ok(geometry.x >= 0 && geometry.x + geometry.width <= width + 1);
+        const profile = await profileCard.boundingBox(), alerts = await notifications.boundingBox();
+        if (width <= 600) assert.ok(alerts.y > profile.y && Math.abs(profile.x - alerts.x) < 2, 'Cards are stacked at mobile widths');
+        if (width >= 1470) assert.ok(alerts.x > profile.x && Math.abs(profile.y - alerts.y) < 2, 'Cards are side by side on desktop');
+        await settingsPage.getByRole('textbox', { name: 'Имя в CRM', exact: true }).focus();
         await page.keyboard.press('Tab');
-        assert.equal(await page.evaluate(() => document.querySelector('dialog[open]').contains(document.activeElement)), true);
-        await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
-        await expect(page.locator('.sidebar-user-controls .driver-notification-button')).toBeFocused();
-        const boxes = await page.locator('.sidebar-user-controls').evaluate(el => { const r=el.getBoundingClientRect(); return [...el.querySelectorAll('button')].map(b=>{const q=b.getBoundingClientRect();return {width:q.width,height:q.height,fits:q.left>=r.left&&q.right<=r.right+1};}); });
-        assert.ok(boxes.every(b=>b.width>=40&&b.height>=40&&b.fits));
+        assert.equal(await settingsPage.evaluate(el => el.contains(document.activeElement)), true);
+        if (width <= 760) {
+          await settingsPage.getByRole('button', { name: 'К уведомлениям', exact: true }).click();
+          await expect(notifications).toBeFocused();
+        }
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
-        if ([320,1470].includes(width) && section==='operator') await page.screenshot({path:resolve(output,`${engine}-sidebar-${width}.png`)});
+        if ([320,1470].includes(width) && section==='operator') await page.screenshot({path:resolve(output,`${engine}-settings-${width}.png`), fullPage: true});
+        await openMenu();
+        const boxes = await page.locator('.sidebar-user-controls').evaluate(el => { const r=el.getBoundingClientRect(); return [...el.querySelectorAll('.sidebar-account-action')].map(b=>{const q=b.getBoundingClientRect();return {width:q.width,height:q.height,fits:q.left>=r.left&&q.right<=r.right+1};}); });
+        assert.ok(boxes.every(b=>b.width>=40&&b.height>=40&&b.fits));
         report.checks.push({engine,width,section,passed:true});
       }
     }
-    await page.evaluate(()=>{location.hash='work'});
-    await page.keyboard.press('Escape');
+    await go('work');
     await page.getByRole('button',{name:'Свернуть панель',exact:true}).click();
-    dialog = await open('work'); await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
-    const collapsed = await page.locator('.sidebar-user-controls button').evaluateAll(items=>items.map(e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,top:b.top,bottom:b.bottom}}));
+    await open('work');
+    const collapsed = await page.locator('.sidebar-bottom .sidebar-settings-link, .sidebar-bottom [aria-label="Выйти"]').evaluateAll(items=>items.map(e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,top:b.top,bottom:b.bottom}}));
+    assert.equal(collapsed.length, 2);
     assert.ok(collapsed[1].top >= collapsed[0].bottom);
     await page.screenshot({path:resolve(output,`${engine}-sidebar-collapsed.png`)});
     await page.getByRole('button',{name:'Развернуть панель',exact:true}).click();
@@ -151,7 +203,7 @@ try {
     await page.route('**/api/auth/logout', route=>route.fulfill({json:{ok:true}}));
     await page.locator('.sidebar-user-controls button[aria-label="Выйти"]').click();
     await expect(page.getByRole('button',{name:'Войти',exact:true})).toBeVisible();
-    report.checks.push({ engine, explicit, deletion, writes, result: 'one permission/subscribe enables all three sections; persists after reload; one disable removes shared device' });
+    report.checks.push({ engine, explicit, deletion, writes, result: 'source settings persist separately from device registration; one disable removes the shared device' });
     console.log('PASS', engine, report.checks.at(-1).result);
     await context.close(); await browser.close(); browser = null;
   }

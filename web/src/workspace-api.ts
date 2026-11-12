@@ -26,7 +26,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
 }
 
 export async function fetchDirectoryData(): Promise<DirectoryData> {
-  const response = await apiFetch(isLogisticsWorkspace() ? '/api/context' : '/api/snapshot?shipments=omit', { cache: 'no-store' })
+  const response = await apiFetch(isLogisticsWorkspace() ? '/api/context' : '/api/snapshot?shipments=omit&context=directories', { cache: 'no-store' })
   if (!response.ok) throw new Error('Не удалось сверить актуальные данные. Ваш ввод сохранён в форме; повторите сохранение.')
   return response.json() as Promise<DirectoryData>
 }

@@ -166,3 +166,19 @@ test('operation form receives durable result while provider is still pending',as
   for(let i=0;i<50;i++){const data=await f.store.read(f.source);if(Object.values(data.push?.deliveries??{}).every(row=>!row.lease))break;await new Promise(resolve=>setTimeout(resolve,20))}
  }finally{release();await new Promise(resolve=>setTimeout(resolve,150));await f.close()}
 });
+
+
+test('operator source preference applies to new plans and completions for the current account', async () => {
+  const sent: Notice[] = [], f = await fixture(capture(sent));
+  try {
+    const path = '/api/push/preferences';
+    assert.equal((await f.request(path, 'PATCH', { operator: false }, f.admin)).body.preferences.operator, false);
+    assert.equal((await f.request(path, 'GET', undefined, f.operator)).body.preferences.operator, true);
+    const plan = await f.createPlan(['100']);
+    assert.equal(sent.length, 0);
+    assert.equal((await finish(f, plan, f.admin)).status, 201);
+    assert.deepEqual(sent.map(row => row.userId), [f.operatorId]);
+    assert.equal((await f.request(path, 'PATCH', { operator: true }, f.admin)).body.preferences.operator, true);
+    assert.equal((await dispatchReminders(f.store, f.source, config, capture(sent))).sent, 0);
+  } finally { await f.close(); }
+});
