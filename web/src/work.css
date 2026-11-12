@@ -779,30 +779,3 @@ dialog.work-editor .work-editor-content .work-description-field > textarea {
     transform: none;
   }
 }
-
-.work-completion-notification {
-  display: grid;
-  gap: 4px;
-  padding-block: 6px;
-  font-size: 13px;
-}
-.work-completion-notification label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: fit-content;
-  min-height: 24px;
-  cursor: pointer;
-}
-.work-completion-notification input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  flex: none;
-  accent-color: var(--accent, #176647);
-}
-.work-completion-notification small {
-  padding-inline-start: 24px;
-  font-size: 12px;
-  color: var(--muted, #586b60);
-}

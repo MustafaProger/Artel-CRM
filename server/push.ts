@@ -132,11 +132,11 @@ export function queueTaskAssignment(data: OperationsData, task: WorkTask | undef
 }
 /** Save the event with the status change so push failures cannot lose it. */
 export function queueTaskCompletion(data: OperationsData, task: WorkTask | undefined, previous: WorkTask | undefined, actor: Pick<AccountUser, 'id' | 'name'>): boolean {
-  if (!task?.notifyOnCompletion || task.status !== 'done') {
+  if (task?.status !== 'done') {
     if (previous && data.push?.taskCompletions) delete data.push.taskCompletions[previous.id];
     return false;
   }
-  if (!previous || previous.status === 'done' || task.createdBy === actor.id) return false;
+  if (previous?.status === 'done') return false;
   const push = data.push ??= { devices: [], deliveries: {} };
   (push.taskCompletions ??= {})[task.id] = { version: task.version, at: Date.now(), completedByName: actor.name.trim() || 'Сотрудник CRM' };
   return true;
@@ -184,7 +184,7 @@ const assignmentLifetime = 86400000;
 const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssignment, now: number) =>
   assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === (assignment.taskId ?? id) && workAssigneeIds(task).includes(assignment.assigneeId) && !task.archivedAt && !isClosedWorkStatus(task.status));
 const completedTask = (data: OperationsData, id: string, event: TaskCompletion, now: number) =>
-  event.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.status === 'done' && task.notifyOnCompletion && task.version >= event.version);
+  event.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.status === 'done' && task.version >= event.version);
 const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssignment, now: number) => {
   if (assignment.at <= now - assignmentLifetime || data.directories?.deletedEntries?.drivers?.includes(assignment.driverId) || !data.directories?.drivers.some(driver => driver.id === assignment.driverId)) return false;
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);

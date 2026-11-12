@@ -17,7 +17,7 @@ import type { WorkTask } from '../web/src/work-model';
 const base = await loadSnapshot();
 const source = base.provenance.sourceSha256;
 const config: PushConfig = { publicKey: 'test-public', privateKey: 'test-private', subject: 'https://artel-crm.vercel.app', schedule: true };
-interface Notification { userId: string; body: string; tag: string; url: string }
+interface Notification { userId: string; title: string; body: string; tag: string; url: string }
 function capture(sent: Notification[]): PushSender {
   return async (device, payload) => { sent.push({ ...JSON.parse(payload), userId: device.userId }); };
 }
@@ -180,11 +180,14 @@ test('pending assignment and due reminder deliveries are cancelled for completed
     assert.equal(transfer.status, 200);
     const sent: Notification[] = [];
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), Date.now() + 121000);
-    assert.equal(sent.length, 2, 'Only the current task assignment and its due reminder remain eligible');
-    assert.ok(sent.every(row => row.userId === f.users[2].id && row.url.includes(created.body.entry.id)));
-    assert.equal(sent.filter(row => /назнач/i.test(row.body)).length, 1);
-    assert.equal(sent.filter(row => /напомин/i.test(row.body)).length, 1);
-    assert.notEqual(sent[0].tag, sent[1].tag);
+    const completions = sent.filter(row => row.title === 'Ваша задача выполнена');
+    assert.deepEqual(completions.map(row => row.userId), [f.users[0].id]);
+    const assigneeNotifications = sent.filter(row => row.title !== 'Ваша задача выполнена');
+    assert.equal(assigneeNotifications.length, 2, 'Only the current assignment and its due reminder remain eligible');
+    assert.ok(assigneeNotifications.every(row => row.userId === f.users[2].id && row.url.includes(created.body.entry.id)));
+    assert.equal(assigneeNotifications.filter(row => /назнач/i.test(row.body)).length, 1);
+    assert.equal(assigneeNotifications.filter(row => /напомин/i.test(row.body)).length, 1);
+    assert.notEqual(assigneeNotifications[0].tag, assigneeNotifications[1].tag);
   } finally { await f.close(); }
 });
 
@@ -229,7 +232,7 @@ test('concurrent request dispatch and scheduler dispatch claim a pending assignm
   } finally { await f.close(); }
 });
 
-test('opted-in tasks notify their original author when a colleague marks them done', async t => {
+test('tasks notify their original author even when the legacy setting was off', async t => {
   for (const mode of ['legacy', 'work-partitioned', 'auth-archive-partitioned'] as const) {
     await t.test(mode, async () => {
       const sent: Notification[] = [];
@@ -245,18 +248,20 @@ test('opted-in tasks notify their original author when a colleague marks them do
           await migrateAuthStorage(f.folder, source);
           await migrateArchiveStorage(f.folder, source);
         }
-        const create = await f.alice('/api/work/tasks', 'POST', { title: 'Сверить итог', assigneeIds: [f.users[2].id], notifyOnCompletion: true });
+        const create = await f.alice('/api/work/tasks', 'POST', { title: 'Сверить итог', assigneeIds: [f.users[2].id] });
         assert.equal(create.status, 201);
         const task = create.body.entry as WorkTask;
-        assert.equal(task.notifyOnCompletion, true);
         const route = `/api/work/tasks/${task.id}`;
-        const forbidden = await f.bob(route, 'PATCH', { version: task.version, notifyOnCompletion: false });
-        assert.equal(forbidden.status, 403);
+        await f.store.mutate(source, data => {
+          const savedTask = data.work!.tasks.find(row => row.id === task.id)!;
+          Object.assign(savedTask, { notifyOnCompletion: false });
+          return { result: undefined, changed: true };
+        });
 
-        const done = await f.bob(route, 'PATCH', { version: task.version, status: 'done', archived: true });
+        const done = await f.bob(route, 'PATCH', { version: task.version, status: 'done', archived: true, notifyOnCompletion: false });
         assert.equal(done.status, 200);
         assert.ok(done.body.entry.archivedAt);
-        assert.equal(done.body.entry.notifyOnCompletion, true);
+        assert.equal(done.body.entry.notifyOnCompletion, undefined);
         assert.deepEqual(sent.map(row => row.userId), [f.users[2].id], 'Only the assignment succeeded so far');
         const stale = await f.bob(route, 'PATCH', { version: task.version, status: 'done' });
         assert.equal(stale.status, 409);
@@ -282,31 +287,27 @@ test('opted-in tasks notify their original author when a colleague marks them do
   }
 });
 
-test('completion pushes are immediate and skip failed, opted-out and self-completed tasks', async () => {
+test('completion pushes are immediate for colleagues and authors and skip failed tasks', async () => {
   const sent: Notification[] = [];
   const f = await fixture(capture(sent));
   try {
-    for (const { optIn, status, finish, expected } of [
-      { optIn: true, status: 'done', finish: f.bob, expected: true },
-      { optIn: false, status: 'done', finish: f.bob, expected: false },
-      { optIn: true, status: 'failed', finish: f.bob, expected: false },
-      { optIn: true, status: 'done', finish: f.alice, expected: false },
+    for (const { status, finish, expected } of [
+      { status: 'done', finish: f.bob, expected: [f.users[1].id] },
+      { status: 'failed', finish: f.bob, expected: [] },
+      { status: 'done', finish: f.alice, expected: [f.users[1].id] },
     ]) {
       const created = await f.alice('/api/work/tasks', 'POST', { title: 'Проверить документы', assigneeId: f.users[2].id });
       assert.equal(created.status, 201);
       const route = `/api/work/tasks/${created.body.entry.id}`;
-      const enabled = await f.alice(route, 'PATCH', { version: created.body.entry.version, notifyOnCompletion: true });
-      assert.equal(enabled.status, 200);
-      let version = enabled.body.entry.version;
-      if (!optIn) {
-        const disabled = await f.alice(route, 'PATCH', { version, notifyOnCompletion: false });
-        assert.equal(disabled.status, 200);
-        version = disabled.body.entry.version;
-      }
       sent.length = 0;
-      const closed = await finish(route, 'PATCH', { version, status });
+      const closed = await finish(route, 'PATCH', { version: created.body.entry.version, status });
       assert.equal(closed.status, 200);
-      assert.deepEqual(sent.map(row => row.userId), expected ? [f.users[1].id] : []);
+      assert.deepEqual(sent.map(row => row.userId), expected);
     }
+
+    sent.length = 0;
+    const createdDone = await f.alice('/api/work/tasks', 'POST', { title: 'Документы уже проверены', status: 'done' });
+    assert.equal(createdDone.status, 201);
+    assert.deepEqual(sent.map(row => row.userId), [f.users[1].id]);
   } finally { await f.close(); }
 });

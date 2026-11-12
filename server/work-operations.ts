@@ -191,16 +191,15 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   const common = { id: id ?? `work-${kind}-${body.requestId ?? randomUUID()}`, version: (previous?.version ?? 0) + 1, assigneeId, createdAt: previous?.createdAt ?? now, updatedAt: now, createdBy: previous?.createdBy ?? actor.id, updatedBy: actor.id };
   let entry: AnyWorkEntry;
   if (kind === 'tasks') {
-    const notifyOnCompletion = body.notifyOnCompletion;
-    if (notifyOnCompletion !== undefined && typeof notifyOnCompletion !== 'boolean') throw new ApiError(400, 'Некорректная настройка уведомления о выполнении.');
-    if (notifyOnCompletion !== undefined && creator !== actor.id) throw new ApiError(403, 'Настроить уведомление о выполнении может только автор задачи.');
+    // Accept the obsolete boolean from open copies of the previous editor.
+    if (body.notifyOnCompletion !== undefined && typeof body.notifyOnCompletion !== 'boolean') throw new ApiError(400, 'Некорректная настройка уведомления о выполнении.');
     const status = handoff ? 'todo' : get('status', 'todo');
     if (!workStatuses.some(row => row.id === status)) throw new ApiError(400, 'Неизвестное состояние задачи.');
     const priority = body.priority === undefined ? (previous as WorkTask | undefined)?.priority ?? 4 : body.priority;
     if (!workPriorities.includes(priority as 1 | 2 | 3 | 4)) throw new ApiError(400, 'Неизвестный приоритет задачи.');
     const subtasks = body.subtasks === undefined ? (previous as WorkTask | undefined)?.subtasks : body.subtasks;
     if (subtasks !== undefined && !validSubtasks(subtasks)) throw new ApiError(400, `Укажите названия подзадач. Допускается до ${workSubtaskLimit} подзадач по 200 символов.`);
-    entry = { ...common, ...((notifyOnCompletion ?? (previous as WorkTask | undefined)?.notifyOnCompletion) ? { notifyOnCompletion: true } : {}), ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
+    entry = { ...common, ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
   } else if (kind === 'companies') {
     const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
     const comments = [...((previous as WorkCompanyRecord | undefined)?.comments ?? [])];

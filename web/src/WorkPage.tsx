@@ -353,9 +353,6 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
   const record = editor.kind === 'companies' ? entry as WorkCompanyRecord | undefined : task;
   const note = entry as WorkNote | undefined;
   const [assignees, setAssignees] = useState(() => task ? [...workAssigneeIds(task)] : [actor.id]);
-  const [notifyOnCompletion, setNotifyOnCompletion] = useState(task?.notifyOnCompletion === true);
-  const completionHintId = useId();
-  const canSetCompletionNotification = editor.kind === 'tasks' && (!entry || entry.createdBy === actor.id);
   const [activity, setActivity] = useState<TaskActivity | null>(null);
   const [handoffTo, setHandoffTo] = useState<string[]>([]);
   const [handoffComment, setHandoffComment] = useState('');
@@ -518,7 +515,6 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
           body = {
             ...identity, ...recordFields,
             title: fields.title, description: fields.description,
-            ...(canSetCompletionNotification ? { notifyOnCompletion } : {}),
             priority: Number(fields.priority), companyId: fields.companyId || null, dueDate: fields.dueDate || null,
             ...(activeSubtasks.length || task?.subtasks ? { subtasks: activeSubtasks } : {}),
             ...(handingOff
@@ -667,14 +663,6 @@ function WorkEditor({ editor, users, historicalUsers, companies, actor, onSaving
         </div>
       </section>}
       {editor.kind === 'tasks' && <><div className="work-task-toolbar" role="group" aria-label="Параметры задачи" tabIndex={0}>{taskParameters}{uploadAction}</div>{(record?.attachments?.length || files.length) ? <section className="work-files work-task-file-list" aria-label="Файлы задачи">{fileRows}</section> : null}</>}
-      {canSetCompletionNotification && <div className="work-completion-notification">
-        <label>
-          <input type="checkbox" checked={notifyOnCompletion} disabled={saving} aria-describedby={completionHintId}
-            onChange={event => setNotifyOnCompletion(event.target.checked)}/>
-          Уведомить меня о выполнении
-        </label>
-        <small id={completionHintId}>Если коллега выполнит задачу, вы получите push при включённых уведомлениях CRM.</small>
-      </div>}
       {editor.kind === 'tasks' ? taskActivity : details}
       </div>
 
