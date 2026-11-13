@@ -1,3 +1,4 @@
+import { saveUser } from '../server/auth';
 import { migrateWorkStorage } from '../server/work-partition';
 import { enabledPages } from '../web/src/page-catalog';
 import { availablePagesFor, hasPageAccess } from '../web/src/page-access';
@@ -111,7 +112,7 @@ test('administration links existing employees, rejects duplicate links, unknown 
     assert.equal((await f.aidar('/api/auth/users/' + f.users[0].id, 'PATCH', update(f.users[0], { role: 'director' }))).status, 403);
     for (const changes of [{ sections: ['unknown'] }, { sections: ['work', 'work'] }, { shipmentScope: 'all' }]) assert.equal((await f.director('/api/auth/users/' + f.users[0].id, 'PATCH', update(f.users[0], changes))).status, 400);
     const linkedAdmin = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'Admin QA' });
-    const created = await f.director('/api/auth/users', 'POST', { name: 'Admin', login: 'admin-qa', password: f.password, role: 'admin', managerId: linkedAdmin.body.entry.id, sections: [] });
+    const created = await f.director('/api/auth/users', 'POST', { name: 'Admin', login: 'admin-qa', password: f.password, role: 'admin', managerId: linkedAdmin.body.entry.id });
     assert.equal(created.status, 201); assert.equal(created.body.user.sections.length, sections.length);
     const admin = f.client(); await admin('/api/auth/login', 'POST', { login: 'admin-qa', password: f.password });
     assert.equal((await admin('/api/auth/users')).status, 200);
@@ -323,14 +324,72 @@ test('enabled pages respect explicit grants without adding new rights to old man
   for (const id of ['cabinet-balances', 'accounts'] as const) {
     assert.equal(hasPageAccess(user, id), false);
     assert.equal(hasPageAccess({ ...user, sections: [...user.sections!, id] }, id), true);
-    assert.equal(hasPageAccess({ ...user, role: 'director' }, id), true);
-    assert.equal(hasPageAccess({ ...user, role: 'admin' }, id), true);
+    assert.equal(hasPageAccess({ ...user, role: 'director', sections: undefined }, id), true);
+    assert.equal(hasPageAccess({ ...user, role: 'admin', sections: undefined }, id), true);
     assert.equal(hasPageAccess({ ...user, role: 'admin', active: false }, id), false);
   }
   assert.equal(hasPageAccess(user, 'operator'), true);
   assert.equal(hasPageAccess({ ...user, sections: [] }, 'operator'), false);
   assert.equal(availablePagesFor(user).length, 10);
   assert.equal(availablePagesFor({ ...user, role: 'director' }).length, enabledPages.length);
+  assert.equal(availablePagesFor({ ...user, role: 'director', customSections: true }).length, 10);
+  assert.equal(availablePagesFor({ ...user, role: 'developer', customSections: true }).length, enabledPages.length);
+});
+
+test('developer authority is protected and a director can be given individual sections and directories', async () => {
+  const f = await fixture();
+  try {
+    const director = (await f.director('/api/auth/session')).body.user as AccountUser;
+    const credentials = { login: 'developer-qa', password: f.password };
+    const create = { ...credentials, name: 'Developer QA', role: 'developer', sections: [] };
+    assert.equal((await f.director('/api/auth/users', 'POST', create)).status, 403);
+    await f.store.mutate(base.provenance.sourceSha256, async data => ({
+      result: await saveUser(data, currentSnapshot(base, data, false), create), changed: true,
+    }));
+    const developer = f.client();
+    const signed = await developer('/api/auth/login', 'POST', credentials);
+    assert.equal(signed.status, 200);
+    const user = signed.body.user as AccountUser;
+    assert.equal(user.role, 'developer');
+    assert.equal(availablePagesFor(user).length, enabledPages.length);
+    const path = '/api/auth/users/' + user.id;
+    assert.equal((await f.director(path, 'PATCH', update(user, { role: 'director' }))).status, 403);
+    assert.equal((await f.director(path, 'DELETE', { version: user.version, confirmationName: user.name })).status, 403);
+    assert.equal((await f.director(path + '/password', 'POST', { version: user.version })).status, 403);
+    assert.equal((await developer(path, 'PATCH', update(user, { active: false }))).status, 409);
+    assert.equal((await developer('/api/work')).status, 200);
+
+    const directorPath = '/api/auth/users/' + director.id;
+    const changed = await developer(directorPath, 'PATCH', update(director, {
+      sections: ['work', 'directories'], directoryGrants: ['products'],
+    }));
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.user.role, 'director');
+    assert.deepEqual(changed.body.user.sections, ['work', 'directories']);
+    await f.director('/api/auth/login', 'POST', { login: director.login, password: f.password });
+    assert.equal((await f.director('/api/auth/users')).status, 403);
+    assert.equal((await f.director('/api/cabinets')).status, 403);
+    assert.equal((await f.director('/api/banking/export')).status, 403);
+    assert.equal((await f.director('/api/settlements')).status, 403);
+    assert.equal((await f.director('/api/work')).status, 200);
+    const snapshot = (await f.director('/api/snapshot')).body;
+    assert.deepEqual(snapshot.payments, []);
+    assert.deepEqual(snapshot.shipments, []);
+    const directories = (await f.director('/api/directories')).body;
+    assert.deepEqual(directories.companies, []);
+    assert.deepEqual(directories.directories.drivers, []);
+    assert.deepEqual(directories.directories.oilDepots, []);
+    assert.ok(directories.directories.products.length > 0);
+    assert.equal((await f.director('/api/directories', 'POST', { kind: 'products', name: 'Developer QA product' })).status, 201);
+    assert.equal((await f.director('/api/directories', 'POST', { kind: 'oilDepots', name: 'Developer QA depot' })).status, 403);
+    assert.equal((await f.director('/api/directories/cleanup')).status, 403);
+
+    const empty = await developer(directorPath, 'PATCH', update(changed.body.user, { sections: [] }));
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.body.user.sections, []);
+    await f.director('/api/auth/login', 'POST', { login: director.login, password: f.password });
+    assert.equal((await f.director('/api/work')).status, 403);
+  } finally { await f.close(); }
 });
 
 test('editing visible permissions preserves hidden grants and cabinet access stays forbidden', async () => {

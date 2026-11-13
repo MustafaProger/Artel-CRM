@@ -1,6 +1,6 @@
 import { Bell, ChevronDown } from 'lucide-react'
 import { useRef } from 'react'
-import { hasSection, type AccountUser } from './auth-model'
+import { canOverseeTripRequests, hasSection, type AccountUser } from './auth-model'
 import NotificationSources, { type NotificationSource } from './NotificationSources'
 import PersonalProfileSettings from './PersonalProfileSettings'
 import PushSettings from './PushSettings'
@@ -17,7 +17,7 @@ export default function PersonalSettings({ user, onUserChanged, visible }: {
   const sources: NotificationSource[] = []
   if (user.role === 'driver') sources.push('tripAssignments')
   if (hasSection(user, 'work')) sources.push('tasks', 'companies')
-  if (user.role === 'director' && hasSection(user, 'trips')) sources.push('tripRequests')
+  if (canOverseeTripRequests(user) && hasSection(user, 'trips')) sources.push('tripRequests')
   if (hasSection(user, 'invoices')) sources.push('invoices')
   if (hasSection(user, 'operator')) sources.push('operator')
   const audience = user.role === 'driver' ? 'driver' : hasSection(user, 'work') ? 'work' : hasSection(user, 'invoices') ? 'invoices' : 'operator'

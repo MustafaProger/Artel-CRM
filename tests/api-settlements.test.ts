@@ -248,7 +248,7 @@ test('overview ledger isolates two assigned portfolios, empty managers, unassign
     assert.ok(directorReport.companies.some(company => company.receipts.some(row => row.id === unknown.id)));
     const admin = f.client();
     const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'Ledger admin employee' });
-    assert.equal((await f.director('/api/auth/users', 'POST', { name: 'Ledger admin', login: 'settlements.admin', password: f.password, role: 'admin', managerId: employee.body.entry.id, sections: [] })).status, 201);
+    assert.equal((await f.director('/api/auth/users', 'POST', { name: 'Ledger admin', login: 'settlements.admin', password: f.password, role: 'admin', managerId: employee.body.entry.id, sections: ['overview'] })).status, 201);
     await admin('/api/auth/login', 'POST', { login: 'settlements.admin', password: f.password });
     assert.deepEqual((await admin('/api/settlements')).body, directorReport);
   } finally { await f.close(); }

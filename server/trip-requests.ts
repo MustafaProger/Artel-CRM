@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { hasSection, type AccountUser } from '../web/src/auth-model';
+import { canOverseeTripRequests, hasSection, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { TripRequest } from '../web/src/trip-request-model';
 import type { OperationsData } from './operations-store';
@@ -35,7 +35,7 @@ export function validateTripRequests(value: unknown, creates: unknown) {
 }
 
 export function canAccessTripRequest(actor: AccountUser | null, request: Pick<TripRequest, 'ownerUserId'>) {
-  return !actor || hasSection(actor, 'trips') && (actor.role === 'director' || request.ownerUserId === actor.id);
+  return !actor || hasSection(actor, 'trips') && (canOverseeTripRequests(actor) || request.ownerUserId === actor.id);
 }
 
 /** Operational company/location lookup; no accounting or bank properties are exposed. */

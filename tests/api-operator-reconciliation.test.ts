@@ -56,6 +56,6 @@ test('operator-only employee sees only explicitly granted service directory',()=
  assert.deepEqual(availableDirectoryTabs(user),['operatorServices'])
  assert.deepEqual(availableDirectoryTabs({...user,directoryGrants:[]}),[])
  assert.deepEqual(availableDirectoryTabs({...user,sections:[...user.sections!, 'trips']}), ['customers', 'addresses', 'operatorServices'])
- assert.deepEqual(availableDirectoryTabs({...user,role:'admin'}), ['customers', 'addresses', 'suppliers', 'oilDepots', 'products', 'vehicles', 'drivers', 'managers', 'operatorServices'])
+ assert.deepEqual(availableDirectoryTabs({...user,role:'admin'}), ['customers', 'addresses', 'operatorServices'])
  assert.deepEqual(availableDirectoryTabs({...user,active:false}),[])
 })

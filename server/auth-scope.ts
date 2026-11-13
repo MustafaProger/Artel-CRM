@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import { hasSection, hasDirectoryGrant, type AccountUser } from '../web/src/auth-model';
+import { hasSection, hasDirectoryGrant, hasFullDirectoryAccess, hasCustomerDirectoryAccess, type AccountUser } from '../web/src/auth-model';
 import type { Company, Shipment, Snapshot } from '../web/src/model';
 import { canManage } from './auth';
 import { ApiError } from './api-error';
@@ -37,7 +37,13 @@ export function requireWholeTrip(actor: AccountUser, snapshot: Pick<Snapshot, 's
 const companyLookup = (company: Company): Company => ({ id: company.id, name: company.name, roles: company.roles, directoryArchived: company.directoryArchived, shipmentIds: [], paymentIds: [], managerLabels: [], flags: [] });
 export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 'work' | 'directories', workCompanyIds: string[] = []): Snapshot {
   if (actor.role === 'driver') throw new ApiError(403, 'Водителю доступен только кабинет рейсов.');
-  if (canManage(actor) && context !== 'work') return snapshot;
+  const administrator = canManage(actor);
+  const financialAccess = administrator && context === undefined && hasSection(actor, 'payments');
+  const overviewAccess = administrator && context === undefined && hasSection(actor, 'overview');
+  if (administrator && hasFullDirectoryAccess(actor) && (context === 'directories' && !actor.customSections ||
+      overviewAccess && financialAccess && hasSection(actor, 'shipments') && hasSection(actor, 'trips') && hasSection(actor, 'stock'))) {
+    return snapshot;
+  }
   const shipmentAccess = !context && (hasSection(actor, 'shipments') || hasSection(actor, 'trips'));
   const directoryAccess = context !== 'work' && hasSection(actor, 'directories');
   const shipments = shipmentAccess ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).map(row => {
@@ -45,17 +51,18 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
     return mixed ? { ...row, tripReadOnly: true, fields: { ...row.fields, trip_total_tonnes: null, trip_additional_costs: null } } : row;
   }) : [];
   const ids = new Set(shipments.map(row => row.id));
-  const customerIds = ownCustomerIds(snapshot, actor);
+  const customerIds = administrator && !overviewAccess && !shipmentAccess && !hasCustomerDirectoryAccess(actor) && context !== 'work'
+    ? new Set<string>() : ownCustomerIds(snapshot, actor);
   const requestCustomerIds = new Set(shipments.filter(row => row.fields.source_request_id).map(row => row.customerId));
   const directoryCompanyIds = new Set((snapshot.directories?.oilDepots ?? []).filter(() => directoryAccess && hasDirectoryGrant(actor, 'oilDepots')).flatMap(row => [row.ownerCompanyId, row.loadingActorCompanyId, row.infrastructureOwnerCompanyId]));
   const sharedCompany = (company: Company) => directoryAccess && (company.roles.includes('supplier') && hasDirectoryGrant(actor, 'suppliers') || company.roles.includes('other') && hasDirectoryGrant(actor, 'oilDepots') || company.roles.includes('carrier') && (hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))); 
   // Shared company lookup is operational input, never a back door to directory details or records.
-  const companies = (directoryAccess || shipmentAccess || hasSection(actor, 'work') ? snapshot.companies : [])
-    .filter(company => sharedCompany(company) || directoryCompanyIds.has(company.id) || canManage(actor) || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || context !== 'directories' && company.roles.some(role => role === 'supplier' || role === 'carrier'))
+  const companies = (directoryAccess || shipmentAccess || financialAccess || overviewAccess || hasSection(actor, 'work') ? snapshot.companies : [])
+    .filter(company => sharedCompany(company) || directoryCompanyIds.has(company.id) || administrator && context !== 'directories' && (overviewAccess || financialAccess || shipmentAccess || context === 'work') || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || context !== 'directories' && company.roles.some(role => role === 'supplier' || role === 'carrier'))
     .map(company => ({
     ...(directoryAccess && (customerIds.has(company.id) || sharedCompany(company)) ? company : companyLookup(company)),
-    roles: context === 'directories' && directoryAccess && customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'customer' ? customerIds.has(company.id) || requestCustomerIds.has(company.id) : role === 'supplier' ? context !== 'directories' || hasDirectoryGrant(actor, 'suppliers') : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots') : role === 'carrier' && (context !== 'directories' || hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))),
-    shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: [], managerLabels: [], flags: [],
+    roles: context === 'directories' && directoryAccess && !administrator && customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'customer' ? customerIds.has(company.id) || requestCustomerIds.has(company.id) : role === 'supplier' ? context !== 'directories' || hasDirectoryGrant(actor, 'suppliers') : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots') : role === 'carrier' && (context !== 'directories' || hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))),
+    shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: financialAccess ? company.paymentIds : [], managerLabels: [], flags: [],
   }));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };
   const totals = (rows: Shipment[]) => ({ shipmentCount: rows.length, paymentCount: 0, liters: metric(rows.map(r => r.liters)), revenue: metric(rows.map(r => r.revenue)), cost: metric(rows.map(r => r.cost)), incoming: metric([]), outgoing: metric([]) });
@@ -63,6 +70,7 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   const catalog = snapshot.directories;
   const directories = catalog && (directoryAccess || shipmentAccess) ? {
     ...catalog,
+    transportPricing: shipmentAccess || hasDirectoryGrant(actor, 'vehicles') ? catalog.transportPricing : undefined,
     vehicles: directoryAccess && hasDirectoryGrant(actor, 'vehicles') ? catalog.vehicles : shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.vehicles.map(({ id, plate, name, capacityLitres, compartmentsLitres, compartmentDeparturePricesRub }) => ({ id, plate, name, capacityLitres, compartmentsLitres, compartmentDeparturePricesRub })) : [],
     drivers: directoryAccess && hasDirectoryGrant(actor, 'drivers') ? catalog.drivers : shipmentAccess ? catalog.drivers.map(({ id, name, vehicleId }) => ({ id, name, vehicleId })) : [],
     products: shipmentAccess || directoryAccess && hasDirectoryGrant(actor, 'products') ? catalog.products : [],
@@ -72,15 +80,15 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
     operatorGroups: directoryAccess && hasDirectoryGrant(actor, 'operatorServices') ? catalog.operatorGroups : [],
     managers: directoryAccess && hasDirectoryGrant(actor, 'managers') ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
     deletedEntries: undefined,
-    customerManagers: catalog.customerManagers?.filter(link => link.managerId === actor.managerId),
+    customerManagers: catalog.customerManagers?.filter(link => administrator && customerIds.has(link.companyId) || link.managerId === actor.managerId),
     addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (customerIds.has(address.companyId) || snapshot.companies.some(company => company.id === address.companyId && sharedCompany(company)) || shipmentAccess) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
-    assignedCustomerIds: [...customerIds],
-    currentEmployeeId: actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
+    assignedCustomerIds: administrator ? undefined : [...customerIds],
+    currentEmployeeId: !administrator && actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
     duplicates: [],
   } : undefined;
-  return { ...snapshot, directories, shipments, payments: [], stocks: [], companies, managers: [],
-    overview: { ...totals(shipments), companyCount: companies.filter(company => customerIds.has(company.id)).length, missingShipmentDates: shipments.filter(s => !s.date).length, missingPaymentDates: 0 },
-    monthly: [...new Set(dates.map(d => d.slice(0, 7)))].map(month => ({ month, ...totals(shipments.filter(s => s.date?.startsWith(month))) })),
+  return { ...snapshot, directories, shipments, payments: financialAccess ? snapshot.payments : [], stocks: administrator && !context && hasSection(actor, 'stock') ? snapshot.stocks : [], companies, managers: overviewAccess ? snapshot.managers : [],
+    overview: overviewAccess ? { ...snapshot.overview, ...(!financialAccess ? { paymentCount: 0, missingPaymentDates: 0, incoming: metric([]), outgoing: metric([]) } : {}) } : { ...totals(shipments), companyCount: companies.filter(company => customerIds.has(company.id)).length, missingShipmentDates: shipments.filter(s => !s.date).length, missingPaymentDates: 0 },
+    monthly: overviewAccess && financialAccess ? snapshot.monthly : [...new Set(dates.map(d => d.slice(0, 7)))].map(month => ({ month, ...totals(shipments.filter(s => s.date?.startsWith(month))) })),
     provenance: { ...snapshot.provenance, counts: { shipment_rows: shipments.length, counterparties: companies.length }, dateRange: { from: dates[0] ?? null, to: dates.at(-1) ?? null } },
     quality: { status: 'scoped', issueCounts: {}, issues: [], recordFlagCounts: { shipments: {}, payments: {} }, flaggedShipmentCount: 0, flaggedPaymentCount: 0, duplicateCandidates: [], aliasCandidates: [], multipleManagerCompanyIds: [], limitations: [] },
   };

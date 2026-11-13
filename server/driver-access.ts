@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import type { AccountUser } from '../web/src/auth-model';
+import { canOverseeTripRequests, type AccountUser } from '../web/src/auth-model';
 import type { Driver, Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
@@ -37,7 +37,7 @@ export async function mutateDriverAccess(data: OperationsData, snapshot: Snapsho
   const changingLogin = method === 'PATCH' && Object.hasOwn(input, 'login');
   if (method === 'POST' && !['issue', 'reset'].includes(String(input.action)) || method === 'PATCH' && (changingLogin ? Object.hasOwn(input, 'active') : input.active !== false)) throw new ApiError(400, 'Выберите изменение логина, выдачу, смену пароля или отключение доступа.');
   const accounts = data.accounts;
-  if (!accounts?.users.some(user => user.active && !user.deletedAt && user.role === 'director')) throw new ApiError(409, 'Сначала настройте учётную запись директора.');
+  if (!accounts?.users.some(user => user.active && !user.deletedAt && canOverseeTripRequests(user))) throw new ApiError(409, 'Сначала настройте учётную запись директора.');
   const previous = linkedUser(data, driverId);
   if (input.version !== (previous?.version ?? 0)) throw new ApiError(409, 'Доступ уже изменён. Обновите сведения о доступе.');
   // Tombstoned accounts are never restored or replaced by another account.

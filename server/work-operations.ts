@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { hasSection, isScopedEmployee, type AccountUser } from '../web/src/auth-model';
+import { hasSection, isAdministrator, isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
@@ -13,7 +13,7 @@ const identifier = (value: unknown): value is string => boundedText(value, 180, 
 const date = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const instant = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && date(value.slice(0, 10)) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().replace('.000Z', 'Z') === value.replace('.000Z', 'Z');
 const listKey = (kind: WorkKind) => kind === 'companies' ? 'companyRecords' : kind;
-const isSupervisor = (actor: AccountUser) => actor.role === 'director' || actor.role === 'admin';
+const isSupervisor = isAdministrator;
 const canAccess = (actor: AccountUser, entry: AnyWorkEntry) => isSupervisor(actor) || isScopedEmployee(actor) && isMyWork(entry, actor.id);
 const validAssignees = (value: unknown): value is string[] => Array.isArray(value) && value.every(identifier) && new Set(value).size === value.length;
 

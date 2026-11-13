@@ -109,7 +109,7 @@ test('catalog refresh forwards only the explicit GET workspace refresh flag', as
   } finally { await f.close(); }
 });
 
-test('directors and admins have invoices with every section even without a stored grant', async () => {
+test('legacy managers of CRM retain invoices and a director can explicitly revoke it', async () => {
   const f = await fixture(async () => response({}));
   try {
     for (const role of ['director', 'admin'] as const) {
@@ -125,8 +125,8 @@ test('directors and admins have invoices with every section even without a store
       const edit = (sections?: string[]) => ({ name: user.name, login: user.login, role: user.role, managerId: user.managerId, active: true, version: user.version, ...(sections === undefined ? {} : { sections }) });
       await saveUser(data, f.base, edit(), user.id); user = data.accounts!.users[0];
       assert.ok(effectiveSections(user).includes('invoices'));
-      await saveUser(data, f.base, edit([]), user.id); user = data.accounts!.users[0];
-      assert.equal(effectiveSections(user).includes('invoices'), true);
+      await saveUser(data, f.base, edit(['accounts']), user.id); user = data.accounts!.users[0];
+      assert.equal(effectiveSections(user).includes('invoices'), false);
       assert.ok(effectiveSections(user).includes('accounts'));
       assert.ok(data.push?.invoiceRevocations?.[hash(f.token)]);
       assert.equal(data.accounts!.sessions.some(session => session.userId === user.id), false);

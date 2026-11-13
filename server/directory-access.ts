@@ -1,4 +1,4 @@
-import { hasDirectoryGrant, hasSection, isAdministrator, type AccountUser } from '../web/src/auth-model';
+import { hasCustomerDirectoryAccess, hasDirectoryGrant, hasFullDirectoryAccess, hasSection, isAdministrator, type AccountUser } from '../web/src/auth-model';
 import type { Company, Snapshot } from '../web/src/model';
 import { ownCustomerIds } from './auth-scope';
 import { ApiError } from './api-error';
@@ -9,12 +9,14 @@ type CompanyRole = typeof companyRoles[number];
 const isCompanyRole = (role: unknown): role is CompanyRole => companyRoles.some(value => value === role);
 
 export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: string, body: Record<string, unknown>, id?: string, deleting = false): Record<string, unknown> {
-  if (isAdministrator(actor)) return body;
-  if (!hasSection(actor, 'directories') || !actor.managerId) throw new ApiError(403, 'Справочник недоступен.');
+  const administrator = isAdministrator(actor);
+  const customerAccess = hasCustomerDirectoryAccess(actor);
+  if (!hasSection(actor, 'directories') || !administrator && !actor.managerId) throw new ApiError(403, 'Справочник недоступен.');
+  if (administrator && hasFullDirectoryAccess(actor)) return body;
   const deny = (): never => { throw new ApiError(403, 'Нет права изменять эту запись справочника.'); };
   const ownCompanies = ownCustomerIds(snapshot, actor);
   const roleGrant = (role: CompanyRole, entry?: Company): boolean => {
-    if (role === 'customer') return !entry || ownCompanies.has(entry.id);
+    if (role === 'customer') return (!administrator || customerAccess) && (!entry || ownCompanies.has(entry.id));
     if (role === 'supplier') return hasDirectoryGrant(actor, 'suppliers');
     if (role === 'other') return hasDirectoryGrant(actor, 'oilDepots');
     return hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers');
@@ -23,7 +25,7 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
     const entry = snapshot.companies.find(row => row.id === companyId);
     if (!entry) return deny();
     const roles = entry.roles.filter(isCompanyRole);
-    const ownsCard = allowOwnedCard && ownCompanies.has(entry.id);
+    const ownsCard = allowOwnedCard && (!administrator || customerAccess) && ownCompanies.has(entry.id);
     if (!roles.length || (!ownsCard && !roles.every(role => roleGrant(role, entry)))) return deny();
     return entry;
   };
@@ -32,6 +34,8 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
       if (input[key] && input[key] !== (previous as Record<string, unknown> | undefined)?.[key]) company(input[key]);
     }
   };
+  if (administrator && (kind === 'customers' && !customerAccess || kind === 'suppliers' && !hasDirectoryGrant(actor, 'suppliers') ||
+      kind === 'carriers' && !hasDirectoryGrant(actor, 'vehicles') && !hasDirectoryGrant(actor, 'drivers'))) deny();
   if (['companies', 'customers', 'suppliers', 'carriers'].includes(kind)) {
     const previous = id ? company(id, !deleting) : undefined;
     // Restoring or merging a hidden identity still requires the shared catalog grants.
@@ -42,7 +46,7 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
       for (const match of matches) {
         company(match.id, false);
         const assignment = snapshot.directories?.customerManagers?.find(row => row.companyId === match.id);
-        if (assignment && assignment.managerId !== actor.managerId && Array.isArray(body.roles) && body.roles.includes('customer')) deny();
+        if (!administrator && assignment && assignment.managerId !== actor.managerId && Array.isArray(body.roles) && body.roles.includes('customer')) deny();
       }
     }
     if (deleting) return body;
@@ -56,6 +60,7 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
     // existing one the actor has no right to manage.
     const roles = [...new Set([...body.roles, ...existingRoles.filter(role => !roleGrant(role, previous))])];
     const previousManager = snapshot.directories?.customerManagers?.find(row => row.companyId === previous?.id)?.managerId ?? null;
+    if (administrator) return { ...body, roles };
     const managerId = previous ? previousManager : roles.includes('customer') ? actor.managerId : null;
     // Employee forms show the signed-in manager. Saving a card must preserve its actual assignment.
     if (body.managerId && body.managerId !== managerId && !(previous && body.managerId === actor.managerId)) deny();
@@ -65,7 +70,10 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
     }
     return { ...body, roles, managerId };
   }
-  if (kind === 'customerManagers') deny(); // Reassignment remains an administrative operation.
+  if (kind === 'customerManagers') {
+    if (!administrator || !customerAccess) deny();
+    return body;
+  }
   if (kind === 'addresses') {
     const previous = id ? snapshot.directories?.addresses.find(row => row.id === id) : undefined;
     if (id && !previous) throw new ApiError(404, 'Адрес не найден.');

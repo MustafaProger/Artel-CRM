@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Plus, Search, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 import './accounts.css';
 import './account-toggle.css';
-import { effectiveSections, isAdministrator, isScopedEmployee, defaultEmployeeSections, roleNames, selectableRoles, type AccountRole, type AccountUser, type SectionId, type SharedDirectory } from './auth-model';
+import { allDirectoryIds, allSectionIds, effectiveDirectoryGrants, effectiveSections, isAdministrator, isDeveloper, isScopedEmployee, defaultEmployeeSections, roleNames, selectableRoles, type AccountRole, type AccountUser, type SectionId, type SharedDirectory } from './auth-model';
 import type { Directories } from './model';
 import DriverAccess from './DriverAccess';
 import AccountPasswordField from './AccountPasswordField';
@@ -49,15 +49,24 @@ export default function AccountManagement({ directories, onChanged }: { director
   const edit = (user: AccountUser | null) => {
     setEditorRequest(previous => previous + 1);
     setEditing(user); setDriverId(user?.driverId ?? ''); setError(''); setNotice(''); setEmployeeName('');
-    setForm(user ? { name: user.name, login: user.login, password: '', role: user.role, managerId: user.managerId ?? '', active: user.active, directoryGrants: [...(user.directoryGrants ?? [])], sections: effectiveSections(user) } : empty());
+    setForm(user ? { name: user.name, login: user.login, password: '', role: user.role, managerId: user.managerId ?? '', active: user.active, directoryGrants: [...effectiveDirectoryGrants(user)], sections: effectiveSections(user) } : empty());
   };
   const toggle = (id: SectionId, enabled: boolean) => setForm(previous => ({ ...previous, sections: enabled ? [...previous.sections, id] : previous.sections.filter(value => value !== id) }));
-  const privileged = isAdministrator(form);
+  const privileged = isDeveloper(form);
+  const canManageDevelopers = users.some(user => user.id === currentUserId && isDeveloper(user));
+  const canEdit = (user: AccountUser) => !isDeveloper(user) || canManageDevelopers;
   const drivers = staffDrivers;
   const linkedName = (user: AccountUser) => (user.role === 'driver' ? drivers.find(driver => driver.id === user.driverId) : employees.find(employee => employee.id === user.managerId))?.name;
   const filteredUsers = users.filter(user => (roleFilter === 'all' || user.role === roleFilter) && [user.name, user.login, linkedName(user) ?? ''].some(value => value.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'))));
-  const roleOptions = selectableRoles.filter(([role]) => !editing || (editing.role === 'driver') === (role === 'driver'));
-  const changeRole = (role: AccountRole) => setForm(previous => ({ ...previous, role, password: role === 'driver' ? '' : previous.password, directoryGrants: isScopedEmployee(previous) && isScopedEmployee({ role }) ? previous.directoryGrants : [], sections: isScopedEmployee(previous) && isScopedEmployee({ role }) ? previous.sections : [] }));
+  const roleOptions = selectableRoles.filter(([role]) => (role !== 'developer' || canManageDevelopers) && (!editing || (editing.role === 'driver') === (role === 'driver')));
+  const changeRole = (role: AccountRole) => setForm(previous => {
+    const resetGrants = previous.role === 'driver' || isAdministrator(previous) !== isAdministrator({ role });
+    return {
+      ...previous, role, password: role === 'driver' ? '' : previous.password,
+      directoryGrants: resetGrants ? isAdministrator({ role }) ? [...allDirectoryIds] : [] : previous.directoryGrants,
+      sections: resetGrants ? isAdministrator({ role }) ? [...allSectionIds] : [...defaultEmployeeSections] : previous.sections,
+    };
+  });
   const closeEditor = () => { setEditing(undefined); setForm(empty()); };
   const refreshAccess = () => { void refresh().catch(reason => setError(reason.message)); };
   const removal = useDirectAction();
@@ -69,7 +78,15 @@ export default function AccountManagement({ directories, onChanged }: { director
     setNotice('Учётная запись удалена.');
     onChanged();
   });
-  const deletionBlock = (user: AccountUser) => user.id === currentUserId ? 'Нельзя удалить свою учётную запись' : user.active && user.role === 'director' && users.filter(row => row.active && row.role === 'director').length === 1 ? 'Нельзя удалить последнего активного директора' : '';
+  const deletionBlock = (user: AccountUser) => {
+    if (user.id === currentUserId) return 'Нельзя удалить свою учётную запись';
+    if (!canEdit(user)) return 'Учётными записями разработчиков управляет разработчик';
+    if (user.active && (isDeveloper(user) || user.role === 'director') && !users.some(row =>
+      row.id !== user.id && row.active && (isDeveloper(row) || !isDeveloper(user) && row.role === 'director' && effectiveSections(row).includes('accounts')))) {
+      return isDeveloper(user) ? 'Нельзя удалить последнего разработчика' : 'Оставьте директору доступ к управлению учётными записями';
+    }
+    return '';
+  };
   return <section ref={viewEntrance} className="account-management">
     <div className="account-toolbar search-add-toolbar"><label className="shipment-search account-search"><Search size={17}/><input aria-label="Поиск пользователей" placeholder="Имя или логин" value={search} onChange={event => setSearch(event.target.value)}/></label><button className="button primary mobile-icon-action" aria-label="Добавить пользователя" title="Добавить пользователя" disabled={busy} onClick={() => edit(null)}><Plus size={16} aria-hidden="true" /><span className="mobile-action-label">Добавить пользователя</span></button></div>
     <RoleFilter disabled={loading} value={roleFilter} onChange={setRoleFilter} counts={{ all: users.length, ...Object.fromEntries(Object.keys(roleNames).map(role => [role, users.filter(user => user.role === role).length])) }}/>
@@ -92,7 +109,7 @@ export default function AccountManagement({ directories, onChanged }: { director
     }}><fieldset disabled={busy}>
       <legend>{editing ? 'Изменить учётную запись' : 'Новая учётная запись'}</legend>
       <div className="account-editor-grid"><div className="account-details-card"><div className="account-group-heading"><span className="account-group-icon"><UserRound size={19} aria-hidden="true" /></span><div><h3>Данные сотрудника</h3></div></div><div className="account-fields">
-      <label className="account-full-field">Сотрудник справочника<select aria-label="Сотрудник справочника" required={!editing || isScopedEmployee(form) && form.active} value={form.managerId} onChange={event => { const id = event.target.value; setForm({ ...form, managerId: id, name: employees.find(employee => employee.id === id)?.name ?? form.name }); }}>
+      <label className="account-full-field">Сотрудник справочника<select aria-label="Сотрудник справочника" required={!privileged && (!editing || isScopedEmployee(form) && form.active)} value={form.managerId} onChange={event => { const id = event.target.value; setForm({ ...form, managerId: id, name: employees.find(employee => employee.id === id)?.name ?? form.name }); }}>
         <option value="">Выберите сотрудника</option>{employees.map(employee => <option key={employee.id} value={employee.id}>{employee.name} {users.some(user => user.active && user.managerId === employee.id && user.id !== editing?.id) ? '· аккаунт уже есть' : ''}</option>)}
       </select></label>
       <div className="account-create-employee"><label>Новый сотрудник<input value={employeeName} maxLength={120} placeholder="Если сотрудника ещё нет в справочнике" onChange={event => setEmployeeName(event.target.value)} /></label><button className="button" type="button" disabled={!employeeName.trim()} onClick={async () => {
@@ -110,13 +127,13 @@ export default function AccountManagement({ directories, onChanged }: { director
       </div></div><div className="account-access-card"><div className="account-group-heading"><span className="account-group-icon"><ShieldCheck size={19} aria-hidden="true" /></span><div><h3>Права доступа</h3></div></div>
       <label>Полномочия<select aria-label="Полномочия" value={form.role} onChange={event => changeRole(event.target.value as AccountRole)}>{roleOptions.map(([id, title]) => <option value={id} key={id}>{title}</option>)}</select></label>
       <div className="account-permissions"><div className="account-permissions-heading"><strong>Доступные разделы</strong><span>{enabledPages.filter(page => privileged || form.sections.includes(page.id)).length} из {enabledPages.length}</span></div><div className="account-section-grid">{enabledPages.map(section => <label key={section.id}><input className="account-toggle" type="checkbox" checked={privileged || form.sections.includes(section.id)} disabled={privileged} onChange={event => toggle(section.id, event.target.checked)} /><span>{section.title}</span></label>)}</div></div>
-      <AccountDirectoryAccess grants={form.directoryGrants} privileged={privileged} enabled={privileged || form.sections.includes('directories')} onChange={directoryGrants => setForm(previous => ({ ...previous, directoryGrants }))}/>
+      <AccountDirectoryAccess grants={form.directoryGrants} privileged={privileged} scoped={isScopedEmployee(form)} enabled={privileged || form.sections.includes('directories')} onChange={directoryGrants => setForm(previous => ({ ...previous, directoryGrants }))}/>
       </div></div>
       <div className="account-form-footer"><label className="active-field"><input className="account-toggle" type="checkbox" checked={form.active} onChange={event => setForm({ ...form, active: event.target.checked })} /><span>Активен</span></label>
       <div className="account-actions"><button className="button primary" type="submit">{busy ? 'Сохраняем…' : 'Сохранить пользователя'}</button><button className="button" type="button" onClick={closeEditor}>Отмена</button></div></div>
     </fieldset></form>}
     </div>}
-    <div className="account-list-heading"><h3>Пользователи</h3><span>{loading ? '—' : `${filteredUsers.length} из ${users.length}`}</span></div>{loading && !users.length && <LoadingSkeleton variant="accounts" label="Загружаем учётные записи" rows={3}/>}{!loading && !error && !filteredUsers.length && <p className="account-empty view-entrance" role="status">{users.length ? 'По выбранным фильтрам пользователей нет.' : 'Учётных записей пока нет.'}</p>}<div className="account-list view-entrance">{filteredUsers.map(user => <div className="account-row" key={user.id}><span className="account-avatar" aria-hidden="true">{user.name.trim().slice(0, 1).toUpperCase()}</span><div className="account-user-info"><div className="account-user-title"><strong>{user.name}</strong><span className={`account-status${user.active ? '' : ' is-inactive'}`}>{user.active ? 'Активен' : 'Отключён'}</span></div><small>{user.login} · {roleNames[user.role]}</small><small>{user.role === 'driver' ? 'Водитель' : 'Сотрудник'}: {linkedName(user) ?? 'Запись справочника не связана или недоступна'}</small><small>Разделы: {user.active ? user.role === 'driver' ? 'Личный кабинет водителя' : availablePagesFor(user).map(section => section.title).join(', ') || 'Нет доступа' : 'Доступ отключён'}</small><small>{user.role === 'driver' ? 'Рейсы и доставки: только свои' : isScopedEmployee(user) ? 'Отгрузки: только свои' : 'Отгрузки: все'}</small></div><div className="account-row-actions"><AccountSavedPassword key={`${user.id}:${user.version}`} userId={user.id} version={user.version} available={user.passwordAvailable === true}/><button className="button" disabled={busy} onClick={() => edit(user)}>Изменить</button>{user.role !== 'driver' && <button className="button account-delete" disabled={busy || !!removal.pending || !!deletionBlock(user)} title={deletionBlock(user) || `Удалить ${user.name}`} aria-label={`Удалить ${user.name}`} onClick={() => void remove(user)}><Trash2 size={15} aria-hidden="true"/>Удалить</button>}{deletionBlock(user) && <small>{deletionBlock(user)}</small>}</div></div>)}</div>
+    <div className="account-list-heading"><h3>Пользователи</h3><span>{loading ? '—' : `${filteredUsers.length} из ${users.length}`}</span></div>{loading && !users.length && <LoadingSkeleton variant="accounts" label="Загружаем учётные записи" rows={3}/>}{!loading && !error && !filteredUsers.length && <p className="account-empty view-entrance" role="status">{users.length ? 'По выбранным фильтрам пользователей нет.' : 'Учётных записей пока нет.'}</p>}<div className="account-list view-entrance">{filteredUsers.map(user => <div className="account-row" key={user.id}><span className="account-avatar" aria-hidden="true">{user.name.trim().slice(0, 1).toUpperCase()}</span><div className="account-user-info"><div className="account-user-title"><strong>{user.name}</strong><span className={`account-status${user.active ? '' : ' is-inactive'}`}>{user.active ? 'Активен' : 'Отключён'}</span></div><small>{user.login} · {roleNames[user.role]}</small><small>{user.role === 'driver' ? 'Водитель' : 'Сотрудник'}: {linkedName(user) ?? 'Запись справочника не связана или недоступна'}</small><small>Разделы: {user.active ? user.role === 'driver' ? 'Личный кабинет водителя' : availablePagesFor(user).map(section => section.title).join(', ') || 'Нет доступа' : 'Доступ отключён'}</small><small>{user.role === 'driver' ? 'Рейсы и доставки: только свои' : isScopedEmployee(user) ? 'Отгрузки: только свои' : 'Отгрузки: все'}</small></div><div className="account-row-actions"><AccountSavedPassword key={`${user.id}:${user.version}`} userId={user.id} version={user.version} available={user.passwordAvailable === true}/><button className="button" disabled={busy || !canEdit(user)} onClick={() => edit(user)}>Изменить</button>{user.role !== 'driver' && <button className="button account-delete" disabled={busy || !!removal.pending || !!deletionBlock(user)} title={deletionBlock(user) || `Удалить ${user.name}`} aria-label={`Удалить ${user.name}`} onClick={() => void remove(user)}><Trash2 size={15} aria-hidden="true"/>Удалить</button>}{deletionBlock(user) && <small>{deletionBlock(user)}</small>}</div></div>)}</div>
     </div>
   </section>;
 }

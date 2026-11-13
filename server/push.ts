@@ -3,7 +3,7 @@ import { createHash, ECDH, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import webPush from 'web-push';
 import { ApiError } from './api-error';
-import { hasSection, type AccountUser } from '../web/src/auth-model';
+import { canOverseeTripRequests, hasSection, type AccountUser } from '../web/src/auth-model';
 import { isClosedWorkStatus, workAssigneeIds, type WorkTask } from '../web/src/work-model';
 import type { Shipment } from '../web/src/model';
 import type { TripRequest } from '../web/src/trip-request-model';
@@ -157,7 +157,7 @@ export function savePushPreferences(data: OperationsData, userId: string, input:
 }
 
 function canReceiveTripRequest(user: AccountUser, request: TripRequest) {
-  return user.id !== request.ownerUserId && user.role === 'director' && canAccessTripRequest(user, request);
+  return user.id !== request.ownerUserId && canOverseeTripRequests(user) && canAccessTripRequest(user, request);
 }
 
 /** Commit the event with the new request. Existing requests and idempotent replays never enqueue. */

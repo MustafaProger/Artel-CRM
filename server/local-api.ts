@@ -25,19 +25,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import Decimal from 'decimal.js';
 import type { Plugin } from 'vite';
-import { hasSection, isAdministrator, type AccountUser } from '../web/src/auth-model';
+import { hasSection, isAdministrator, isDeveloper, type AccountUser } from '../web/src/auth-model';
 import type { Company, Metric, Payment, QualityIssue, Shipment, Snapshot, Stock } from '../web/src/model';
 import { ApiError } from './api-error';
 import { decryptAccountPassword } from './account-passwords';
 import { avatarUploadLimit } from './profile-avatars';
-import { activeUsers, authenticate, deleteUser, findSession, login, prepareLogin, prepareProfileUpdate, logout, logisticsRequest, persistentSessionExpiry, publicUser, requireAccounts, requireManage, requireUser, saveUser, sessionCookie, sessionToken } from './auth';
+import { activeUsers, authenticate, deleteUser, findSession, login, prepareLogin, prepareProfileUpdate, logout, logisticsRequest, persistentSessionExpiry, publicUser, requireAccounts, requireDeveloper, requireManage, requireUser, saveUser, sessionCookie, sessionToken } from './auth';
 import { mutateDriverAccess, readDriverAccess, requireDriverRoute } from './driver-access';
 import { readTripExecution, recordTripExecution } from './trip-execution';
 import { readSharedTripTimelines } from './trip-process';
 import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
 import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
 import { scopeSnapshot, ownsShipment, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
-import { apiSection, requireSection, requireTripSection } from './permissions';
+import { apiSection, requireDirectoryMaintenance, requireSection, requireTripSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
@@ -560,6 +560,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           requireAccounts(requireUser(data, request));
           const user = data.accounts?.users.find(row => row.id === decodeURIComponent(passwordUserId) && !row.deletedAt);
           if (!user) throw new ApiError(404, 'Пользователь не найден.');
+          if (isDeveloper(user)) requireDeveloper(requireUser(data, request));
           if (user.version !== body.version) throw new ApiError(409, 'Пользователь уже изменён. Обновите список.');
           return write(response, 200, JSON.stringify({ password: decryptAccountPassword(user, options.accountPasswordKey ?? process.env.ARTEL_ACCOUNT_PASSWORD_KEY) }));
         }
@@ -598,7 +599,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             const userIds = (data.accounts?.users ?? []).filter(user => user.active && !user.deletedAt && online.has(user.id)).map(user => user.id);
             return write(response, 200, JSON.stringify({ userIds }));
           }
-          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(user => ({ ...publicUser(user), passwordAvailable: !!user.passwordCiphertext }));
+          const users = (data.accounts?.users ?? []).filter(user => !user.deletedAt).map(user => ({ ...publicUser(user), passwordAvailable: !isDeveloper(user) && !!user.passwordCiphertext }));
           const directories = currentShipmentAccess(base, data).directories!;
           const staff = { managers: directories.managers.map(({ id, name }) => ({ id, name })), drivers: directories.drivers.filter(driver => !directories.deletedEntries?.drivers?.includes(driver.id)).map(({ id, name }) => ({ id, name })) };
           return write(response, 200, JSON.stringify({users, currentUserId: actor.id, staff}));
@@ -648,7 +649,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             const { changed, ...deleted } = deleteUser(data, actor, decodeURIComponent(userId), body);
             return { result: { status: 200, ...deleted }, changed };
           }
-          return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey)},changed:true};
+          return {result:{status:userId?200:201,user:await saveUser(data,currentSnapshot(base,data),body,userId?decodeURIComponent(userId):undefined,false,options.accountPasswordKey,actor)},changed:true};
         });
         });
         if ('token' in result && typeof result.token === 'string') {
@@ -738,9 +739,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (pathname === '/api/navigation') {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
         const snapshot = currentShipmentAccess(base, requestData);
-        const shipmentCount = !actor || isAdministrator(actor) ? snapshot.shipments.length
-          : hasSection(actor, 'shipments') || hasSection(actor, 'trips')
-            ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).length : 0;
+        const shipmentCount = !actor ? snapshot.shipments.length
+          : hasSection(actor, 'shipments') || hasSection(actor, 'trips') || isAdministrator(actor) && hasSection(actor, 'overview')
+            ? isAdministrator(actor) ? snapshot.shipments.length : snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).length
+            : 0;
         return write(response, 200, JSON.stringify({ shipmentCount, ...(actor && hasSection(actor, 'work') ? { todayTaskCount: todayTaskCount(requestData, actor) } : {}) }));
       }
       const executionMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/execution(?:\/(deliver|complete))?$/);
@@ -986,17 +988,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       }
       if (pathname === '/api/directories/reconcile-customers') {
         const data = requestData;
-        requireManage(authorized(data));
+        requireDirectoryMaintenance(authorized(data));
         if (request.method === 'GET') return write(response, 200, JSON.stringify(planCustomerReconciliation(base, data)));
         if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request);
         if (Object.keys(body).some(key => !['revision', 'fingerprint'].includes(key)) || !Number.isSafeInteger(body.revision) || typeof body.fingerprint !== 'string') throw new ApiError(400, 'Сначала выполните предварительную сверку.');
-        const result = await reconcileCustomers(operations, base, { revision: body.revision as number, fingerprint: body.fingerprint }, current => requireManage(authorized(current)));
+        const result = await reconcileCustomers(operations, base, { revision: body.revision as number, fingerprint: body.fingerprint }, current => requireDirectoryMaintenance(authorized(current)));
         return write(response, 200, JSON.stringify(result));
       }
       if (pathname === '/api/directories/cleanup') {
         const stored = requestData;
-        requireManage(authorized(stored));
+        requireDirectoryMaintenance(authorized(stored));
         if (request.method === 'GET') {
           try {
             const preview = url.searchParams.get('scope') === 'companies' ? prepareCompanyCleanup(base, stored) : prepareDirectoryCleanup(base, stored);
@@ -1011,7 +1013,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (body.confirm !== 'clear-directories' || body.scope !== undefined && body.scope !== 'companies' || Object.keys(body).some(key => !['confirm','revision','scope'].includes(key))) throw new ApiError(400, 'Подтвердите очистку справочников.');
         if (!operations.backup) throw new ApiError(503, 'Резервное копирование недоступно. Очистка запрещена.');
         const result = await operations.mutate(base.provenance.sourceSha256, async data => {
-          requireManage(authorized(data));
+          requireDirectoryMaintenance(authorized(data));
           if (body.revision !== data.revision) throw new ApiError(409, 'Данные изменены. Откройте предварительную проверку заново.');
           const prepared = body.scope === 'companies' ? prepareCompanyCleanup(base, data) : prepareDirectoryCleanup(base, data);
           const backup = await operations.backup!(data);
@@ -1345,7 +1347,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return write(response, 200, JSON.stringify({ company: directoryCompany(company) }));
       }
       if (pathname === '/api/companies/from-inn') {
-        if (actor) requireManage(actor); // Untyped legacy creation cannot establish employee ownership.
+        if (actor) requireDirectoryMaintenance(actor);
         if (Object.keys(body).some(key => key !== 'inn') || typeof body.inn !== 'string' || !validInn(body.inn.trim())) throw new ApiError(400, 'Укажите корректный ИНН из 10 или 12 цифр с верными контрольными цифрами.');
         const inn = body.inn.trim();
         const stored = await operations.read(base.provenance.sourceSha256);
@@ -1354,7 +1356,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (existing) return write(response, 200, JSON.stringify({ company: directoryCompany(existing), created: false }));
         const found = await lookupCheckoCompany(inn, options.checkoApiKey ?? process.env.CHECKO_API_KEY, options.fetcher);
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
-          if (actor) { const currentActor = requireSection(authorized(data), 'directories'); if (logistics) requireManage(currentActor); }
+          if (actor) requireDirectoryMaintenance(authorized(data));
           const snapshot = currentSnapshot(base, data);
           const duplicate = snapshot.companies.find(company => company.inn === inn);
           if (duplicate) return { result: { company: duplicate, created: false }, changed: false };

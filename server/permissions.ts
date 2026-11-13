@@ -1,9 +1,12 @@
-import { hasSection, type AccountUser, type SectionId } from '../web/src/auth-model';
+import { hasFullDirectoryAccess, isAdministrator, hasSection, type AccountUser, type SectionId } from '../web/src/auth-model';
 import { ApiError } from './api-error';
 
 export function requireSection(actor: AccountUser, section: SectionId) {
   if (!hasSection(actor, section)) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
   return actor;
+}
+export function requireDirectoryMaintenance(actor: AccountUser) {
+  if (!isAdministrator(actor) || !hasFullDirectoryAccess(actor)) throw new ApiError(403, 'Для действия нужен полный доступ к справочникам.');
 }
 export function requireTripSection(actor: AccountUser, saby = false) {
   if (!hasSection(actor, 'trips') && (saby || !hasSection(actor, 'shipments'))) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');

@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
 import { isClosedWorkStatus, workAssigneeIds } from '../web/src/work-model';
-import { effectiveSections, defaultEmployeeSections, validDirectoryGrants, hasSection, isAdministrator, isScopedEmployee, sections, type SectionId } from '../web/src/auth-model';
+import { effectiveSections, defaultEmployeeSections, validDirectoryGrants, hasSection, isAdministrator, isDeveloper, isScopedEmployee, roleNames, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
@@ -20,7 +20,7 @@ export interface AccountsData {
   sessions: { hash: string; userId: string; expiresAt: number; audience?: 'logistics' }[];
   attempts: Record<string, { count: number; until: number }>;
 }
-export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role === 'logistician' ? 'employee' : user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...profileAvatarProjection(user.id, user.avatar), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
+export const publicUser = (user: StoredUser): AccountUser => ({ id:user.id, name:user.name, login:user.login, role:user.role === 'logistician' ? 'employee' : user.role, managerId:user.managerId, ...(user.driverId ? { driverId: user.driverId } : {}), active:user.active, version:user.version, sections:effectiveSections(user), ...(user.customSections ? { customSections: true } : {}), ...profileAvatarProjection(user.id, user.avatar), ...(user.directoryGrants ? { directoryGrants: [...user.directoryGrants] } : {}), ...(user.deletedAt ? { deletedAt: user.deletedAt } : {}) });
 export const activeUsers = (data: OperationsData) => (data.accounts?.users ?? []).filter(user=>user.active && !user.deletedAt && user.role !== 'driver').map(publicUser);
 export const canManage = isAdministrator;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -71,6 +71,22 @@ export function sessionCookie(token: string, secure: boolean, audience?: 'logist
 export function requireUser(data: OperationsData, request: IncomingMessage) { const user=authenticate(data,request); if(!user)throw new ApiError(401,'Войдите в приложение.');return user; }
 export function requireAccounts(user: AccountUser) { if (!hasSection(user, 'accounts')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.'); }
 export function requireManage(user: AccountUser) { if(!canManage(user))throw new ApiError(403,'Действие доступно директору и администратору.'); }
+export function requireDeveloper(actor: AccountUser) {
+  if (!isDeveloper(actor)) throw new ApiError(403, 'Учётными записями разработчиков управляет разработчик.');
+}
+
+function requireRemainingAccountAuthority(accounts: AccountsData, previous: StoredUser, next?: StoredUser) {
+  if (!previous.active) return;
+  const remaining = accounts.users.filter(user => user.id !== previous.id && user.active && !user.deletedAt);
+  if (next?.active) remaining.push(next);
+  if (isDeveloper(previous) && !remaining.some(isDeveloper)) throw new ApiError(409, 'Нельзя отключить последнего разработчика.');
+  if (previous.role === 'director' && !remaining.some(user => isDeveloper(user) || user.role === 'director' && hasSection(user, 'accounts'))) {
+    throw new ApiError(409, next?.active && next.role === 'director'
+      ? 'Оставьте хотя бы одному директору доступ к управлению учётными записями.'
+      : 'Нельзя отключить или удалить последнего активного директора.');
+  }
+}
+
 export function validateAccounts(value: AccountsData) {
   if(!value || !Array.isArray(value.users) || !Array.isArray(value.sessions) || !value.attempts || typeof value.attempts!=='object')throw new Error('Invalid accounts');
   const ids=new Set<string>(), logins=new Set<string>(), driverIds=new Set<string>();
@@ -78,16 +94,17 @@ export function validateAccounts(value: AccountsData) {
     if (u.avatar !== undefined && !validStoredAvatar(u.avatar)) throw new Error('Invalid profile avatar');
     if (u.passwordCiphertext !== undefined && !validPasswordCiphertext(u.passwordCiphertext)) throw new Error('Invalid password ciphertext');
     if (u.deletedAt !== undefined && (typeof u.deletedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u.deletedAt) || !Number.isFinite(Date.parse(u.deletedAt)) || new Date(u.deletedAt).toISOString() !== u.deletedAt || u.active || typeof u.deletedBy !== 'string' || !u.deletedBy) || u.deletedBy !== undefined && u.deletedAt === undefined) throw new Error('Invalid user deletion');
+    if (u.customSections !== undefined && (u.customSections !== true || !Array.isArray(u.sections))) throw new Error('Invalid section override');
     if (u.directoryGrants !== undefined && !validDirectoryGrants(u.directoryGrants)) throw new Error('Invalid directory grants');
     if (u.sections !== undefined && (!Array.isArray(u.sections) || new Set(u.sections).size !== u.sections.length || u.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new Error('Invalid sections');
-    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !accountLoginPattern.test(u.login) || logins.has(u.login) || !['director','admin','employee','manager','logistician','driver'].includes(u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
+    if(!u || typeof u.id!=='string' || !u.id || ids.has(u.id) || typeof u.name!=='string' || !u.name || typeof u.login!=='string' || !accountLoginPattern.test(u.login) || logins.has(u.login) || !Object.hasOwn(roleNames, u.role) || (u.managerId!==null && typeof u.managerId!=='string') || typeof u.active!=='boolean' || !Number.isSafeInteger(u.version) || u.version<1 || !/^[a-f0-9]{128}$/.test(u.passwordHash) || !/^[a-f0-9]{32}$/.test(u.salt))throw new Error('Invalid user');
     if (u.role === 'driver') {
       if (typeof u.driverId !== 'string' || !u.driverId || driverIds.has(u.driverId) || u.managerId !== null || !Array.isArray(u.sections) || u.sections.length) throw new Error('Invalid driver account');
       driverIds.add(u.driverId);
     } else if (u.driverId !== undefined) throw new Error('Invalid employee driver binding');
     ids.add(u.id);logins.add(u.login);
   }
-  if(value.users.length && !value.users.some(u=>u.active && u.role==='director'))throw new Error('Director required');
+  if(value.users.length && !value.users.some(u=>u.active && (isDeveloper(u) || u.role === 'director')))throw new Error('Director required');
   for(const row of value.sessions)if(!row || !ids.has(row.userId) || !/^[a-f0-9]{64}$/.test(row.hash) || !Number.isSafeInteger(row.expiresAt) || row.audience !== undefined && row.audience !== 'logistics')throw new Error('Invalid session');
   for(const [key,row] of Object.entries(value.attempts))if(!/^[a-f0-9]{64}$/.test(key) || !row || !Number.isSafeInteger(row.count) || row.count<0 || !Number.isSafeInteger(row.until))throw new Error('Invalid login attempt');
 }
@@ -125,42 +142,61 @@ async function derivePasswordFields(password: string) {
   const derived = await scrypt(password, salt, 64) as Buffer;
   return { salt, passwordHash: derived.toString('hex') };
 }
-export async function passwordFields(input: unknown, passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
+export async function passwordFields(input: unknown, passwordKey: string | null | undefined = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
   checkPasswordLength(input);
   const fields = await derivePasswordFields(input);
-  return { ...fields, passwordCiphertext: passwordKey === undefined ? undefined : encryptAccountPassword(input, fields, passwordKey) };
+  return { ...fields, passwordCiphertext: passwordKey == null ? undefined : encryptAccountPassword(input, fields, passwordKey) };
 }
-export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false,passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY) {
+export async function saveUser(data:OperationsData,snapshot:Snapshot,input:Record<string,unknown>,id?:string,setup=false,passwordKey = process.env.ARTEL_ACCOUNT_PASSWORD_KEY, actor?: AccountUser) {
   if(Object.keys(input).some(k=>!['name','login','password','role','managerId','active','version','setupToken','sections','directoryGrants'].includes(k)))throw new ApiError(400,'Неизвестное поле пользователя.');
   const accounts=data.accounts ??= {users:[],sessions:[],attempts:{}};
   const previous=id?accounts.users.find(u=>u.id===id):undefined;
+  if (actor && (input.role === 'developer' || previous && isDeveloper(previous))) requireDeveloper(actor);
   if (previous?.role === 'driver') throw new ApiError(403, 'Управляйте доступом водителя в разделе «Сотрудники и доступ».');
   if(id && (!previous || previous.deletedAt))throw new ApiError(404,'Пользователь не найден.');
   if(previous && input.version!==previous.version)throw new ApiError(409,'Пользователь уже изменён. Обновите список.');
   const name = text(input, 'name'), login = parseAccountLogin(input.login);
   requireAvailableLogin(accounts, login, id);
   const role=setup?'director':input.role;
-  if(!['director','admin','employee','manager'].includes(String(role)))throw new ApiError(400,'Выберите роль пользователя.');
+  if(typeof role !== 'string' || !['developer','director','admin','employee','manager'].includes(role))throw new ApiError(400,'Выберите роль пользователя.');
   const managerId=input.managerId || null;
   if(managerId!==null && (typeof managerId!=='string' || !snapshot.directories?.managers.some(m=>m.id===managerId)))throw new ApiError(400,'Выберите сотрудника из справочника.');
   if(managerId && accounts.users.some(u=>u.id!==id && u.managerId===managerId && u.active))throw new ApiError(409,'Сотрудник уже связан с активной учётной записью.');
   if(input.active!==undefined && typeof input.active!=='boolean')throw new ApiError(400,'Некорректный статус пользователя.');
   const active=setup?true:input.active!==false;
-  if(previous?.role==='director' && (!active || role!=='director') && !accounts.users.some(u=>u.id!==id && u.active && u.role==='director'))throw new ApiError(409,'Нельзя отключить последнего директора.');
-  if (!setup && !managerId && (!previous || isScopedEmployee({ role: role as AccountUser['role'] }) && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
   if (input.sections !== undefined && (!Array.isArray(input.sections) || new Set(input.sections).size !== input.sections.length || input.sections.some(id => id !== 'settlements' && !sections.some(section => section.id === id)))) throw new ApiError(400, 'Некорректный список разделов.');
   if (input.directoryGrants !== undefined && !validDirectoryGrants(input.directoryGrants)) throw new ApiError(400, 'Некорректный список справочников.');
-  const permissions = input.sections === undefined ? previous && isScopedEmployee(previous) ? effectiveSections(previous) : undefined
-    : [...new Set((input.sections as SectionId[]).map(id => id === 'settlements' ? 'overview' : id))];
-  if (previous?.passwordCiphertext && input.password && !passwordKey) throw new ApiError(503, 'Хранилище паролей недоступно.');
-  const user:StoredUser={...(previous??await passwordFields(input.password, passwordKey)),...(previous && input.password?await passwordFields(input.password, passwordKey):{}),id:id??`user-${randomUUID()}`,name,login,role:role as AccountUser['role'],managerId:managerId as string|null,active,version:(previous?.version??0)+1};
-  user.sections = isScopedEmployee(user) ? [...(permissions ?? (previous ? [] : defaultEmployeeSections))]
-    : sections.map(section => section.id);
-  if (previous && hasSection(previous, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
-  if (isScopedEmployee(user)) {
-    if (input.directoryGrants !== undefined) user.directoryGrants = [...input.directoryGrants as NonNullable<AccountUser['directoryGrants']>];
-    else if (previous && !isScopedEmployee(previous)) delete user.directoryGrants;
-  } else delete user.directoryGrants;
+  if (previous?.passwordCiphertext && input.password && !passwordKey && role !== 'developer') throw new ApiError(503, 'Хранилище паролей недоступно.');
+  const accountRole = role as AccountUser['role'];
+  const encryptionKey = role === 'developer' ? null : passwordKey;
+  const permissions = input.sections as SectionId[] | undefined;
+  const user: StoredUser = {
+    ...(previous ?? await passwordFields(input.password, encryptionKey)),
+    ...(previous && input.password ? await passwordFields(input.password, encryptionKey) : {}),
+    id: id ?? `user-${randomUUID()}`, name, login, role: accountRole, managerId: managerId as string | null, active, version: (previous?.version ?? 0) + 1,
+  };
+  if (isDeveloper(user)) {
+    delete user.sections;
+    delete user.customSections;
+    delete user.directoryGrants;
+    delete user.passwordCiphertext;
+  } else {
+    if (permissions !== undefined && !setup) {
+      user.sections = [...new Set(permissions.map(id => id === 'settlements' ? 'overview' : id))];
+      if (isAdministrator(user)) user.customSections = true;
+      else delete user.customSections;
+    } else if (!previous || isDeveloper(previous) || isAdministrator(previous) && !isAdministrator(user)) {
+      delete user.customSections;
+      user.sections = isScopedEmployee(user) ? previous ? [] : [...defaultEmployeeSections] : effectiveSections(user);
+    }
+    if (input.directoryGrants !== undefined && !setup) user.directoryGrants = [...input.directoryGrants as NonNullable<AccountUser['directoryGrants']>];
+    else if (previous && isAdministrator(previous) !== isAdministrator(user)) delete user.directoryGrants;
+  }
+  if (previous) requireRemainingAccountAuthority(accounts, previous, user);
+  if (!setup && role !== 'developer' && !managerId && (!previous || isScopedEmployee({ role: role as AccountUser['role'] }) && active)) throw new ApiError(400, 'Свяжите учётную запись с сотрудником справочника.');
+  if (previous) {
+    if (hasSection(previous, 'invoices')) queueInvoiceRevocations(data, accounts.sessions.filter(session => session.userId === id && !session.audience).map(session => session.hash));
+  }
   if(previous)accounts.users[accounts.users.indexOf(previous)]=user;else accounts.users.push(user);
   if(previous)accounts.sessions=accounts.sessions.filter(s=>s.userId!==id);
   if (previous && data.push) data.push.devices = data.push.devices.filter(device => device.userId !== id);
@@ -174,13 +210,14 @@ export function deleteUser(data: OperationsData, actor: AccountUser, id: string,
   const accounts = data.accounts;
   const user = accounts?.users.find(row => row.id === id);
   if (!accounts || !user) throw new ApiError(404, 'Пользователь не найден.');
+  if (isDeveloper(user)) requireDeveloper(actor);
   if (user.role === 'driver') throw new ApiError(403, 'Управляйте доступом водителя в разделе «Сотрудники и доступ».');
   if (input.confirmationName !== user.name) throw new ApiError(400, 'Для подтверждения введите точное имя сотрудника.');
   if (actor.id === id) throw new ApiError(409, 'Нельзя удалить свою учётную запись.');
   // The same DELETE can be safely retried after a lost response, without another revision.
   if (user.deletedAt && (input.version === user.version - 1 || input.version === user.version)) return { id, deleted: true, changed: false };
   if (input.version !== user.version) throw new ApiError(409, 'Пользователь уже изменён. Обновите список.');
-  if (user.active && user.role === 'director' && !accounts.users.some(row => row.id !== id && row.active && !row.deletedAt && row.role === 'director')) throw new ApiError(409, 'Нельзя удалить последнего активного директора.');
+  requireRemainingAccountAuthority(accounts, user);
   const tasks = data.work?.tasks.filter(row => workAssigneeIds(row).includes(id) && !row.archivedAt && !isClosedWorkStatus(row.status)).length ?? 0;
   const companies = data.work?.companyRecords.filter(row => row.assigneeId === id && !row.archivedAt).length ?? 0;
   if (tasks || companies) throw new ApiError(409, `У сотрудника есть незавершённые записи: задачи — ${tasks}, работа с компаниями — ${companies}. В разделе «Работа» передайте их другому сотруднику или завершите и архивируйте, затем повторите удаление.`);
@@ -205,7 +242,7 @@ interface LoginResult { status: number; token?: string; user?: AccountUser; erro
 const loginName = (input: Record<string, unknown>) => normalizeAccountLogin(input.login).slice(0, 64);
 const loginIdentity = (user: StoredUser | undefined): string | null => user ? JSON.stringify([
   user.id, user.login, user.passwordHash, user.salt, user.version, user.active, user.deletedAt,
-  user.role, user.managerId, user.driverId, user.sections, user.directoryGrants,
+  user.role, user.managerId, user.driverId, user.sections, user.customSections, user.directoryGrants,
 ]) : null;
 
 const profileAttemptLimit = 5;
