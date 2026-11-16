@@ -25,7 +25,7 @@ def authorize(request):
     if action == 'login':
         if challenge and now < challenge['expires'] and challenge['actor'] != actor:
             return {'state': 'busy'}
-        if now - last_login < 30:
+        if now - last_login < 60:
             return {'state': 'retry_later'}
         credential_dir = os.environ.get('CREDENTIALS_DIRECTORY')
         if not credential_dir:

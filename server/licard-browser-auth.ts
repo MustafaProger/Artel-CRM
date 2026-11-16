@@ -38,7 +38,7 @@ export async function authorizeLicard(
   if (result?.state === 'code_required' && typeof result.challenge === 'string' && /^[a-zA-Z0-9_-]{32}$/.test(result.challenge)) {
     return { state: 'code_required', challenge: result.challenge };
   }
-  if (result?.state === 'retry_later') throw new ApiError(429, 'Новый код можно запросить через 30 секунд.');
+  if (result?.state === 'retry_later') throw new ApiError(429, 'Повторный запрос доступен не раньше чем через 60 секунд после предыдущего.');
   if (result?.state === 'credentials_required') throw new ApiError(503, 'Данные для входа в ЛИКАРД не настроены на сервере.');
   if (result?.state === 'busy') throw new ApiError(409, 'Другой администратор уже подтверждает вход в ЛИКАРД.');
   if (result?.state === 'expired') throw new ApiError(410, 'Срок действия запроса истёк. Запросите новый код.');

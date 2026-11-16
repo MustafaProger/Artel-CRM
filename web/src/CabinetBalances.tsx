@@ -118,6 +118,7 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
   const [challenge, setChallenge] = useState(''), [code, setCode] = useState('');
   const [pending, setPending] = useState<'login' | 'code' | null>(null);
   const [error, setError] = useState('');
+  const resendAt = useRef(0);
   const [resendIn, setResendIn] = useState(0);
   useEffect(() => {
     if (challenge && !pending) field.current?.focus();
@@ -125,7 +126,9 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
 
   useEffect(() => {
     if (resendIn <= 0) return;
-    const timeout = window.setTimeout(() => setResendIn(seconds => seconds - 1), 1000);
+    const timeout = window.setTimeout(() => {
+      setResendIn(Math.max(0, Math.ceil((resendAt.current - Date.now()) / 1000)));
+    }, 1000);
     return () => window.clearTimeout(timeout);
   }, [resendIn]);
 
@@ -145,7 +148,8 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
         onConnected();
       } else if (result.challenge) {
         setChallenge(result.challenge);
-        setResendIn(30);
+        resendAt.current = Date.now() + 60_000;
+        setResendIn(60);
       }
     } catch (reason) {
       if (action === 'code') setCode('');
@@ -165,7 +169,7 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
         <button className="button primary" type="submit" disabled={!!pending || code.length < 4}
           aria-busy={pending === 'code'}>{pending === 'code' ? 'Проверяем…' : 'Подтвердить'}</button>
       </form>
-      {resendIn > 0 ? <span className="cabinet-hint">Новый код через {resendIn} с</span>
+      {resendIn > 0 ? <span className="cabinet-hint">Повторный запрос через {resendIn} с</span>
         : <button className="button cabinet-licard-resend" type="button" disabled={!!pending}
           onClick={() => void send('login')}>{pending === 'login' ? 'Отправляем…' : 'Отправить код ещё раз'}</button>}
     </> : <button className="button primary" type="button" disabled={!!pending} aria-busy={pending === 'login'}
