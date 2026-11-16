@@ -160,6 +160,7 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
     }
   };
 
+  const resendClock = `${String(Math.floor(resendIn / 60)).padStart(2, '0')}:${String(resendIn % 60).padStart(2, '0')}`;
   return <div className={`cabinet-licard-signin${challenge ? ' is-code' : ''}`} aria-label="Вход в ЛИКАРД">
     {challenge ? <>
       <form onSubmit={event => { event.preventDefault(); void send('code'); }}>
@@ -169,9 +170,12 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
         <button className="button primary" type="submit" disabled={!!pending || code.length < 4}
           aria-busy={pending === 'code'}>{pending === 'code' ? 'Проверяем…' : 'Подтвердить'}</button>
       </form>
-      {resendIn > 0 ? <span className="cabinet-hint">Повторный запрос через {resendIn} с</span>
-        : <button className="button cabinet-licard-resend" type="button" disabled={!!pending}
+      <div className="cabinet-licard-repeat">
+        {resendIn > 0 ? <span className="cabinet-licard-timer" role="timer">
+          Повторный запрос через <time dateTime={`PT${resendIn}S`}>{resendClock}</time>
+        </span> : <button className="button cabinet-licard-resend" type="button" disabled={!!pending}
           onClick={() => void send('login')}>{pending === 'login' ? 'Отправляем…' : 'Отправить код ещё раз'}</button>}
+      </div>
     </> : <button className="button primary" type="button" disabled={!!pending} aria-busy={pending === 'login'}
       onClick={() => void send('login')}><LockKeyhole size={16}/>{pending === 'login' ? 'Запрашиваем код…' : 'Войти'}</button>}
     {error && <p className="shipment-error" role="alert">{error}</p>}

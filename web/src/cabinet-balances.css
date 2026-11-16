@@ -92,19 +92,27 @@
 .cabinet-dialog footer .button{max-width:100%;white-space:normal}
 
 .cabinet-licard-signin {
+  --licard-gutter: 24px;
   display: grid;
-  justify-items: start;
+  justify-items: end;
   gap: 8px;
-  margin: 12px 24px;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: calc(100% - 2 * var(--licard-gutter));
+  margin: 12px var(--licard-gutter) 12px auto;
 }
 .cabinet-licard-signin.is-code {
-  padding: 14px 16px;
+  min-width: min(300px, calc(100% - 2 * var(--licard-gutter)));
+  padding: 14px 16px 8px;
   border: 1px solid var(--border, #e4e7eb);
   border-radius: 12px;
   background: #f8faf9;
 }
 .cabinet-licard-signin p { margin: 0; }
-.cabinet-licard-signin form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.cabinet-licard-signin form { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
+.cabinet-licard-repeat { display: flex; justify-content: flex-end; align-items: center; min-height: 44px; }
+.cabinet-licard-timer { color: var(--cabinet-muted); font-size: 12px; text-align: right; }
+.cabinet-licard-timer time { margin-inline-start: 3px; color: var(--text, #252a28); font-weight: 600; font-variant-numeric: tabular-nums; }
 .cabinet-licard-signin label { display: grid; gap: 5px; font-size: 12px; font-weight: 500; }
 .cabinet-licard-signin input {
   width: 8rem;
@@ -128,8 +136,8 @@
 }
 .cabinet-licard-signin .cabinet-licard-resend:not(:disabled):hover { text-decoration: underline; }
 @media (max-width: 620px) {
-  .cabinet-licard-signin { margin-inline: 16px; }
-  .cabinet-licard-signin.is-code { padding: 12px; }
+  .cabinet-licard-signin { --licard-gutter: 16px; }
+  .cabinet-licard-signin.is-code { padding: 12px 12px 6px; }
 }
 
 @keyframes cabinet-balance-pulse {
