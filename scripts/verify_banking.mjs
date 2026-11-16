@@ -40,6 +40,26 @@ try {
   await expect(page.locator('.bank-card')).toHaveCount(3);
   await expect(page.locator('.bank-ledger')).toHaveCount(0);
   await page.screenshot({ path: resolve(output, 'disconnected-desktop.png'), fullPage: true }); check('Three connections without a duplicate T-Bank ledger on the overview');
+  const sberStatements = '**/api/banking/sber/*/statements?*';
+  await page.route(sberStatements, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const retry = new URL(route.request().url()).pathname.includes('/sber-artel/');
+    await route.fulfill({ response, json: {
+      ...body, missing: [], lastError: 'Проверка состояния загрузки',
+      progress: { from: fixtureDay, to: fixtureDay, day: fixtureDay, completedDays: 0, totalDays: 1, pages: 0,
+        ...(retry ? { nextAttemptAt: new Date(Date.now() + 3_600_000).toISOString() } : {}) },
+    } });
+  });
+  await page.reload();
+  const sberCards = page.locator('.bank-card.bank-sber');
+  await expect(sberCards.nth(0)).toContainText('Загрузка остановлена');
+  await expect(sberCards.nth(0)).toContainText('Проверка состояния загрузки');
+  await expect(sberCards.nth(1)).toContainText('Ожидает повтора');
+  await expect(sberCards.nth(1)).toContainText('Повтор не ранее');
+  await page.unroute(sberStatements);
+  await page.reload();
+  check('Sber cards distinguish stopped synchronization and scheduled retry and show the reason');
   await page.getByRole('tab', { name: 'Архив из файла' }).click();
   if (await page.locator('.payment-stats').count()) {
     await expect(page.getByRole('table', { name: 'Платежи из выписки' })).toBeVisible();

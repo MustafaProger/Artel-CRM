@@ -115,14 +115,22 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
   const connectionCards = bankConnections.map(definition => {
     const live = data?.connections.find(item => item.id === definition.id)
     const isSber = definition.provider === 'sber', sberCard = sberCards[definition.id], sberCardError = sberCardErrors[definition.id]
-    const sberCardState: BankCard['state'] = sberCard?.progress ? 'syncing' : sberCard?.lastError ? 'error' : sberCard?.missing.length ? 'not_configured' : sberCard?.lastSuccessAt ? 'connected' : 'ready'
+    const retryAt = sberCard?.lastError ? sberCard.progress?.nextAttemptAt : undefined
+    const stopped = !!(sberCard?.progress && sberCard.lastError && !retryAt)
+    const sberCardState: BankCard['state'] = sberCardError ? 'error' : sberCard?.missing.length ? 'not_configured'
+      : sberCard?.lastError && !retryAt ? 'error' : sberCard?.progress ? 'syncing'
+      : sberCard?.lastSuccessAt ? 'connected' : 'ready'
     const sberRows = sberCard?.operations.filter(row => row.booked) ?? []
     const sberTotals: BankTotals[] = sberRows.length ? [{ currency: 'RUB', count: sberRows.length,
       incoming: sberRows.filter(row => row.direction === 'incoming').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
       outgoing: sberRows.filter(row => row.direction === 'outgoing').reduce((sum, row) => sum.plus(row.amount), new Exact(0)).toFixed(),
     }] : []
-    const state = isSber ? sberCardError ? 'error' : sberCardState : live?.state ?? 'not_configured'
-    return { ...definition, state, label: isSber && sberCardError ? 'Статус недоступен' : stateName[state],
+    const state = isSber ? sberCardState : live?.state ?? 'not_configured'
+    const label = sberCardError ? 'Статус недоступен' : state === 'not_configured' ? stateName[state]
+      : stopped ? 'Загрузка остановлена' : retryAt ? 'Ожидает повтора' : stateName[state]
+    return { ...definition, state, label,
+      syncIssue: sberCardError ? 'Не удалось получить состояние подключения.' : sberCard?.lastError,
+      retryAt,
       accounts: isSber && sberCard ? [{ number: sberCard.account, currency: 'RUB' }] : live?.accounts ?? [],
       totals: isSber ? sberCardError ? [] : sberTotals : live?.totals ?? [],
       lastSuccessAt: isSber ? sberCard?.lastSuccessAt : live?.lastSuccessAt,
@@ -147,12 +155,13 @@ export default function BankingPage({ legacy }: { legacy: ReactNode }) {
       </>}
       {settings && <div className="bank-settings panel"><h3>Настройка доступа к выпискам</h3><p>Доступ настраивается на сервере для каждого юридического лица. После настройки выберите период и запустите первую синхронизацию.</p>{(card ? [card] : data?.connections ?? []).map(item => <div key={item.id}><strong>{item.bankName} · {item.company}</strong><p>{item.missing.length ? `Требуются: ${item.missing.join(', ')}.` : 'Настройки доступа сохранены на сервере. Подключение подтверждается успешной загрузкой выписки.'}</p>{item.limitations.map(text => <p className="bank-muted" key={text}>{text}</p>)}</div>)}<p>Автоматическая сверка: {data?.scheduleEnabled ? 'включена на сервере' : 'ожидает включения на сервере'}. Для первого получения истории нужен ручной запуск.</p></div>}
       {!data ? loading ? <LoadingSkeleton variant="banks" label="Загружаем банковские подключения"/> : <div className="bank-notice bank-error" role="alert">{error || 'Не удалось загрузить подключения.'} <button className="button" onClick={() => setRevision(v => v + 1)}>Повторить загрузку</button></div> : <>
-        {!connection && <div className="bank-cards view-entrance">{connectionCards.map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`}>
+        {!connection && <div className="bank-cards view-entrance">{connectionCards.map(item => <button className={`bank-card bank-${item.provider}`} key={item.id} onClick={() => selectBank(item.id)} aria-label={`Открыть ${item.bankName} — ${item.company}`} aria-describedby={item.syncIssue ? `bank-issue-${item.id}` : undefined}>
           <div className="bank-card-top"><span className="bank-emblem"><Building2 size={22}/></span><span className={`bank-state ${item.state}`}>{item.label}</span></div>
           <h3>{item.bankName}<ChevronRight size={18}/></h3><p className="bank-company">{item.company}</p>
           <div className="bank-accounts">{item.accounts.length ? item.accounts.map(account => <span key={account.number}>{account.number}<small>{account.currency}</small></span>) : <span>Счета ещё не подключены</span>}</div>
           <Totals values={item.totals} compact/>
-          <div className="bank-last-sync">Успешная синхронизация<strong>{time(item.lastSuccessAt)}</strong></div>
+          {item.syncIssue && <div className="bank-card-issue" id={`bank-issue-${item.id}`}>{item.syncIssue}{item.retryAt && <span>Повтор не ранее {time(item.retryAt)}</span>}</div>}
+          <div className="bank-last-sync">Последняя успешная синхронизация<strong>{time(item.lastSuccessAt)}</strong></div>
         </button>)}</div>}
 
         {(card ? [card] : data?.connections ?? []).filter(card => card.lastError || card.progress).map(item => <div key={item.id} className={`bank-notice ${item.lastError ? 'bank-error' : ''}`} role={item.lastError ? 'alert' : 'status'}><strong>{item.bankName} · {item.company}</strong>{item.lastError && <p>{item.lastError}</p>}{item.progress && <p>История {date(item.progress.from)} — {date(item.progress.to)} · загружается {date(item.progress.day)} · страниц: {item.progress.pages}{item.progress.nextAttemptAt ? ` · повтор не ранее ${time(item.progress.nextAttemptAt)}` : ''}</p>}</div>)}

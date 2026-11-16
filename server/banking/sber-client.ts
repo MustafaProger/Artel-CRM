@@ -24,10 +24,22 @@ export function sberMissing(env: Record<string, string | undefined>, hasSavedTok
   return missing;
 }
 
+const oauthErrors = {
+  invalid_grant: 'Сбер отклонил ключ обновления. Требуется заново авторизовать подключение.',
+  invalid_client: 'Сбер отклонил данные сервиса при обновлении доступа. Проверьте настройки сервиса.',
+} as const;
+
+function oauthError(body: string): keyof typeof oauthErrors | undefined {
+  try {
+    const code: unknown = JSON.parse(body)?.error;
+    if (code === 'invalid_grant' || code === 'invalid_client') return code;
+  } catch { /* Unexpected bank response; use the generic message. */ }
+}
+
 /** Only controlled messages are surfaced: Sber error bodies may echo the access token. */
 export class SberHttpError extends ApiError {
-  constructor(public readonly bankStatus: number, public readonly retryAfterSeconds = 0, public readonly reason?: string) {
-    super(502, bankStatus === 401 ? 'Сбер отклонил ключ доступа. Требуется действующая пара ключей.' : bankStatus === 403 ? 'Сбер не разрешил просмотр этого счёта. Проверьте права сервиса и согласие на доступ.' : bankStatus === 429 ? 'Сбер ограничил частоту запросов. Повторите обновление после паузы.' : bankStatus === 404 ? 'Сбер не предоставил данные за выбранную дату. Сохранённая выписка не изменена.' : bankStatus === 400 ? 'Сбер отклонил параметры запроса. Сохранённая выписка не изменена.' : bankStatus === 495 ? 'Не удалось проверить защищённое соединение со Сбером. Проверьте сертификат и доверенную цепочку.' : 'Сбер временно недоступен. Сохранённая выписка остаётся доступной.');
+  constructor(public readonly bankStatus: number, public readonly retryAfterSeconds = 0, public readonly reason?: keyof typeof oauthErrors, public readonly refreshing = false) {
+    super(502, reason ? oauthErrors[reason] : refreshing && (bankStatus === 400 || bankStatus === 401) ? 'Сбер отклонил запрос обновления доступа к выпискам.' : bankStatus === 401 ? 'Сбер отклонил ключ доступа. Требуется действующая пара ключей.' : bankStatus === 403 ? 'Сбер не разрешил просмотр этого счёта. Проверьте права сервиса и согласие на доступ.' : bankStatus === 429 ? 'Сбер ограничил частоту запросов. Повторите обновление после паузы.' : bankStatus === 404 ? 'Сбер не предоставил данные за выбранную дату. Сохранённая выписка не изменена.' : bankStatus === 400 ? 'Сбер отклонил параметры запроса. Сохранённая выписка не изменена.' : bankStatus === 495 ? 'Не удалось проверить защищённое соединение со Сбером. Проверьте сертификат и доверенную цепочку.' : 'Сбер временно недоступен. Сохранённая выписка остаётся доступной.');
   }
   get transient() { return this.bankStatus === 429 || this.bankStatus === 408 || this.bankStatus >= 500; }
 }
@@ -54,10 +66,25 @@ export const sberRequest: SberRequest = async (env, options, prefix = SBER_PREFI
       }, res => {
         const status = res.statusCode ?? 502;
         if (status !== 200) {
-          res.resume();
           const retry = res.headers['retry-after'];
           const seconds = Number(retry) || Math.ceil((Date.parse(String(retry)) - Date.now()) / 1000) || 0;
-          reject(new SberHttpError(status, Math.min(3600, Math.max(status === 429 ? 5 : 0, seconds))));
+          const delay = Math.min(3600, Math.max(status === 429 ? 5 : 0, seconds));
+          const fail = (reason?: keyof typeof oauthErrors) => reject(new SberHttpError(status, delay, reason, refresh));
+          if (refresh && (status === 400 || status === 401)) {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on('data', (chunk: Buffer) => {
+              size += chunk.length;
+              if (size <= 8192) chunks.push(chunk);
+              else { fail(); res.destroy(); }
+            });
+            res.on('end', () => fail(oauthError(Buffer.concat(chunks).toString('utf8'))));
+            res.on('error', () => fail());
+            res.on('aborted', () => fail());
+          } else {
+            res.resume();
+            fail();
+          }
           return;
         }
         const chunks: Buffer[] = []; let size = 0;

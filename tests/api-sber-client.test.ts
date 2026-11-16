@@ -118,6 +118,24 @@ test('Sber 401 refresh persists the complete pair before retry and never guesses
   assert.ok(memory.current()!.expiresAt! > Date.now() + 3_500_000);
 });
 
+test('Sber distinguishes an OAuth client rejection from a statement request error without exposing bank text', async t => {
+  captureHttps(t, [
+    { status: 400, body: '{"error":"invalid_client","error_description":"fixture-secret fixture-refresh"}' },
+    { status: 400, body: '{"error":"fixture-secret"}' },
+    { status: 400, body: '{"error":"invalid_client"}' },
+  ]);
+  const refresh = { path: TOKEN, form: { grant_type: 'refresh_token' } };
+  await assert.rejects(sberRequest(environment(), refresh), {
+    bankStatus: 400, reason: 'invalid_client', message: 'Сбер отклонил данные сервиса при обновлении доступа. Проверьте настройки сервиса.',
+  });
+  await assert.rejects(sberRequest(environment(), refresh), {
+    bankStatus: 400, reason: undefined, message: 'Сбер отклонил запрос обновления доступа к выпискам.',
+  });
+  await assert.rejects(sberRequest(environment(), { path: SUMMARY, query, accessToken: seed.accessToken }), {
+    bankStatus: 400, reason: undefined, message: 'Сбер отклонил параметры запроса. Сохранённая выписка не изменена.',
+  });
+});
+
 test('saved Sber token pair wins over environment seeds and future expiry does not trigger refresh', async () => {
   const saved = { accessToken: 'fixture-saved-access', refreshToken: 'fixture-saved-refresh', expiresAt: Date.now() + 3600_000 };
   const memory = memoryVault(saved);

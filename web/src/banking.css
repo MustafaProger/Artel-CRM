@@ -38,6 +38,8 @@
 .bank-incoming{color:#28814e}
 .bank-muted{font-size:12px;color:var(--bank-muted);line-height:1.6}
 .bank-card-totals>.bank-muted{margin:0;font-size:11px;max-width:220px}
+.bank-card-issue{color:#ad4032;font-size:12px;line-height:1.5;margin:0 0 14px;overflow-wrap:anywhere}
+.bank-card-issue span{display:block;margin-top:4px}
 .bank-last-sync{display:flex;flex-direction:column;gap:5px;font-size:10px;color:#5f6d64;margin-top:auto}
 .bank-auto-sync{display:flex;align-items:center;gap:7px;color:var(--bank-muted);font-size:12px;line-height:1.6;margin:0 0 20px}
 .bank-last-sync strong{font-size:11px;font-weight:500;color:#616e65}
