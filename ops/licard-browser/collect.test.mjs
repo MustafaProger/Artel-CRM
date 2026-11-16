@@ -52,11 +52,12 @@ test('browser login asks for a code and resumes contract balance after confirmat
         };
         </script>`;
       const dashboard = '<p>RU260007461</p><section><div><h5>Баланс</h5></div><p>227,106.1 ₽</p><button>Пополнить баланс</button><p>Последний платеж 200,000 ₽</p></section>';
-      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: url.pathname === '/auth' ? auth : dashboard });
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: url.pathname === '/auth' ? auth : url.pathname === '/loading' ? '<main>Загрузка</main>' : dashboard });
     });
     const page = await context.newPage();
     await page.goto('https://lk.licard.com/auth');
     assert.deepEqual(await worker(), { state: 'auth_required' });
+    await page.goto('https://lk.licard.com/loading');
     assert.deepEqual(await worker('login', { login: 'fixture@example.org', password: 'test-password' }), { state: 'code_required' });
     assert.deepEqual(await worker('code', { code: '001234' }), { state: 'connected' });
     assert.deepEqual(await worker(), { state: 'connected', amountMinor: 22710610 });

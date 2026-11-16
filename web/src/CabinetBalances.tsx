@@ -116,7 +116,7 @@ export default function CabinetBalances() {
 function LicardSignIn({ onConnected }: { onConnected: () => void }) {
   const field = useRef<HTMLInputElement>(null), busy = useRef(false);
   const [challenge, setChallenge] = useState(''), [code, setCode] = useState('');
-  const [pending, setPending] = useState<'login' | 'code' | null>(null);
+  const [pending, setPending] = useState<'login' | 'resend' | 'code' | null>(null);
   const [error, setError] = useState('');
   const resendAt = useRef(0);
   const [resendIn, setResendIn] = useState(0);
@@ -132,24 +132,25 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
     return () => window.clearTimeout(timeout);
   }, [resendIn]);
 
-  const send = async (action: 'login' | 'code') => {
-    if (busy.current || (action === 'login' && resendIn > 0)) return;
+  const send = async (action: 'login' | 'resend' | 'code') => {
+    if (busy.current || (action === 'resend' && Date.now() < resendAt.current)) return;
     busy.current = true;
     setPending(action);
     setError('');
     try {
-      const result = await request<{ state: 'connected' | 'code_required'; challenge?: string }>({
+      const result = await request<{ state: 'connected' | 'code_required'; challenge?: string; retryAfterSeconds?: number }>({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action === 'login' ? { action } : { action, code, challenge }),
+        body: JSON.stringify(action === 'login' ? { action } : { action, challenge, code: action === 'code' ? code : undefined }),
       }, '/api/cabinets/licard/auth');
       setCode('');
       if (result.state === 'connected') {
         onConnected();
       } else if (result.challenge) {
         setChallenge(result.challenge);
-        resendAt.current = Date.now() + 60_000;
-        setResendIn(60);
+        const remaining = result.retryAfterSeconds ?? 60;
+        resendAt.current = Date.now() + remaining * 1000;
+        setResendIn(remaining);
       }
     } catch (reason) {
       if (action === 'code') setCode('');
@@ -174,7 +175,7 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
         {resendIn > 0 ? <span className="cabinet-licard-timer" role="timer">
           Повторный запрос через <time dateTime={`PT${resendIn}S`}>{resendClock}</time>
         </span> : <button className="button cabinet-licard-resend" type="button" disabled={!!pending}
-          onClick={() => void send('login')}>{pending === 'login' ? 'Отправляем…' : 'Отправить код ещё раз'}</button>}
+          onClick={() => void send('resend')}>{pending === 'resend' ? 'Отправляем…' : 'Отправить код ещё раз'}</button>}
       </div>
     </> : <button className="button primary" type="button" disabled={!!pending} aria-busy={pending === 'login'}
       onClick={() => void send('login')}><LockKeyhole size={16}/>{pending === 'login' ? 'Запрашиваем код…' : 'Войти'}</button>}

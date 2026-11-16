@@ -12,20 +12,31 @@ from pathlib import Path
 
 SOCKET = Path('/opt/artel-crm/data/operations/.licard-auth.sock')
 challenge = None
-last_login = 0
+RESEND_DELAY = 60
+last_code_at = None
+
+
+def code_response(now):
+    remaining = max(0, RESEND_DELAY - int(now - last_code_at))
+    return {'state': 'code_required', 'challenge': challenge['token'], 'retryAfterSeconds': remaining}
 
 
 def authorize(request):
-    global challenge, last_login
+    global challenge, last_code_at
     now = time.monotonic()
     action = request.get('action')
     actor = request.get('actor')
     if not isinstance(actor, str) or not actor or len(actor) > 150:
         return {'state': 'error'}
-    if action == 'login':
-        if challenge and now < challenge['expires'] and challenge['actor'] != actor:
-            return {'state': 'busy'}
-        if now - last_login < 60:
+    if action in ('login', 'resend'):
+        if challenge and now < challenge['expires']:
+            if challenge['actor'] != actor:
+                return {'state': 'busy'}
+            if action == 'resend' and request.get('challenge') != challenge['token']:
+                return {'state': 'expired'}
+            if action == 'login' or now - last_code_at < RESEND_DELAY:
+                return code_response(now)
+        if last_code_at is not None and now - last_code_at < RESEND_DELAY:
             return {'state': 'retry_later'}
         credential_dir = os.environ.get('CREDENTIALS_DIRECTORY')
         if not credential_dir:
@@ -37,8 +48,6 @@ def authorize(request):
             return {'state': 'credentials_required'}
         if not isinstance(login, str) or not 0 < len(login) <= 320 or not isinstance(password, str) or not 0 < len(password) <= 4096:
             return {'state': 'error'}
-        last_login = now
-        challenge = None
         fields = {'login': login, 'password': password}
     elif action == 'code':
         code = request.get('code')
@@ -54,15 +63,16 @@ def authorize(request):
     else:
         return {'state': 'error'}
 
+    browser_action = 'login' if action == 'resend' else action
     result = subprocess.run(
-        ['docker', 'exec', '-i', 'artel-licard-browser', 'node', '/state/worker/collect.mjs', action],
+        ['docker', 'exec', '-i', 'artel-licard-browser', 'node', '/state/worker/collect.mjs', browser_action],
         input=json.dumps(fields), text=True, capture_output=True, timeout=28, check=True,
     )
     state = json.loads(result.stdout)['state']
-    if state == 'code_required' and action == 'login':
-        token = secrets.token_urlsafe(24)
-        challenge = {'actor': actor, 'token': token, 'expires': time.monotonic() + 900, 'attempts': 0}
-        return {'state': state, 'challenge': token}
+    if state == 'code_required' and browser_action == 'login':
+        last_code_at = time.monotonic()
+        challenge = {'actor': actor, 'token': secrets.token_urlsafe(24), 'expires': last_code_at + 900, 'attempts': 0}
+        return code_response(last_code_at)
     if state == 'connected':
         challenge = None
         # systemd also serializes refreshes started by the timer.

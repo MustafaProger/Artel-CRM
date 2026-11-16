@@ -4,7 +4,7 @@ import { ApiError } from './api-error';
 export async function authorizeLicard(
   socketPath: string,
   fields: Record<string, string>,
-): Promise<{ state: 'connected' } | { state: 'code_required'; challenge: string }> {
+): Promise<{ state: 'connected' } | { state: 'code_required'; challenge: string; retryAfterSeconds: number }> {
   const body = JSON.stringify(fields);
   const output = await new Promise<string>((resolve, reject) => {
     const outgoing = request({
@@ -31,12 +31,14 @@ export async function authorizeLicard(
     throw new ApiError(503, 'Сервер входа в ЛИКАРД временно недоступен.');
   });
 
-  let result: { state?: string; challenge?: string };
+  let result: { state?: string; challenge?: string; retryAfterSeconds?: number };
   try { result = JSON.parse(output); }
   catch { throw new ApiError(502, 'Не удалось получить ответ ЛИКАРД.'); }
   if (result?.state === 'connected') return { state: 'connected' };
   if (result?.state === 'code_required' && typeof result.challenge === 'string' && /^[a-zA-Z0-9_-]{32}$/.test(result.challenge)) {
-    return { state: 'code_required', challenge: result.challenge };
+    const retryAfterSeconds = result.retryAfterSeconds ?? 60;
+    return { state: 'code_required', challenge: result.challenge,
+      retryAfterSeconds: Number.isInteger(retryAfterSeconds) ? Math.max(0, Math.min(60, retryAfterSeconds)) : 60 };
   }
   if (result?.state === 'retry_later') throw new ApiError(429, 'Повторный запрос доступен не раньше чем через 60 секунд после предыдущего.');
   if (result?.state === 'credentials_required') throw new ApiError(503, 'Данные для входа в ЛИКАРД не настроены на сервере.');

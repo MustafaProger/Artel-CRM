@@ -135,17 +135,18 @@ function submitAuthPage() {
 }
 
 async function authorize(action, fields) {
-  return withLicardTab(async ({ call, evaluate, url }) => {
+  return withLicardTab(async ({ call, evaluate }) => {
     const dashboard = await evaluate(inspectDashboard, contract);
     if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
     if (action === 'login') {
-      if (url !== origin + '/auth') return { state: 'error' };
       const view = await evaluate(authPage);
       if (!view?.password) {
         await call('Page.navigate', { url: origin + '/auth' });
         for (let attempt = 0; attempt < 16; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 500));
           if ((await evaluate(authPage).catch(() => null))?.password) break;
+          const dashboard = await evaluate(inspectDashboard, contract).catch(() => null);
+          if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
         }
       }
     } else {

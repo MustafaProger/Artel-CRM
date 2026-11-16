@@ -106,6 +106,10 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     if (body.action === 'login' && Object.keys(body).length === 1) {
       return send(200, await authorizeLicard(socket, { action: 'login', actor: user.id }));
     }
+    if (body.action === 'resend' && Object.keys(body).length === 2
+      && typeof body.challenge === 'string' && /^[a-zA-Z0-9_-]{32}$/.test(body.challenge)) {
+      return send(200, await authorizeLicard(socket, { action: 'resend', actor: user.id, challenge: body.challenge }));
+    }
     if (body.action === 'code' && Object.keys(body).every(key => ['action', 'code', 'challenge'].includes(key))) {
       if (typeof body.code !== 'string' || !/^\d{4,10}$/.test(body.code)
         || typeof body.challenge !== 'string' || !/^[a-zA-Z0-9_-]{32}$/.test(body.challenge)) throw new ApiError(400, 'Введите код из письма ЛИКАРД.');
