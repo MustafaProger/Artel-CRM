@@ -94,23 +94,43 @@
 .cabinet-licard-signin {
   display: grid;
   justify-items: start;
-  gap: 10px;
+  gap: 8px;
   margin: 12px 24px;
 }
+.cabinet-licard-signin.is-code {
+  padding: 14px 16px;
+  border: 1px solid var(--border, #e4e7eb);
+  border-radius: 12px;
+  background: #f8faf9;
+}
 .cabinet-licard-signin p { margin: 0; }
+.cabinet-licard-copy { display: grid; gap: 3px; font-size: 13px; line-height: 1.5; }
+.cabinet-licard-copy strong { font-size: 14px; font-weight: 600; }
+.cabinet-licard-copy p { color: var(--cabinet-muted); }
 .cabinet-licard-signin form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
-.cabinet-licard-signin label { display: grid; gap: 5px; font-size: 13px; }
+.cabinet-licard-signin label { display: grid; gap: 5px; font-size: 12px; font-weight: 500; }
 .cabinet-licard-signin input {
-  width: 10rem;
+  width: 8rem;
   min-height: 44px;
   padding: 0 12px;
   color: inherit;
-  background: transparent;
-  border: 1px solid var(--line, #d5d9d7);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e4e7eb);
   border-radius: 12px;
   font: inherit;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
 }
-.cabinet-licard-signin .cabinet-licard-resend { min-height: 32px; padding: 4px 0; border: 0; background: transparent; }
-@media (max-width: 620px) { .cabinet-licard-signin { margin-inline: 16px; } }
+.cabinet-licard-signin .cabinet-licard-resend {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+}
+.cabinet-licard-signin .cabinet-licard-resend:not(:disabled):hover { text-decoration: underline; }
+@media (max-width: 620px) {
+  .cabinet-licard-signin { margin-inline: 16px; }
+  .cabinet-licard-signin.is-code { padding: 12px; }
+}
