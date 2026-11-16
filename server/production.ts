@@ -155,7 +155,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
     operationsStore: store, secureCookies: true, requireAuthentication: true,
     authorizeRequest: request => productionRequestAllowed(request, configuration.origin),
     bankEnvironment, ...transports, pushConfig: push, pushIntervalSeconds: 30,
-    cabinetEnvironment: { ...env, ARTEL_YANDEX_BALANCE_FILE: resolve(storeDirectory, 'yandex-balance.json') },
+    cabinetEnvironment: { ...env, ARTEL_YANDEX_BALANCE_FILE: resolve(storeDirectory, 'yandex-balance.json'), ARTEL_LICARD_BALANCE_FILE: resolve(storeDirectory, 'licard-balance.json') },
     accountPasswordKey: env.ARTEL_ACCOUNT_PASSWORD_KEY,
     invoiceBridge,
     setupToken: env.ARTEL_SETUP_TOKEN, cronSecret: env.CRON_SECRET, checkoApiKey: env.CHECKO_API_KEY,

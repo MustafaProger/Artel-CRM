@@ -56,7 +56,7 @@ export default function CabinetBalances() {
             const managed = connection.refreshMode === 'server_browser';
             const hasAccounts = !!connection.accounts?.length;
             return <section className="cabinet-connection" key={connection.id} aria-label={connection.label}>
-              <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
+              <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : managed || automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
               {hasAccounts ? <div className="cabinet-accounts">{connection.accounts!.map(account => <div className="cabinet-account" key={account.id}>
                 <div className="cabinet-account-info"><strong>{account.organization || account.supplier}</strong>{account.organization && account.supplier !== account.organization && <span>{account.supplier}</span>}{managed && account.contract && <span>Договор {account.contract}</span>}</div>
                 <div className="cabinet-account-balance"><strong className={`cabinet-account-amount${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
@@ -72,11 +72,11 @@ export default function CabinetBalances() {
           })}
         </article>)}
       </div><aside className="cabinet-sidebar" aria-label="Добавление кабинетов">
-        <div className="panel cabinet-help"><span className="cabinet-eyebrow">ПОДКЛЮЧЕНИЕ</span><h3>Как добавить кабинет</h3><ol><li>Выберите сервис.</li><li>Введите название, логин и пароль.</li><li>После подключения здесь появятся остатки.</li></ol><p>У GloPro, Роснефти и natcar остатки загружаются автоматически. Яндекс Go обновляется через браузер на сервере. Иногда администратору нужно подтвердить вход. Для ЛУКОЙЛ пока можно только сохранить доступ.</p><p className="cabinet-security"><LockKeyhole size={16}/>Данные для входа хранятся в зашифрованном виде.</p></div>
+        <div className="panel cabinet-help"><span className="cabinet-eyebrow">ПОДКЛЮЧЕНИЕ</span><h3>Как добавить кабинет</h3><ol><li>Выберите сервис.</li><li>Введите название, логин и пароль.</li><li>После подключения здесь появятся остатки.</li></ol><p>У GloPro, Роснефти и natcar остатки загружаются автоматически. Подключённые кабинеты Яндекс Go и ЛУКОЙЛ обновляются через браузер на сервере. Иногда администратору нужно подтвердить вход.</p><p className="cabinet-security"><LockKeyhole size={16}/>Данные для входа хранятся в зашифрованном виде.</p></div>
         {!!available.length && <div className="panel cabinet-available"><h3>Другие сервисы</h3>{available.map(provider => <div className="cabinet-available-item" key={provider.id}><div className="cabinet-provider-title"><ProviderMark provider={provider.id}/><strong>{provider.name}</strong></div><p>{automatic(provider.id) ? 'Автоматическое обновление остатков' : 'Получение остатков пока недоступно'}</p><button className="button" disabled={!data.credentialStorageReady} onClick={() => setEditor(provider.id)}><Plus size={16}/>{automatic(provider.id) ? 'Добавить кабинет' : 'Сохранить доступ'}</button></div>)}</div>}
       </aside></div>
     </>}
-    {editor && <ConnectionEditor yandexConnected={data?.connections.some(c => c.refreshMode === 'server_browser') ?? false} initialProvider={editor === 'choose' ? null : editor} onClose={() => setEditor(null)} onSaved={provider => { setEditor(null); setNotice(automatic(provider) ? 'Кабинет добавлен. Первое обновление остатков начнётся в течение минуты.' : 'Доступ сохранён. Получение остатков этого сервиса ещё не подключено.'); void refresh(); }}/>}
+    {editor && <ConnectionEditor managedProviders={data?.connections.filter(c => c.refreshMode === 'server_browser').map(c => c.provider) ?? []} initialProvider={editor === 'choose' ? null : editor} onClose={() => setEditor(null)} onSaved={provider => { setEditor(null); setNotice(automatic(provider) ? 'Кабинет добавлен. Первое обновление остатков начнётся в течение минуты.' : 'Доступ сохранён. Получение остатков этого сервиса ещё не подключено.'); void refresh(); }}/>}
     {organizationEditor && <OrganizationEditor connection={organizationEditor} onClose={() => setOrganizationEditor(null)} onSaved={() => { setOrganizationEditor(null); setNotice('Состав организаций сохранён. Обновите остатки или дождитесь автоматического обновления.'); void refresh(); }}/>}
   </section>;
 }
@@ -115,7 +115,7 @@ function OrganizationEditor({ connection, onClose, onSaved }: { connection: Cabi
   </form></dialog>;
 }
 
-function ConnectionEditor({ initialProvider, onClose, onSaved, yandexConnected }: { yandexConnected: boolean; initialProvider: CabinetProvider | null; onClose: () => void; onSaved: (provider: CabinetProvider) => void }) {
+function ConnectionEditor({ initialProvider, onClose, onSaved, managedProviders }: { managedProviders: CabinetProvider[]; initialProvider: CabinetProvider | null; onClose: () => void; onSaved: (provider: CabinetProvider) => void }) {
   const [provider, setProvider] = useState<CabinetProvider | null>(initialProvider);
   const entry = cabinetProviders.find(item => item.id === provider);
   const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);
@@ -137,7 +137,7 @@ function ConnectionEditor({ initialProvider, onClose, onSaved, yandexConnected }
   return <dialog ref={dialog} className="cabinet-dialog" aria-labelledby="cabinet-editor-title" onCancel={event => { event.preventDefault(); close(); }}>
     <form onSubmit={submit}>
       <header><h2 id="cabinet-editor-title">{entry ? `Добавить кабинет ${entry.name}` : 'Добавить кабинет'}</h2><button type="button" className="icon-button" aria-label="Закрыть" onClick={close} disabled={saving}><X size={20}/></button></header>
-      {!entry || !provider ? <><p className="cabinet-dialog-description">Шаг 1 из 2 · Выберите сервис</p><div className="cabinet-provider-options">{cabinetProviders.filter(item => item.id !== 'yandex' || !yandexConnected).map(item => <button type="button" className="cabinet-provider-option" key={item.id} onClick={() => setProvider(item.id)}><ProviderMark provider={item.id}/><span><strong>{item.name}</strong><small>{automatic(item.id) ? 'Автоматическая загрузка остатков' : 'Сохранение доступа · остатки пока недоступны'}</small></span><ArrowRight size={18}/></button>)}</div></> : <>
+      {!entry || !provider ? <><p className="cabinet-dialog-description">Шаг 1 из 2 · Выберите сервис</p><div className="cabinet-provider-options">{cabinetProviders.filter(item => !managedProviders.includes(item.id)).map(item => <button type="button" className="cabinet-provider-option" key={item.id} onClick={() => setProvider(item.id)}><ProviderMark provider={item.id}/><span><strong>{item.name}</strong><small>{automatic(item.id) ? 'Автоматическая загрузка остатков' : 'Сохранение доступа · остатки пока недоступны'}</small></span><ArrowRight size={18}/></button>)}</div></> : <>
       <button type="button" className="cabinet-back" disabled={saving} onClick={changeProvider}><ArrowLeft size={15}/>Выбрать другой сервис</button>
       <p className="cabinet-dialog-description">Шаг 2 из 2 · Данные для входа в {entry.name}</p>
       {!automatic(provider) && <p className="cabinet-pending">Получение остатков пока недоступно. Сейчас можно сохранить доступ для дальнейшей настройки.</p>}

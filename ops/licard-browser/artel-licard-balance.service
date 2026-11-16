@@ -1,0 +1,15 @@
+[Unit]
+Description=Read Licard fuel balance from the server browser
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/artel-crm/private/licard-browser-20261113/publish-snapshot.py
+TimeoutStartSec=40
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/artel-crm/data/operations
