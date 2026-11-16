@@ -14,8 +14,8 @@ export function parseRubles(text) {
   return Number.isSafeInteger(minor) ? minor : null;
 }
 
-async function readDashboard() {
-  const response = await fetch('http://127.0.0.1:9222/json/list', { signal: AbortSignal.timeout(5000) });
+async function withLicardTab(inTab) {
+  const response = await fetch((process.env.ARTEL_LICARD_CDP_URL || 'http://127.0.0.1:9222') + '/json/list', { signal: AbortSignal.timeout(5000) });
   const tabs = (await response.json()).filter(tab => tab.type === 'page' && new URL(tab.url).origin === origin);
   if (tabs.length !== 1) return { state: 'error' };
   const ws = new WebSocket(tabs[0].webSocketDebuggerUrl);
@@ -38,17 +38,27 @@ async function readDashboard() {
       pending.set(++id, { resolve, reject });
       ws.send(JSON.stringify({ id, method, params }));
     });
-    const read = async () => {
-      const { result } = await call('Runtime.evaluate', {
-        expression: '(' + inspectDashboard.toString() + ')(' + JSON.stringify(contract) + ')',
+    const evaluate = async (fn, argument) => {
+      const { result, exceptionDetails } = await call('Runtime.evaluate', {
+        expression: '(' + fn.toString() + ')(' + JSON.stringify(argument) + ')',
         returnByValue: true,
       });
+      if (exceptionDetails) throw new Error('Browser page evaluation failed');
       return result?.value;
     };
+    return await inTab({ call, evaluate, url: tabs[0].url });
+  } finally {
+    ws.close();
+  }
+}
+
+async function readDashboard() {
+  return withLicardTab(async ({ call, evaluate, url }) => {
+    const read = () => evaluate(inspectDashboard, contract);
     const initial = await read();
     if (initial?.auth) return { state: 'auth_required' };
     await call('Page.enable');
-    if (tabs[0].url === origin + '/') await call('Page.reload', { ignoreCache: true });
+    if (url === origin + '/') await call('Page.reload', { ignoreCache: true });
     else await call('Page.navigate', { url: origin + '/' });
     for (let attempt = 0; attempt < 30; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -58,9 +68,7 @@ async function readDashboard() {
       if (amountMinor !== null) return { state: 'connected', amountMinor };
     }
     return { state: 'error' };
-  } finally {
-    ws.close();
-  }
+  });
 }
 
 function inspectDashboard(expectedContract) {
@@ -77,9 +85,96 @@ function inspectDashboard(expectedContract) {
   return {};
 }
 
+function authPage() {
+  if (location.origin !== 'https://lk.licard.com' || location.pathname !== '/auth') return {};
+  const text = document.body?.innerText ?? '';
+  const password = document.querySelector('input[type=password]');
+  const inputs = [...document.querySelectorAll('input:not([type=hidden])')].filter(input => input.getClientRects().length);
+  const code = text.includes('Подтверждение входа') && !password && inputs.length === 1;
+  return { password: !!password, code, expired: /срок действия кода ист[её]к/i.test(text) };
+}
+
+function fillAuthPage({ login, password, code }) {
+  if (location.origin !== 'https://lk.licard.com' || location.pathname !== '/auth') return false;
+  const visible = element => element.getClientRects().length > 0;
+  const inputs = [...document.querySelectorAll('input:not([type=hidden])')].filter(visible);
+  const buttons = [...document.querySelectorAll('button')].filter(button => visible(button) && button.innerText.trim() === 'Войти');
+  if (buttons.length !== 1) return false;
+  const put = (field, value) => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setValue.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  if (code !== undefined) {
+    if (!document.body.innerText.includes('Подтверждение входа') || inputs.length !== 1 || inputs[0].type === 'password') return false;
+    put(inputs[0], code);
+  } else {
+    const passwordInput = inputs.find(input => input.type === 'password');
+    const loginInput = inputs.find(input => input.type === 'email' || /электронная почта/i.test(input.placeholder));
+    if (!passwordInput || !loginInput) return false;
+    put(loginInput, login);
+    put(passwordInput, password);
+  }
+  return true;
+}
+
+function submitAuthPage() {
+  if (location.origin !== 'https://lk.licard.com' || location.pathname !== '/auth') return false;
+  const buttons = [...document.querySelectorAll('button')].filter(button =>
+    button.getClientRects().length && !button.disabled && button.innerText.trim() === 'Войти');
+  if (buttons.length !== 1) return false;
+  buttons[0].click();
+  return true;
+}
+
+async function authorize(action, fields) {
+  return withLicardTab(async ({ call, evaluate, url }) => {
+    const dashboard = await evaluate(inspectDashboard, contract);
+    if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
+    if (action === 'login') {
+      if (url !== origin + '/auth') return { state: 'error' };
+      const view = await evaluate(authPage);
+      if (!view?.password) {
+        await call('Page.navigate', { url: origin + '/auth' });
+        for (let attempt = 0; attempt < 16; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          if ((await evaluate(authPage).catch(() => null))?.password) break;
+        }
+      }
+    } else {
+      const view = await evaluate(authPage);
+      if (!view?.code || view.expired) return { state: 'expired' };
+    }
+    if (!await evaluate(fillAuthPage, fields) || !await evaluate(submitAuthPage)) return { state: 'error' };
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const view = await evaluate(authPage).catch(() => null);
+      if (action === 'login' && view?.code && !view.expired) return { state: 'code_required' };
+      if (view?.expired) return { state: 'expired' };
+      const dashboard = await evaluate(inspectDashboard, contract).catch(() => null);
+      if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
+    }
+    return { state: action === 'login' ? 'login_failed' : 'invalid_code' };
+  });
+}
+
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   const watchdog = setTimeout(() => process.exit(1), 25000);
-  try { console.log(JSON.stringify(await readDashboard())); }
-  catch { console.log(JSON.stringify({ state: 'error' })); }
-  finally { clearTimeout(watchdog); }
+  try {
+    const action = process.argv[2];
+    let result;
+    if (action === 'login' || action === 'code') {
+      let input = '';
+      for await (const chunk of process.stdin.setEncoding('utf8')) input += chunk;
+      result = await authorize(action, JSON.parse(input));
+    } else {
+      result = await readDashboard();
+    }
+    console.log(JSON.stringify(result));
+  } catch {
+    console.log(JSON.stringify({ state: 'error' }));
+  } finally {
+    clearTimeout(watchdog);
+  }
 }

@@ -19,7 +19,7 @@ last_success = None
 amount = None
 try:
     previous = json.loads(TARGET.read_text())
-    if previous.get('version') == 1 and previous.get('contract') == CONTRACT and valid_amount(previous.get('amountMinor')):
+    if isinstance(previous, dict) and previous.get('version') == 1 and previous.get('contract') == CONTRACT and valid_amount(previous.get('amountMinor')):
         last_success = previous.get('lastSuccessAt')
         amount = previous['amountMinor']
 except (OSError, ValueError):
@@ -37,7 +37,7 @@ try:
     elif result.get('state') == 'connected' and valid_amount(result.get('amountMinor')):
         state = 'connected'
         amount = result['amountMinor']
-except (OSError, subprocess.SubprocessError, ValueError):
+except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
     pass
 
 now = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')

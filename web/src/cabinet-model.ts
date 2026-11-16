@@ -20,7 +20,7 @@ export interface CabinetConnection {
   organizationNames?: string[];
   refreshMode?: 'server_browser';
 }
-export interface CabinetResponse { connections: CabinetConnection[]; credentialStorageReady: boolean }
+export interface CabinetResponse { connections: CabinetConnection[]; credentialStorageReady: boolean; canAuthorizeLicard?: boolean }
 
 export interface CabinetAccount {
   id: string;

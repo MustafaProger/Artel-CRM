@@ -1,0 +1,19 @@
+[Unit]
+Description=Accept Licard authentication from Artel CRM
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/artel-crm/private/licard-browser-20261113/auth-bridge.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/artel-crm/data/operations
+
+[Install]
+WantedBy=multi-user.target

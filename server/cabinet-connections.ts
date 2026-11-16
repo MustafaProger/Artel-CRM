@@ -1,8 +1,10 @@
+import { isAdministrator } from '../web/src/auth-model';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { cabinetProviders, type CabinetAccount, type CabinetConnection, type CabinetProvider, type CabinetResponse } from '../web/src/cabinet-model';
 import { GloProClient, GloProError } from './glopro-client';
 import { FuelCabinetClient, FuelCabinetError, normalizeCabinetOrganization } from './fuel-cabinet-client';
+import { authorizeLicard } from './licard-browser-auth';
 import { readLicardBrowserBalance } from './licard-browser-balance';
 import { readYandexBrowserBalance } from './yandex-browser-balance';
 import { ApiError } from './api-error';
@@ -91,9 +93,29 @@ function inputText(value: unknown, name: string, max: number, trim = true) {
 }
 export async function cabinetRoutes(store: OperationsStorage, source: string, env: Environment, request: IncomingMessage, response: ServerResponse, readBody: () => Promise<Record<string, unknown>>) {
   const initial = await store.read(source);
-  requireSection(requireUser(initial, request), 'cabinet-balances');
+  const user = requireUser(initial, request);
+  requireSection(user, 'cabinet-balances');
+  const canAuthorizeLicard = isAdministrator(user) && !!env.ARTEL_LICARD_AUTH_SOCKET;
   const send = (status: number, value: unknown) => { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
   const path = request.url?.split('?')[0];
+  if (path === '/api/cabinets/licard/auth') {
+    if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
+    if (!canAuthorizeLicard) throw new ApiError(403, 'Подтверждение входа в ЛИКАРД доступно администраторам.');
+    const body = await readBody();
+    const socket = env.ARTEL_LICARD_AUTH_SOCKET!;
+    if (body.action === 'login' && Object.keys(body).every(key => ['action', 'login', 'password'].includes(key))) {
+      const login = inputText(body.login, 'Электронная почта', 320);
+      const password = inputText(body.password, 'Пароль', 4096, false);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(login)) throw new ApiError(400, 'Проверьте адрес электронной почты.');
+      return send(200, await authorizeLicard(socket, { action: 'login', actor: user.id, login, password }));
+    }
+    if (body.action === 'code' && Object.keys(body).every(key => ['action', 'code', 'challenge'].includes(key))) {
+      if (typeof body.code !== 'string' || !/^\d{4,10}$/.test(body.code)
+        || typeof body.challenge !== 'string' || !/^[a-zA-Z0-9_-]{32}$/.test(body.challenge)) throw new ApiError(400, 'Введите код из письма ЛИКАРД.');
+      return send(200, await authorizeLicard(socket, { action: 'code', actor: user.id, code: body.code, challenge: body.challenge }));
+    }
+    throw new ApiError(400, 'Неизвестное действие входа в ЛИКАРД.');
+  }
   const organizationsId = path?.match(/^\/api\/cabinets\/(cabinet-[a-f0-9-]{36})\/organizations$/)?.[1];
   if (organizationsId) {
     if (request.method !== 'PATCH') throw new ApiError(405, 'Метод не поддерживается.');
@@ -130,7 +152,7 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     let ready = false;
     try { encryptionKey(env); ready = true; } catch { /* Read-only page remains available before setup. */ }
     const data = initial;
-    const result: CabinetResponse = { connections: Object.values(data.cabinets?.connections ?? {}).map(publicConnection), credentialStorageReady: ready };
+    const result: CabinetResponse = { connections: Object.values(data.cabinets?.connections ?? {}).map(publicConnection), credentialStorageReady: ready, ...(canAuthorizeLicard ? { canAuthorizeLicard: true } : {}) };
     const yandex = await readYandexBrowserBalance(env.ARTEL_YANDEX_BALANCE_FILE);
     if (yandex) result.connections.push(yandex);
     const licard = await readLicardBrowserBalance(env.ARTEL_LICARD_BALANCE_FILE);

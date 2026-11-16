@@ -29,7 +29,7 @@ export function licardBrowserConnection(value: unknown, now = Date.now()): Cabin
       contract, amountMinor, currency: 'RUB', balanceLabel: 'Баланс по договору',
     }];
   }
-  if (state === 'auth_required') connection.error = 'Администратору нужно повторно войти в ЛИКАРД на сервере.';
+  if (state === 'auth_required') connection.error = 'Администратору нужно повторно войти в ЛИКАРД.';
   else if (state === 'error') connection.error = 'Не удалось обновить баланс ЛУКОЙЛ. Сервер повторит попытку.';
   else if (!connection.lastSuccessAt) return invalid;
   else if (now - Date.parse(connection.lastSuccessAt) > 600_000) {
