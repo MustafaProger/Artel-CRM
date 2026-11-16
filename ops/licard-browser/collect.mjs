@@ -111,8 +111,14 @@ function fillAuthPage({ login, password, code }) {
     put(inputs[0], code);
   } else {
     const passwordInput = inputs.find(input => input.type === 'password');
-    const loginInput = inputs.find(input => input.type === 'email' || /электронная почта/i.test(input.placeholder));
-    if (!passwordInput || !loginInput) return false;
+    if (!passwordInput) return false;
+    const form = passwordInput.closest('form');
+    const candidates = inputs.filter(input => input !== passwordInput
+      && ['email', 'text'].includes(input.type) && (!form || form.contains(input)));
+    const loginInput = candidates.find(input => input.type === 'email'
+      || /электронная почта/i.test([input.placeholder, ...Array.from(input.labels ?? [], label => label.innerText)].join(' ')))
+      ?? (candidates.length === 1 ? candidates[0] : null);
+    if (!loginInput) return false;
     put(loginInput, login);
     put(passwordInput, password);
   }

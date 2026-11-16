@@ -39,10 +39,10 @@ test('browser login asks for a code and resumes contract balance after confirmat
       const url = new URL(route.request().url());
       if (url.origin !== 'https://lk.licard.com') return route.abort();
       const auth = `<main>
-        <input type=email placeholder="Электронная почта"><input type=password><button>Войти</button>
+        <input type=text><input type=password><button>Войти</button>
         </main><script>
         document.querySelector('button').onclick = () => {
-          if (document.querySelector('input[type=email]').value !== 'fixture@example.org' ||
+          if (document.querySelector('input[type=text]').value !== 'fixture@example.org' ||
               document.querySelector('input[type=password]').value !== 'test-password') return;
           document.querySelector('main').innerHTML = '<h1>Подтверждение входа</h1><input placeholder="Код подтверждения"><button disabled>Войти</button>';
           document.querySelector('input').oninput = () => { document.querySelector('button').disabled = false; };
