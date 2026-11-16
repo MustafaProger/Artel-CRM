@@ -6,6 +6,7 @@ Requires=docker.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/artel-crm/private/licard-browser-20261113/auth-bridge.py
+LoadCredentialEncrypted=licard-login:/opt/artel-crm/secrets/licard-login.cred
 Restart=on-failure
 RestartSec=5
 UMask=0077

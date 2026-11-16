@@ -27,7 +27,14 @@ def authorize(request):
             return {'state': 'busy'}
         if now - last_login < 30:
             return {'state': 'retry_later'}
-        login, password = request.get('login'), request.get('password')
+        credential_dir = os.environ.get('CREDENTIALS_DIRECTORY')
+        if not credential_dir:
+            return {'state': 'credentials_required'}
+        try:
+            credentials = json.loads((Path(credential_dir) / 'licard-login').read_text())
+            login, password = credentials['login'], credentials['password']
+        except (OSError, ValueError, KeyError, TypeError):
+            return {'state': 'credentials_required'}
         if not isinstance(login, str) or not 0 < len(login) <= 320 or not isinstance(password, str) or not 0 < len(password) <= 4096:
             return {'state': 'error'}
         last_login = now

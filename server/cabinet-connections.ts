@@ -103,11 +103,8 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     if (!canAuthorizeLicard) throw new ApiError(403, 'Подтверждение входа в ЛИКАРД доступно администраторам.');
     const body = await readBody();
     const socket = env.ARTEL_LICARD_AUTH_SOCKET!;
-    if (body.action === 'login' && Object.keys(body).every(key => ['action', 'login', 'password'].includes(key))) {
-      const login = inputText(body.login, 'Электронная почта', 320);
-      const password = inputText(body.password, 'Пароль', 4096, false);
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(login)) throw new ApiError(400, 'Проверьте адрес электронной почты.');
-      return send(200, await authorizeLicard(socket, { action: 'login', actor: user.id, login, password }));
+    if (body.action === 'login' && Object.keys(body).length === 1) {
+      return send(200, await authorizeLicard(socket, { action: 'login', actor: user.id }));
     }
     if (body.action === 'code' && Object.keys(body).every(key => ['action', 'code', 'challenge'].includes(key))) {
       if (typeof body.code !== 'string' || !/^\d{4,10}$/.test(body.code)

@@ -90,3 +90,27 @@
 .cabinet-discard-prompt .button{max-width:100%;white-space:normal}
 .cabinet-dialog footer{flex-wrap:wrap;gap:10px}
 .cabinet-dialog footer .button{max-width:100%;white-space:normal}
+
+.cabinet-licard-signin {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  margin: 12px 24px;
+}
+.cabinet-licard-signin p { margin: 0; }
+.cabinet-licard-signin form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.cabinet-licard-signin label { display: grid; gap: 5px; font-size: 13px; }
+.cabinet-licard-signin input {
+  width: 10rem;
+  min-height: 44px;
+  padding: 0 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line, #d5d9d7);
+  border-radius: 12px;
+  font: inherit;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.cabinet-licard-signin .cabinet-licard-resend { min-height: 32px; padding: 4px 0; border: 0; background: transparent; }
+@media (max-width: 620px) { .cabinet-licard-signin { margin-inline: 16px; } }

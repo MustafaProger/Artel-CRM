@@ -16,7 +16,6 @@ const automatic = (provider: CabinetProvider) => ['glopro', 'natcar', 'rosneft']
 export default function CabinetBalances() {
   const [data, setData] = useState<CabinetResponse | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true);
   const [editor, setEditor] = useState<CabinetProvider | 'choose' | null>(null), [notice, setNotice] = useState('');
-  const [licardAuth, setLicardAuth] = useState(false);
   const [syncing, setSyncing] = useState<string[]>([]);
   const [organizationEditor, setOrganizationEditor] = useState<CabinetConnection | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -56,6 +55,7 @@ export default function CabinetBalances() {
             const stale = cabinetConnectionStale(connection);
             const managed = connection.refreshMode === 'server_browser';
             const hasAccounts = !!connection.accounts?.length;
+            const canSignIn = managed && provider.id === 'licard' && connection.state === 'auth_required' && data.canAuthorizeLicard;
             return <section className="cabinet-connection" key={connection.id} aria-label={connection.label}>
               <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : managed || automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
               {hasAccounts ? <div className="cabinet-accounts">{connection.accounts!.map(account => <div className="cabinet-account" key={account.id}>
@@ -63,11 +63,12 @@ export default function CabinetBalances() {
                 <div className="cabinet-account-balance"><strong className={`cabinet-account-amount${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
 
               </div>)}</div> : <p className="cabinet-pending">{managed ? 'Серверное подключение ожидает первого успешного чтения.' : automatic(provider.id) ? 'Остатки ещё не получены. Первое обновление — в течение минуты после добавления.' : 'Автоматическое получение остатков пока недоступно. Доступ сохранён для настройки подключения.'}</p>}
-              {connection.error && <p className="cabinet-sync-error" role="status">{connection.error}</p>}
+              {canSignIn ? <LicardSignIn onConnected={() => {
+                setNotice('Вход в ЛИКАРД подтверждён. Баланс обновится автоматически.');
+                void refresh();
+              }}/> : connection.error && <p className="cabinet-sync-error" role="status">{connection.error}</p>}
               <footer className={`cabinet-connection-footer${managed ? ' is-managed' : ''}`}><span>{connection.lastSuccessAt ? `${managed ? 'Прочитано в кабинете' : stale ? 'Последнее обновление' : 'Обновлено'} ${date(connection.lastSuccessAt)} МСК` : 'Успешных обновлений пока нет'}</span><div>
                 {provider.id === 'natcar' && <button className="button cabinet-organizations-button" disabled={syncing.includes(connection.id)} onClick={() => setOrganizationEditor(connection)}><Building2 size={16}/>Организации</button>}
-                {managed && provider.id === 'licard' && connection.state === 'auth_required' && data.canAuthorizeLicard &&
-                  <button className="button" onClick={() => setLicardAuth(true)}><LockKeyhole size={16}/>Войти в ЛИКАРД</button>}
                 {managed && <span className="cabinet-auto-refresh">Автообновление каждые 5 минут</span>}
                 {automatic(provider.id) && <button className="button cabinet-refresh" aria-label={syncing.includes(connection.id) ? 'Обновление…' : 'Обновить'} title="Обновить остатки" aria-busy={syncing.includes(connection.id)} disabled={syncing.includes(connection.id)} onClick={() => void synchronize(connection.id)}><RefreshCw size={15} aria-hidden="true"/><span>{syncing.includes(connection.id) ? 'Обновление…' : 'Обновить'}</span></button>}
               </div></footer>
@@ -80,71 +81,63 @@ export default function CabinetBalances() {
       </aside></div>
     </>}
     {editor && <ConnectionEditor managedProviders={data?.connections.filter(c => c.refreshMode === 'server_browser').map(c => c.provider) ?? []} initialProvider={editor === 'choose' ? null : editor} onClose={() => setEditor(null)} onSaved={provider => { setEditor(null); setNotice(automatic(provider) ? 'Кабинет добавлен. Первое обновление остатков начнётся в течение минуты.' : 'Доступ сохранён. Получение остатков этого сервиса ещё не подключено.'); void refresh(); }}/>}
-    {licardAuth && <LicardAuthDialog onClose={() => setLicardAuth(false)} onConnected={() => {
-      setLicardAuth(false);
-      setNotice('Вход в ЛИКАРД подтверждён. Баланс обновится автоматически.');
-      void refresh();
-    }}/>}
     {organizationEditor && <OrganizationEditor connection={organizationEditor} onClose={() => setOrganizationEditor(null)} onSaved={() => { setOrganizationEditor(null); setNotice('Состав организаций сохранён. Обновите остатки или дождитесь автоматического обновления.'); void refresh(); }}/>}
   </section>;
 }
 
-function LicardAuthDialog({ onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null), busy = useRef(false);
-  const [login, setLogin] = useState(''), [password, setPassword] = useState('');
-  const [code, setCode] = useState(''), [challenge, setChallenge] = useState('');
-  const [submitting, setSubmitting] = useState(false), [error, setError] = useState('');
-  const motion = useDialogMotion(dialog, onClose);
-  const close = () => { if (!busy.current) motion.close(); };
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy.current) return;
+function LicardSignIn({ onConnected }: { onConnected: () => void }) {
+  const field = useRef<HTMLInputElement>(null), busy = useRef(false);
+  const [challenge, setChallenge] = useState(''), [code, setCode] = useState('');
+  const [pending, setPending] = useState<'login' | 'code' | null>(null);
+  const [error, setError] = useState(''), [confirmed, setConfirmed] = useState(false);
+  useEffect(() => {
+    if (challenge && !pending) field.current?.focus();
+  }, [challenge, pending]);
+
+  const send = async (action: 'login' | 'code') => {
+    if (busy.current || confirmed) return;
     busy.current = true;
-    setSubmitting(true);
+    setPending(action);
     setError('');
     try {
-      const payload = challenge ? { action: 'code', code, challenge } : { action: 'login', login, password };
       const result = await request<{ state: 'connected' | 'code_required'; challenge?: string }>({
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'login' ? { action } : { action, code, challenge }),
       }, '/api/cabinets/licard/auth');
+      setCode('');
       if (result.state === 'connected') {
-        setPassword('');
-        setCode('');
-        await motion.complete(onConnected);
+        setConfirmed(true);
+        onConnected();
       } else if (result.challenge) {
-        setPassword('');
         setChallenge(result.challenge);
       }
     } catch (reason) {
-      setCode('');
+      if (action === 'code') setCode('');
       setError(reason instanceof Error ? reason.message : 'Не удалось войти в ЛИКАРД.');
     } finally {
       busy.current = false;
-      setSubmitting(false);
+      setPending(null);
     }
   };
-  return <dialog ref={dialog} className="cabinet-dialog" aria-labelledby="licard-auth-title"
-    onCancel={event => { event.preventDefault(); close(); }}>
-    <form onSubmit={submit}>
-      <header><h2 id="licard-auth-title">Вход в ЛИКАРД</h2><button type="button" className="icon-button"
-        aria-label="Закрыть" onClick={close} disabled={submitting}><X size={20}/></button></header>
-      {challenge ? <>
-        <p className="cabinet-dialog-description">ЛИКАРД отправил код на указанную почту.</p>
-        <label>Код из письма<input required autoComplete="one-time-code" inputMode="numeric"
-          pattern="[0-9]{4,10}" maxLength={10} value={code} disabled={submitting} onChange={event => setCode(event.target.value)}/></label>
-        <button type="button" className="button cabinet-back" disabled={submitting}
-          onClick={() => { setChallenge(''); setCode(''); setError(''); }}>Запросить новый код</button>
-      </> : <>
-        <label>Электронная почта<input required type="email" autoComplete="off" maxLength={320}
-          value={login} disabled={submitting} onChange={event => setLogin(event.target.value)}/></label>
-        <label>Пароль ЛИКАРД<input required type="password" autoComplete="off" maxLength={4096}
-          value={password} disabled={submitting} onChange={event => setPassword(event.target.value)}/></label>
-      </>}
-      {error && <p className="shipment-error" role="alert">{error}</p>}
-      <footer><button type="button" className="button" onClick={close} disabled={submitting}>Отмена</button>
-        <button className="button primary" disabled={submitting} aria-busy={submitting}>{challenge ? 'Подтвердить вход' : 'Получить код'}</button></footer>
-    </form>
-  </dialog>;
+
+  if (confirmed) return <div className="cabinet-licard-signin" role="status">Вход подтверждён. Обновляем баланс…</div>;
+  return <div className="cabinet-licard-signin" aria-label="Вход в ЛИКАРД">
+    {challenge ? <>
+      <p role="status">ЛИКАРД отправил код на почту.</p>
+      <form onSubmit={event => { event.preventDefault(); void send('code'); }}>
+        <label>Код из письма<input ref={field} required autoComplete="one-time-code" inputMode="numeric"
+          pattern="[0-9]{4,10}" maxLength={10} value={code} disabled={!!pending}
+          onChange={event => setCode(event.target.value.replace(/[^0-9]/g, ''))}/></label>
+        <button className="button primary" type="submit" disabled={!!pending || code.length < 4}
+          aria-busy={pending === 'code'}>{pending === 'code' ? 'Проверяем…' : 'Подтвердить'}</button>
+      </form>
+      <button className="button cabinet-licard-resend" type="button" disabled={!!pending}
+        onClick={() => void send('login')}>{pending === 'login' ? 'Отправляем…' : 'Запросить код повторно'}</button>
+    </> : <button className="button primary" type="button" disabled={!!pending} aria-busy={pending === 'login'}
+      onClick={() => void send('login')}><LockKeyhole size={16}/>{pending === 'login' ? 'Запрашиваем код…' : 'Войти'}</button>}
+    {error && <p className="shipment-error" role="alert">{error}</p>}
+  </div>;
 }
 
 function ProviderMark({ provider }: { provider: CabinetProvider }) {
