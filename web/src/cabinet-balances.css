@@ -104,9 +104,6 @@
   background: #f8faf9;
 }
 .cabinet-licard-signin p { margin: 0; }
-.cabinet-licard-copy { display: grid; gap: 3px; font-size: 13px; line-height: 1.5; }
-.cabinet-licard-copy strong { font-size: 14px; font-weight: 600; }
-.cabinet-licard-copy p { color: var(--cabinet-muted); }
 .cabinet-licard-signin form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
 .cabinet-licard-signin label { display: grid; gap: 5px; font-size: 12px; font-weight: 500; }
 .cabinet-licard-signin input {
@@ -133,4 +130,14 @@
 @media (max-width: 620px) {
   .cabinet-licard-signin { margin-inline: 16px; }
   .cabinet-licard-signin.is-code { padding: 12px; }
+}
+
+@keyframes cabinet-balance-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .64; }
+}
+.cabinet-account-amount.is-refreshing { animation: cabinet-balance-pulse 1.65s ease-in-out infinite; }
+.cabinet-account-amount.is-updated { animation: cabinet-balance-pulse 1.05s ease-in-out; }
+@media (prefers-reduced-motion: reduce) {
+  .cabinet-account-amount.is-refreshing, .cabinet-account-amount.is-updated { animation: none; }
 }

@@ -17,15 +17,34 @@ export default function CabinetBalances() {
   const [data, setData] = useState<CabinetResponse | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true);
   const [editor, setEditor] = useState<CabinetProvider | 'choose' | null>(null), [notice, setNotice] = useState('');
   const [licardUpdating, setLicardUpdating] = useState(false);
+  const latest = useRef(new Map<string, string | undefined>());
+  const [justUpdated, setJustUpdated] = useState(() => new Set<string>());
   const [syncing, setSyncing] = useState<string[]>([]);
   const [organizationEditor, setOrganizationEditor] = useState<CabinetConnection | null>(null);
   const controller = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
     controller.current?.abort(); const pending = new AbortController(); controller.current = pending;
     setLoading(true); setError('');
-    try { const result = await request<CabinetResponse>({ signal: pending.signal }); if (!pending.signal.aborted) { setData(result); setError(''); if (!result.connections.some(connection => connection.provider === 'licard' && connection.state === 'auth_required')) setLicardUpdating(false); } }
-    catch (reason) { if (!pending.signal.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
-    finally { if (!pending.signal.aborted) setLoading(false); }
+    try {
+      const result = await request<CabinetResponse>({ signal: pending.signal });
+      if (pending.signal.aborted) return;
+      const updated = new Set(result.connections.filter(connection => {
+        const previous = latest.current.get(connection.id);
+        return connection.state === 'connected' && previous && connection.lastSuccessAt
+          && Date.parse(connection.lastSuccessAt) > Date.parse(previous);
+      }).map(connection => connection.id));
+      latest.current = new Map(result.connections.map(connection => [connection.id, connection.lastSuccessAt]));
+      setJustUpdated(updated);
+      setData(result);
+      setError('');
+      if (!result.connections.some(connection => connection.provider === 'licard' && connection.state === 'auth_required')) {
+        setLicardUpdating(false);
+      }
+    } catch (reason) {
+      if (!pending.signal.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.');
+    } finally {
+      if (!pending.signal.aborted) setLoading(false);
+    }
   }, []);
   useEffect(() => { void refresh(); const stop = watchVisibleRefresh(() => { void refresh(); }, 20_000); return () => { stop(); controller.current?.abort(); }; }, [refresh]);
   useEffect(() => {
@@ -62,12 +81,14 @@ export default function CabinetBalances() {
             const managed = connection.refreshMode === 'server_browser';
             const hasAccounts = !!connection.accounts?.length;
             const waitingForBalance = managed && provider.id === 'licard' && connection.state === 'auth_required' && licardUpdating;
+            const balanceMotion = waitingForBalance || syncing.includes(connection.id) ? ' is-refreshing'
+              : justUpdated.has(connection.id) ? ' is-updated' : '';
             const canSignIn = managed && provider.id === 'licard' && connection.state === 'auth_required' && data.canAuthorizeLicard && !waitingForBalance;
             return <section className="cabinet-connection" key={connection.id} aria-label={connection.label}>
               <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span role={waitingForBalance ? 'status' : undefined} className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{waitingForBalance ? 'Обновляем баланс' : connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : managed || automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
               {hasAccounts ? <div className="cabinet-accounts">{connection.accounts!.map(account => <div className="cabinet-account" key={account.id}>
                 <div className="cabinet-account-info"><strong>{account.organization || account.supplier}</strong>{account.organization && account.supplier !== account.organization && <span>{account.supplier}</span>}{managed && account.contract && <span>Договор {account.contract}</span>}</div>
-                <div className="cabinet-account-balance"><strong className={`cabinet-account-amount${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
+                <div className="cabinet-account-balance"><strong key={connection.lastSuccessAt} className={`cabinet-account-amount${balanceMotion}${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
 
               </div>)}</div> : <p className="cabinet-pending">{managed ? 'Серверное подключение ожидает первого успешного чтения.' : automatic(provider.id) ? 'Остатки ещё не получены. Первое обновление — в течение минуты после добавления.' : 'Автоматическое получение остатков пока недоступно. Доступ сохранён для настройки подключения.'}</p>}
               {canSignIn ? <LicardSignIn onConnected={() => {
@@ -137,10 +158,6 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
 
   return <div className={`cabinet-licard-signin${challenge ? ' is-code' : ''}`} aria-label="Вход в ЛИКАРД">
     {challenge ? <>
-      <div className="cabinet-licard-copy" role="status">
-        <strong>Подтвердите вход</strong>
-        <p>Код отправлен на почту.</p>
-      </div>
       <form onSubmit={event => { event.preventDefault(); void send('code'); }}>
         <label>Код из письма<input ref={field} required autoComplete="one-time-code" inputMode="numeric"
           pattern="[0-9]{4,10}" maxLength={10} value={code} disabled={!!pending}
