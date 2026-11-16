@@ -164,9 +164,9 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
   return <div className={`cabinet-licard-signin${challenge ? ' is-code' : ''}`} aria-label="Вход в ЛИКАРД">
     {challenge ? <>
       <form onSubmit={event => { event.preventDefault(); void send('code'); }}>
-        <label>Код из письма<input ref={field} required autoComplete="one-time-code" inputMode="numeric"
+        <input ref={field} required aria-label="Код из письма" placeholder="Код из письма" autoComplete="one-time-code" inputMode="numeric"
           pattern="[0-9]{4,10}" maxLength={10} value={code} disabled={!!pending}
-          onChange={event => setCode(event.target.value.replace(/[^0-9]/g, ''))}/></label>
+          onChange={event => setCode(event.target.value.replace(/[^0-9]/g, ''))}/>
         <button className="button primary" type="submit" disabled={!!pending || code.length < 4}
           aria-busy={pending === 'code'}>{pending === 'code' ? 'Проверяем…' : 'Подтвердить'}</button>
       </form>
