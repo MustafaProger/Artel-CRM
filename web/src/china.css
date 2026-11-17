@@ -4,3 +4,5 @@
 .china-page .china-table{table-layout:auto}
 .china-page .china-table th:first-child{width:1%;white-space:nowrap}
 .china-table .china-date{display:inline-block;white-space:nowrap}
+
+.china-page > .work-notice { margin-block-end: 16px; }

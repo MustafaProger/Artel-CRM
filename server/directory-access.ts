@@ -21,12 +21,14 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
     if (role === 'other') return hasDirectoryGrant(actor, 'oilDepots');
     return hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers');
   };
-  const company = (companyId: unknown, allowOwnedCard = true) => {
-    const entry = snapshot.companies.find(row => row.id === companyId);
-    if (!entry) return deny();
+  const canEditCompany = (entry: Company, allowOwnedCard: boolean) => {
     const roles = entry.roles.filter(isCompanyRole);
     const ownsCard = allowOwnedCard && (!administrator || customerAccess) && ownCompanies.has(entry.id);
-    if (!roles.length || (!ownsCard && !roles.every(role => roleGrant(role, entry)))) return deny();
+    return roles.length > 0 && (ownsCard || roles.every(role => roleGrant(role, entry)));
+  };
+  const company = (companyId: unknown, allowOwnedCard = true) => {
+    const entry = snapshot.companies.find(row => row.id === companyId);
+    if (!entry || !canEditCompany(entry, allowOwnedCard)) return deny();
     return entry;
   };
   const checkReferences = (input: Record<string, unknown>, previous?: object) => {
@@ -43,10 +45,14 @@ export function directoryMutation(actor: AccountUser, snapshot: Snapshot, kind: 
       const inn = typeof body.inn === 'string' ? body.inn.trim() : '';
       const name = typeof body.name === 'string' ? normalizeName(body.name) : '';
       const matches = snapshot.companies.filter(row => inn ? row.inn === inn : !row.inn && name && normalizeName(row.name) === name);
+      const addingCustomer = Array.isArray(body.roles) && body.roles.includes('customer');
       for (const match of matches) {
-        company(match.id, false);
         const assignment = snapshot.directories?.customerManagers?.find(row => row.companyId === match.id);
-        if (!administrator && assignment && assignment.managerId !== actor.managerId && Array.isArray(body.roles) && body.roles.includes('customer')) deny();
+        const assignedElsewhere = !administrator && assignment && assignment.managerId !== actor.managerId && addingCustomer;
+        if (!canEditCompany(match, false) || assignedElsewhere) {
+          const subject = addingCustomer && match.roles.includes('customer') ? 'Такой клиент уже есть' : 'Такая компания уже есть';
+          throw new ApiError(403, `${subject} в справочнике. Для работы с этой карточкой обратитесь к администратору.`);
+        }
       }
     }
     if (deleting) return body;

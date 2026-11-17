@@ -11,3 +11,5 @@
   .transport-settings-heading { align-items: flex-start; flex-direction: column; }
   .transport-settings-fields { grid-template-columns: minmax(0, 1fr); }
 }
+
+.transport-settings > .directory-notice { margin-block-start: 12px; }

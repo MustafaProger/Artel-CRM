@@ -96,7 +96,7 @@ try {
   await expect(duplicate.getByRole('alert')).toContainText('уже');
   await expect(duplicate).toBeVisible(); assert.equal((await snapshot()).companies.length, 4);
   await duplicate.getByRole('button', { name: 'Отмена', exact: true }).click();
-  await duplicate.getByRole('button', { name: 'Не сохранять', exact: true }).click();
+  await expect(duplicate).toHaveCount(0);
   check('True company duplicate stays in the editor with the server error and creates no extra card');
 
   const fresh = company('unused', 'QA Новый клиент', []), freshResponse = await save(await openNew(fresh));
@@ -130,7 +130,7 @@ try {
   await expect(registryDuplicate.getByRole('alert')).toContainText('уже');
   assert.equal((await snapshot()).companies.length, 6);
   await registryDuplicate.getByRole('button', { name: 'Отмена', exact: true }).click();
-  await registryDuplicate.getByRole('button', { name: 'Не сохранять', exact: true }).click();
+  await expect(registryDuplicate).toHaveCount(0);
   runtime.replaceMiddleware();
   await page.reload(); await expect(page.locator('.directory-record-count')).toHaveText('Записей: 5');
   await expect(page.getByRole('button', { name: `Редактировать: ${registryCompany.name}`, exact: true })).toBeVisible();
@@ -143,7 +143,7 @@ try {
   await expect(activeNameCollision.getByRole('alert')).toContainText('уже');
   assert.equal((await snapshot()).companies.length, 6);
   await activeNameCollision.getByRole('button', { name: 'Отмена', exact: true }).click();
-  await activeNameCollision.getByRole('button', { name: 'Не сохранять', exact: true }).click();
+  await expect(activeNameCollision).toHaveCount(0);
   check('An already-active customer without INN still blocks a same-name new INN duplicate');
   await page.screenshot({ path: resolve(output, 'customers-created.png'), fullPage: true });
 

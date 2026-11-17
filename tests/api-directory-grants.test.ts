@@ -104,9 +104,25 @@ test('directory grants: own customer creation binds the actor and cannot claim, 
     const body = { version: created.body.entry.version, name: 'Updated own client QA', roles: ['customer'], addresses: [] };
     assert.equal((await f.a('/api/directories/companies/' + id, 'PATCH', {...body,managerId:f.users[1].managerId})).status, 403);
     const changed = await f.a('/api/directories/companies/' + id, 'PATCH', body); assert.equal(changed.status, 200);
+    const foreign = await f.admin('/api/directories', 'POST', {
+      kind: 'companies', name: 'Private client QA', inn: '9900000017', roles: ['customer'],
+      managerId: f.users[1].managerId, addresses: [],
+    });
+    assert.equal(foreign.status, 201);
     const before = await readFile(f.store.path, 'utf8');
     assert.equal((await f.a('/api/directories', 'POST', {kind:'customerManagers',companyId:f.customers[1].id,managerId:f.users[0].managerId})).status, 403);
-    assert.equal((await f.a('/api/directories', 'POST', {kind:'companies',name:f.customers[1].name,roles:['customer'],managerId:f.users[0].managerId,addresses:[]})).status, 403);
+    for (const identity of [{ name: f.customers[1].name }, { name: 'Another name QA', inn: '9900000017' }]) {
+      const duplicate = await f.a('/api/directories', 'POST', {
+        kind: 'companies', ...identity, roles: ['customer'], managerId: f.users[0].managerId, addresses: [],
+      });
+      assert.equal(duplicate.status, 403);
+      assert.deepEqual(duplicate.body, { error: 'Такой клиент уже есть в справочнике. Для работы с этой карточкой обратитесь к администратору.' });
+    }
+    const forbidden = await f.a('/api/directories', 'POST', {
+      kind: 'companies', name: 'Unrelated supplier QA', roles: ['supplier'], addresses: [],
+    });
+    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.body.error, 'Нет права изменять эту запись справочника.');
     assert.equal((await f.a('/api/directories/customers/' + f.customers[1].id, 'DELETE', {version:1})).status, 403);
     assert.equal((await f.a('/api/companies/from-inn', 'POST', {inn:'7707083893'})).status, 403);
     assert.equal(await readFile(f.store.path, 'utf8'), before);
