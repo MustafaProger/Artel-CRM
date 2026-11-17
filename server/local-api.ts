@@ -723,6 +723,26 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return user;
       };
       const actor = authEnabled ? authorized(requestData) : null;
+      if (pathname === '/api/directories/export.xlsx' || pathname === '/api/shipments/export.xlsx') {
+        const exportActor = actor ?? authorized(requestData);
+        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается для этого маршрута.');
+        const directories = pathname === '/api/directories/export.xlsx';
+        const { directoryWorkbook, shipmentWorkbook, shipmentExportPeriod } = await import('./settings-export');
+        const period = directories ? null : shipmentExportPeriod(url.searchParams);
+        const full = currentSnapshot(base, requestData, !directories);
+        const scoped = scopeSnapshot(full, exportActor, directories ? 'directories' : undefined);
+        const workbook = period ? await shipmentWorkbook(scoped, period) : await directoryWorkbook(scoped, exportActor);
+        const filename = period ? `Артэль-отгрузки-${period.from}—${period.to}.xlsx` : 'Артэль-справочники.xlsx';
+        response.writeHead(200, {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': `attachment; filename="artel.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          'Content-Length': workbook.length,
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'Cross-Origin-Resource-Policy': 'same-origin',
+        });
+        return response.end(workbook);
+      }
       if (pathname === '/api/transport-pricing') {
         if (request.method !== 'PATCH') throw new ApiError(405, 'Метод не поддерживается.');
         const body = await jsonBody(request);

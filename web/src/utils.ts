@@ -20,7 +20,11 @@ export function downloadCsv(filename: string, headings: string[], rows: (string 
     return `"${s.replace(/"/g, '""')}"`
   }
   const csv = '\uFEFF' + [headings,...rows].map(row => row.map(cell).join(';')).join('\r\n')
-  const url = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8;'}))
+  downloadFile(filename, new Blob([csv], {type:'text/csv;charset=utf-8;'}))
+}
+
+export function downloadFile(filename: string, file: Blob) {
+  const url = URL.createObjectURL(file)
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

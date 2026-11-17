@@ -44,6 +44,7 @@
   "dependencies": {
     "@vercel/blob": "^2.8.0",
     "decimal.js": "^10.6.0",
+    "exceljs": "^4.4.0",
     "jose": "^6.2.12",
     "jpeg-js": "0.4.4",
     "lucide-react": "^0.468.0",

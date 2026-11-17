@@ -68,7 +68,7 @@ try {
     await expect(page.locator('.loading-state')).toHaveCount(0);
     if (route === 'shipments') await expect(page.getByTestId('shipment-row')).toHaveCount(1);
   };
-  const widths = [320, 361, 390, 701, 767, 768, 769, 800, 1100, 1440, 1920];
+  const widths = [375, 390, 701, 767, 768, 769, 800, 1100, 1440, 1920];
   for (const width of widths) {
     await page.setViewportSize({ width, height: 1000 });
     await visit('shipments');

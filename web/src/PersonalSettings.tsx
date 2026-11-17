@@ -4,6 +4,7 @@ import { canOverseeTripRequests, hasSection, type AccountUser } from './auth-mod
 import NotificationSources, { type NotificationSource } from './NotificationSources'
 import PersonalProfileSettings from './PersonalProfileSettings'
 import PushSettings from './PushSettings'
+import SettingsExports from './SettingsExports'
 import './personal-settings.css'
 
 export default function PersonalSettings({ user, onUserChanged, visible }: {
@@ -28,14 +29,17 @@ export default function PersonalSettings({ user, onUserChanged, visible }: {
       <h2 id="personal-profile-title" className="personal-profile-heading">Профиль</h2>
       {visible && <PersonalProfileSettings user={user} onUserChanged={onUserChanged}/>}
     </section>
-    <section className="panel personal-settings-card" aria-labelledby="personal-notifications-title" ref={notifications} tabIndex={-1}>
-      <header className="personal-settings-card-heading">
-        <span aria-hidden="true"><Bell size={20}/></span>
-        <h2 id="personal-notifications-title">Уведомления</h2>
-      </header>
-      {sources.length > 0 ? <PushSettings key={user.id} userId={user.id} kind={audience}>
-        <NotificationSources userId={user.id} sources={sources} visible={visible}/>
-      </PushSettings> : <p className="personal-settings-empty">Для вашей учётной записи пока нет доступных источников уведомлений.</p>}
-    </section>
+    <div className="personal-settings-secondary">
+      <section className="panel personal-settings-card" aria-labelledby="personal-notifications-title" ref={notifications} tabIndex={-1}>
+        <header className="personal-settings-card-heading">
+          <span aria-hidden="true"><Bell size={20}/></span>
+          <h2 id="personal-notifications-title">Уведомления</h2>
+        </header>
+        {sources.length > 0 ? <PushSettings key={user.id} userId={user.id} kind={audience}>
+          <NotificationSources userId={user.id} sources={sources} visible={visible}/>
+        </PushSettings> : <p className="personal-settings-empty">Для вашей учётной записи пока нет доступных источников уведомлений.</p>}
+      </section>
+      {visible && <SettingsExports key={user.id} directories={hasSection(user, 'directories')} shipments={hasSection(user, 'shipments')}/>}
+    </div>
   </div>
 }

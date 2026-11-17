@@ -1,3 +1,4 @@
+import type { DirectoryData } from './model';
 import type { AvatarPresetId } from './avatar-model';
 import { permissionSections } from './page-catalog';
 
@@ -55,3 +56,6 @@ export const availableDirectoryTabs = (user: AccountUser) => {
   const sharedTabs = sharedDirectories.filter(row => row.id !== 'paymentForms' && hasDirectoryGrant(user, row.id)).map(row => row.id);
   return [...customerTabs, ...sharedTabs];
 };
+
+export const hasScopedSupplierDirectory = (data: DirectoryData) =>
+  !!data.directories?.currentEmployeeId && data.companies.some(company => !company.directoryArchived && company.roles.includes('supplier'));

@@ -9,7 +9,7 @@ import OperatorServiceBadge from './OperatorServiceBadge'
 import { useDialogMotion } from './useDialogMotion'
 import ScrollableSegments from './ScrollableSegments'
 import RoleFilter, { type RoleFilterValue } from './RoleFilter'
-import { roleNames, type AccountRole, type AccountUser } from './auth-model'
+import { hasScopedSupplierDirectory, roleNames, type AccountRole, type AccountUser } from './auth-model'
 import { apiFetch as fetch, fetchDirectoryData, isLogisticsWorkspace } from './workspace-api'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
@@ -41,8 +41,7 @@ type DirectoryRow = {id:string;name:string;detail:string;version?:number;manager
 
 export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=true,canManageTab,canViewAccounts=false,initialTab='customers',allowedTabs,hideTabs=false}:{data:DirectoryData;onChanged:()=>void|Promise<void>;canManage?:boolean;canManageTab?:(tab:DirectoryTab)=>boolean;canViewAccounts?:boolean;initialTab?:DirectoryTab;allowedTabs?:readonly DirectoryTab[];hideTabs?:boolean}) {
   const hasScopedSuppliers = Boolean(
-    !hideTabs && allowedTabs && !allowedTabs.includes('suppliers') && data.directories?.currentEmployeeId &&
-    data.companies.some(company => !company.directoryArchived && company.roles.includes('supplier'))
+    !hideTabs && allowedTabs && !allowedTabs.includes('suppliers') && hasScopedSupplierDirectory(data)
   )
   const [tab,setTab] = useState<Tab>(() => allowedTabs?.includes(initialTab) === false ? allowedTabs[0] ?? initialTab : initialTab), [query,setQuery] = useState(''), [page,setPage] = useState(0)
   useEffect(() => {

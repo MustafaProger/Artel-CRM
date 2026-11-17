@@ -68,3 +68,5 @@
 @media(min-width:761px){.sidebar-collapsed .sidebar{width:76px;padding-inline:12px}.sidebar-collapsed .workspace-main{margin-left:76px}.sidebar-collapsed .sidebar-heading{flex-direction:column;gap:17px}.sidebar-collapsed .brand-name,.sidebar-collapsed .nav-label,.sidebar-collapsed .nav-item>span,.sidebar-collapsed .nav-item>small{display:none}.sidebar-collapsed .nav-item{justify-content:center;padding:14px 0}.sidebar-collapsed .sidebar nav+nav{margin-top:18px}.sidebar-collapsed .sidebar-heading .brand{flex:none}.sidebar-collapsed .toast{left:calc(50% + 38px)}}
 @media(max-width:760px){.sidebar-scrim{display:block}.sidebar-toggle{display:none!important}.sidebar-mobile-close{display:inline-grid!important}.topbar{height:64px}.sidebar-heading .brand{font-size:24px}}
 @media(max-width:460px){.global-search input{width:98px}.global-search-submit{width:30px;min-width:30px}.global-search kbd{display:none}.breadcrumb{gap:3px}.topbar{gap:4px}}
+
+html, body, #root { min-width: 375px; }

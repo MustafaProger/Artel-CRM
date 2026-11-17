@@ -154,7 +154,7 @@ try {
     if (!built) { devices = (await store.read(source)).push.devices.filter(d => d.endpoint === fake.endpoint); assert.equal(devices.length, 0); } assert.equal(deletion, 1); assert.equal(explicit, 1);
 
     // Desktop, narrow mobile, drawer-only shipments and collapsed sidebar.
-    for (const width of [320,390,600,760,761,1024,1470,1920]) {
+    for (const width of [375,390,600,760,761,1024,1470,1920]) {
       await page.setViewportSize({ width, height: 950 });
       for (const section of ['work','invoices','operator','shipments']) {
         if (section === 'operator') {
@@ -166,7 +166,7 @@ try {
           assert.ok(Math.abs(bb[0].top-bb[1].top)<1 && bb[1].left>bb[0].right, 'Statuses must share one horizontal row');
           await statuses.nth(1).click(); await expect(statuses.nth(1)).toHaveAttribute('aria-pressed','true');
           await statuses.nth(0).click();
-          if ([320,390,600,1470].includes(width)) await page.screenshot({path:resolve(output,`${engine}-operator-status-${width}.png`)});
+          if ([375,390,600,1470].includes(width)) await page.screenshot({path:resolve(output,`${engine}-operator-status-${width}.png`)});
         }
         await open(section);
         await expect(page.locator('.workspace-main .driver-notification-button')).toHaveCount(0);
@@ -184,7 +184,7 @@ try {
           await expect(notifications).toBeFocused();
         }
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
-        if ([320,1470].includes(width) && section==='operator') await page.screenshot({path:resolve(output,`${engine}-settings-${width}.png`), fullPage: true});
+        if ([375,1470].includes(width) && section==='operator') await page.screenshot({path:resolve(output,`${engine}-settings-${width}.png`), fullPage: true});
         await openMenu();
         const boxes = await page.locator('.sidebar-user-controls').evaluate(el => { const r=el.getBoundingClientRect(); return [...el.querySelectorAll('.sidebar-account-action')].map(b=>{const q=b.getBoundingClientRect();return {width:q.width,height:q.height,fits:q.left>=r.left&&q.right<=r.right+1};}); });
         assert.ok(boxes.every(b=>b.width>=40&&b.height>=40&&b.fits));
