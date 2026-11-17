@@ -424,6 +424,18 @@ test('process timelines follow current request ownership while whole-trip data a
     assert.equal(completed.stage, 'completed');
     assert.equal(completed.completedAt, finished.body.execution.completed.at);
     assert.deepEqual(completed.stops[0].event, { at: finished.body.execution.completed.at });
+
+    await f.store.mutate(f.source, data => {
+      data.tripProcessHiddenIds = [full.id, mixed.id];
+      return { changed: true, result: null };
+    });
+    const hidden = (await f.request(path, 'GET', undefined, f.one.cookie)).body;
+    assert.deepEqual(hidden.trips.map((row: ShipmentTrip) => row.id), [f.tripId]);
+    assert.deepEqual(hidden.sharedTrips.map((row: { id: string }) => row.id), [single.id]);
+    assert.deepEqual((await f.request('/api/shipment-trips', 'GET', undefined, f.one.cookie)).body.trips, ordinary.trips);
+    assert.equal((await f.request(`/api/shipment-trips/${full.id}`, 'GET', undefined, f.one.cookie)).status, 200);
+    const next = await createTrip([await f.create(8)], ['manager']);
+    assert.ok((await f.request(path, 'GET', undefined, f.one.cookie)).body.trips.some((row: ShipmentTrip) => row.id === next.id));
   } finally { await f.close(); }
 });
 

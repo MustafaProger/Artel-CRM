@@ -1310,9 +1310,18 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
             return { ...trip, createdAt: creator?.createdAt ?? trip.createdAt, createdByName: names.get(creator?.actorId ?? ''), execution: readTripExecution(fullSnapshot, stored, id), workflowIssues: readTripWorkflowIssues(stored, id, { snapshot: fullSnapshot, trip: getShipmentTrip(fullSnapshot, id, numbers), config }) };
           }).sort((a,b) => (b.fields.date ?? '').localeCompare(a.fields.date ?? '') || a.id.localeCompare(b.id));
           const automation = automaticSigningCapability(options.sabyClient?.config ?? sabyConfigFromEnv());
-          const sharedTrips = currentActor && !logistics && url.searchParams.get('view') === 'process'
+          const processView = url.searchParams.get('view') === 'process';
+          const sharedTrips = currentActor && !logistics && processView
             ? readSharedTripTimelines(fullSnapshot, stored, currentActor, numbers, new Set(trips.map(trip => trip.id)))
             : undefined;
+          if (processView && stored.tripProcessHiddenIds?.length) {
+            const hidden = new Set(stored.tripProcessHiddenIds);
+            return write(response, 200, JSON.stringify({
+              trips: trips.filter(trip => !hidden.has(trip.id)),
+              sharedTrips: sharedTrips?.filter(trip => !hidden.has(trip.id)),
+              automation,
+            }));
+          }
           return write(response, 200, JSON.stringify({ trips, automation, sharedTrips }));
         }
         if (tripIdMatch) {

@@ -56,6 +56,7 @@ export interface OperationsData {
   paymentAllocations?: PaymentAllocation[];
   tripExchangeControls?: Record<string, TripExchangeControl>;
   tripExecutions?: Record<string, StoredTripExecution>;
+  tripProcessHiddenIds?: string[];
   driverTripProgress?: Record<string, DriverTripProgress>;
   tripCreateRequests?: Record<string, { tripId: string; fingerprint: string; actorId: string | null; createdAt?: string }>;
   tripRequests?: Record<string, TripRequest>;
@@ -89,6 +90,10 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 export function validate(data: unknown, sourceSha256: string): asserts data is OperationsData {
   if (!object(data) || (data.schemaVersion !== 1 && data.schemaVersion !== 2) || data.sourceSha256 !== sourceSha256 || !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 || !object(data.shipments) || !Array.isArray(data.companies)) throw new StoreError('Invalid operations store');
   if (data.sourceOperationsCleared !== undefined && typeof data.sourceOperationsCleared !== 'boolean') throw new StoreError('Invalid operations reset');
+  if (data.tripProcessHiddenIds !== undefined && (!strings(data.tripProcessHiddenIds) ||
+    data.tripProcessHiddenIds.some(id => !id.trim()) || new Set(data.tripProcessHiddenIds).size !== data.tripProcessHiddenIds.length)) {
+    throw new StoreError('Invalid trip process exclusions');
+  }
   if (data.tripNumbers !== undefined) {
     if (!object(data.tripNumbers) || Object.entries(data.tripNumbers).some(([id, value]) => !id || !Number.isSafeInteger(value) || Number(value) < 1) || new Set(Object.values(data.tripNumbers)).size !== Object.keys(data.tripNumbers).length) throw new StoreError('Invalid trip numbers');
   }
