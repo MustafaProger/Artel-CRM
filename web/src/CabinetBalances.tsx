@@ -16,7 +16,7 @@ const automatic = (provider: CabinetProvider) => ['glopro', 'natcar', 'rosneft']
 export default function CabinetBalances() {
   const [data, setData] = useState<CabinetResponse | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true);
   const [editor, setEditor] = useState<CabinetProvider | 'choose' | null>(null), [notice, setNotice] = useState('');
-  const [licardUpdating, setLicardUpdating] = useState(false);
+  const [licardUpdate, setLicardUpdate] = useState<{ lastAttemptAt?: string } | null>(null);
   const latest = useRef(new Map<string, string | undefined>());
   const [justUpdated, setJustUpdated] = useState(() => new Set<string>());
   const [syncing, setSyncing] = useState<string[]>([]);
@@ -37,21 +37,38 @@ export default function CabinetBalances() {
       setJustUpdated(updated);
       setData(result);
       setError('');
-      if (!result.connections.some(connection => connection.provider === 'licard' && connection.state === 'auth_required')) {
-        setLicardUpdating(false);
-      }
+      const licard = result.connections.find(connection => connection.provider === 'licard' && connection.refreshMode === 'server_browser');
+      setLicardUpdate(update => {
+        if (!update || !licard || licard.state === 'connected') return null;
+        if (licard.state === 'error' && licard.lastAttemptAt !== update.lastAttemptAt) return null;
+        return update;
+      });
     } catch (reason) {
       if (!pending.signal.aborted) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.');
     } finally {
-      if (!pending.signal.aborted) setLoading(false);
+      if (controller.current === pending) {
+        controller.current = null;
+        if (!pending.signal.aborted) setLoading(false);
+      }
     }
   }, []);
   useEffect(() => { void refresh(); const stop = watchVisibleRefresh(() => { void refresh(); }, 20_000); return () => { stop(); controller.current?.abort(); }; }, [refresh]);
   useEffect(() => {
-    if (!licardUpdating) return;
-    const timeout = window.setTimeout(() => setLicardUpdating(false), 45_000);
-    return () => window.clearTimeout(timeout);
-  }, [licardUpdating]);
+    if (!licardUpdate) return;
+    let cancelled = false;
+    let retry: number | undefined;
+    const poll = async () => {
+      if (document.visibilityState === 'visible' && !controller.current) await refresh();
+      if (!cancelled) retry = window.setTimeout(poll, 1_000);
+    };
+    const timeout = window.setTimeout(() => setLicardUpdate(null), 45_000);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retry);
+      window.clearTimeout(timeout);
+    };
+  }, [licardUpdate, refresh]);
   const synchronize = async (id: string) => {
     if (syncing.includes(id)) return;
     setSyncing(current => [...current, id]); setError('');
@@ -80,21 +97,24 @@ export default function CabinetBalances() {
             const stale = cabinetConnectionStale(connection);
             const managed = connection.refreshMode === 'server_browser';
             const hasAccounts = !!connection.accounts?.length;
-            const waitingForBalance = managed && provider.id === 'licard' && connection.state === 'auth_required' && licardUpdating;
-            const balanceMotion = waitingForBalance || syncing.includes(connection.id) ? ' is-refreshing'
+            const waitingForBalance = managed && provider.id === 'licard' && licardUpdate !== null;
+            const balanceMotion = syncing.includes(connection.id) ? ' is-refreshing'
               : justUpdated.has(connection.id) ? ' is-updated' : '';
             const canSignIn = managed && provider.id === 'licard' && connection.state === 'auth_required' && data.canAuthorizeLicard && !waitingForBalance;
             return <section className="cabinet-connection" key={connection.id} aria-label={connection.label}>
-              <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span role={waitingForBalance ? 'status' : undefined} className={`cabinet-status ${hasAccounts && !stale ? 'is-current' : 'is-pending'}`}>{waitingForBalance ? 'Обновляем баланс' : connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : managed || automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
+              <div className="cabinet-connection-heading"><span>Кабинет · {connection.label}</span><span role={managed && provider.id === 'licard' ? 'status' : undefined} className={`cabinet-status ${hasAccounts && !stale && !waitingForBalance ? 'is-current' : 'is-pending'}`}>{waitingForBalance ? 'Обновляем баланс' : connection.state === 'auth_required' ? 'Требуется вход' : hasAccounts ? stale ? 'Данные требуют обновления' : 'Остатки обновлены' : managed || automatic(provider.id) ? 'Ожидаем обновление' : 'Доступ сохранён'}</span></div>
               {hasAccounts ? <div className="cabinet-accounts">{connection.accounts!.map(account => <div className="cabinet-account" key={account.id}>
                 <div className="cabinet-account-info"><strong>{account.organization || account.supplier}</strong>{account.organization && account.supplier !== account.organization && <span>{account.supplier}</span>}{managed && account.contract && <span>Договор {account.contract}</span>}</div>
-                <div className="cabinet-account-balance"><strong key={connection.lastSuccessAt} className={`cabinet-account-amount${balanceMotion}${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong><span>{account.balanceLabel ?? 'Баланс р/с'}</span>{managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}{account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}</div>
+                <div className={`cabinet-account-balance${waitingForBalance ? ' is-loading' : ''}`} aria-busy={waitingForBalance || undefined}>
+                  <strong key={connection.lastSuccessAt} className={`cabinet-account-amount${balanceMotion}${account.amountMinor < 0 ? ' is-negative' : ''}`}>{money(account.amountMinor)}</strong>
+                  <span>{account.balanceLabel ?? 'Баланс р/с'}</span>
+                  {managed && account.details?.map(detail => <span key={detail.label}>{detail.label}: {money(detail.amountMinor)}</span>)}
+                  {account.sourceUpdatedAt && <span>Данные {provider.name} на {date(account.sourceUpdatedAt)} МСК</span>}
+                </div>
 
               </div>)}</div> : <p className="cabinet-pending">{managed ? 'Серверное подключение ожидает первого успешного чтения.' : automatic(provider.id) ? 'Остатки ещё не получены. Первое обновление — в течение минуты после добавления.' : 'Автоматическое получение остатков пока недоступно. Доступ сохранён для настройки подключения.'}</p>}
-              {canSignIn ? <LicardSignIn onConnected={() => {
-                setLicardUpdating(true);
-                void refresh();
-              }}/> : !waitingForBalance && connection.error && <p className="cabinet-sync-error" role="status">{connection.error}</p>}
+              {canSignIn ? <LicardSignIn onConnected={() => setLicardUpdate({ lastAttemptAt: connection.lastAttemptAt })}/>
+                : !waitingForBalance && connection.error && <p className="cabinet-sync-error" role="status">{connection.error}</p>}
               <footer className={`cabinet-connection-footer${managed ? ' is-managed' : ''}`}><span>{connection.lastSuccessAt ? `${managed ? 'Прочитано в кабинете' : stale ? 'Последнее обновление' : 'Обновлено'} ${date(connection.lastSuccessAt)} МСК` : 'Успешных обновлений пока нет'}</span><div>
                 {provider.id === 'natcar' && <button className="button cabinet-organizations-button" disabled={syncing.includes(connection.id)} onClick={() => setOrganizationEditor(connection)}><Building2 size={16}/>Организации</button>}
                 {managed && <span className="cabinet-auto-refresh">Автообновление каждые 5 минут</span>}
@@ -178,7 +198,7 @@ function LicardSignIn({ onConnected }: { onConnected: () => void }) {
           onClick={() => void send('resend')}>{pending === 'resend' ? 'Отправляем…' : 'Отправить код ещё раз'}</button>}
       </div>
     </> : <button className="button primary" type="button" disabled={!!pending} aria-busy={pending === 'login'}
-      onClick={() => void send('login')}><LockKeyhole size={16}/>{pending === 'login' ? 'Запрашиваем код…' : 'Войти'}</button>}
+      onClick={() => void send('login')}><LockKeyhole size={16}/>{pending === 'login' ? 'Входим…' : 'Войти'}</button>}
     {error && <p className="shipment-error" role="alert">{error}</p>}
   </div>;
 }

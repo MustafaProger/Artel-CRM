@@ -21,6 +21,23 @@ def code_response(now):
     return {'state': 'code_required', 'challenge': challenge['token'], 'retryAfterSeconds': remaining}
 
 
+def browser_state(action, fields=None, timeout=28):
+    result = subprocess.run(
+        ['docker', 'exec', '-i', 'artel-licard-browser', 'node', '/state/worker/collect.mjs', action],
+        input=json.dumps(fields) if fields is not None else '', text=True, capture_output=True, timeout=timeout, check=True,
+    )
+    return json.loads(result.stdout)['state']
+
+
+def finish_login():
+    global challenge
+    challenge = None
+    # A balance read already triggered by the timer may have seen the login page.
+    subprocess.run(['systemctl', 'restart', '--no-block', 'artel-licard-balance.service'],
+                   timeout=3, check=True, capture_output=True)
+    return {'state': 'connected'}
+
+
 def authorize(request):
     global challenge, last_code_at
     now = time.monotonic()
@@ -35,7 +52,14 @@ def authorize(request):
             if action == 'resend' and request.get('challenge') != challenge['token']:
                 return {'state': 'expired'}
             if action == 'login' or now - last_code_at < RESEND_DELAY:
-                return code_response(now)
+                state = browser_state('status', timeout=5)
+                if state == 'connected':
+                    return finish_login()
+                if state == 'code_required':
+                    return code_response(time.monotonic())
+                if state not in ('expired', 'login_required'):
+                    return {'state': 'error'}
+                challenge = None
         if last_code_at is not None and now - last_code_at < RESEND_DELAY:
             return {'state': 'retry_later'}
         credential_dir = os.environ.get('CREDENTIALS_DIRECTORY')
@@ -64,20 +88,13 @@ def authorize(request):
         return {'state': 'error'}
 
     browser_action = 'login' if action == 'resend' else action
-    result = subprocess.run(
-        ['docker', 'exec', '-i', 'artel-licard-browser', 'node', '/state/worker/collect.mjs', browser_action],
-        input=json.dumps(fields), text=True, capture_output=True, timeout=28, check=True,
-    )
-    state = json.loads(result.stdout)['state']
+    state = browser_state(browser_action, fields)
     if state == 'code_required' and browser_action == 'login':
         last_code_at = time.monotonic()
         challenge = {'actor': actor, 'token': secrets.token_urlsafe(24), 'expires': last_code_at + 900, 'attempts': 0}
         return code_response(last_code_at)
     if state == 'connected':
-        challenge = None
-        # systemd also serializes refreshes started by the timer.
-        subprocess.run(['systemctl', 'start', '--no-block', 'artel-licard-balance.service'],
-                       timeout=3, check=True, capture_output=True)
+        return finish_login()
     if state == 'expired':
         challenge = None
     return {'state': state}

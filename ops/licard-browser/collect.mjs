@@ -57,14 +57,18 @@ async function readDashboard() {
     const read = () => evaluate(inspectDashboard, contract);
     const initial = await read();
     if (initial?.auth) return { state: 'auth_required' };
-    await call('Page.enable');
-    if (url === origin + '/') await call('Page.reload', { ignoreCache: true });
-    else await call('Page.navigate', { url: origin + '/' });
+    const waitingForInitialBalance = initial?.authorized && parseRubles(initial.amount ?? '') === null;
+    if (!waitingForInitialBalance) {
+      await call('Page.enable');
+      if (url === origin + '/') await call('Page.reload', { ignoreCache: true });
+      else await call('Page.navigate', { url: origin + '/' });
+    }
     for (let attempt = 0; attempt < 30; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 500));
       const view = await read().catch(() => null);
       if (view?.auth) return { state: 'auth_required' };
-      const amountMinor = view?.loadedAt !== initial?.loadedAt && view?.amount ? parseRubles(view.amount) : null;
+      const fresh = waitingForInitialBalance || view?.loadedAt !== initial?.loadedAt;
+      const amountMinor = fresh && view?.amount ? parseRubles(view.amount) : null;
       if (amountMinor !== null) return { state: 'connected', amountMinor };
     }
     return { state: 'error' };
@@ -78,11 +82,12 @@ function inspectDashboard(expectedContract) {
   const text = (document.body?.innerText ?? '').split('\n').map(line => line.trim());
   const contracts = new Set(text.filter(line => /^RU\d+$/.test(line)));
   if (contracts.size !== 1 || !contracts.has(expectedContract)) return {};
+  const dashboard = { authorized: true, loadedAt: performance.timeOrigin };
   const titles = [...document.querySelectorAll('h5')].filter(heading => heading.innerText.trim() === 'Баланс');
-  if (titles.length !== 1) return {};
+  if (titles.length !== 1) return dashboard;
   const lines = titles[0].parentElement.parentElement.innerText.split('\n').map(line => line.trim()).filter(Boolean);
-  if (lines[0] === 'Баланс' && lines[2] === 'Пополнить баланс') return { amount: lines[1], loadedAt: performance.timeOrigin };
-  return {};
+  if (lines[0] === 'Баланс' && lines[2] === 'Пополнить баланс') return { ...dashboard, amount: lines[1] };
+  return dashboard;
 }
 
 function authPage() {
@@ -91,7 +96,8 @@ function authPage() {
   const password = document.querySelector('input[type=password]');
   const inputs = [...document.querySelectorAll('input:not([type=hidden])')].filter(input => input.getClientRects().length);
   const code = text.includes('Подтверждение входа') && !password && inputs.length === 1;
-  return { password: !!password, code, expired: /срок действия кода ист[её]к/i.test(text) };
+  return { password: !!password, code, expired: /срок действия кода ист[её]к/i.test(text),
+    invalidCode: code && /неверный код/i.test(text) };
 }
 
 function fillAuthPage({ login, password, code }) {
@@ -134,10 +140,22 @@ function submitAuthPage() {
   return true;
 }
 
+async function readAuthorization() {
+  return withLicardTab(async ({ evaluate }) => {
+    const dashboard = await evaluate(inspectDashboard, contract);
+    if (dashboard?.authorized) return { state: 'connected' };
+    const view = await evaluate(authPage);
+    if (view?.expired) return { state: 'expired' };
+    if (view?.code) return { state: 'code_required' };
+    if (view?.password) return { state: 'login_required' };
+    return { state: 'error' };
+  });
+}
+
 async function authorize(action, fields) {
   return withLicardTab(async ({ call, evaluate }) => {
     const dashboard = await evaluate(inspectDashboard, contract);
-    if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
+    if (dashboard?.authorized) return { state: 'connected' };
     if (action === 'login') {
       const view = await evaluate(authPage);
       if (!view?.password) {
@@ -146,7 +164,7 @@ async function authorize(action, fields) {
           await new Promise(resolve => setTimeout(resolve, 500));
           if ((await evaluate(authPage).catch(() => null))?.password) break;
           const dashboard = await evaluate(inspectDashboard, contract).catch(() => null);
-          if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
+          if (dashboard?.authorized) return { state: 'connected' };
         }
       }
     } else {
@@ -154,15 +172,18 @@ async function authorize(action, fields) {
       if (!view?.code || view.expired) return { state: 'expired' };
     }
     if (!await evaluate(fillAuthPage, fields) || !await evaluate(submitAuthPage)) return { state: 'error' };
-    for (let attempt = 0; attempt < 20; attempt++) {
+    // The cabinet and the balance render separately after authentication.
+    for (let attempt = 0; attempt < 26; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 500));
       const view = await evaluate(authPage).catch(() => null);
       if (action === 'login' && view?.code && !view.expired) return { state: 'code_required' };
       if (view?.expired) return { state: 'expired' };
       const dashboard = await evaluate(inspectDashboard, contract).catch(() => null);
-      if (dashboard?.amount && parseRubles(dashboard.amount) !== null) return { state: 'connected' };
+      if (dashboard?.authorized) return { state: 'connected' };
     }
-    return { state: action === 'login' ? 'login_failed' : 'invalid_code' };
+    const view = await evaluate(authPage).catch(() => null);
+    if (action === 'code' && view?.invalidCode) return { state: 'invalid_code' };
+    return { state: 'auth_timeout' };
   });
 }
 
@@ -175,6 +196,8 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
       let input = '';
       for await (const chunk of process.stdin.setEncoding('utf8')) input += chunk;
       result = await authorize(action, JSON.parse(input));
+    } else if (action === 'status') {
+      result = await readAuthorization();
     } else {
       result = await readDashboard();
     }

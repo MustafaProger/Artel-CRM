@@ -45,6 +45,8 @@ export async function authorizeLicard(
   if (result?.state === 'busy') throw new ApiError(409, 'Другой администратор уже подтверждает вход в ЛИКАРД.');
   if (result?.state === 'expired') throw new ApiError(410, 'Срок действия запроса истёк. Запросите новый код.');
   if (result?.state === 'invalid_code') throw new ApiError(422, 'ЛИКАРД не принял код. Проверьте код из последнего письма.');
-  if (result?.state === 'login_failed') throw new ApiError(422, 'ЛИКАРД не подтвердил сохранённые данные для входа. Обратитесь к администратору.');
+  if (result?.state === 'auth_timeout' || result?.state === 'login_failed') {
+    throw new ApiError(504, 'ЛИКАРД не завершил вход вовремя. Подождите немного и повторите попытку.');
+  }
   throw new ApiError(502, 'Не удалось подтвердить вход в ЛИКАРД.');
 }

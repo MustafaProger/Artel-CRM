@@ -13,7 +13,7 @@ test('balance precision for both Licard formats', () => {
   ]) assert.equal(parseRubles(text), expected);
 });
 
-test('browser login asks for a code and resumes contract balance after confirmation', { timeout: 35_000 }, async () => {
+async function checkBrowserLogin(requiresCode) {
   const listener = net.createServer();
   await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
   const port = listener.address().port;
@@ -34,6 +34,7 @@ test('browser login asks for a code and resumes contract balance after confirmat
     processHandle.stdin.end(fields ? JSON.stringify(fields) : '');
   });
   try {
+    let dashboardLoads = 0;
     const context = await browser.newContext();
     await context.route('**/*', route => {
       const url = new URL(route.request().url());
@@ -44,6 +45,10 @@ test('browser login asks for a code and resumes contract balance after confirmat
         document.querySelector('button').onclick = () => {
           if (document.querySelector('input[type=text]').value !== 'fixture@example.org' ||
               document.querySelector('input[type=password]').value !== 'test-password') return;
+          if (!${requiresCode}) {
+            location.assign('/');
+            return;
+          }
           document.querySelector('main').innerHTML = '<h1>Подтверждение входа</h1><input placeholder="Код подтверждения"><button disabled>Войти</button>';
           document.querySelector('input').oninput = () => { document.querySelector('button').disabled = false; };
           document.querySelector('button').onclick = () => {
@@ -51,17 +56,46 @@ test('browser login asks for a code and resumes contract balance after confirmat
           };
         };
         </script>`;
-      const dashboard = '<p>RU260007461</p><section><div><h5>Баланс</h5></div><p>227,106.1 ₽</p><button>Пополнить баланс</button><p>Последний платеж 200,000 ₽</p></section>';
+      const amount = '<section><div><h5>Баланс</h5></div><p>227,106.1 ₽</p><button>Пополнить баланс</button><p>Последний платеж 200,000 ₽</p></section>';
+      const delayedAmount = `<script>
+        window.renderBalance = () => document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(amount)});
+      </script>`;
+      const dashboard = '<p>RU260007461</p>' + (requiresCode ? amount : delayedAmount);
+      if (url.pathname === '/') dashboardLoads += 1;
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: url.pathname === '/auth' ? auth : url.pathname === '/loading' ? '<main>Загрузка</main>' : dashboard });
     });
     const page = await context.newPage();
     await page.goto('https://lk.licard.com/auth');
     assert.deepEqual(await worker(), { state: 'auth_required' });
+    assert.deepEqual(await worker('status'), { state: 'login_required' });
     await page.goto('https://lk.licard.com/loading');
-    assert.deepEqual(await worker('login', { login: 'fixture@example.org', password: 'test-password' }), { state: 'code_required' });
-    assert.deepEqual(await worker('code', { code: '001234' }), { state: 'connected' });
-    assert.deepEqual(await worker(), { state: 'connected', amountMinor: 22710610 });
+    const loginState = await worker('login', { login: 'fixture@example.org', password: 'test-password' });
+    if (requiresCode) {
+      assert.deepEqual(loginState, { state: 'code_required' });
+      assert.deepEqual(await worker('status'), { state: 'code_required' });
+      assert.deepEqual(await worker('code', { code: '001234' }), { state: 'connected' });
+    } else {
+      assert.deepEqual(loginState, { state: 'connected' });
+    }
+    assert.deepEqual(await worker('status'), { state: 'connected' });
+    const refresh = worker();
+    if (!requiresCode) {
+      assert.equal(await page.getByRole('heading', { name: 'Баланс' }).count(), 0);
+      // Keep the initial balance pending while the worker starts reading the cabinet.
+      await new Promise(resolve => setTimeout(resolve, 750));
+      await page.evaluate(() => window.renderBalance());
+    }
+    assert.deepEqual(await refresh, { state: 'connected', amountMinor: 22710610 });
+    assert.equal(dashboardLoads, requiresCode ? 2 : 1);
   } finally {
     await browser.close();
   }
+}
+
+test('browser login opens and refreshes the balance without a code when Licard accepts the password', { timeout: 35_000 }, async () => {
+  await checkBrowserLogin(false);
+});
+
+test('browser login asks for a code and refreshes the balance after confirmation', { timeout: 35_000 }, async () => {
+  await checkBrowserLogin(true);
 });
