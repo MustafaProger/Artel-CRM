@@ -37,7 +37,7 @@ import { readSharedTripTimelines } from './trip-process';
 import { driverTripConfirmation, readDriverTrips, recordDriverTripAction } from './driver-trips';
 import { logisticsCompany, logisticsContext, requireLogisticsDirectoryInput, requireLogisticsDirectoryTarget, requireLogisticsRoute } from './logistics-api';
 import { scopeSnapshot, ownsShipment, checkShipmentWrite, ownShipmentInput, requireOwnedShipment, requireWholeTrip } from './auth-scope';
-import { apiSection, requireDirectoryMaintenance, requireSection, requireTripSection } from './permissions';
+import { apiSection, requireDirectoryMaintenance, requireSection, requireShipmentMutation, requireTripSection } from './permissions';
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
@@ -719,6 +719,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           if (request.headers['x-artel-account'] !== undefined && request.headers['x-artel-account'] !== user.id) throw new ApiError(401, 'Пользователь изменился. Обновите страницу.');
         }
         if (section && !(user.role === 'driver' && pathname.startsWith('/api/push/')) && !(logistics && pathname === '/api/directories' && request.method === 'GET')) requireSection(user, section);
+        if (/^\/api\/(shipments|shipment-trips)(\/[^/]+)?$/.test(pathname)) requireShipmentMutation(user, request.method ?? '');
         return user;
       };
       const actor = authEnabled ? authorized(requestData) : null;
@@ -1310,7 +1311,6 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (logistics) requireLogisticsDirectoryInput(pathname, body);
       const directoryWrite = pathname === '/api/directories' || !!directoryMatch || pathname === '/api/companies/lookup' || pathname === '/api/companies/from-inn';
       if (actor && directoryWrite) { requireSection(actor, 'directories'); if (logistics) requireManage(actor); }
-      else if (actor && request.method === 'DELETE') requireManage(actor);
       if (pathname === '/api/directories' || directoryMatch) {
         const savedAddresses: string[] = [];
         const result = await operations.mutate(base.provenance.sourceSha256, data => {
@@ -1371,7 +1371,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const id = tripIdMatch ? decodeURIComponent(tripIdMatch[1]) : undefined;
         const signingConfig = options.sabyClient?.config ?? sabyConfigFromEnv();
         const saved = request.method === 'DELETE'
-          ? await operations.mutate(base.provenance.sourceSha256, data => {if(actor)requireManage(authorized(data));return { result: { value: deleteShipmentTrip(base, data, body, id!), queued: false }, changed: true };})
+          ? await operations.mutate(base.provenance.sourceSha256, data => {
+            if (actor) authorized(data);
+            return { result: { value: deleteShipmentTrip(base, data, body, id!), queued: false }, changed: true };
+          })
           : await operations.mutate(base.provenance.sourceSha256, async data => {
             const currentActor=actor?authorized(data):null;
             const snapshot = currentSnapshot(base, data);
@@ -1430,7 +1433,6 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (Object.keys(body).some(key => !['fields', 'version'].includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
       const result = await operations.mutate<{ shipment: Shipment } | { deleted: boolean; id: string }>(base.provenance.sourceSha256, data => {
         const currentActor=actor?authorized(data):null;
-        if(currentActor && request.method==='DELETE')requireManage(currentActor);
         // Persist the original/manual baseline, never the derived bank-paid total.
         const snapshot = currentSnapshot(base, data, false);
         const id = shipmentIdMatch ? decodeURIComponent(shipmentIdMatch[1]) : `shipment-local-${randomUUID()}`;

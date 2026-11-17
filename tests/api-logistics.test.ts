@@ -47,8 +47,8 @@ async function fixture() {
   const signed = await request(prefix + '/auth/login', 'POST', { login: 'logistics-owner', password });
   assert.equal(signed.status, 200, signed.text);
   const cookie = signed.cookie!;
-  const user = async (sections: string[] = ['trips'], managerId = 'manager', login = 'logistics-employee', directoryGrants: string[] = []) => {
-    const input = { name: login, login, password, role: 'manager', managerId, sections, directoryGrants };
+  const user = async (sections: string[] = ['trips'], managerId = 'manager', login = 'logistics-employee', directoryGrants: string[] = [], role: 'manager' | 'logistician' = 'manager') => {
+    const input = { name: login, login, password, role, managerId, sections, directoryGrants };
     const created = await request('/api/auth/users', 'POST', input, crmCookie);
     assert.equal(created.status, 201, created.text);
     const signed = await request(prefix + '/auth/login', 'POST', { login, password });
@@ -137,10 +137,10 @@ test('logistics trip CRUD retains multiple deliveries, durable create repeats, v
   } finally { await f.close(); }
 });
 
-test('logistics managers retain own-client isolation, hidden mixed trips, denied directory writes and immediate revocation', async () => {
+test('logisticians retain own-client isolation, hidden mixed trips, denied directory writes and immediate revocation', async () => {
   const f = await fixture();
   try {
-    const user = await f.user(); assert.equal(user.loginStatus, 200);
+    const user = await f.user(['trips'], 'manager', 'logistics-employee', [], 'logistician'); assert.equal(user.loginStatus, 200);
     const context = await f.request(prefix + '/context', 'GET', undefined, user.cookie);
     assert.equal(context.status, 200);
     assert.equal(context.body.directories.drivers[0].phone, undefined);

@@ -291,23 +291,19 @@ try {
 
   // Browser ownership restrictions are backed by real scoped API denials.
   const employee = await context(390), employeePage = await employee.newPage();
-  await login(employeePage, manager); await expect(employeePage.getByTestId('trip-card')).toHaveCount(2);
+  await login(employeePage, manager); await employeePage.getByRole('button', { name: 'Рейсы', exact: true }).click(); await expect(employeePage.getByTestId('trip-card')).toHaveCount(2);
   await expect(employeePage.locator('body')).not.toContainText('QA-FOREIGN-PRIVATE-TRIP');
   const managerContext = await api(employee, '/api/logistics/context');
   assert.ok(!JSON.stringify(managerContext).includes('QA ЧУЖОЙ КЛИЕНТ'));
   assert.equal((await employee.request.get(base + `/api/logistics/shipment-trips/${foreign.id}`)).status(), 404);
-  assert.equal((await employee.request.patch(base + `/api/logistics/shipment-trips/${foreign.id}`, { data: editBody(foreign) })).status(), 404);
+  assert.equal((await employee.request.patch(base + `/api/logistics/shipment-trips/${foreign.id}`, { data: editBody(foreign) })).status(), 403);
   assert.equal((await employee.request.post(base + '/api/logistics/directories', { data: { kind: 'vehicles', plate: 'FORBIDDEN' } })).status(), 403);
   assert.equal((await employee.request.delete(base + `/api/logistics/shipment-trips/${trip.id}`, { data: { versions: versions(trip) } })).status(), 403);
   await expect(employeePage.getByRole('button', { name: /^Удалить рейс/ })).toHaveCount(0);
   await expect(employeePage.getByRole('link', { name: 'Автомобили', exact: true })).toHaveCount(0);
-  await employeePage.getByTestId('trip-card').first().getByRole('button', { name: 'Изменить рейс', exact: true }).click();
-  await expect(employeePage.getByRole('dialog')).toBeVisible();
-  await expect(employeePage.getByRole('button', { name: 'Новое место в справочнике' })).toHaveCount(0);
-  await employeePage.getByRole('dialog').getByTestId('trip-customer').first().getByRole('textbox', { name: 'Примечание к доставке', exact: true }).fill('QA own-trip manager edit');
-  await employeePage.getByRole('button', { name: 'Сохранить рейс', exact: true }).click();
-  await expect(employeePage.getByRole('dialog')).toHaveCount(0);
-  assert.equal((await api(employee, tripPath)).trip.customers[0].fields.delivery_notes, 'QA own-trip manager edit');
+  await expect(employeePage.getByRole('button', { name: 'Изменить рейс', exact: true })).toHaveCount(0);
+  await expect(employeePage.getByRole('button', { name: 'Новый рейс', exact: true })).toHaveCount(0);
+  assert.equal((await employee.request.patch(base + tripPath, { data: editBody(trip) })).status(), 403);
   await shot(employeePage, 'manager-own-trips-390');
   const deniedContext = await context(), deniedPage = await deniedContext.newPage();
   await login(deniedPage, denied); await expect(deniedPage.getByRole('alert')).toBeVisible();

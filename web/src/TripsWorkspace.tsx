@@ -5,7 +5,7 @@ import { apiFetch } from './workspace-api'
 import TripsPage from './TripsPage'
 
 /** This page needs operational directories, never a financial dashboard snapshot. */
-export default function TripsWorkspace({ canManagePlaces, allowDelete = false }: { canManagePlaces: boolean; allowDelete?: boolean }) {
+export default function TripsWorkspace({ canManagePlaces, canWrite, allowDelete }: { canManagePlaces: boolean; canWrite: boolean; allowDelete: boolean }) {
   const [data, setData] = useState<DirectoryData | null>(null)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
@@ -21,6 +21,6 @@ export default function TripsWorkspace({ canManagePlaces, allowDelete = false }:
   }, [revision])
   return <>
     {error && <div className="shipment-error" role="alert">{error} <button className="button" onClick={() => setRevision(value => value + 1)}>Повторить загрузку справочников</button></div>}
-    {data ? <TripsPage allowDelete={allowDelete} data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <PageLoading/>}
+    {data ? <TripsPage canWrite={canWrite} allowDelete={allowDelete} data={data} canManagePlaces={canManagePlaces} onChanged={() => setRevision(value => value + 1)}/> : !error && <PageLoading/>}
   </>
 }

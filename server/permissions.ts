@@ -1,4 +1,4 @@
-import { hasFullDirectoryAccess, isAdministrator, hasSection, type AccountUser, type SectionId } from '../web/src/auth-model';
+import { canDeleteShipments, canWriteShipments, hasFullDirectoryAccess, isAdministrator, hasSection, type AccountUser, type SectionId } from '../web/src/auth-model';
 import { ApiError } from './api-error';
 
 export function requireSection(actor: AccountUser, section: SectionId) {
@@ -12,6 +12,13 @@ export function requireTripSection(actor: AccountUser, saby = false) {
   if (!hasSection(actor, 'trips') && (saby || !hasSection(actor, 'shipments'))) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
   return actor;
 }
+export function requireShipmentMutation(actor: AccountUser, method: string) {
+  if (method === 'DELETE' && !canDeleteShipments(actor)) throw new ApiError(403, 'Удалять отгрузки может только директор.');
+  if ((method === 'POST' || method === 'PATCH') && !canWriteShipments(actor)) {
+    throw new ApiError(403, 'Добавлять и редактировать отгрузки могут директор, бухгалтер и логист.');
+  }
+}
+
 export function apiSection(path: string): SectionId | null {
   if (/^\/api\/documents(\/|$)/.test(path)) return 'documents';
   if (/^\/api\/trip-requests(\/|$)/.test(path)) return 'trips';

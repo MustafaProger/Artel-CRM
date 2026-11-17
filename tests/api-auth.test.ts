@@ -133,6 +133,63 @@ test('manager financial scope does not leak global aggregates or other shipment 
   }finally{await r.close();}
 });
 
+test('shipment mutations are restricted by role while assigned records remain readable', async () => {
+  const r = await runtime();
+  try {
+    const password = randomBytes(20).toString('hex');
+    const setup = await r.request('/api/auth/setup', 'POST', { name: 'Director', login: 'director', password });
+    assert.equal(setup.status, 200);
+    const directorCookie = setup.cookie!.split(';')[0];
+    const snapshot = (await r.request('/api/snapshot', 'GET', undefined, directorCookie)).body;
+    const managerId = snapshot.directories.managers[0].id;
+    const fields = {
+      shipment_type: 'azs', date: '2026-10-01', customer_id: 'synthetic-own', supplier_id: 'synthetic-supplier',
+      manager_id: managerId, product_id: snapshot.directories.products[0].id,
+      payment_form_id: snapshot.directories.paymentForms.find((row: { name: string }) => row.name === 'б/нал').id,
+      quantity_litres: '1000', customer_amount: '65000', purchase_amount: '50000',
+    };
+    const created = await r.request('/api/shipments', 'POST', { fields }, directorCookie);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const shipmentPath = '/api/shipments/' + created.body.shipment.id;
+    const staff = { name: 'Staff role check', login: 'staff', managerId, sections: ['shipments', 'trips'] };
+    let user: AccountUser | undefined;
+    const staffRoles = [
+      ['manager', false], ['employee', false], ['admin', false], ['accountant', true], ['logistician', true],
+    ] as const;
+    for (const [role, canWrite] of staffRoles) {
+      const account = user
+        ? await r.request('/api/auth/users/' + user.id, 'PATCH', { ...staff, role, version: user.version }, directorCookie)
+        : await r.request('/api/auth/users', 'POST', { ...staff, role, password }, directorCookie);
+      assert.equal(account.status, user ? 200 : 201, JSON.stringify(account.body));
+      user = account.body.user;
+      const signed = await r.request('/api/auth/login', 'POST', { login: staff.login, password });
+      assert.equal(signed.status, 200);
+      assert.equal(signed.body.user.role, role);
+      const cookie = signed.cookie!.split(';')[0];
+      assert.equal((await r.request('/api/shipments?type=azs', 'GET', undefined, cookie)).status, 200, role);
+      assert.equal((await r.request(shipmentPath, 'GET', undefined, cookie)).status, 200, role);
+      const before = await r.store.read(r.base.provenance.sourceSha256);
+      const newRow = await r.request('/api/shipments', 'POST', { fields }, cookie);
+      assert.equal(newRow.status, canWrite ? 201 : 403, JSON.stringify(newRow.body));
+      if (canWrite) {
+        const { id, version } = newRow.body.shipment;
+        assert.equal((await r.request('/api/shipments/' + id, 'PATCH', { version, fields: { quantity_litres: '1200' } }, cookie)).status, 200, role);
+      } else {
+        assert.equal((await r.request(shipmentPath, 'PATCH', { version: 1, fields: { quantity_litres: '1200' } }, cookie)).status, 403, role);
+      }
+      assert.equal((await r.request(shipmentPath, 'DELETE', { version: 1 }, cookie)).status, 403, role);
+      assert.equal((await r.request('/api/shipment-trips', 'POST', {}, cookie)).status, canWrite ? 400 : 403, role);
+      assert.equal((await r.request('/api/shipment-trips/unknown', 'PATCH', {}, cookie)).status, canWrite ? 404 : 403, role);
+      if (!canWrite) assert.deepEqual((await r.store.read(r.base.provenance.sourceSha256)).shipments, before.shipments);
+    }
+    const edited = await r.request(shipmentPath, 'PATCH', { version: 1, fields: { quantity_litres: '1500' } }, directorCookie);
+    assert.equal(edited.status, 200);
+    assert.equal((await r.request(shipmentPath, 'DELETE', { version: edited.body.shipment.version }, directorCookie)).status, 200);
+  } finally {
+    await r.close();
+  }
+});
+
 test('a fresh cloud store instance retains users and sessions in the same protected envelope',async()=>{
   const local=await runtime(),base=local.base;try{
     await local.request('/api/auth/setup','POST',{name:'Cloud user',login:'clouduser',password:randomBytes(20).toString('hex')});

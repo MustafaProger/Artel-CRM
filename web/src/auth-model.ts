@@ -1,9 +1,12 @@
 import type { AvatarPresetId } from './avatar-model';
 import { permissionSections } from './page-catalog';
-export type AccountRole = 'developer' | 'director' | 'admin' | 'employee' | 'manager' | 'logistician' | 'driver';
-export const roleNames: Record<AccountRole, string> = { developer: 'Разработчик', director: 'Директор', admin: 'Администратор', employee: 'Сотрудник', manager: 'Менеджер', logistician: 'Логист', driver: 'Водитель' };
-export const selectableRoles = (Object.entries(roleNames) as [AccountRole, string][]).filter(([role]) => role !== 'logistician');
-export const isScopedEmployee = (user: Pick<AccountUser, 'role'>) => ['employee', 'manager', 'logistician'].includes(user.role);
+export type AccountRole = 'developer' | 'director' | 'admin' | 'employee' | 'manager' | 'accountant' | 'logistician' | 'driver';
+export const roleNames: Record<AccountRole, string> = { developer: 'Разработчик', director: 'Директор', admin: 'Администратор', employee: 'Сотрудник', manager: 'Менеджер', accountant: 'Бухгалтер', logistician: 'Логист', driver: 'Водитель' };
+export const selectableRoles = Object.entries(roleNames) as [AccountRole, string][];
+export const canWriteShipments = (user: Pick<AccountUser, 'role'>) =>
+  user.role === 'director' || user.role === 'accountant' || user.role === 'logistician';
+export const canDeleteShipments = (user: Pick<AccountUser, 'role'>) => user.role === 'director';
+export const isScopedEmployee = (user: Pick<AccountUser, 'role'>) => ['employee', 'manager', 'accountant', 'logistician'].includes(user.role);
 export const sections = permissionSections;
 // Keep the removed identifier readable for existing account records.
 export type SectionId = typeof sections[number]['id'] | 'settlements';

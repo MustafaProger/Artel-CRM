@@ -39,7 +39,7 @@ async function fixture(options: Pick<LocalApiOptions, 'tripRequestGeocoder' | 'p
   const setup = await request('/api/auth/setup', 'POST', { name: 'Синтетический директор', login: 'requests-owner', password });
   assert.equal(setup.status, 200); const admin = setup.cookie!;
   const employee = async (login: string, managerId: string, sections = ['trips']) => {
-    const added = await request('/api/auth/users', 'POST', { name: login, login, password, role: 'employee', managerId, sections }, admin);
+    const added = await request('/api/auth/users', 'POST', { name: login, login, password, role: 'logistician', managerId, sections }, admin);
     assert.equal(added.status, 201);
     const signed = await request('/api/auth/login', 'POST', { login, password });
     return { cookie: signed.cookie!, user: added.body.user };

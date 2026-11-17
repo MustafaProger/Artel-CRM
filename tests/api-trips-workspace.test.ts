@@ -134,10 +134,10 @@ test('oil depot places and maps persist as historical snapshots and validate URL
   } finally { await r.close(); }
 });
 
-test('trips-only permissions preserve manager isolation, exclude mixed groups, and revoke sessions and APIs', async () => {
+test('trips-only logistician permissions preserve owner isolation, exclude mixed groups, and revoke sessions and APIs', async () => {
   const r = await runtime();
   try {
-    const userBody = { name: 'Trip employee', login: 'trip-employee', password: r.password, role: 'manager', managerId: 'trip-manager-a', sections: ['trips'], active: true };
+    const userBody = { name: 'Trip employee', login: 'trip-employee', password: r.password, role: 'logistician', managerId: 'trip-manager-a', sections: ['trips'], active: true };
     const createdUser = await r.request('/api/auth/users', 'POST', userBody, r.admin);
     assert.equal(createdUser.status,201,await createdUser.clone().text());
     const user = (await createdUser.json()).user;

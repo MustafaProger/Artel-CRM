@@ -20,7 +20,7 @@ import { sections, effectiveSections, legacyManagerSections, defaultEmployeeSect
 import type { Shipment, ShipmentTrip, Snapshot } from '../web/src/model';
 const base = await loadSnapshot();
 
-async function fixture() {
+async function fixture(role: 'manager' | 'logistician' = 'manager') {
   const directory = await mkdtemp(resolve(tmpdir(), 'artel-permissions-'));
   const store = new OperationsStore(directory);
   await store.mutate(base.provenance.sourceSha256, data => { data.sourceOperationsCleared = true; return { changed: true, result: null }; });
@@ -43,7 +43,7 @@ async function fixture() {
   const users: AccountUser[] = [];
   for (const [name, login, api] of [['Айдар QA', 'aidar-qa', aidar], ['Зуфар QA', 'zufar-qa', zufar]] as const) {
     const employee = await director('/api/directories', 'POST', { kind: 'managers', name });
-    const created = await director('/api/auth/users', 'POST', { name, login, password, role: 'manager', managerId: employee.body.entry.id, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) });
+    const created = await director('/api/auth/users', 'POST', { name, login, password, role, managerId: employee.body.entry.id, sections: sections.filter(s => !['accounts', 'cabinet-balances'].includes(s.id)).map(s => s.id) });
     assert.equal(created.status, 201, JSON.stringify(created.body)); users.push(created.body.user);
     assert.equal((await api('/api/auth/login', 'POST', { login, password })).status, 200);
   }
@@ -53,14 +53,13 @@ async function fixture() {
 }
 const update = (user: AccountUser, changes: object = {}) => ({ name: user.name, login: user.login, role: user.role, managerId: user.managerId, active: user.active, version: user.version, sections: effectiveSections(user), ...changes });
 
-test('employee persists with explicit sections; the retired role remains readable without losing permissions', async () => {
+test('employee persists with explicit sections; legacy logisticians keep their role and permissions', async () => {
   const role = 'employee';
   const f = await fixture(); try {
     const before = (await f.store.read(base.provenance.sourceSha256)).accounts!.users.find(user => user.id === f.users[0].id)!;
     const own = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
     const foreign = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[1].managerId!) });
     assert.equal(own.status, 201); assert.equal(foreign.status, 201);
-    assert.equal((await f.director(`/api/auth/users/${before.id}`, 'PATCH', update(f.users[0], { role: 'logistician' }))).status, 400);
     await f.store.mutate(base.provenance.sourceSha256, data => {
       const account = data.accounts!.users.find(user => user.id === before.id)!;
       account.sections = effectiveSections(account);
@@ -68,7 +67,7 @@ test('employee persists with explicit sections; the retired role remains readabl
       return { result: null, changed: true };
     });
     const legacySession = await f.aidar('/api/auth/session');
-    assert.equal(legacySession.body.user.role, 'employee');
+    assert.equal(legacySession.body.user.role, 'logistician');
     assert.deepEqual(legacySession.body.user.sections, effectiveSections(before));
     const changed = await f.director(`/api/auth/users/${before.id}`, 'PATCH', update(f.users[0], { role }));
     assert.equal(changed.status, 200); assert.equal(changed.body.user.role, role);
@@ -121,8 +120,8 @@ test('administration links existing employees, rejects duplicate links, unknown 
   } finally { await f.close(); }
 });
 
-test('two employees: IDs, spoofed owners, shared customers, search, facets, totals, sorting, pages and export pagination stay isolated', async () => {
-  const f = await fixture(); try {
+test('two logisticians: IDs, spoofed owners, shared customers, search, facets, totals, sorting, pages and export pagination stay isolated', async () => {
+  const f = await fixture('logistician'); try {
     const a = await f.director('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
     const b = await f.director('/api/shipments', 'POST', { fields: { ...f.azs(f.users[1].managerId!), customer_amount: '777777', quantity_litres: '2222' } });
     assert.equal(a.status, 201, JSON.stringify(a.body)); assert.equal(b.status, 201, JSON.stringify(b.body));
@@ -156,8 +155,8 @@ test('two employees: IDs, spoofed owners, shared customers, search, facets, tota
   } finally { await f.close(); }
 });
 
-test('a manager cannot claim an unassigned customer through a zero shipment or truck; existing historical own clients remain usable', async () => {
-  const f = await fixture(); try {
+test('a logistician cannot claim an unassigned customer through a zero shipment or truck; existing historical own clients remain usable', async () => {
+  const f = await fixture('logistician'); try {
     const created = await f.director('/api/directories', 'POST', { kind: 'companies', name: 'Unassigned protected customer', roles: ['customer'], addresses: [] });
     assert.equal(created.status, 201); const customerId = created.body.entry.id;
     const before = encodeOperations(await f.store.read(base.provenance.sourceSha256));
@@ -180,7 +179,7 @@ test('a manager cannot claim an unassigned customer through a zero shipment or t
 });
 
 test('mixed-owner trips hide shared totals and reject all partial truck changes atomically; own trips remain usable', async () => {
-  const f = await fixture(); try {
+  const f = await fixture('logistician'); try {
     const c = f.snapshot.directories!;
     const fields = { date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: c.products[0].id, purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: c.drivers[0].id, additional_costs: '1600' };
     const customer = (index: number) => ({ fields: { customer_id: f.snapshot.companies[0].id, manager_id: f.users[index].managerId, payment_form_id: c.paymentForms[0].id, quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '1000' } });
@@ -358,6 +357,11 @@ test('developer authority is protected and a director can be given individual se
     assert.equal((await f.director(path + '/password', 'POST', { version: user.version })).status, 403);
     assert.equal((await developer(path, 'PATCH', update(user, { active: false }))).status, 409);
     assert.equal((await developer('/api/work')).status, 200);
+    assert.equal((await developer('/api/shipments')).status, 200);
+    for (const [path, method] of [
+      ['/api/shipments', 'POST'], ['/api/shipments/example', 'PATCH'], ['/api/shipments/example', 'DELETE'],
+      ['/api/shipment-trips', 'POST'], ['/api/shipment-trips/example', 'PATCH'], ['/api/shipment-trips/example', 'DELETE'],
+    ]) assert.equal((await developer(path, method, {})).status, 403);
 
     const directorPath = '/api/auth/users/' + director.id;
     const changed = await developer(directorPath, 'PATCH', update(director, {

@@ -38,7 +38,7 @@ const DocumentsPage = lazy(pageModules.documents)
 const WorkPage = lazy(pageModules.work)
 import AuthGate from './AuthGate'
 const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
-import { hasSection, hasDirectoryGrant, availableDirectoryTabs, isAdministrator, type AccountUser } from './auth-model'
+import { hasSection, hasDirectoryGrant, availableDirectoryTabs, canDeleteShipments, canWriteShipments, isAdministrator, type AccountUser } from './auth-model'
 const AccountManagement = lazy(pageModules.accounts)
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
@@ -221,9 +221,9 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
       {page === 'work' && <WorkPage onTaskCount={setTodayTaskCount}/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'payroll' && <PayrollPage/>}
-      {page === 'shipments' && data && <ShipmentsPage canDelete={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+      {page === 'shipments' && data && <ShipmentsPage canWrite={canWriteShipments(user)} canDelete={canDeleteShipments(user)} canFilterManagers={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && data && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={hasSection(user, 'accounts')} data={data} onChanged={fetchData}/>}
-      {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} allowDelete={canManage} canManagePlaces={canManage && availableDirectoryTabs(user).includes('addresses')}/>}
+      {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} canWrite={canWriteShipments(user)} allowDelete={canDeleteShipments(user)} canManagePlaces={canManage && availableDirectoryTabs(user).includes('addresses')}/>}
       {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div></Suspense></PageLoadBoundary>)}
       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}

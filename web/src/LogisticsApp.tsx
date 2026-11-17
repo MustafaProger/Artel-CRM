@@ -5,7 +5,7 @@ import AuthGate from './AuthGate'
 import DriverWorkspace from './DriverWorkspace'
 import TripsPage from './TripsPage'
 import DirectoriesPage, { type DirectoryTab } from './DirectoriesPage'
-import { hasSection, isAdministrator, type AccountUser } from './auth-model'
+import { hasSection, canDeleteShipments, canWriteShipments, isAdministrator, type AccountUser } from './auth-model'
 import type { DirectoryData } from './model'
 import { apiFetch } from './workspace-api'
 
@@ -84,7 +84,7 @@ function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: (
         {error && <div className="shipment-error logistics-load-error" role="alert"><span>{error}</span><button className="button" disabled={loading} onClick={refresh}>Повторить загрузку</button></div>}
         {!data && loading && <PageLoading/>}
         {data && <div key={active.id} className="logistics-page-content view-entrance">
-          {active.id === 'trips' ? <TripsPage data={data} canManagePlaces={canManage} onChanged={refresh} allowDelete={canManage}/> : <>
+          {active.id === 'trips' ? <TripsPage data={data} canManagePlaces={canManage} onChanged={refresh} canWrite={canWriteShipments(user)} allowDelete={canDeleteShipments(user)}/> : <>
             {!canManage && <p className="logistics-readonly">Справочник доступен для просмотра. Изменения вносит администратор.</p>}
             <DirectoriesPage key={active.id} data={data} onChanged={refresh} canManage={canManage} initialTab={active.id} allowedTabs={[active.id]} hideTabs/>
           </>}
