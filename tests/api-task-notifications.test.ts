@@ -62,11 +62,12 @@ test('assigning another employee sends immediately, with or without a reminder; 
   const f = await fixture(capture(sent));
   try {
     const due = Date.now() + 3600000;
-    const assigned = await f.director('/api/work/tasks', 'POST', { title: 'Обсудить поставку', assigneeId: f.users[1].id, reminderAt: new Date(due).toISOString() });
+    const assigned = await f.director('/api/work/tasks', 'POST', { title: 'Обсудить поставку', description: 'PRIVATE-TASK-DESCRIPTION', assigneeId: f.users[1].id, dueDate: '2027-04-05', reminderAt: new Date(due).toISOString() });
     assert.equal(assigned.status, 201);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].userId, f.users[1].id);
-    assert.match(sent[0].body, /назнач/i);
+    assert.equal(sent[0].title, 'Вам назначили задачу');
+    assert.equal(sent[0].body, 'Директор теста · «Обсудить поставку»');
     assert.match(sent[0].url, new RegExp(`workId=${assigned.body.entry.id}`));
     assert.equal((await f.store.read(source)).push!.lastRunAt, undefined, 'An immediate assignment must not masquerade as a scheduler run');
     const assignment = sent[0];
@@ -74,13 +75,15 @@ test('assigning another employee sends immediately, with or without a reminder; 
     assert.equal(withoutReminder.status, 201);
     assert.equal(withoutReminder.body.entry.reminderAt, null);
     assert.deepEqual(sent.map(row => row.userId), [f.users[1].id, f.users[1].id]);
-    assert.match(sent[1].body, /назнач/i);
+    assert.equal(sent[1].title, assignment.title);
+    assert.equal(sent[1].body, 'Директор теста · «Проверить договор»');
     await dispatchReminders(f.store, source, config, capture(sent), due - 1);
     assert.equal(sent.length, 2, 'A future reminder must not be sent early');
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), due);
     assert.equal(sent.length, 3);
     assert.equal(sent[2].userId, f.users[1].id);
-    assert.match(sent[2].body, /напомин/i);
+    assert.equal(sent[2].title, 'Напоминание по задаче');
+    assert.equal(sent[2].body, '«Обсудить поставку» · срок до 05.04.2027');
     assert.equal(sent[2].url, assignment.url);
     assert.notEqual(sent[2].tag, assignment.tag, 'The reminder must not replace the assignment notification');
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), due + 60000);
@@ -103,7 +106,7 @@ test('a director or manager assigning a task to themselves receives only one due
     assert.equal(sent.length, 0);
     await dispatchReminders(f.store, source, config, capture(sent), due);
     assert.deepEqual(sent.map(row => row.userId).sort(), [f.users[0].id, f.users[1].id].sort());
-    assert.ok(sent.every(row => /напомин/i.test(row.body)));
+    assert.ok(sent.every(row => row.title === 'Напоминание по задаче' && row.body === '«Своя задача»'));
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), due + 60000);
     assert.equal(sent.length, 2);
   } finally { await f.close(); }
@@ -128,6 +131,8 @@ test('employee transfer sends to the new assignee; edits, repeated requests and 
     const transferred = await f.alice(`/api/work/tasks/${task.id}`, 'PATCH', { version: edited.body.entry.version, assigneeId: f.users[2].id });
     assert.equal(transferred.status, 200);
     assert.deepEqual(sent.map(row => row.userId), [f.users[1].id, f.users[2].id]);
+    assert.equal(sent[1].title, 'Вам назначили задачу');
+    assert.equal(sent[1].body, 'Сотрудник А · «Уточнённая задача»');
     assert.notEqual(sent[0].tag, sent[1].tag);
     const sameAssignee = await f.bob(`/api/work/tasks/${task.id}`, 'PATCH', { version: transferred.body.entry.version, assigneeId: f.users[2].id });
     assert.equal(sameAssignee.status, 200);
@@ -138,7 +143,7 @@ test('employee transfer sends to the new assignee; edits, repeated requests and 
   } finally { await f.close(); }
 });
 
-test('an immediate provider failure does not roll back the task; the scheduler retries the persisted assignment once', async () => {
+test('an immediate provider failure preserves the task; pending legacy assignments can be retried without a stored sender', async () => {
   const attempts: Notification[] = [];
   const failing: PushSender = async (device, payload, pushConfig) => { await capture(attempts)(device, payload, pushConfig); throw Object.assign(new Error('Temporary provider failure'), { statusCode: 503 }); };
   const f = await fixture(failing);
@@ -151,6 +156,10 @@ test('an immediate provider failure does not roll back the task; the scheduler r
     const edited = await f.director(`/api/work/tasks/${created.body.entry.id}`, 'PATCH', { version: created.body.entry.version, title: 'Уточнено после сбоя' });
     assert.equal(edited.status, 200);
     assert.equal(attempts.length, 1, 'An ordinary edit preserves the pending event and its retry delay');
+    await f.store.mutate(source, data => {
+      for (const assignment of Object.values(data.push!.taskAssignments!)) delete assignment.senderName;
+      return { result: null, changed: true };
+    });
     const sent: Notification[] = [];
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), Date.now());
     assert.equal(sent.length, 0, 'A provider failure keeps the retry delay');
@@ -158,6 +167,8 @@ test('an immediate provider failure does not roll back the task; the scheduler r
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), retryAt);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].userId, f.users[1].id);
+    assert.equal(sent[0].title, 'Вам назначили задачу');
+    assert.equal(sent[0].body, '«Уточнено после сбоя»');
     assert.equal(sent[0].tag, attempts[0].tag);
     await dispatchReminders(new OperationsStore(f.folder), source, config, capture(sent), retryAt + 121000);
     assert.equal(sent.length, 1);
@@ -185,8 +196,8 @@ test('pending assignment and due reminder deliveries are cancelled for completed
     const assigneeNotifications = sent.filter(row => row.title !== 'Ваша задача выполнена');
     assert.equal(assigneeNotifications.length, 2, 'Only the current assignment and its due reminder remain eligible');
     assert.ok(assigneeNotifications.every(row => row.userId === f.users[2].id && row.url.includes(created.body.entry.id)));
-    assert.equal(assigneeNotifications.filter(row => /назнач/i.test(row.body)).length, 1);
-    assert.equal(assigneeNotifications.filter(row => /напомин/i.test(row.body)).length, 1);
+    assert.equal(assigneeNotifications.filter(row => row.title === 'Вам назначили задачу').length, 1);
+    assert.equal(assigneeNotifications.filter(row => row.title === 'Напоминание по задаче').length, 1);
     assert.notEqual(assigneeNotifications[0].tag, assigneeNotifications[1].tag);
   } finally { await f.close(); }
 });

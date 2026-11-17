@@ -69,13 +69,16 @@ test('operator notifications: create excludes author; completion goes to creator
     assert.equal((await f.request('/api/push/config', 'GET', undefined, f.operator, { 'x-artel-account': 'another' })).status, 401);
     const plan = await f.createPlan(['100']);
     assert.deepEqual(sent.map(row => row.userId), [f.adminId]);
-    assert.match(sent[0].body, /новое задание/i);
+    assert.equal(sent[0].title, 'Новое задание операторской');
+    assert.match(sent[0].body, /«ООО СИНТЕТИКА».*100\s*₽/);
+    assert.doesNotMatch(sent[0].body, /Синтетический получатель|Тестовый банк|0000 0000/);
     assert.equal(sent[0].url, `/?operatorPlan=${plan.id}#operator`);
     const body = f.operation(plan.id, 1, [{ kind: 'recipient', recipientId: plan.recipients[0].id, amount: '100' }], '100');
     const saved = await f.request('/api/operator/refuellings', 'POST', body, f.admin);
     assert.equal(saved.status, 201);
     assert.deepEqual(sent.map(row => row.userId), [f.adminId, f.operatorId]);
-    assert.match(sent[1].body, /выполнено оператором/i);
+    assert.equal(sent[1].title, 'Задание операторской выполнено');
+    assert.match(sent[1].body, /«ООО СИНТЕТИКА».*100\s*₽/);
     assert.equal(sent[1].url, sent[0].url);
     assert.notEqual(sent[1].tag, sent[0].tag);
     assert.equal((await f.request('/api/operator/refuellings', 'POST', body, f.admin)).status, 200);

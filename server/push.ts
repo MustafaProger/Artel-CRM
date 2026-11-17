@@ -5,11 +5,11 @@ import webPush from 'web-push';
 import { ApiError } from './api-error';
 import { canOverseeTripRequests, hasSection, type AccountUser } from '../web/src/auth-model';
 import { isClosedWorkStatus, workAssigneeIds, type WorkTask } from '../web/src/work-model';
-import type { Shipment } from '../web/src/model';
+import type { Company, Shipment } from '../web/src/model';
 import type { TripRequest } from '../web/src/trip-request-model';
 import { canAccessTripRequest } from './trip-requests';
 import { sessionToken } from './auth';
-import type { OperationsData, OperationsStorage } from './operations-store';
+import type { OperationsData, OperationsStorage, ShipmentOverride } from './operations-store';
 
 export interface PushDevice {
   id: string; userId: string; sessionHash: string; endpoint: string;
@@ -17,7 +17,7 @@ export interface PushDevice {
 }
 interface Delivery { deviceId: string; at: number; attempts: number; retryAt: number; lease?: string; sent?: boolean }
 interface TaskHandoff { title: string; senderName: string }
-interface TaskAssignment { taskId?: string; version: number; assigneeId: string; at: number; handoff?: TaskHandoff }
+interface TaskAssignment { taskId?: string; version: number; assigneeId: string; at: number; senderName?: string; handoff?: TaskHandoff }
 interface TaskCompletion { version: number; at: number; completedByName: string }
 interface TripAssignment { token: string; driverId: string; at: number }
 interface TripRequestNotification { at: number; recipientIds: string[] }
@@ -107,6 +107,7 @@ export function validatePush(value: PushData | undefined) {
     if (!value.taskAssignments || typeof value.taskAssignments !== 'object' || Array.isArray(value.taskAssignments)) throw new Error('Invalid task assignments');
     for (const [id, row] of Object.entries(value.taskAssignments)) {
       if (!id || !row || row.taskId !== undefined && (typeof row.taskId !== 'string' || !row.taskId) || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.assigneeId !== 'string' || !row.assigneeId || !Number.isSafeInteger(row.at) || row.at < 0) throw new Error('Invalid task assignment');
+      if (row.senderName !== undefined && (typeof row.senderName !== 'string' || !row.senderName.trim())) throw new Error('Invalid task assignment sender');
       const handoff = row.handoff;
       if (handoff !== undefined && (!handoff || typeof handoff.title !== 'string' || !handoff.title.trim()
         || typeof handoff.senderName !== 'string' || !handoff.senderName.trim())) throw new Error('Invalid task handoff');
@@ -182,13 +183,14 @@ export function queueTaskAssignment(data: OperationsData, task: WorkTask | undef
     if ((assignment.taskId ?? key) === id && (handoffTo?.includes(assignment.assigneeId) || !recipients.includes(assignment.assigneeId))) delete existing![key];
   }
   if (!task) return;
-  const handoff = handoffTo ? { title: task.title, senderName: actor.name.trim() || 'Сотрудник CRM' } : undefined;
+  const senderName = actor.name.trim() || 'Сотрудник CRM';
+  const context = handoffTo ? { handoff: { title: task.title, senderName } } : { senderName };
   for (const assigneeId of handoffTo ?? recipients.filter(id => !previousRecipients.includes(id))) {
     if (assigneeId === actor.id) continue;
     const push = data.push ??= { devices: [], deliveries: {} };
     const assignments = push.taskAssignments ??= {};
     const key = Object.hasOwn(assignments, id) ? `assignment-${createHash('sha256').update(JSON.stringify([id, assigneeId])).digest('hex')}` : id;
-    assignments[key] = { ...(key === id ? {} : { taskId: id }), version: task.version, assigneeId, at: Date.now(), ...(handoff ? { handoff } : {}) };
+    assignments[key] = { ...(key === id ? {} : { taskId: id }), version: task.version, assigneeId, at: Date.now(), ...context };
   }
 }
 /** Save the event with the status change so push failures cannot lose it. */
@@ -235,11 +237,39 @@ export const sendPush: PushSender = (device, payload, config) => webPush.sendNot
   vapidDetails: { publicKey: config.publicKey, privateKey: config.privateKey, subject: config.subject },
   TTL: 3600, urgency: 'high', timeout: 5000,
 });
-function reminderCandidates(data: OperationsData, now: number) {
-  const rows = [...(data.work?.tasks ?? []).map(row => ({ ...row, kind: 'tasks' })), ...(data.work?.companyRecords ?? []).map(row => ({ ...row, kind: 'companies' }))];
-  return rows.filter(row => row.reminderAt && Date.parse(row.reminderAt) <= now && !row.archivedAt && (!('status' in row) || !isClosedWorkStatus(row.status)))
-    .flatMap(row => workAssigneeIds(row).filter(id => data.accounts?.users.some(user => user.id === id && hasSection(user, 'work')))
-      .map(assigneeId => ({ ...row, assigneeId })));
+// Keep the first lines of a phone notification readable, including titles with emoji.
+function preview(value: string | null | undefined, max: number): string {
+  if (!value) return '';
+  const characters = Array.from(value.replace(/\s+/g, ' ').trim());
+  return characters.length <= max ? characters.join('') : `${characters.slice(0, max - 1).join('').trimEnd()}…`;
+}
+const parts = (...values: (string | undefined)[]) => values.filter(Boolean).join(' · ');
+const taskSubject = (title: string, sender?: string) => parts(preview(sender, 60), `«${preview(title, 130)}»`);
+const pushDate = (date?: string | null) => date?.match(/^(\d{4})-(\d{2})-(\d{2})$/)?.slice(1).reverse().join('.');
+const invoiceReadyTime = new Intl.DateTimeFormat('ru-RU', {
+  timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+});
+function decimalLabel(value: string, trimFraction = false) {
+  const [whole, rawFraction] = value.split('.');
+  const fraction = trimFraction ? rawFraction?.replace(/0+$/, '') : rawFraction;
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + (fraction ? `,${fraction}` : '');
+}
+function reminderCandidates(data: OperationsData, now: number, companyNames: ReadonlyMap<string, string>): PushCandidate[] {
+  const rows = [...(data.work?.tasks ?? []), ...(data.work?.companyRecords ?? [])];
+  return rows.flatMap(row => {
+    const at = row.reminderAt;
+    const time = at ? Date.parse(at) : NaN;
+    const task = 'title' in row;
+    if (!at || !(time <= now) || row.archivedAt || task && isClosedWorkStatus(row.status)) return [];
+    const date = task ? pushDate(row.dueDate) : undefined;
+    const kind = task ? 'tasks' : 'companies';
+    const title = task ? 'Напоминание по задаче' : 'Напоминание по компании';
+    const body = task
+      ? parts(taskSubject(row.title), date && `срок до ${date}`)
+      : parts(preview(companyNames.get(row.companyId), 75), preview(row.question.split('\n', 1)[0], 65)) || 'Запланировано напоминание о работе с компанией.';
+    return workAssigneeIds(row).filter(assigneeId => data.accounts?.users.some(user => user.id === assigneeId && hasSection(user, 'work')))
+      .map(assigneeId => ({ kind, id: row.id, assigneeId, token: at, event: 'reminder', preferenceAt: time, title, body }));
+  });
 }
 const assignmentLifetime = 86400000;
 const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssignment, now: number) =>
@@ -247,14 +277,24 @@ const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssign
 const completedTask = (data: OperationsData, id: string, event: TaskCompletion, now: number) =>
   event.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.status === 'done' && task.version >= event.version);
 const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssignment, now: number) => {
-  if (assignment.at <= now - assignmentLifetime || data.directories?.deletedEntries?.drivers?.includes(assignment.driverId) || !data.directories?.drivers.some(driver => driver.id === assignment.driverId)) return false;
+  if (assignment.at <= now - assignmentLifetime || data.directories?.deletedEntries?.drivers?.includes(assignment.driverId) || !data.directories?.drivers.some(driver => driver.id === assignment.driverId)) return;
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);
-  return rows.length > 0 && rows.every(row => row.fields.driver_id === assignment.driverId);
+  if (rows.length && rows.every(row => row.fields.driver_id === assignment.driverId)) return rows;
 };
+function tripAssignmentBody(data: OperationsData, rows: ShipmentOverride[], companyNames: ReadonlyMap<string, string>) {
+  const first = [...rows].sort((a, b) => Number(a.fields.trip_delivery_order ?? 0) - Number(b.fields.trip_delivery_order ?? 0))[0].fields;
+  const depot = data.directories?.oilDepots?.find(row => row.id === first.oil_depot_id);
+  const address = data.directories?.addresses.find(row => row.id === first.unloading_address_id && row.companyId === first.customer_id && row.kind === 'delivery');
+  const loading = preview(depot?.name || first.loading_address, 40);
+  const delivery = preview(address?.name || first.unloading_address || first.customer_name || companyNames.get(first.customer_id ?? ''), 55);
+  const route = [loading, delivery].filter(Boolean).join(' → ');
+  const stops = rows.length > 1 && delivery ? `${route} + ещё ${rows.length - 1}` : route;
+  return parts(stops, pushDate(first.date)) || 'Рейс добавлен в «Мои рейсы».';
+}
 interface PushCandidate {
   kind: string; id: string; assigneeId: string; token: string;
   event: 'reminder' | 'assignment' | 'task-completion' | 'trip-assignment' | 'trip-request' | 'invoice-ready' | 'operator-plan';
-  occurredAt?: number; preferenceAt?: number; handoff?: TaskHandoff; completionBody?: string; tripRequestBody?: string;
+  occurredAt?: number; preferenceAt?: number; title: string; body: string;
 }
 function activeRequestForNotification(data: OperationsData, id: string, event: TripRequestNotification, now: number) {
   const request = data.tripRequests?.[id];
@@ -277,46 +317,70 @@ function notificationSourceEnabled(data: OperationsData, candidate: PushCandidat
   const at = candidate.preferenceAt ?? candidate.occurredAt;
   return preference.enabled && (at === undefined || at >= preference.since);
 }
-function candidates(data: OperationsData, now: number): PushCandidate[] {
-  const reminders: PushCandidate[] = reminderCandidates(data, now).map(row => ({ kind: row.kind, id: row.id, assigneeId: row.assigneeId, token: row.reminderAt!, event: 'reminder', preferenceAt: Date.parse(row.reminderAt!) }));
+function candidates(data: OperationsData, now: number, sourceCompanies: readonly Company[]): PushCandidate[] {
+  const companyNames = new Map<string, string>();
+  if (data.work?.companyRecords.length || data.push?.tripAssignments && Object.keys(data.push.tripAssignments).length) {
+    for (const company of sourceCompanies) companyNames.set(company.id, company.name);
+    for (const company of data.companies) companyNames.set(company.id, company.name);
+    for (const id of data.directories?.deletedEntries?.companies ?? []) companyNames.delete(id);
+  }
+  const reminders = reminderCandidates(data, now, companyNames);
   const assignments: PushCandidate[] = [];
   for (const [id, assignment] of Object.entries(data.push?.taskAssignments ?? {})) {
-    if (assignmentTask(data, id, assignment, now) && data.accounts?.users.some(user => user.id === assignment.assigneeId && hasSection(user, 'work'))) {
-      assignments.push({ kind: 'tasks', id: assignment.taskId ?? id, assigneeId: assignment.assigneeId, token: String(assignment.version), event: 'assignment', preferenceAt: assignment.at, handoff: assignment.handoff });
+    const task = assignmentTask(data, id, assignment, now);
+    if (task && data.accounts?.users.some(user => user.id === assignment.assigneeId && hasSection(user, 'work'))) {
+      const { handoff } = assignment;
+      assignments.push({ kind: 'tasks', id: task.id, assigneeId: assignment.assigneeId, token: String(assignment.version),
+        event: 'assignment', preferenceAt: assignment.at, title: handoff ? 'Вам передали задачу' : 'Вам назначили задачу',
+        body: taskSubject(handoff?.title ?? task.title, handoff?.senderName ?? assignment.senderName) });
     }
   }
   for (const [id, event] of Object.entries(data.push?.taskCompletions ?? {})) {
     const task = completedTask(data, id, event, now);
     if (task && data.accounts?.users.some(user => user.id === task.createdBy && hasSection(user, 'work'))) {
       assignments.push({ kind: 'tasks', id, assigneeId: task.createdBy, token: String(event.version), event: 'task-completion',
-        occurredAt: event.at, completionBody: `${event.completedByName} · «${task.title}»` });
+        occurredAt: event.at, title: 'Ваша задача выполнена', body: taskSubject(task.title, event.completedByName) });
     }
   }
   for (const [id, assignment] of Object.entries(data.push?.tripAssignments ?? {})) {
-    if (!assignmentTrip(data, id, assignment, now)) continue;
+    const rows = assignmentTrip(data, id, assignment, now);
+    if (!rows) continue;
+    const number = data.tripNumbers?.[id];
+    const title = number ? `Вам назначен рейс №${number}` : 'Вам назначен рейс';
+    const body = tripAssignmentBody(data, rows, companyNames);
     for (const user of data.accounts?.users ?? []) if (user.active && !user.deletedAt && user.role === 'driver' && user.driverId === assignment.driverId) {
-      assignments.push({ kind: 'driver-trips', id, assigneeId: user.id, token: assignment.token, event: 'trip-assignment', preferenceAt: assignment.at });
+      assignments.push({ kind: 'driver-trips', id, assigneeId: user.id, token: assignment.token, event: 'trip-assignment', preferenceAt: assignment.at, title, body });
     }
   }
   const users = new Map((data.accounts?.users ?? []).map(user => [user.id, user]));
   for (const [id, event] of Object.entries(data.push?.tripRequestNotifications ?? {})) {
     const request = activeRequestForNotification(data, id, event, now);
     if (!request) continue;
-    const client = request.companyName.trim().slice(0, 180);
-    const [whole, fraction] = request.quantityLitres.split('.');
-    const litres = whole.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + (fraction ? `,${fraction}` : '');
+    const date = pushDate(request.executionDate);
+    const body = parts(preview(request.companyName, 90), `${decimalLabel(request.quantityLitres)} л`, date && `доставка ${date}`);
     for (const assigneeId of event.recipientIds) {
       const user = users.get(assigneeId);
       if (user && canReceiveTripRequest(user, request)) assignments.push({
         kind: 'trip-requests', id, assigneeId, token: String(event.at), event: 'trip-request', occurredAt: event.at,
-        tripRequestBody: `${client} · ${litres} л`,
+        title: 'Новая заявка на рейс', body,
       });
     }
   }
   for (const [id, event] of Object.entries(data.push?.invoiceEvents ?? {})) {
-    if (event.occurredAt > now - 7 * assignmentLifetime && data.accounts?.users.some(user => user.id === event.userId && hasSection(user, 'invoices'))) assignments.push({ kind: 'invoices', id, assigneeId: event.userId, token: String(event.occurredAt), event: 'invoice-ready', occurredAt: event.occurredAt });
+    if (event.occurredAt > now - 7 * assignmentLifetime && data.accounts?.users.some(user => user.id === event.userId && hasSection(user, 'invoices'))) {
+      const readyAt = new Date(event.occurredAt);
+      const body = Number.isFinite(readyAt.getTime())
+        ? `PDF сформирован ${invoiceReadyTime.format(readyAt)} МСК`
+        : 'PDF доступен в разделе «Счета».';
+      assignments.push({ kind: 'invoices', id, assigneeId: event.userId, token: String(event.occurredAt), event: 'invoice-ready',
+        occurredAt: event.occurredAt, title: 'Счёт готов', body });
+    }
   }
-  return [...reminders, ...assignments, ...operatorPlanCandidates(data, now)];
+  const operator: PushCandidate[] = operatorPlanCandidates(data, now).map(({ clientName, totalLimit, ...row }) => ({
+    ...row, title: row.kind === 'operator-plan-completed' ? 'Задание операторской выполнено' : 'Новое задание операторской',
+    body: `«${preview(clientName, 100)}» · ${decimalLabel(totalLimit, true)} ₽`,
+  }));
+  return [...reminders, ...assignments, ...operator];
 }
 function notificationDeviceAvailable(data: OperationsData, row: PushCandidate, device: PushDevice, now: number) {
   return notificationSourceEnabled(data, row) && (row.occurredAt === undefined || device.createdAt <= row.occurredAt
@@ -334,8 +398,8 @@ async function mutatePush<T>(store: OperationsStorage, source: string, update: (
   }
 }
 
-export async function dispatchReminders(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now()) {
-  return dispatchNotifications(store, source, config, sender, now, true);
+export async function dispatchReminders(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), sourceCompanies: readonly Company[] = []) {
+  return dispatchNotifications(store, source, config, sender, now, true, undefined, sourceCompanies);
 }
 /** Immediately deliver only assignment events; the scheduler heartbeat is updated by dispatchReminders. */
 export async function dispatchTaskAssignments(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), taskId?: string) {
@@ -344,8 +408,8 @@ export async function dispatchTaskAssignments(store: OperationsStorage, source: 
 export async function dispatchTaskCompletion(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), taskId?: string) {
   return dispatchNotifications(store, source, config, sender, now, false, { event: 'task-completion', id: taskId });
 }
-export async function dispatchTripAssignments(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), tripId?: string) {
-  return dispatchNotifications(store, source, config, sender, now, false, { event: 'trip-assignment', id: tripId });
+export async function dispatchTripAssignments(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), tripId?: string, sourceCompanies: readonly Company[] = []) {
+  return dispatchNotifications(store, source, config, sender, now, false, { event: 'trip-assignment', id: tripId }, sourceCompanies);
 }
 export async function dispatchTripRequestNotifications(store: OperationsStorage, source: string, config: PushConfig, sender = sendPush, now = Date.now(), requestId?: string) {
   return dispatchNotifications(store, source, config, sender, now, false, { event: 'trip-request', id: requestId });
@@ -354,7 +418,7 @@ export async function dispatchOperatorNotifications(store: OperationsStorage, so
   return dispatchNotifications(store, source, config, sender, now, false, { event: 'operator-plan' });
 }
 /** Claim in durable storage before network I/O. Concurrent invocations cannot send the same claim. */
-async function dispatchNotifications(store: OperationsStorage, source: string, config: PushConfig, sender: PushSender, now: number, includeReminders: boolean, filter?: { event: PushCandidate['event']; id?: string }) {
+async function dispatchNotifications(store: OperationsStorage, source: string, config: PushConfig, sender: PushSender, now: number, includeReminders: boolean, filter?: { event: PushCandidate['event']; id?: string }, sourceCompanies: readonly Company[] = []) {
   if (!pushReady(config)) throw new ApiError(503, 'Отправка уведомлений ещё не настроена.');
   const lease = randomUUID();
   const claimed = await mutatePush(store, source, data => {
@@ -379,7 +443,7 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
     const pending: (PushCandidate & { key: string; device: PushDevice })[] = [];
     const counts = { reminder: 0, assignment: 0, 'task-completion': 0, 'trip-assignment': 0, 'trip-request': 0, 'invoice-ready': 0, 'operator-plan': 0 };
     const relevant = new Set<string>();
-    for (const row of candidates(data, now)) for (const device of push.devices.filter(device => device.userId === row.assigneeId)) {
+    for (const row of candidates(data, now, sourceCompanies)) for (const device of push.devices.filter(device => device.userId === row.assigneeId)) {
       if (!notificationDeviceAvailable(data, row, device, now)) continue;
       const key = candidateKey(row, device.id);
       relevant.add(key);
@@ -400,33 +464,20 @@ async function dispatchNotifications(store: OperationsStorage, source: string, c
   const results: { key: string; deviceId: string; sent: boolean; expired: boolean; cancelled: boolean }[] = [];
   for (let offset = 0; offset < claimed.length; offset += 5) {
     const current = await store.read(source);
-    const availableCandidates = candidates(current, now);
+    const availableCandidates = candidates(current, now, sourceCompanies);
     await Promise.all(claimed.slice(offset, offset + 5).map(async item => {
       const device = current.push?.devices.find(device => device.id === item.device.id && device.userId === item.device.userId);
       const available = device && current.push?.deliveries[item.key]?.lease === lease && availableCandidates.find(row => row.id === item.id && row.kind === item.kind && row.assigneeId === item.device.userId && row.event === item.event && row.token === item.token && notificationDeviceAvailable(current, row, device, Date.now()));
       if (!available) { results.push({ key: item.key, deviceId: item.device.id, sent: false, expired: false, cancelled: true }); return; }
       try {
         const operator = item.event === 'operator-plan';
-        const completed = item.kind === 'operator-plan-completed';
         const trip = item.event === 'trip-assignment';
         const invoice = item.event === 'invoice-ready';
-        const { handoff, completionBody, tripRequestBody } = available;
-        const title = completionBody ? 'Ваша задача выполнена'
-          : tripRequestBody ? 'Новая заявка на рейс'
-          : handoff ? 'Вам передали задачу'
-          : operator ? (completed ? 'Задание выполнено · Артэль' : 'Новое задание · Артэль')
-          : trip ? 'Новый рейс · Артэль' : 'Артэль CRM';
-        const body = completionBody ?? tripRequestBody ?? (handoff ? `${handoff.senderName} · «${handoff.title}»`
-          : operator ? (completed ? 'Ваше задание выполнено оператором. Откройте операторскую, чтобы посмотреть результат.' : 'Добавлено новое задание. Откройте операторскую, чтобы посмотреть подробности.')
-          : invoice ? 'Счёт и PDF готовы. Откройте раздел «Счета».'
-          : trip ? 'Вам назначен новый рейс. Откройте кабинет водителя, чтобы посмотреть подробности.'
-          : item.event === 'assignment' ? 'Вам назначена задача. Откройте CRM, чтобы посмотреть подробности.'
-          : item.kind === 'companies' ? 'Напоминание по работе с компанией. Откройте CRM, чтобы посмотреть подробности.'
-          : 'Напоминание по задаче. Откройте CRM, чтобы посмотреть подробности.');
+        const { title, body } = available;
         const url = operator ? `/?operatorPlan=${encodeURIComponent(item.id)}#operator`
           : invoice ? `/?invoiceView=history&invoiceJob=${encodeURIComponent(item.id.slice('invoice-ready:'.length))}#invoices`
           : trip ? `/#driver-trip/${encodeURIComponent(item.id)}`
-          : tripRequestBody ? '/#trips'
+          : item.event === 'trip-request' ? '/#trips'
           : `/?workKind=${item.kind}&workId=${encodeURIComponent(item.id)}#work`;
         await sender(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title, body, tag: item.key, url }), config);
         results.push({ key: item.key, deviceId: item.device.id, sent: true, expired: false, cancelled: false });

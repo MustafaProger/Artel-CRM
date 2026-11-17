@@ -10,7 +10,7 @@ import { bankRequest, type BankRequest } from './banking/transport';
 import { sberRequest, type SberRequest } from './banking/sber-client';
 import { dispatchBanks } from './banking/scheduler';
 import { BANK_SYNC_TICK_MS } from './banking/schedule';
-import { dispatchReminders, pushReady, type PushConfig } from './push';
+import { dispatchReminders, pushReady, sendPush, type PushConfig } from './push';
 import { SabyClient, sabyConfigFromEnv, sabyCredentialBlockers } from './saby-client';
 import { createTripSabyScheduler, SABY_WORKFLOW_TICK_MS, SABY_CARRIER_WAIT_TICK_MS } from './trip-saby-scheduler';
 import { configuredInvoiceBridge, syncInvoiceEvents } from './invoice-bridge';
@@ -227,7 +227,7 @@ export async function createProductionRuntime(env: Environment = process.env) {
         schedule(BANK_SYNC_TICK_MS, () => dispatchBanks(store, base.provenance.sourceSha256, bankEnvironment, transports.bankRequest, transports.sberRequest), true);
       }
       if (env.ARTEL_CABINET_ENCRYPTION_KEY && env.ARTEL_CABINET_SYNC_ENABLED !== 'false') schedule(60_000, () => refreshDueCabinets(store, base.provenance.sourceSha256, env));
-      if (pushReady(push)) wakeWorkNotifications = schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push));
+      if (pushReady(push)) wakeWorkNotifications = schedule(30_000, () => dispatchReminders(store, base.provenance.sourceSha256, push, sendPush, Date.now(), base.companies));
       if (invoiceBridge) schedule(5000, () => syncInvoiceEvents(invoiceBridge, store, base.provenance.sourceSha256), true);
       if (sabyEnabled) {
         schedule(SABY_WORKFLOW_TICK_MS, () => sabyScheduler.tick(), true);

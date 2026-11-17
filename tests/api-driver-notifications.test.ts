@@ -5,7 +5,7 @@ import { OperationsStore } from '../server/operations-store';
 import { dispatchReminders, dispatchTripAssignments, validatePush, type PushSender } from '../server/push';
 import { config, driverNotificationFixture, subscription, tripBody } from './helpers/driver-notifications';
 
-type Notice = { userId: string; body: string; tag: string; url: string };
+type Notice = { userId: string; title: string; body: string; tag: string; url: string };
 const capture = (sent: Notice[]): PushSender => async (device, payload) => { sent.push({ ...JSON.parse(payload), userId: device.userId }); };
 async function fixture(sender: PushSender) {
   const f = await driverNotificationFixture(sender);
@@ -48,7 +48,11 @@ test('new trip notifies only its driver once; replay, edits and historical trips
     const created = await f.admin('/api/shipment-trips', 'POST', body); assert.equal(created.status, 201);
     assert.equal(sent.length, 1); assert.equal(sent[0].userId, f.drivers[0].userId);
     assert.equal(sent[0].url, `/#driver-trip/${created.body.trip.id}`);
-    assert.match(sent[0].body, /новый рейс/); assert.doesNotMatch(JSON.stringify(sent), /customer|supplier|7000|50000/);
+    assert.ok(created.body.trip.number);
+    assert.equal(sent[0].title, `Вам назначен рейс №${created.body.trip.number}`);
+    assert.match(sent[0].body, /Синтетическая нефтебаза → (Доставка|Синтетическая доставка)/);
+    assert.match(sent[0].body, /01\.04\.2025/);
+    assert.doesNotMatch(sent[0].body, /customer|supplier|7000|50000|\+70000000009/);
     const repeat = await f.admin('/api/shipment-trips', 'POST', body); assert.equal(repeat.status, 201); assert.equal(repeat.body.trip.id, created.body.trip.id);
     const edit = tripBody(created.body.trip, 'driver', true); edit.fields.trip_notes = 'Изменён маршрут';
     assert.equal((await f.admin(`/api/shipment-trips/${created.body.trip.id}`, 'PATCH', edit)).status, 200);

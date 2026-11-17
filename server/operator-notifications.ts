@@ -30,17 +30,22 @@ export function queueOperatorPlanEvents(data: OperationsData, before: Record<str
   }
   if (data.push?.operatorPlanEvents && !Object.keys(data.push.operatorPlanEvents).length) delete data.push.operatorPlanEvents;
 }
-export function validOperatorPlanEvent(data: OperationsData, event: OperatorPlanEvent, now: number) {
+function activeOperatorPlan(data: OperationsData, event: OperatorPlanEvent, now: number) {
   const plan = data.operator?.plans?.[event.planId];
-  if (!plan || event.at <= now - lifetime) return false;
-  const status = operatorPlanSummary(data.operator!, plan).status;
-  return event.kind === 'created' ? status === 'active' : status === 'completed';
+  if (!plan || event.at <= now - lifetime) return;
+  const summary = operatorPlanSummary(data.operator!, plan);
+  if (summary.status === (event.kind === 'created' ? 'active' : 'completed')) return summary;
+}
+export function validOperatorPlanEvent(data: OperationsData, event: OperatorPlanEvent, now: number) {
+  return !!activeOperatorPlan(data, event, now);
 }
 export function operatorPlanCandidates(data: OperationsData, now: number) {
   return Object.values(data.push?.operatorPlanEvents ?? {}).flatMap(event => {
-    if (!validOperatorPlanEvent(data, event, now)) return [];
+    const plan = activeOperatorPlan(data, event, now);
+    if (!plan) return [];
     return event.recipientIds.filter(id => data.accounts?.users.some(user => user.id === id && hasSection(user, 'operator')))
-      .map(assigneeId => ({ kind: `operator-plan-${event.kind}`, id: event.planId, assigneeId, token: event.token, event: 'operator-plan' as const, occurredAt: event.at }));
+      .map(assigneeId => ({ kind: `operator-plan-${event.kind}`, id: event.planId, assigneeId, token: event.token,
+        event: 'operator-plan' as const, occurredAt: event.at, clientName: plan.clientName, totalLimit: plan.totalLimit }));
   });
 }
 export function validateOperatorPlanEvents(value: Record<string, OperatorPlanEvent> | undefined) {

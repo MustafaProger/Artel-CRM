@@ -96,14 +96,18 @@ test('deleting an employee revokes push subscriptions and test probes while pres
 });
 
 test('push tests distinguish provider acceptance from notification creation and accept only a scoped receipt token', async () => {
-  let probe: { id: string; token: string } | undefined;
-  const f = await fixture(async (_device, payload) => { probe = JSON.parse(payload).probe; });
+  let notice: { title: string; body: string; url: string; probe: { id: string; token: string } } | undefined;
+  const f = await fixture(async (_device, payload) => { notice = JSON.parse(payload); });
   try {
     const sub = subscription();
     assert.equal((await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: sub })).status, 200);
     const result = await f.manager('/api/push/test', 'POST', { endpoint: sub.endpoint });
     assert.equal(result.status, 200);
-    assert.ok(probe);
+    assert.ok(notice);
+    const { title, body, url, probe } = notice;
+    assert.equal(title, 'Проверка уведомлений');
+    assert.equal(body, 'Push-уведомления работают на этом устройстве.');
+    assert.equal(url, '/#work');
     assert.deepEqual(result.body, { ok: true, probeId: probe.id });
     const statusPath = `/api/push/test-status?probeId=${probe.id}`;
     assert.equal((await f.anon(statusPath)).status, 401);
@@ -287,10 +291,11 @@ test('push dispatch persists deliveries, routes to the current assignee, skips c
     const sender: PushSender = async (device, payload) => { sent.push({ user: device.userId, payload }); await new Promise(done => setTimeout(done, 30)); };
     await Promise.all([dispatchReminders(f.store, base.provenance.sourceSha256, config, sender, now), dispatchReminders(f.store, base.provenance.sourceSha256, config, sender, now)]);
     assert.equal(sent.length, 1); assert.equal(sent[0].user, f.users[1].id);
-    assert.match(JSON.parse(sent[0].payload).url, new RegExp(tasks[0].id));
-    assert.equal(JSON.parse(sent[0].payload).body.includes('due'), false);
+    const reminder = JSON.parse(sent[0].payload);
+    assert.match(reminder.url, new RegExp(tasks[0].id));
+    assert.equal(reminder.body, '«due»');
     const persisted = decodeOperations(encodeOperations(await f.store.read(base.provenance.sourceSha256)), base.provenance.sourceSha256);
-    assert.equal(persisted.push!.deliveries[JSON.parse(sent[0].payload).tag].sent, true);
+    assert.equal(persisted.push!.deliveries[reminder.tag].sent, true);
     assert.equal(Object.values(persisted.push!.deliveries).filter(row => row.sent).length, 3, 'Immediate assignment, completion and due reminder have separate persisted deliveries');
     await dispatchReminders(new OperationsStore(resolve(f.store.path, '..')), base.provenance.sourceSha256, config, sender, now + 60000);
     assert.equal(sent.length, 1);
@@ -311,8 +316,12 @@ test('temporary failures retry, expired endpoints are removed, and company remin
     const a = subscription(), b = subscription();
     await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: a });
     await f.manager('/api/push/subscription', 'POST', { explicit: true, subscription: b });
-    const companyId = (await f.director('/api/snapshot')).body.companies[0].id;
-    const record = await f.director('/api/work/companies', 'POST', { companyId, question: 'Company QA', assigneeId: f.users[1].id, reminderAt: new Date(now - 1000).toISOString() });
+    const company = { id: 'company-push-qa', name: 'Синтетическая компания' };
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      data.companies.push({ ...company, roles: ['customer'], managerLabels: [], shipmentIds: [], paymentIds: [], flags: [] });
+      return { result: null, changed: true };
+    });
+    const record = await f.director('/api/work/companies', 'POST', { companyId: company.id, question: 'Сверить сроки оплаты\nPRIVATE-SECOND-LINE', comment: 'PRIVATE-COMPANY-COMMENT', assigneeId: f.users[1].id, reminderAt: new Date(now - 1000).toISOString() });
     assert.equal(record.status, 201);
     let attempts = 0;
     const failing: PushSender = async device => { attempts++; throw Object.assign(new Error('Provider failure'), { statusCode: device.endpoint === a.endpoint ? 503 : 410 }); };
@@ -321,8 +330,12 @@ test('temporary failures retry, expired endpoints are removed, and company remin
     assert.equal((await f.store.read(base.provenance.sourceSha256)).push!.devices.length, 1);
     await dispatchReminders(f.store, base.provenance.sourceSha256, config, failing, now + 1000);
     assert.equal(attempts, 2);
-    const retry = await dispatchReminders(f.store, base.provenance.sourceSha256, config, async (_device, payload) => { assert.match(payload, /workKind=companies/); }, now + 121000);
+    const notices: { title: string; body: string; url: string }[] = [];
+    const retry = await dispatchReminders(f.store, base.provenance.sourceSha256, config, async (_device, payload) => { notices.push(JSON.parse(payload)); }, now + 121000);
     assert.equal(retry.sent, 1);
+    assert.equal(notices[0].title, 'Напоминание по компании');
+    assert.equal(notices[0].body, `${company.name} · Сверить сроки оплаты`);
+    assert.equal(notices[0].url, `/?workKind=companies&workId=${record.body.entry.id}#work`);
     await f.director(`/api/auth/users/${f.users[1].id}`, 'PATCH', { ...f.users[1], version: 1, active: false, id: undefined });
     assert.equal((await f.store.read(base.provenance.sourceSha256)).push!.devices.length, 0);
   } finally { await f.close(); }
@@ -486,9 +499,9 @@ test('multiple task assignees get durable assignment and reminder events, with a
     const url = `/?workKind=tasks&workId=${encodeURIComponent(taskId)}#work`;
     assert.deepEqual(handoffs(), [{ userId: colleague.id, title: 'Вам передали задачу', body: `${manager.name} · «Prepare UPD»`, url }]);
     assert.equal(sent.length, 6);
-    assert.equal(sent.filter(row => row.userId === colleague.id && row.body.includes('назначена')).length, 1);
+    assert.equal(sent.filter(row => row.userId === colleague.id && row.title === 'Вам назначили задачу').length, 1);
     assert.equal(sent.filter(row => row.userId === manager.id).length, 2);
-    assert.equal(sent.filter(row => row.userId === director.id && row.body.includes('Напоминание')).length, 1);
+    assert.equal(sent.filter(row => row.userId === director.id && row.title === 'Напоминание по задаче').length, 1);
 
     const secondTransfer = await f.director(path, 'PATCH', {
       version: renamed.body.entry.version, assigneeIds: [manager.id, colleague.id], handoff: true,

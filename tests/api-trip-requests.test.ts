@@ -1012,7 +1012,7 @@ test('new request notifications persist once, respect access and preferences, an
       assert.equal((await f.request('/api/push/subscription', 'POST', { subscription, explicit: true }, cookie)).status, 200);
     }
     assert.equal((await f.request('/api/push/preferences', 'PATCH', { tripRequests: false }, secondDirector)).status, 200);
-    const submit = (fields: Record<string, unknown>, cookie = f.one.cookie) => f.request('/api/trip-requests', 'POST', { companyId: 'customer', addressId: 'delivery', quantityLitres: '1200.25', salePricePerLitre: '93.84', ...fields }, cookie);
+    const submit = (fields: Record<string, unknown>, cookie = f.one.cookie) => f.request('/api/trip-requests', 'POST', { companyId: 'customer', addressId: 'delivery', quantityLitres: '1200.25', executionDate: '2027-04-05', salePricePerLitre: '93.84', ...fields }, cookie);
     const key = randomUUID();
     const [one, replay] = await Promise.all([submit({ idempotencyKey: key }), submit({ idempotencyKey: key })]);
     assert.equal(one.status, 201); assert.equal(replay.status, 201);
@@ -1030,7 +1030,7 @@ test('new request notifications persist once, respect access and preferences, an
     assert.equal(sent[0].userId, director.id);
     assert.equal(sent[0].title, 'Новая заявка на рейс');
     assert.equal(sent[0].url, '/#trips');
-    assert.equal(sent[0].body, `${one.body.request.companyName} · 1\u00a0200,25 л`);
+    assert.equal(sent[0].body, `${one.body.request.companyName} · 1\u00a0200,25 л · доставка 05.04.2027`);
     assert.doesNotMatch(JSON.stringify(sent[0]), /93[.,]84/);
     assert.equal((await f.request('/api/push/preferences', 'PATCH', { tripRequests: true }, secondDirector)).status, 200);
     assert.equal((await dispatch()).sent, 0, 'Muted requests are not replayed after enabling');

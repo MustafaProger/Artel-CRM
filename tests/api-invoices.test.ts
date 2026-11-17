@@ -231,17 +231,21 @@ test('events survive lost acknowledgements, deduplicate across restart and notif
     assert.equal(Object.keys((await f.store.read(f.source)).push!.invoiceEvents!).length, 1);
     const restarted = new OperationsStore(resolve(f.store.path, '..'));
     await syncInvoiceEvents(f.bridge, restarted, f.source);
-    let sent = 0;
+    const sent: { title: string; body: string; url: string }[] = [];
     const sender = async (device: { userId: string; endpoint: string }, payload: string) => {
-      sent++; assert.equal(device.userId, 'invoice-user'); assert.ok(device.endpoint.endsWith('/own'));
-      const value = JSON.parse(payload); assert.ok(value.url.endsWith('#invoices')); assert.ok(value.url.includes('invoiceView=history')); assert.equal(value.body.includes(jobId), false);
+      assert.equal(device.userId, 'invoice-user'); assert.ok(device.endpoint.endsWith('/own'));
+      sent.push(JSON.parse(payload));
     };
     await dispatchReminders(restarted, f.source, push, sender);
     await dispatchReminders(restarted, f.source, push, sender);
-    assert.equal(sent, 1);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].title, 'Счёт готов');
+    const [date, clock] = new Date(occurredAt + 3 * 3_600_000).toISOString().split('T');
+    assert.equal(sent[0].body, `PDF сформирован ${date.split('-').reverse().join('.')}, ${clock.slice(0, 5)} МСК`);
+    assert.equal(sent[0].url, `/?invoiceView=history&invoiceJob=${jobId}#invoices`);
     await f.store.mutate(f.source, data => { data.accounts!.users[1].role = 'director'; data.accounts!.users[0].active = false; data.push!.deliveries = {}; return { result: null, changed: true }; });
     await dispatchReminders(restarted, f.source, push, sender);
-    assert.equal(sent, 1);
+    assert.equal(sent.length, 1);
   } finally { await f.close(); }
 });
 

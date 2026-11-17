@@ -130,7 +130,7 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
         }
         return null;
       }, sent[0]);
-      assert.equal(shown?.title, 'Новый рейс · Артэль'); assert.equal(shown?.url, sent[0].url);
+      assert.deepEqual(shown, { title: sent[0].title, body: sent[0].body, url: sent[0].url });
       pass('chromium: actual service worker creates the new-trip notification with the CRM tab closed (synthetic PushEvent)');
       const probeSub = subscription();
       const device = await real.request.post(origin + '/api/push/subscription', { data: { explicit: true, subscription: probeSub } });

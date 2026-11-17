@@ -494,7 +494,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       const config = options.pushConfig ?? pushConfig();
       if (cronRequest) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
-        const result = await dispatchReminders(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush);
+        const result = await dispatchReminders(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), base.companies);
         return write(response, 200, JSON.stringify(result));
       }
       if (pushReceipt) {
@@ -945,7 +945,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           });
           const sendTest = async () => {
           try {
-            await (options.pushSender ?? sendPush)(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: 'Артэль CRM', body: 'Проверка уведомлений. Устройство создало это уведомление.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
+            await (options.pushSender ?? sendPush)(device, JSON.stringify({ displayBinding: pushDisplayBinding(device.sessionHash), title: 'Проверка уведомлений', body: 'Push-уведомления работают на этом устройстве.', tag: `artel-push-test-${probeId}`, url: targetUrl, probe: { id: probeId, token } }), config);
           } catch (error) {
             const received = (await operations.read(base.provenance.sourceSha256)).push?.probes?.[probeId]?.notificationCreatedAt;
             // A browser receipt is stronger evidence than a sender timeout after delivery.
@@ -1403,7 +1403,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const result = saved.value;
         if ('trip' in result && pushReady(config)) {
           // The assignment is already committed. A provider failure must not turn a saved trip into an error.
-          try { await dispatchTripAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.trip.id); }
+          try { await dispatchTripAssignments(operations, base.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), result.trip.id, base.companies); }
           catch { console.error('Уведомление водителю ожидает повторной отправки планировщиком.'); }
         }
         write(response, request.method === 'POST' ? 201 : 200, JSON.stringify(result));
@@ -1507,7 +1507,10 @@ export default function localApi(options: LocalApiOptions = {}): Plugin {
     const check = async () => {
       if (running) return;
       running = true;
-      try { await dispatchReminders(store, (await loadSnapshot()).provenance.sourceSha256, config, options.pushSender ?? sendPush); }
+      try {
+        const snapshot = await loadSnapshot();
+        await dispatchReminders(store, snapshot.provenance.sourceSha256, config, options.pushSender ?? sendPush, Date.now(), snapshot.companies);
+      }
       catch { console.error('Не удалось проверить push-напоминания. Следующая попытка через 30 секунд.'); }
       finally { running = false; }
     };
