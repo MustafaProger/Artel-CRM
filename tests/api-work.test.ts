@@ -87,7 +87,7 @@ test('work assignments transfer across authenticated accounts, remain scoped and
   } finally { await runtime.close(); }
 });
 
-test('multiple assignees, authored comments, handoff from archive and today count follow each account', async () => {
+test('multiple assignees, authored comments, handoff from archive and active task count follow each account', async () => {
   const f = await setup();
   try {
     const [aidar, zhenya, egor] = f.users;
@@ -95,9 +95,10 @@ test('multiple assignees, authored comments, handoff from archive and today coun
     assert.equal(workToday(new Date('2026-11-10T21:00:00.000Z')), '2026-11-11');
     const myTasks = async (client: typeof f.alice) => ((await client('/api/work?assigneeId=mine')).body as WorkResponse).work.tasks;
     const count = async (client: typeof f.alice) => (await client('/api/navigation')).body.todayTaskCount;
-    const personal = await f.alice('/api/work/tasks', 'POST', { title: 'Личная задача', assigneeIds: [], dueDate: today });
+    const personal = await f.alice('/api/work/tasks', 'POST', { title: 'Личная задача', assigneeIds: [] });
     assert.equal(personal.status, 201);
     assert.equal(personal.body.entry.assigneeId, zhenya.id);
+    assert.equal(personal.body.todayTaskCount, 1);
     assert.equal((await myTasks(f.bob)).length, 0);
     assert.equal((await myTasks(f.director)).length, 0);
     const payload = { title: 'Оформить УПД', assigneeIds: [zhenya.id], dueDate: today, requestId: randomUUID() };
@@ -152,6 +153,33 @@ test('multiple assignees, authored comments, handoff from archive and today coun
     assert.equal(restored.body.entry.status, 'todo');
     assert.equal(restored.body.entry.archivedAt, null);
     assert.equal(await count(f.bob), 1);
+  } finally { await f.close(); }
+});
+
+test('the Work badge counts all open personal tasks regardless of deadline and list filters', async () => {
+  const f = await setup();
+  try {
+    const assigneeId = f.users[1].id;
+    const create = (title: string, dueDate: string | null) => f.director('/api/work/tasks', 'POST', { title, assigneeId, dueDate });
+    const undated = await create('Без срока', null);
+    assert.equal(undated.status, 201);
+    assert.equal((await create('Просрочена', '2000-01-01')).status, 201);
+    assert.equal((await create('На будущее', '2099-01-01')).status, 201);
+    assert.equal((await f.alice('/api/navigation')).body.todayTaskCount, 3);
+    const mine = await f.alice('/api/work?assigneeId=mine');
+    assert.equal(mine.body.work.tasks.length, 3);
+    assert.equal(mine.body.todayTaskCount, 3);
+    assert.equal((await f.alice(`/api/work?assigneeId=${f.users[2].id}`)).body.todayTaskCount, 3);
+    assert.equal((await f.bob('/api/navigation')).body.todayTaskCount, 0);
+
+    const path = `/api/work/tasks/${undated.body.entry.id}`;
+    const completed = await f.alice(path, 'PATCH', { version: undated.body.entry.version, status: 'done' });
+    assert.equal(completed.status, 200);
+    assert.equal(completed.body.todayTaskCount, 2);
+    assert.equal((await f.alice('/api/navigation')).body.todayTaskCount, 2);
+    const reopened = await f.alice(path, 'PATCH', { version: completed.body.entry.version, archived: false });
+    assert.equal(reopened.status, 200);
+    assert.equal(reopened.body.todayTaskCount, 3);
   } finally { await f.close(); }
 });
 

@@ -41,7 +41,7 @@ import { apiSection, requireDirectoryMaintenance, requireSection, requireTripSec
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
-import { canReadHistoricalWorkPerson, readWork, mutateWork, workFile, workCompanyIds, todayTaskCount } from './work-operations';
+import { canReadHistoricalWorkPerson, readWork, mutateWork, workFile, workCompanyIds, activeTaskCount } from './work-operations';
 import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-cleanup';
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
@@ -743,7 +743,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           : hasSection(actor, 'shipments') || hasSection(actor, 'trips') || isAdministrator(actor) && hasSection(actor, 'overview')
             ? isAdministrator(actor) ? snapshot.shipments.length : snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).length
             : 0;
-        return write(response, 200, JSON.stringify({ shipmentCount, ...(actor && hasSection(actor, 'work') ? { todayTaskCount: todayTaskCount(requestData, actor) } : {}) }));
+        return write(response, 200, JSON.stringify({ shipmentCount, ...(actor && hasSection(actor, 'work') ? { todayTaskCount: activeTaskCount(requestData, actor) } : {}) }));
       }
       const executionMatch = pathname.match(/^\/api\/shipment-trips\/([^/]+)\/execution(?:\/(deliver|complete))?$/);
       if (executionMatch) {
@@ -1095,7 +1095,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const currentActor=authorized(data);
           const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
           const { completionQueued, ...response } = result;
-          return {result: { response: { ...response, todayTaskCount: todayTaskCount(data, currentActor) }, completionQueued },changed:result.changed};
+          return {result: { response: { ...response, todayTaskCount: activeTaskCount(data, currentActor) }, completionQueued },changed:result.changed};
         });
         // Status, archive and comment edits keep the assignment unchanged.
         const keepsAssignment = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status' || key === 'archived' || key === 'comment');

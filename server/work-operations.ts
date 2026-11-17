@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { hasSection, isAdministrator, isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
-import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAssigneeIds, workToday, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
+import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAssigneeIds, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
 import { queueTaskAssignment, queueTaskCompletion } from './push';
@@ -104,15 +104,14 @@ export function readWork(data: OperationsData, snapshot: Snapshot, params: URLSe
   const referenced = new Set([...visibleWork.tasks, ...visibleWork.companyRecords, ...visibleWork.notes].flatMap(workPersonIds));
   return {
     work: visibleWork,
-    todayTaskCount: todayTaskCount(data, actor),
+    todayTaskCount: activeTaskCount(data, actor),
     historicalUsers: (data.accounts?.users ?? []).filter(user => referenced.has(user.id) && !users.some(active => active.id === user.id)).map(({ id, name, avatar }) => ({ id, name, ...profileAvatarProjection(id, avatar) })),
     users: isSupervisor(actor) ? users : users.map(user => ({ ...user, login: '' })), companies: snapshot.companies.filter(company => isWorkDirectoryCompany(company) || referencedCompanies.has(company.id)), currentUser: actor, revision: data.revision,
   };
 }
 
-export function todayTaskCount(data: OperationsData, actor: AccountUser): number {
-  const today = workToday();
-  return data.work?.tasks.filter(task => task.dueDate === today && !task.archivedAt && !isClosedWorkStatus(task.status) && isMyWork(task, actor.id)).length ?? 0;
+export function activeTaskCount(data: OperationsData, actor: AccountUser): number {
+  return data.work?.tasks.filter(task => !task.archivedAt && !isClosedWorkStatus(task.status) && isMyWork(task, actor.id)).length ?? 0;
 }
 
 const stringField = (value: unknown, label: string, max: number, required = false) => {

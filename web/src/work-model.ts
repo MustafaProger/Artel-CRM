@@ -77,6 +77,7 @@ export interface WorkResponse {
   companies: Company[];
   currentUser: AccountUser;
   revision: number;
+  /** Open tasks in My records. The API field name is retained for already loaded clients. */
   todayTaskCount: number;
 }
 
