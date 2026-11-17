@@ -1,5 +1,9 @@
 import type { AvatarPresetId } from './avatar-model';
 import { permissionSections } from './page-catalog';
+
+export const minPasswordLength = 6;
+export const maxPasswordLength = 256;
+
 export type AccountRole = 'developer' | 'director' | 'admin' | 'employee' | 'manager' | 'accountant' | 'logistician' | 'driver';
 export const roleNames: Record<AccountRole, string> = { developer: 'Разработчик', director: 'Директор', admin: 'Администратор', employee: 'Сотрудник', manager: 'Менеджер', accountant: 'Бухгалтер', logistician: 'Логист', driver: 'Водитель' };
 export const selectableRoles = Object.entries(roleNames) as [AccountRole, string][];

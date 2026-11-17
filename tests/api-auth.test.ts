@@ -76,7 +76,8 @@ test('login uses server sessions; credentials never returned; logout, password c
   const r=await runtime();try{
     assert.equal((await r.request('/api/snapshot')).status,401);
     assert.equal((await r.request('/api/auth/session')).body.needsSetup,true);
-    const password=randomBytes(20).toString('hex');
+    const password='Qa@6+C';
+    assert.equal((await r.request('/api/auth/setup','POST',{name:'Директор',login:'owner',password:'short'})).status,400);
     const setup=await r.request('/api/auth/setup','POST',{name:'Директор',login:'owner',password});
     assert.equal(setup.status,200);assert.ok(setup.cookie?.includes('HttpOnly'));assert.ok(setup.cookie?.includes('SameSite=Strict'));
     assert.ok(!JSON.stringify(setup.body).includes(password));assert.ok(!JSON.stringify(setup.body).includes('passwordHash'));assert.ok(!('token' in setup.body));

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { Check, Pencil, X } from 'lucide-react'
-import type { AccountUser, SessionState } from './auth-model'
+import { maxPasswordLength, minPasswordLength, type AccountUser, type SessionState } from './auth-model'
 import { apiFetch } from './workspace-api'
 import ProfileAvatarPicker from './ProfileAvatarPicker'
 import './personal-profile-settings.css'
@@ -124,7 +124,7 @@ export default function PersonalProfileSettings({ user, onUserChanged }: {
       return
     }
     const { currentPassword, newPassword } = passwords
-    if (currentPassword && newPassword.length >= 12 && passwords.repeatedPassword === newPassword) {
+    if (currentPassword && newPassword.length >= minPasswordLength && passwords.repeatedPassword === newPassword) {
       void save('password', { currentPassword, newPassword })
     }
   }
@@ -177,19 +177,19 @@ export default function PersonalProfileSettings({ user, onUserChanged }: {
       <input className="personal-profile-login" name="username" autoComplete="username" value={user.login} readOnly tabIndex={-1} aria-hidden="true"/>
       <label className="personal-profile-field" htmlFor={`${id}-current`}>
         Текущий пароль
-        <input id={`${id}-current`} name="current-password" type="password" autoComplete="current-password" maxLength={256}
+        <input id={`${id}-current`} name="current-password" type="password" autoComplete="current-password" maxLength={maxPasswordLength}
           value={passwords.currentPassword} required disabled={!!saving} onChange={event => setPassword('currentPassword', event.target.value)}/>
       </label>
       <label className="personal-profile-field" htmlFor={`${id}-new`}>
         Новый пароль
-        <input id={`${id}-new`} name="new-password" type="password" autoComplete="new-password" minLength={12} maxLength={256}
+        <input id={`${id}-new`} name="new-password" type="password" autoComplete="new-password" minLength={minPasswordLength} maxLength={maxPasswordLength}
           aria-describedby={`${id}-length`} value={passwords.newPassword} required disabled={!!saving}
           onChange={event => setPassword('newPassword', event.target.value)}/>
       </label>
-      <p className="personal-profile-hint" id={`${id}-length`}>От 12 до 256 символов.</p>
+      <p className="personal-profile-hint" id={`${id}-length`}>От {minPasswordLength} до {maxPasswordLength} символов.</p>
       <label className="personal-profile-field" htmlFor={`${id}-repeat`}>
         Повторите новый пароль
-        <input ref={repeatInput} id={`${id}-repeat`} name="repeated-password" type="password" autoComplete="new-password" maxLength={256}
+        <input ref={repeatInput} id={`${id}-repeat`} name="repeated-password" type="password" autoComplete="new-password" maxLength={maxPasswordLength}
           value={passwords.repeatedPassword} required disabled={!!saving} aria-invalid={mismatch}
           aria-describedby={mismatch ? `${id}-mismatch` : undefined}
           onChange={event => setPassword('repeatedPassword', event.target.value)}/>

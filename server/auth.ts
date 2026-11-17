@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import type { IncomingMessage } from 'node:http';
 import type { AccountUser } from '../web/src/auth-model';
 import { isClosedWorkStatus, workAssigneeIds } from '../web/src/work-model';
-import { effectiveSections, defaultEmployeeSections, validDirectoryGrants, hasSection, isAdministrator, isDeveloper, isScopedEmployee, roleNames, sections, type SectionId } from '../web/src/auth-model';
+import { effectiveSections, defaultEmployeeSections, validDirectoryGrants, hasSection, isAdministrator, isDeveloper, isScopedEmployee, maxPasswordLength, minPasswordLength, roleNames, sections, type SectionId } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import type { OperationsData } from './operations-store';
 import { ApiError } from './api-error';
@@ -135,7 +135,9 @@ function moveLoginThrottle(accounts: AccountsData, previous: string, next: strin
 }
 
 function checkPasswordLength(input: unknown): asserts input is string {
-  if (typeof input !== 'string' || input.length < 12 || input.length > 256) throw new ApiError(400, 'Пароль должен содержать от 12 до 256 символов.');
+  if (typeof input !== 'string' || input.length < minPasswordLength || input.length > maxPasswordLength) {
+    throw new ApiError(400, `Пароль должен содержать от ${minPasswordLength} до ${maxPasswordLength} символов.`);
+  }
 }
 async function derivePasswordFields(password: string) {
   const salt = randomBytes(16).toString('hex');
@@ -293,7 +295,7 @@ export async function prepareProfileUpdate(data: OperationsData, request: Incomi
   const attemptKey = hash(`artel:auth:profile-password:${accountId}`);
   let credentials: Awaited<ReturnType<typeof derivePasswordFields>> | undefined;
   if (changingPassword) {
-    if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 256) throw new ApiError(400, 'Введите текущий пароль.');
+    if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > maxPasswordLength) throw new ApiError(400, 'Введите текущий пароль.');
     checkPasswordLength(newPassword);
     if (currentPassword === newPassword) throw new ApiError(400, 'Новый пароль должен отличаться от текущего.');
     const previousAttempt = accounts.attempts[attemptKey];
@@ -350,7 +352,7 @@ export async function prepareLogin(data: OperationsData, input: Record<string, u
   // Capture primitives before yielding, even if a caller mutates its input object.
   const identity = loginIdentity(user), expected = user?.passwordHash;
   const salt = user?.salt ?? '00000000000000000000000000000000';
-  const password = typeof input.password === 'string' && input.password.length <= 256 ? input.password : '';
+  const password = typeof input.password === 'string' && input.password.length <= maxPasswordLength ? input.password : '';
   // Known, unknown and throttled users all perform the same password derivation.
   const actual = await performanceSpan('auth.kdf', () => scrypt(password, salt, 64)) as Buffer;
   const verified = expected !== undefined && timingSafeEqual(actual, Buffer.from(expected, 'hex'));

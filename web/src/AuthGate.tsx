@@ -1,7 +1,7 @@
 import { advanceAuthEpoch, apiFetch as fetch, logisticsSessionExpiredEvent, sessionExpiredEvent } from './workspace-api';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight, Eye, EyeOff, KeyRound, LoaderCircle, LockKeyhole, ShieldCheck, Truck, UserRound } from 'lucide-react';
-import type { AccountUser, SessionState } from './auth-model';
+import { maxPasswordLength, minPasswordLength, type AccountUser, type SessionState } from './auth-model';
 import { currentPushEndpoint } from './push-client';
 import { watchVisibleRefresh } from './visible-refresh';
 import './auth.css';
@@ -277,12 +277,12 @@ export default function AuthGate({ children, workspace }: { children: (user: Acc
               <label htmlFor="auth-password">Пароль</label>
               <div className="auth-input-wrap">
                 <LockKeyhole size={20} aria-hidden="true" />
-                <input id="auth-password" name="password" required type={showPassword ? 'text' : 'password'} minLength={needsSetup ? 12 : undefined} maxLength={256} autoComplete={needsSetup ? 'new-password' : 'current-password'} aria-describedby={needsSetup ? 'auth-password-hint' : undefined} placeholder={needsSetup ? 'Придумайте пароль' : 'Введите пароль'} value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} />
+                <input id="auth-password" name="password" required type={showPassword ? 'text' : 'password'} minLength={needsSetup ? minPasswordLength : undefined} maxLength={maxPasswordLength} autoComplete={needsSetup ? 'new-password' : 'current-password'} aria-describedby={needsSetup ? 'auth-password-hint' : undefined} placeholder={needsSetup ? 'Придумайте пароль' : 'Введите пароль'} value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} />
                 <button className="auth-password-toggle" type="button" aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'} aria-controls="auth-password" onClick={() => setShowPassword(value => !value)}>
                   {showPassword ? <EyeOff size={20} aria-hidden="true" /> : <Eye size={20} aria-hidden="true" />}
                 </button>
               </div>
-              {needsSetup && <p className="auth-field-hint" id="auth-password-hint">Не менее 12 символов.</p>}
+              {needsSetup && <p className="auth-field-hint" id="auth-password-hint">Не менее {minPasswordLength} символов.</p>}
             </div>
             {needsSetup && session.setupTokenRequired && <div className="auth-field">
               <label htmlFor="auth-setup-token">Ключ первоначальной настройки</label>

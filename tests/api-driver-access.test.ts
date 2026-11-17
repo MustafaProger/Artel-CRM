@@ -87,7 +87,7 @@ test('custom driver passwords support issue and reset through both audiences wit
   const f = await fixture();
   try {
     // Preserve whitespace exactly, as the shared authentication policy does.
-    const firstPassword = ` ${randomUUID()} `, nextPassword = randomUUID();
+    const firstPassword = ` ${randomUUID()} `, nextPassword = 'Qa@6+E';
     const endpoint = '/api/drivers/driver/access';
     const issued = await f.request(endpoint, 'POST', { version: 0, action: 'issue', password: firstPassword }, f.adminCookie);
     assert.equal(issued.status, 200); assert.equal(issued.body.temporaryPassword, firstPassword);
@@ -151,7 +151,7 @@ test('invalid explicit driver passwords never generate a replacement or mutate a
     for (const action of ['issue', 'reset']) {
       if (action === 'reset') await f.issue();
       const before = (await f.store.read(f.source)).accounts;
-      for (const password of ['', 'x'.repeat(11), 'x'.repeat(257), null, 123, {}, []]) {
+      for (const password of ['', 'x'.repeat(5), 'x'.repeat(257), null, 123, {}, []]) {
         const response = await f.request('/api/drivers/driver/access', 'POST', { version: action === 'issue' ? 0 : 1, action, password }, f.adminCookie);
         assert.equal(response.status, 400); assert.equal(response.body.temporaryPassword, undefined);
         assert.deepEqual((await f.store.read(f.source)).accounts, before);

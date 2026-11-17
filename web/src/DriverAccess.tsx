@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Copy, ExternalLink, Eye, EyeOff, KeyRound, LoaderCircle, ShieldCheck } from 'lucide-react'
 import { apiFetch } from './workspace-api'
+import { maxPasswordLength, minPasswordLength } from './auth-model'
 import './driver-access.css'
 
 type DriverAccessState = {
@@ -29,7 +30,7 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
   const [password, setPassword] = useState('')
   const [repeatPassword, setRepeatPassword] = useState('')
   const [showCustomPassword, setShowCustomPassword] = useState(false)
-  const validPassword = password.length >= 12 && password.length <= 256 && password === repeatPassword
+  const validPassword = password.length >= minPasswordLength && password.length <= maxPasswordLength && password === repeatPassword
   const submitting = useRef(false)
   const request = useRef(0)
   const endpoint = `/api/drivers/${encodeURIComponent(driverId)}/access`
@@ -145,9 +146,9 @@ export default function DriverAccess({ driverId, disabled, onBusyChange, onChang
         <h4>{customPassword ? 'Свой пароль' : 'Новый пароль'}</h4>
         <p>{confirmation === 'issue' ? 'Установите пароль для первого входа водителя.' : 'Прежний пароль перестанет действовать, открытые сеансы водителя завершатся.'}</p>
         {customPassword && <div className="driver-access-custom" onKeyDown={event => { if (event.key === 'Enter') event.preventDefault() }}>
-          <label className="shipment-field"><span>Новый пароль водителя</span><span className="driver-access-password"><input aria-label="Новый пароль водителя" type={showCustomPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} minLength={12} maxLength={256} autoComplete="new-password" spellCheck={false} disabled={disabled || busy} aria-describedby="driver-password-help" autoFocus/><button type="button" className="icon-button" disabled={busy} aria-label={showCustomPassword ? 'Скрыть введённый пароль' : 'Показать введённый пароль'} onClick={() => setShowCustomPassword(value => !value)}>{showCustomPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></span></label>
-          <label className="shipment-field"><span>Повторите пароль</span><input aria-label="Повторите пароль" type={showCustomPassword ? 'text' : 'password'} value={repeatPassword} onChange={event => setRepeatPassword(event.target.value)} maxLength={256} autoComplete="new-password" spellCheck={false} disabled={disabled || busy} aria-invalid={!!repeatPassword && password !== repeatPassword} aria-describedby="driver-password-help"/></label>
-          <p id="driver-password-help" className="driver-access-hint" aria-live="polite">{repeatPassword && password !== repeatPassword ? 'Пароли не совпадают.' : 'От 12 до 256 символов.'}</p>
+          <label className="shipment-field"><span>Новый пароль водителя</span><span className="driver-access-password"><input aria-label="Новый пароль водителя" type={showCustomPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} minLength={minPasswordLength} maxLength={maxPasswordLength} autoComplete="new-password" spellCheck={false} disabled={disabled || busy} aria-describedby="driver-password-help" autoFocus/><button type="button" className="icon-button" disabled={busy} aria-label={showCustomPassword ? 'Скрыть введённый пароль' : 'Показать введённый пароль'} onClick={() => setShowCustomPassword(value => !value)}>{showCustomPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></span></label>
+          <label className="shipment-field"><span>Повторите пароль</span><input aria-label="Повторите пароль" type={showCustomPassword ? 'text' : 'password'} value={repeatPassword} onChange={event => setRepeatPassword(event.target.value)} maxLength={maxPasswordLength} autoComplete="new-password" spellCheck={false} disabled={disabled || busy} aria-invalid={!!repeatPassword && password !== repeatPassword} aria-describedby="driver-password-help"/></label>
+          <p id="driver-password-help" className="driver-access-hint" aria-live="polite">{repeatPassword && password !== repeatPassword ? 'Пароли не совпадают.' : `От ${minPasswordLength} до ${maxPasswordLength} символов.`}</p>
         </div>}
         <div className="driver-access-actions"><button type="button" className="button primary" disabled={disabled || busy || loading || needsCheck || (customPassword && !validPassword)} onClick={() => void change(confirmation)}>Сохранить пароль</button><button type="button" className="button" disabled={busy} onClick={cancelConfirmation}>Отмена изменения доступа</button></div>
       </div>}

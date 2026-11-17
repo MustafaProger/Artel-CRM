@@ -46,7 +46,7 @@ test('password API covers create, reset, drivers, legacy preservation, session p
     assert.equal((await call(legacyPath, 'POST', { version: 1 })).status, 409);
     assert.equal((await call('/api/auth/users')).body.users[0].passwordAvailable, false);
     const employee = (await call('/api/auth/employees', 'POST', { name: 'QA viewer' })).body.entry;
-    const password = randomBytes(24).toString('hex');
+    const password = 'Qa@6+A';
     const created = await call('/api/auth/users', 'POST', { name: 'QA employee', login: 'qa.employee', role: 'employee', managerId: employee.id, password, sections: [] });
     assert.equal(created.status, 201);
     const user = created.body.user, path = `/api/auth/users/${user.id}/password`;
@@ -67,7 +67,7 @@ test('password API covers create, reset, drivers, legacy preservation, session p
     const employeeLogin = await call('/api/auth/login', 'POST', { login: user.login, password });
     const employeeCookie = employeeLogin.headers.get('set-cookie')!.split(';')[0];
     assert.equal((await call(path, 'POST', { version: 1 }, employeeCookie)).status, 403);
-    const password2 = randomBytes(24).toString('hex');
+    const password2 = 'Qa@6+B';
     const edit = { name: user.name, login: user.login, role: user.role, managerId: user.managerId, sections: ['accounts'], version: 1, password: password2 };
     assert.equal((await call(`/api/auth/users/${user.id}`, 'PATCH', edit)).status, 200);
     assert.equal((await call(path, 'POST', { version: 1 })).status, 409);

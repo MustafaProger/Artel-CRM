@@ -14,7 +14,7 @@ export function encryptAccountPassword(password: string, record: PasswordRecord,
   return ['v1', iv.toString('hex'), cipher.getAuthTag().toString('hex'), encrypted.toString('hex')].join('.');
 }
 export function validPasswordCiphertext(value: unknown): value is string {
-  return typeof value === 'string' && /^v1\.[a-f0-9]{24}\.[a-f0-9]{32}\.(?:[a-f0-9]{2}){12,1024}$/.test(value);
+  return typeof value === 'string' && /^v1\.[a-f0-9]{24}\.[a-f0-9]{32}\.(?:[a-f0-9]{2}){6,1024}$/.test(value);
 }
 export function decryptAccountPassword(record: PasswordRecord, secret: string | undefined) {
   if (!record.passwordCiphertext) throw new ApiError(409, 'Пароль недоступен для просмотра. Он остаётся действующим.');

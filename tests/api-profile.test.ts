@@ -95,7 +95,7 @@ test('password update requires the current secret and revokes only other session
     }
     const passwordView = `/api/auth/users/${f.employee.id}/password`;
     assert.equal((await f.call(passwordView, 'POST', { version: 1 }, f.admin.cookie)).body.password, f.employeePassword);
-    const newPassword = randomPassword();
+    const newPassword = 'Qa@6+D';
     assert.equal((await f.call(profile, 'PATCH', { version: 1, newPassword }, signed.cookie)).status, 400);
     assert.equal((await f.call(profile, 'PATCH', { version: 1, currentPassword: f.employeePassword, newPassword: 'short' }, signed.cookie)).status, 400);
     const wrong = await f.call(profile, 'PATCH', { version: 1, name: 'Must not change', currentPassword: 'wrong-password', newPassword }, signed.cookie);
