@@ -26,14 +26,16 @@ const stateLabel = (company: SettlementCompany, side: Side, supplierScope = fals
 
 export default function OrganizationOverview({ organizations, unassignedShipmentCount }: { organizations: OrganizationSettlement[]; unassignedShipmentCount: number }) {
   const [organizationId, setOrganizationId] = useState('nk-artel')
-  const [side, setSide] = useState<Side>('suppliers')
+  const [selectedSide, setSide] = useState<Side>('suppliers')
   const organization = organizations.find(row => row.id === organizationId) ?? organizations[0]
+  const supplierReport = selectedSide === 'suppliers' ? organization?.suppliers : undefined
+  const side = supplierReport ? 'suppliers' : 'clients'
   return <section className="organization-overview view-entrance" aria-label="Расчёты по нашим организациям">
     {organization ? <>
       <div className="overview-organization-picker" role="group" aria-label="Наша организация">{organizations.map(row => <button type="button" key={row.id} aria-pressed={organization.id === row.id} onClick={() => setOrganizationId(row.id)} data-organization-id={row.id}><Building2 size={20}/><span>{row.name}</span></button>)}</div>
-      <ScrollableSegments className="overview-ledger-tabs" label="Сторона взаиморасчётов" value={side}><button type="button" aria-pressed={side === 'suppliers'} onClick={() => setSide('suppliers')}>Поставщики</button><button type="button" aria-pressed={side === 'clients'} onClick={() => setSide('clients')}>Клиенты</button></ScrollableSegments>
+      {organization.suppliers && <ScrollableSegments className="overview-ledger-tabs" label="Сторона взаиморасчётов" value={side}><button type="button" aria-pressed={side === 'suppliers'} onClick={() => setSide('suppliers')}>Поставщики</button><button type="button" aria-pressed={side === 'clients'} onClick={() => setSide('clients')}>Клиенты</button></ScrollableSegments>}
       {unassignedShipmentCount > 0 && <div className="overview-notice" data-testid="organization-unassigned-notice"><AlertCircle size={18}/><div><strong>Без нашей организации: {unassignedShipmentCount} отгрузок</strong></div></div>}
-      <OrganizationLedger key={`${organization.id}:${side}`} report={organization[side]} organization={organization.name} organizationId={organization.id} side={side}/>
+      <OrganizationLedger key={`${organization.id}:${side}`} report={supplierReport ?? organization.clients} organization={organization.name} organizationId={organization.id} side={side}/>
     </> : <div className="overview-empty overview-card"><Building2 size={30}/><h3>Раздельные расчёты пока недоступны</h3></div>}
   </section>
 }

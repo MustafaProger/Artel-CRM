@@ -250,7 +250,10 @@ test('overview ledger isolates two assigned portfolios, empty managers, unassign
     const employee = await f.director('/api/directories', 'POST', { kind: 'managers', name: 'Ledger admin employee' });
     assert.equal((await f.director('/api/auth/users', 'POST', { name: 'Ledger admin', login: 'settlements.admin', password: f.password, role: 'admin', managerId: employee.body.entry.id, sections: ['overview'] })).status, 201);
     await admin('/api/auth/login', 'POST', { login: 'settlements.admin', password: f.password });
-    assert.deepEqual((await admin('/api/settlements')).body, directorReport);
+    assert.deepEqual((await admin('/api/settlements')).body, {
+      ...directorReport,
+      organizations: directorReport.organizations!.map(({ id, name, clients }) => ({ id, name, clients })),
+    });
   } finally { await f.close(); }
 });
 

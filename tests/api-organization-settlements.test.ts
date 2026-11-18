@@ -170,17 +170,26 @@ test('assigned clients isolate organizations; mixed legacy history cannot consum
   assert.equal(legacy.fields.paid_amount_source, '10');
 });
 
-test('manager supplier projections hide foreign purchases, aliases, payment amounts, purposes, review and free advances', () => {
+test('supplier ledgers are available to directors and developers in full and to logisticians for their own purchases', () => {
   const store = empty(), own = shipment('own', '300'), other = shipment('hidden-purchase', '400');
   other.fields.manager_id = 'manager-two';
   const hiddenAlias = { ...supplier, id: 'hidden-supplier-alias', name: 'Hidden alias name' };
   other.supplierId = hiddenAlias.id; other.supplier = hiddenAlias.name;
   insert(store, [payment('shared-1000', '1000')]);
   const directory = [hiddenAlias, ...companies], rows = [own, other];
-  const actor: AccountUser = { id: 'user-manager', login: 'manager', name: 'Manager', role: 'manager', managerId: 'manager-one', sections: ['overview'], version: 1 };
+  const actor: AccountUser = { id: 'user-logistician', login: 'logistician', name: 'Logistician', role: 'logistician', managerId: 'manager-one', sections: ['overview'], active: true, version: 1 };
   const snapshot = { companies: directory, shipments: rows, directories: { managers: [{ id: 'manager-one', name: 'One' }, { id: 'manager-two', name: 'Two' }], customerManagers: [] } } as unknown as Snapshot;
   const full = buildOrganizationSettlements(rows, directory, store).organizations;
-  const report = organizationSettlementsForActor(full, snapshot, actor).organizations![0].suppliers;
+  for (const role of ['director', 'developer'] as const) {
+    assert.deepEqual(organizationSettlementsForActor(full, snapshot, { ...actor, role }).organizations, full);
+  }
+  for (const role of ['admin', 'accountant', 'manager', 'employee', 'driver'] as const) {
+    const result = organizationSettlementsForActor(full, snapshot, { ...actor, role });
+    assert.ok(result.organizations!.every(row => !Object.hasOwn(row, 'suppliers')));
+    assert.ok(!JSON.stringify(result).includes('shared-1000'));
+  }
+  assert.ok(organizationSettlementsForActor(full, snapshot, null).organizations!.every(row => !Object.hasOwn(row, 'suppliers')));
+  const report = organizationSettlementsForActor(full, snapshot, actor).organizations![0].suppliers!;
   assert.equal(report.totals.incoming, '300'); assert.equal(report.totals.advance, '0');
   assert.equal(report.companies[0].receipts[0].amountIsScoped, true);
   assert.equal(report.companies[0].receipts[0].purpose, null);
@@ -254,12 +263,27 @@ test('API adds organization ledgers while keeping global compatibility; snapshot
   const before = await store.read(base.provenance.sourceSha256);
   const response = await request('/api/settlements'); assert.equal(response.status, 200);
   const report = response.body as SettlementsReport;
-  assert.equal(report.organizations!.find(row => row.id === 'artel')!.suppliers.totals.advance, '400');
-  assert.equal(report.organizations!.find(row => row.id === 'nk-artel')!.suppliers.totals.debt, '300');
+  assert.equal(report.organizations!.find(row => row.id === 'artel')!.suppliers?.totals.advance, '400');
+  assert.equal(report.organizations!.find(row => row.id === 'nk-artel')!.suppliers?.totals.debt, '300');
   assert.equal(report.totals.debt, '800'); assert.equal(report.unassignedShipmentCount, 1);
+  const tracePath = '/api/settlements/supplier-payment/' + payment('outgoing-api', '700', 'artel').id;
+  const trace = await request(tracePath);
+  assert.equal(trace.status, 200);
+  assert.equal(trace.body.match.receipt.advance, '400');
+  assert.deepEqual(trace.body.match.shipments.map((row: { id: string }) => row.id), [savedIds[0]]);
+  assert.equal(Object.hasOwn(trace.body, 'organizations'), false);
   const current = (await request('/api/snapshot')).body as Snapshot;
   assert.deepEqual(savedIds.map(id => current.shipments.find(row => row.id === id)!.fields.paid_amount_source), ['500', '0', '0']);
   assert.deepEqual(await store.read(base.provenance.sourceSha256), before);
   const reopened = new OperationsStore(directory), stored = await reopened.read(base.provenance.sourceSha256);
   assert.deepEqual(currentSnapshot(base, stored).shipments.map(row => [row.id, row.fields.paid_amount_source]), current.shipments.map(row => [row.id, row.fields.paid_amount_source]));
+
+  const employee = await request('/api/directories', 'POST', { kind: 'managers', name: 'Organization QA admin' });
+  const credentials = { login: 'organization.admin.qa', password: randomUUID() };
+  assert.equal((await request('/api/auth/users', 'POST', { ...credentials, name: 'Organization QA admin', role: 'admin', managerId: employee.body.entry.id, sections: ['overview', 'payments'] })).status, 201);
+  assert.equal((await request('/api/auth/login', 'POST', credentials)).status, 200);
+  const adminReport = await request('/api/settlements');
+  assert.equal(adminReport.status, 200);
+  assert.ok(adminReport.body.organizations.every((row: object) => !Object.hasOwn(row, 'suppliers')));
+  assert.deepEqual(await request(tracePath), trace);
 });

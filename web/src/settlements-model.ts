@@ -71,9 +71,18 @@ export interface SettlementSource {
   from: string | null
   to: string | null
 }
+export interface SupplierPaymentTraceResult {
+  match: {
+    organizationName: string
+    supplierName: string
+    receipt: Pick<SettlementReceipt, 'amount' | 'allocated' | 'advance' | 'allocations'>
+    shipments: Pick<SettlementShipment, 'id' | 'number' | 'date' | 'debt'>[]
+  } | null
+  reviewReason?: string
+}
 export interface SettlementsReport {
   scope?: 'all' | 'own'
-  /** Root-only extension; companies/totals retain the legacy global customer view. */
+  /** Per-organization ledgers; companies/totals retain the global customer view. */
   organizations?: OrganizationSettlement[]
   unassignedShipmentCount?: number
   companies: SettlementCompany[]

@@ -113,10 +113,12 @@ try {
     assert.deepEqual(result.violations, [], `Accessibility violations in ${name} at ${width}px`);
   };
   const managerLogins = [];
+  let logistician;
   for (let index = 0; index < managers.length; index++) {
     const password = randomBytes(24).toString('hex'), login = `overview-manager-${index}`;
     managerLogins.push({ login, password });
-    await api('/api/auth/users', { name: managers[index].name, login, password, role: 'manager', managerId: managers[index].id, sections: ['overview', 'shipments'] });
+    const { user } = await api('/api/auth/users', { name: managers[index].name, login, password, role: index === 0 ? 'logistician' : 'manager', managerId: managers[index].id, sections: ['overview', 'shipments'] });
+    if (index === 0) logistician = user;
   }
   await page.goto(base + '/#settlements');
   await expect(page.locator('.overview-page')).toBeVisible();
@@ -256,9 +258,13 @@ try {
     await expect(ownReceipt).toContainText('450 000,00');
     await expect(ownReceipt).not.toContainText('700 000,00');
     await expect(ownReceipt).not.toContainText('OTHER-MANAGER-350');
-    await capture('manager-supplier-detail', 320, ownPage);
+    await capture('logistician-supplier-detail', 320, ownPage);
   } finally { await ownContext.close(); }
-  check('Manager supplier view shows only own 450,000 of a shared payment, labels it as partial, hides foreign purchases and does not claim access to the free supplier advance');
+  check('Logistician supplier view shows the 450,000 scoped payment and hides foreign purchases and the free supplier advance');
+  const roleChange = await context.request.patch(base + '/api/auth/users/' + logistician.id, {
+    data: { name: logistician.name, login: logistician.login, role: 'manager', managerId: logistician.managerId, version: logistician.version, sections: logistician.sections },
+  });
+  assert.equal(roleChange.status(), 200, await roleChange.text());
   // Distinct synthetic balances and latest-operation dates exercise every sort
   // independently in each organization and on both sides of the ledger.
   const extraSuppliers = [];
@@ -358,12 +364,16 @@ try {
     try {
       assert.equal((await managerContext.request.post(base + '/api/auth/login', { data: managerLogins[index] })).status(), 200);
       const scoped = await (await managerContext.request.get(base + '/api/settlements')).json();
+      assert.equal((await managerContext.request.get(base + '/api/settlements/supplier-payment/' + supplierPayment.id)).status(), 403);
       const managerPage = await managerContext.newPage(); managerPage.on('pageerror', error => report.errors.push(error.message));
       await managerPage.goto(base + '/#overview');
       for (const org of ['nk-artel', 'artel']) {
         await managerPage.locator(`.overview-organization-picker [data-organization-id="${org}"]`).click();
-        await managerPage.getByRole('button', { name: 'Клиенты', exact: true }).click();
-        const expected = scoped.organizations.find(row => row.id === org).clients;
+        const organization = scoped.organizations.find(row => row.id === org);
+        assert.ok(!Object.hasOwn(organization, 'suppliers'));
+        await expect(managerPage.getByRole('button', { name: 'Поставщики', exact: true })).toHaveCount(0);
+        await expect(managerPage.getByTestId('organization-ledger')).toHaveAttribute('data-side', 'clients');
+        const expected = organization.clients;
         assert.equal(expected.scope, 'own'); assert.deepEqual(expected.sources, []); assert.deepEqual(expected.review, []);
         await expect(managerPage.locator('.organization-company-button')).toHaveCount(expected.companies.length);
         await expect(managerPage.locator('.overview-page')).not.toContainText(companies[1 - index].name);

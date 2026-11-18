@@ -7,5 +7,5 @@ export interface OrganizationSettlement {
   id: OurOrganizationId;
   name: string;
   clients: SettlementsReport;
-  suppliers: SettlementsReport;
+  suppliers?: SettlementsReport;
 }

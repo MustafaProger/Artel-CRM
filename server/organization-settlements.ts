@@ -4,7 +4,7 @@ import type { BankOperation } from '../web/src/banking-model';
 import type { Company, PaymentAllocation, Shipment, Snapshot } from '../web/src/model';
 import type { OrganizationSettlement } from '../web/src/organization-settlements-model';
 import { ourOrganizations, organizationForConnection, shipmentOrganizationId, type OurOrganizationId } from '../web/src/our-organizations';
-import type { SettlementCompany, SettlementReceipt, SettlementReview, SettlementsReport } from '../web/src/settlements-model';
+import type { SettlementCompany, SettlementReceipt, SettlementReview, SettlementsReport, SupplierPaymentTraceResult } from '../web/src/settlements-model';
 import { decimal, SHIPMENT_DECIMAL_PRECISION } from '../web/src/shipment-calculations';
 import { canManage } from './auth';
 import { ownsShipment } from './auth-scope';
@@ -140,7 +140,9 @@ function supplierSettlements(shipments: Shipment[], companies: Company[], operat
   return { scope: 'all', companies: result, totals: totals(result), review, sources: [] };
 }
 
-export function buildOrganizationSettlements(shipments: Shipment[], companies: Company[], store: OperationsData): { organizations: OrganizationSettlement[]; clientAllocations: PaymentAllocation[] } {
+type CompleteOrganizationSettlement = OrganizationSettlement & { suppliers: SettlementsReport };
+
+export function buildOrganizationSettlements(shipments: Shipment[], companies: Company[], store: OperationsData): { organizations: CompleteOrganizationSettlement[]; clientAllocations: PaymentAllocation[] } {
   // Deduplicate across ALL connectors before separating organizations. Otherwise
   // one bank operation imported into two slots could be spent once per company.
   const { operations, conflicts, organizationConflicts, sources, ownAccounts, ownInns } = settlementSources(store);
@@ -195,18 +197,39 @@ function scopeSuppliers(report: SettlementsReport, snapshot: Snapshot, actor: Ac
   return { scope: 'own', companies, sources: [], review: [], totals: totals(companies) };
 }
 
-export function organizationSettlementsForActor(organizations: OrganizationSettlement[], snapshot: Snapshot, actor: AccountUser | null): Pick<SettlementsReport, 'organizations' | 'unassignedShipmentCount'> {
-  const all = !actor || canManage(actor);
+export function organizationSettlementsForActor(organizations: CompleteOrganizationSettlement[], snapshot: Snapshot, actor: AccountUser | null): Pick<SettlementsReport, 'organizations' | 'unassignedShipmentCount'> {
+  const fullClientAccess = actor && canManage(actor);
   return {
-    organizations: all ? organizations : organizations.map(organization => {
-      // Without an organization relationship, an idle directory client must not
-      // appear as an assigned client of both legal entities automatically.
+    organizations: organizations.map(({ suppliers, ...organization }) => {
+      if (actor?.role === 'director' || actor?.role === 'developer') return { ...organization, suppliers };
+      if (!actor || fullClientAccess) return organization;
+
+      // Keep idle clients out of organizations where they have no transactions.
       const represented = new Set(organization.clients.companies.flatMap(group => group.companyIds));
       const clientSnapshot = { ...snapshot, companies: snapshot.companies.filter(company => represented.has(company.id)) };
-      return { ...organization, clients: scopeSettlements(organization.clients, clientSnapshot, actor!), suppliers: scopeSuppliers(organization.suppliers, snapshot, actor!) };
+      const clients = scopeSettlements(organization.clients, clientSnapshot, actor);
+      return actor.role === 'logistician'
+        ? { ...organization, clients, suppliers: scopeSuppliers(suppliers, snapshot, actor) }
+        : { ...organization, clients };
     }),
-    unassignedShipmentCount: snapshot.shipments.filter(row => !shipmentOrganizationId(row) && (all || ownsShipment(actor!, row, snapshot))).length,
+    unassignedShipmentCount: snapshot.shipments.filter(row => !shipmentOrganizationId(row) && (!actor || fullClientAccess || ownsShipment(actor, row, snapshot))).length,
   };
+}
+
+export function supplierPaymentTrace(organizations: CompleteOrganizationSettlement[], operationId: string): SupplierPaymentTraceResult {
+  for (const { name: organizationName, suppliers } of organizations) {
+    for (const supplier of suppliers.companies) {
+      const payment = supplier.receipts.find(row => row.id === operationId);
+      if (!payment) continue;
+      const { amount, allocated, advance, allocations } = payment;
+      const shipmentIds = new Set(allocations.map(row => row.shipmentId));
+      const shipments = supplier.shipments.filter(row => shipmentIds.has(row.id))
+        .map(({ id, number, date, debt }) => ({ id, number, date, debt }));
+      return { match: { organizationName, supplierName: supplier.name, receipt: { amount, allocated, advance, allocations }, shipments } };
+    }
+  }
+  const reviewReason = organizations.flatMap(row => row.suppliers.review).find(row => row.id === operationId)?.reason;
+  return { match: null, reviewReason };
 }
 
 /** Global totals remain a compatibility view. Once a client has assigned rows,

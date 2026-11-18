@@ -48,7 +48,7 @@ import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
 import { currentShipmentAccess, currentWorkSnapshot, currentTripRequestSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
 import { buildSettlements } from './settlements';
-import { buildOrganizationSettlements, organizationSettlementsForActor } from './organization-settlements';
+import { buildOrganizationSettlements, organizationSettlementsForActor, supplierPaymentTrace } from './organization-settlements';
 import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
 import { addDirectoryEntry, normalizeName } from './directory-operations';
 import { saveCompany, updateDirectoryEntry } from './directory-editing';
@@ -911,6 +911,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (logistics && pathname === '/api/context') {
         const stored = requestData;
         return write(response, 200, JSON.stringify(logisticsContext(currentSnapshot(base, stored), authorized(stored))));
+      }
+      const supplierPayment = pathname.match(/^\/api\/settlements\/supplier-payment\/([a-f0-9]{64})$/);
+      if (supplierPayment) {
+        if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+        requireManage(requireSection(actor ?? authorized(requestData), 'payments'));
+        const snapshot = currentSnapshot(base, requestData, false);
+        const { organizations } = buildOrganizationSettlements(snapshot.shipments, snapshot.companies, requestData);
+        return write(response, 200, JSON.stringify(supplierPaymentTrace(organizations, supplierPayment[1])));
       }
       if (pathname === '/api/settlements') {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
