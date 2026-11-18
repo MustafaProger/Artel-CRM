@@ -66,7 +66,8 @@ function projectTrip(snapshot: Snapshot, id: string, rows: Shipment[], actor: Ac
   };
 }
 export function readDriverTrips(snapshot: Snapshot, actor: AccountUser, id?: string, query = '', data?: OperationsData) {
-  const owned = ownedTrips(snapshot, actor);
+  const hidden = new Set(data?.tripProcessHiddenIds);
+  const owned = ownedTrips(snapshot, actor).filter(([tripId]) => !hidden.has(tripId));
   const numbers = data ? readTripNumbers(snapshot, data) : {};
   if (id) {
     const rows = owned.find(([tripId]) => tripId === id)?.[1];

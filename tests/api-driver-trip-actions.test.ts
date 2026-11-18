@@ -69,6 +69,36 @@ test('driver-v1 creates immediate accounting without mass, future plan only and 
   } finally { await f.close(); }
 });
 
+test('one-time process exclusions hide the same trips from driver lists, search, direct links and actions', async () => {
+  const f = await fixture();
+  try {
+    const before = await f.store.read(f.source);
+    await f.store.mutate(f.source, data => {
+      data.tripProcessHiddenIds = [f.created.trip.id];
+      return { changed: true, result: null };
+    });
+    const list = await f.request('/api/driver/trips', 'GET', undefined, f.cookie);
+    assert.equal(list.status, 200);
+    assert.ok(list.body.trips.some((row: { id: string }) => row.id === f.tripId));
+    assert.ok(!list.body.trips.some((row: { id: string }) => row.id === f.created.trip.id));
+    assert.equal(list.body.total, list.body.trips.length);
+    const search = await f.request('/api/driver/trips?q=' + encodeURIComponent(f.created.trip.id), 'GET', undefined, f.cookie);
+    assert.deepEqual(search.body.trips, []);
+    assert.equal((await f.read()).status, 404);
+    for (const action of ['arrive', 'depart', 'deliver', 'complete'] as const) {
+      assert.equal((await f.action(action, { versions: {} })).status, 404);
+    }
+    const ordinary = await f.request('/api/shipment-trips', 'GET', undefined, f.adminCookie);
+    assert.ok(ordinary.body.trips.some((row: { id: string }) => row.id === f.created.trip.id));
+    assert.equal((await f.request('/api/shipment-trips/' + f.created.trip.id, 'GET', undefined, f.adminCookie)).status, 200);
+    const data = await f.store.read(f.source);
+    assert.deepEqual(data.shipments, before.shipments);
+    assert.deepEqual(data.tripExecutions, before.tripExecutions);
+    assert.deepEqual(data.driverTripProgress, before.driverTripProgress);
+    assert.equal(f.provider.calls.length, 0);
+  } finally { await f.close(); }
+});
+
 test('workflow exposes actual driver confirmation and requests continuation once, only after committed departure', async () => {
   const requested: string[] = [];
   const f = await fixture(false, tripId => requested.push(tripId));

@@ -688,6 +688,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           const result = await operations.mutate(base.provenance.sourceSha256, fresh => {
             const actor = requireUser(fresh, request);
             requireDriverRoute(actor, pathname, request.method!);
+            readDriverTrips(currentSnapshot(base, fresh, false), actor, decodeURIComponent(match[1]), '', fresh);
             if (match[2] === 'deliver' || match[2] === 'complete') {
               if (actor.role !== 'driver') throw new ApiError(403, 'Доступен только кабинет назначенного водителя.');
               const snapshot = currentSnapshot(base, fresh, false);
