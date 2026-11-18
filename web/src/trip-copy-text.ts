@@ -41,6 +41,7 @@ export function tripDriverCopyText(trip: ShipmentTrip, data: DirectoryData): str
     // Saved destination wins over subsequent edits to the address directory.
     const hasSavedAddress = !!fields.unloading_address?.trim()
     const address = hasSavedAddress ? fields.unloading_address : place?.address
+    const comment = fields.delivery_notes?.trim()
     const link = mapLink({
       mapUrl: fields.unloading_map_url || (!hasSavedAddress ? place?.mapUrl : null),
       latitude: fields.unloading_latitude || (!hasSavedAddress ? place?.latitude : null),
@@ -52,6 +53,7 @@ export function tripDriverCopyText(trip: ShipmentTrip, data: DirectoryData): str
       line(address, 'Адрес не указан'),
       link ? `${link.label === 'Найти адрес в Яндекс.Картах' ? 'Яндекс (поиск адреса): ' : ''}${link.href}` : 'Ссылка Яндекса не указана',
       ...[{name:place?.receiverName,phone:place?.receiverPhone},...(place?.additionalReceivers??[])].map(contact=>`${line(contact.name, 'Приёмщик')} ${line(contact.phone, 'телефон не указан')}`),
+      ...(comment ? [`Комментарий: ${comment}`] : []),
     ].join('\n')
   })
   return [`Погрузка на ${line(depot?.name, 'нефтебаза не указана')} от ${line(supplier?.name, 'поставщик не указан')}`, ...deliveries].join('\n\n')

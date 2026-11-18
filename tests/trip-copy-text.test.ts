@@ -69,6 +69,18 @@ test('driver message matches destinations, saved links and each site contact, wi
   assert.equal(JSON.stringify({ value, directory }), before)
 })
 
+test('driver message includes each delivery comment with its original line breaks', () => {
+  const { value, directory } = driverFixture()
+  const original = tripDriverCopyText(value, directory)
+  value.customers[0].fields.delivery_notes = 'Въезд через правые ворота\n\nПозвонить перед разгрузкой'
+  value.customers[1].fields.delivery_notes = '  \n  '
+  assert.equal(
+    tripDriverCopyText(value, directory),
+    original.replace('Приёмщик 79919688774', 'Приёмщик 79919688774\nКомментарий: Въезд через правые ворота\n\nПозвонить перед разгрузкой'),
+  )
+  assert.doesNotMatch(tripCopyText(value, directory), /Комментарий|правые ворота/)
+})
+
 test('missing driver details are explicit and a mismatched company cannot provide contacts', () => {
   const { value, directory } = driverFixture()
   value.customers = [value.customers[0]]
