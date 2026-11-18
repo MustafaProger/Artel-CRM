@@ -8,7 +8,7 @@
 .work-editor-footer .button.work-delete:hover { background: #912018; border-color: #912018; }
 
 /* One aligned row owns its checkbox, content and status; no nested card borders. */
-.work-page .work-task-row{display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;align-items:start;min-width:0;padding:10px 16px;border-bottom:1px solid var(--border,#e4e7eb)}
+.work-page .work-task-row{display:grid;grid-template-columns:44px minmax(0,1fr);gap:3px;align-items:start;min-width:0;padding:10px 16px;border-bottom:1px solid var(--border,#e4e7eb)}
 .work-page .work-task-row:last-child{border-bottom:0}
 .work-task-content{min-width:0}
 .work-page .work-task-open{display:flex;flex-direction:column;gap:5px;width:100%;min-width:0;padding:10px 0;border:0;border-radius:6px;box-shadow:none;background:none;text-align:left;color:var(--text,#1d1d1f);font:inherit;cursor:pointer}
@@ -20,7 +20,7 @@
 .work-task-meta>span{display:inline-flex;gap:4px;align-items:center}
 .work-task-check{position:relative;display:flex;align-items:center;justify-content:center;width:44px;height:44px;cursor:pointer;border-radius:9px}
 .work-page .work-task-check input{position:absolute;inset:0;width:44px;height:44px;margin:0;opacity:0;cursor:inherit}
-.work-task-check-box{display:flex;align-items:center;justify-content:center;width:23px;height:23px;border:1.5px solid var(--work-check-color);border-radius:7px;background:white;color:var(--work-check-color);pointer-events:none;transition:background .12s,border-color .12s,transform .12s}
+.work-task-check-box{display:flex;align-items:center;justify-content:center;width:23px;height:23px;border:1.5px solid var(--work-check-color);border-radius:50%;background:white;color:var(--work-check-color);pointer-events:none;transition:background .12s,border-color .12s,transform .12s}
 .work-task-check-box svg {
   opacity: 0;
   transform: scale(.8);
@@ -53,7 +53,7 @@
 .work-task-error{margin:0 0 8px;font-size:12px;line-height:1.5;color:#a12f25;overflow-wrap:anywhere}
 .work-task-error button{border:0;background:none;color:inherit;font:inherit;text-decoration:underline;min-height:32px;cursor:pointer}
 .work-page .work-task-open:focus-visible{outline:2px solid #19694d;outline-offset:3px}
-@media(max-width:650px){.work-page .work-task-row{grid-template-columns:44px minmax(0,1fr);gap:0 6px;padding:8px}.work-task-status{grid-column:2;justify-self:start;margin:0 0 10px}.work-task-meta{gap:3px 10px}}
+@media(max-width:650px){.work-page .work-task-row{grid-template-columns:44px minmax(0,1fr);gap:0 2px;padding:8px}.work-task-status{grid-column:2;justify-self:start;margin:0 0 10px}.work-task-meta{gap:3px 10px}}
 @media(prefers-reduced-motion:reduce){.work-task-check-box,.work-task-check-box svg{transition:none}.work-task-check:active .work-task-check-box{transform:none}}
 @media(forced-colors:active){.work-task-check-box{border-color:ButtonText}.work-task-check input:checked+.work-task-check-box{background:Highlight;border-color:Highlight;color:HighlightText;forced-color-adjust:none}}
 
@@ -79,36 +79,45 @@
 .work-search{display:flex;align-items:center;gap:7px;min-width:150px;max-width:230px;padding:7px 10px;border:1px solid var(--border,#cedbd2);border-radius:8px;background:#fff;color:var(--muted,#586b60)}
 .work-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text,#28332f);font:inherit;font-size:12px}
 .work-search:focus-within{outline:2px solid #8ebaa5;outline-offset:2px}
-.work-list-controls{padding:12px 16px;border-bottom:1px solid var(--border,#cedbd2)}
 .work-page div.work-list-scopes.scrollable-segments {
   gap: 6px;
   padding: 0;
   border: 0;
   border-radius: 7px;
   background: transparent;
+  align-self: center;
 }
-.work-page div.work-list-scopes.scrollable-segments > button {
-  min-height: 0;
-  padding: 7px 11px;
-  border-radius: 7px;
-  font-size: 12px;
-  font-weight: inherit;
-  line-height: inherit;
+.work-section-heading > .mobile-icon-action { flex-shrink: 0; }
+div.work-green-segments.scrollable-segments[class] > button {
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: var(--work-segment-radius, 7px);
+  font-size: 13px;
+  font-weight: 550;
+  transition: background-color var(--motion-feedback, 160ms) ease, color var(--motion-feedback, 160ms) ease;
 }
-.work-page div.work-list-scopes.scrollable-segments > button[aria-pressed="true"] {
-  color: #176647;
-  font-weight: 650;
+@media (max-width: 650px) {
+  div.work-green-segments.scrollable-segments[class] > button {
+    min-height: 44px;
+    padding: 6px 8px;
+  }
 }
-.work-list-scopes.scrollable-segments > .scrollable-segments-selection {
+.work-green-segments.scrollable-segments > .scrollable-segments-selection {
   border-color: #c4dfce;
-  border-radius: 7px;
+  border-radius: var(--work-segment-radius, 7px);
   background: #e4f0e8;
   box-shadow: none;
 }
 @media (hover: hover) and (pointer: fine) {
-  .work-page div.work-list-scopes.scrollable-segments > button[aria-pressed="false"]:hover {
+  div.work-green-segments.scrollable-segments > button[aria-pressed="false"]:hover {
     background: #edf4ef;
   }
+}
+@media (prefers-reduced-motion: reduce) {
+  div.work-green-segments.scrollable-segments[class] > button { transition: none; }
+}
+@media (forced-colors: active) {
+  .work-green-segments.scrollable-segments > .scrollable-segments-selection { border-color: Highlight; }
 }
 .work-week{padding:14px 16px 8px;border-bottom:1px solid var(--border,#cedbd2)}
 .work-week-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.work-week-heading strong{text-transform:capitalize;font-size:13px}.work-week-heading>div{display:flex;align-items:center;gap:5px}.work-week-heading .button{font-size:11px;padding:6px 10px}
@@ -298,7 +307,7 @@
 .work-editor .work-subtask-row > .icon-button:focus-visible { outline-offset: -2px; }
 .work-editor .work-subtask-check{position:relative;width:28px;min-height:28px}
 .work-editor .work-subtask-check input{position:absolute;inset:0;width:28px;height:28px;margin:0;opacity:0;cursor:pointer}
-.work-editor .work-subtask-check-box{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid #87958e;border-radius:5px;background:#fff;color:#fff;pointer-events:none}
+.work-editor .work-subtask-check-box{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid #87958e;border-radius:50%;background:#fff;color:#fff;pointer-events:none}
 .work-editor .work-subtask-check-box svg{opacity:0}
 .work-editor .work-subtask-check input:checked+.work-subtask-check-box{background:var(--accent,#19694d);border-color:var(--accent,#19694d)}
 .work-editor .work-subtask-check input:checked+.work-subtask-check-box svg{opacity:1}
@@ -319,7 +328,7 @@
 .work-editor:has(.work-editor-properties) .work-editor-properties .work-hint{font-size:11px;line-height:1.35}
 
 /* Task editor: compact, wrapping controls beside the file action. */
-.work-editor:not(.work-compose):has(.work-task-toolbar){width:min(910px,calc(100vw - 24px));max-height:88dvh;font-family:Inter,system-ui,sans-serif}
+.work-editor:not(.work-compose):has(.work-task-toolbar){width:min(1050px,calc(100vw - 24px));max-height:88dvh;font-family:Inter,system-ui,sans-serif}
 .work-editor:not(.work-compose):has(.work-task-toolbar) form{max-height:88dvh}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-heading{padding:10px 16px}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-editor-body{display:block;padding:0;overflow:auto;overscroll-behavior:contain;min-height:0}
@@ -361,17 +370,16 @@
 .work-editor .work-choice-trigger:disabled{cursor:not-allowed;opacity:.65}
 .work-editor .work-choice-value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .work-editor .work-choice-trigger>svg{flex:none;color:var(--muted,#586b60)}
-.work-editor .work-choice-options{position:absolute;top:calc(100% + 5px);left:0;z-index:20;width:max-content;min-width:100%;max-width:min(300px,calc(100vw - 40px));max-height:220px;overflow-y:auto;box-sizing:border-box;padding:5px;border:1px solid var(--border,#cedbd2);border-radius:11px;background:#fff;box-shadow:0 12px 30px #1d332522}
-.work-editor .work-choice-options>button{display:flex;align-items:center;gap:9px;width:100%;min-height:34px;padding:6px 9px;border:0;border-radius:7px;background:transparent;color:var(--text,#28332f);font:12px/1.35 Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
-.work-editor .work-choice-options>button>span:nth-child(2){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.work-editor .work-choice-options>button:hover:not(:disabled),.work-editor .work-choice-options>button:focus-visible{outline:none;background:#edf5f0}
-.work-editor .work-choice-options>button[aria-selected="true"]{color:var(--accent,#176647);font-weight:600}
-.work-editor .work-choice-options>button:disabled{opacity:.55;cursor:not-allowed}
+:is(.work-editor,.kb-picker) .work-choice-options{position:absolute;top:calc(100% + 5px);left:0;z-index:20;width:max-content;min-width:100%;max-width:min(300px,calc(100vw - 40px));max-height:220px;overflow-y:auto;box-sizing:border-box;padding:5px;border:1px solid var(--border,#cedbd2);border-radius:11px;background:#fff;box-shadow:0 12px 30px #1d332522}
+:is(.work-editor,.kb-picker) .work-choice-options button{display:flex;align-items:center;gap:9px;width:100%;min-height:34px;padding:6px 9px;border:0;border-radius:7px;background:transparent;color:var(--text,#28332f);font:12px/1.35 Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
+:is(.work-editor,.kb-picker) .work-choice-options button>span:nth-child(2){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:is(.work-editor,.kb-picker) .work-choice-options button:hover:not(:disabled),:is(.work-editor,.kb-picker) .work-choice-options button:focus-visible{outline:none;background:#edf5f0}
+:is(.work-editor,.kb-picker) .work-choice-options button[aria-selected="true"]{color:var(--accent,#176647);font-weight:600}
+:is(.work-editor,.kb-picker) .work-choice-options button:disabled{opacity:.55;cursor:not-allowed}
 .work-priority-dot{display:inline-block;flex:none;width:9px;height:9px;border-radius:3px;background:#87958e}
 .work-priority-dot.work-priority-1{background:#f05b5b}
 .work-priority-dot.work-priority-2{background:#f59e0b}
 .work-priority-dot.work-priority-3{background:#438df5}
-.work-task-check .work-task-check-box{border-radius:7px;width:23px;height:23px}
 @media(forced-colors:active){.work-priority-dot{background:ButtonText!important}.work-editor .work-choice-options>button:focus-visible{outline:2px solid Highlight}}
 .work-editor:not(.work-compose):has(.work-task-toolbar) .work-choice-options{top:auto;bottom:calc(100% + 5px)}
 .work-editor .work-priority-field .work-choice-options{left:auto;right:0}

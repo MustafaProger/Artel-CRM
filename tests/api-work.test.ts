@@ -432,3 +432,105 @@ test('partitioned Work retains shared company labels and does not change trips/d
     assert.equal(work.companies.find(row=>row.id===company.id)?.name,'Общее новое название');assert.equal(work.work.tasks.find(row=>row.id===task.body.entry.id)?.companyId,company.id);
   } finally {await f.close();}
 });
+
+test('project membership protects rich tasks and files and the common board synchronizes task status', async () => {
+  const f = await setup();
+  try {
+    const path = '/api/work/boards', tasks = '/api/work/tasks';
+    const list = async (client: typeof f.alice) => (await client(path)).body.boards;
+    const create = { title: 'Учёба', group: 'Развитие', memberIds: [], requestId: randomUUID() };
+    assert.equal((await f.anonymous(path)).status, 401);
+    const project = (await f.alice(path, 'POST', create)).body.board;
+    assert.equal((await f.alice(path, 'POST', create)).body.board.id, project.id);
+    const projectPath = path + '/' + project.id;
+    assert.equal((await list(f.director)).length, 1);
+    assert.equal((await f.director(projectPath, 'DELETE', { version: 1 })).status, 404);
+    const shared = await f.alice(projectPath, 'PATCH', { version: 1, action: 'rename', title: 'Учёба', group: 'Развитие', memberIds: [f.users[2].id] });
+    assert.equal(shared.status, 200);
+    assert.equal((await list(f.bob)).length, 2);
+    assert.equal((await f.bob(projectPath, 'PATCH', { version: 2, action: 'rename', title: 'Другое' })).status, 403);
+    const placement = { boardId: project.id, columnId: project.columns[0].id, version: 2 };
+    const rich = { title: 'Расписание', description: 'Первая неделя', priority: 2, comment: 'Начинаем',
+      subtasks: [{ id: 'first', title: 'Уточнить время', done: false }], requestId: randomUUID(), placement,
+      assigneeIds: [f.users[2].id], addAttachments: [{ name: 'plan.txt', data: 'WA==' }] };
+    const created = await f.bob(tasks, 'POST', rich);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal((await f.bob(tasks, 'POST', rich)).status, 200);
+    const task = created.body.entry;
+    const card = tasks + '/' + task.id;
+    assert.equal((await f.alice(path)).body.tasks[0].subtasks[0].title, 'Уточнить время');
+    assert.equal((await f.director(path)).body.tasks.length, 0);
+    assert.equal((await f.director('/api/work')).body.work.tasks.length, 0);
+    assert.equal((await f.director(card, 'PATCH', { version: 1, comment: 'нет' })).status, 404);
+    assert.equal((await f.director(card + '/files/' + task.attachments[0].id)).status, 404);
+    const current = (await f.alice(path)).body.boards.find((b: {id:string}) => b.id === project.id);
+    const move = {action: 'moveCard', columnId: project.columns[1].id, cardId: task.id, version: current.version};
+    const concurrent = await Promise.all([f.alice(projectPath, 'PATCH', move), f.bob(projectPath, 'PATCH', move)]);
+    assert.deepEqual(concurrent.map(r => r.status).sort(), [200,409]);
+    assert.equal((await f.alice(projectPath, 'PATCH', {version:current.version+1, action:'deleteColumn', columnId:move.columnId})).status,409);
+    assert.equal((await f.alice(projectPath, 'PATCH', {version:current.version+1, action:'rename', title:'Учёба', memberIds:[]})).status,200);
+    assert.equal((await f.bob('/api/work')).body.work.tasks.length,0);
+    assert.equal((await f.bob(card + '/files/' + task.attachments[0].id)).status,404);
+    assert.equal((await f.bob(card, 'PATCH', {version:1,comment:'нет'})).status,404);
+
+    const ordinary = (await f.alice(tasks, 'POST', {title:'Обычная задача', assigneeIds:[f.users[2].id]})).body.entry;
+    const common = (await list(f.director))[0];
+    assert.equal(common.id, 'work-common');
+    assert.equal(common.columns[0].cards.length,0);
+    const ordinaryPath = tasks + '/' + ordinary.id;
+    const publish = {version:1, placement:{boardId:common.id, columnId:'todo', version:common.version}};
+    assert.equal((await f.bob(ordinaryPath,'PATCH',publish)).status,403);
+    assert.equal((await f.alice(ordinaryPath,'PATCH',publish)).body.entry.id,ordinary.id);
+    const complete = await f.bob(ordinaryPath,'PATCH',{version:2,status:'done'});
+    assert.equal(complete.body.entry.status,'done');
+    assert.ok(complete.body.entry.archivedAt);
+    const updated = (await list(f.bob))[0];
+    assert.equal(updated.columns.find((c:{id:string}) => c.id === 'done').cards[0].id,ordinary.id);
+    assert.equal((await f.director(ordinaryPath,'PATCH',{version:3,placement:{boardId:common.id,columnId:'doing',version:updated.version}})).body.entry.archivedAt,null);
+    assert.equal((await f.director(path+'/'+common.id,'DELETE',{version:4})).status,403);
+    const draft = { title: 'Из формы задач', requestId: randomUUID(), placement: { boardId: common.id, columnId: 'todo' } };
+    const fromList = (await f.alice(tasks, 'POST', draft)).body.entry;
+    assert.equal(fromList.boardId, common.id);
+    assert.equal((await f.alice(tasks, 'POST', draft)).body.entry.id, fromList.id);
+    const firstColumn = (await list(f.bob))[0].columns[0];
+    assert.deepEqual(firstColumn.cards.map((row: {id: string}) => row.id), [fromList.id]);
+    const changed = await f.bob(tasks+'/'+fromList.id, 'PATCH', { version: fromList.version, status: 'doing' });
+    assert.equal(changed.status, 200);
+    assert.ok((await list(f.alice))[0].columns[1].cards.some((row: {id: string}) => row.id === fromList.id));
+  } finally { await f.close(); }
+});
+
+
+test('existing company project keeps its audience and upgrades an old card in place', async () => {
+  const f = await setup();
+  try {
+    const [owner, participant] = f.users;
+    const card = { id: randomUUID(), title: 'Разобрать материалы', description: 'Первая глава' };
+    const column = { id: randomUUID(), title: 'Продвижение', cards: [card] };
+    const board = { id: randomUUID(), version: 1, title: 'Обучение', ownerId: owner.id,
+      companyId: f.snapshot.companies[0].id, columns: [column] };
+    await f.store.mutate(base.provenance.sourceSha256, data => {
+      (data.work ??= emptyWork()).boards = [board];
+      return { changed: true, result: null };
+    });
+    const findBoard = async (client: typeof f.alice) =>
+      (await client('/api/work/boards')).body.boards.find((row: {id: string}) => row.id === board.id);
+    const converted = await findBoard(f.alice);
+    assert.deepEqual(converted.memberIds, [participant.id]);
+    assert.equal(converted.companyId, undefined);
+    assert.equal(await findBoard(f.bob), undefined);
+    const updated = await f.alice('/api/work/tasks/'+card.id, 'PATCH', {
+      version: 1, status: 'done', archived: true, placement: { boardId: board.id, columnId: column.id, version: converted.version }
+    });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.equal(updated.body.entry.id, card.id);
+    assert.equal(updated.body.entry.description, card.description);
+    assert.equal(updated.body.entry.status, 'done');
+    assert.ok(updated.body.entry.archivedAt);
+    assert.deepEqual((await findBoard(f.alice)).columns[0].cards, [card]);
+    const reopened = await f.alice('/api/work/tasks/'+card.id, 'PATCH', { version: updated.body.entry.version, status: 'todo', archived: false });
+    assert.equal(reopened.status, 200);
+    assert.equal(reopened.body.entry.status, 'todo');
+    assert.equal(reopened.body.entry.archivedAt, null);
+  } finally { await f.close(); }
+});

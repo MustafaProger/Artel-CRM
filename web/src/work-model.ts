@@ -31,6 +31,7 @@ export interface WorkSubtask { id: string; title: string; done: boolean }
 export const workSubtaskLimit = 50;
 
 export interface WorkTask extends WorkEntry {
+  boardId?: string;
   /** Older records use the single assigneeId. */
   assigneeIds?: string[];
   archivedAt?: string | null;
@@ -62,6 +63,7 @@ export interface WorkCompanyRecord extends WorkEntry {
 }
 export interface WorkNote extends WorkEntry { title: string; content: string }
 export interface WorkData {
+  boards?: import('./kanban-model').WorkBoard[];
   tasks: WorkTask[];
   companyRecords: WorkCompanyRecord[];
   notes: WorkNote[];
@@ -70,6 +72,7 @@ export type AnyWorkEntry = WorkTask | WorkCompanyRecord | WorkNote;
 export type WorkPerson = Pick<AccountUser, 'id' | 'name' | 'avatarUrl'>;
 
 export interface WorkResponse {
+  taskBoards?: import('./kanban-model').WorkBoard[];
   work: WorkData;
   users: AccountUser[];
   /** Identities referenced by visible records, including former employees. Never used for new assignments. */

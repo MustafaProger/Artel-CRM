@@ -1,3 +1,4 @@
+import { canReadBoardTask } from './kanban';
 import { operatorPlanCandidates, validOperatorPlanEvent, validateOperatorPlanEvents, type OperatorPlanEvent } from './operator-notifications';
 import { createHash, ECDH, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
@@ -267,15 +268,15 @@ function reminderCandidates(data: OperationsData, now: number, companyNames: Rea
     const body = task
       ? parts(taskSubject(row.title), date && `срок до ${date}`)
       : parts(preview(companyNames.get(row.companyId), 75), preview(row.question.split('\n', 1)[0], 65)) || 'Запланировано напоминание о работе с компанией.';
-    return workAssigneeIds(row).filter(assigneeId => data.accounts?.users.some(user => user.id === assigneeId && hasSection(user, 'work')))
+    return workAssigneeIds(row).filter(assigneeId => (!task || !row.boardId || canReadBoardTask(data, row.boardId, assigneeId)) && data.accounts?.users.some(user => user.id === assigneeId && hasSection(user, 'work')))
       .map(assigneeId => ({ kind, id: row.id, assigneeId, token: at, event: 'reminder', preferenceAt: time, title, body }));
   });
 }
 const assignmentLifetime = 86400000;
 const assignmentTask = (data: OperationsData, id: string, assignment: TaskAssignment, now: number) =>
-  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === (assignment.taskId ?? id) && workAssigneeIds(task).includes(assignment.assigneeId) && !task.archivedAt && !isClosedWorkStatus(task.status));
+  assignment.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === (assignment.taskId ?? id) && (!task.boardId || canReadBoardTask(data, task.boardId, assignment.assigneeId)) && workAssigneeIds(task).includes(assignment.assigneeId) && !task.archivedAt && !isClosedWorkStatus(task.status));
 const completedTask = (data: OperationsData, id: string, event: TaskCompletion, now: number) =>
-  event.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.status === 'done' && task.version >= event.version);
+  event.at > now - assignmentLifetime && data.work?.tasks.find(task => task.id === id && task.status === 'done' && (!task.boardId || canReadBoardTask(data, task.boardId, task.createdBy)) && task.version >= event.version);
 const assignmentTrip = (data: OperationsData, id: string, assignment: TripAssignment, now: number) => {
   if (assignment.at <= now - assignmentLifetime || data.directories?.deletedEntries?.drivers?.includes(assignment.driverId) || !data.directories?.drivers.some(driver => driver.id === assignment.driverId)) return;
   const rows = Object.values(data.shipments).filter(row => !row.deleted && row.fields.trip_id === id);

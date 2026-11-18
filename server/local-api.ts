@@ -41,7 +41,8 @@ import { apiSection, requireDirectoryMaintenance, requireSection, requireShipmen
 import { planCustomerReconciliation, reconcileCustomers } from './customer-reconciliation';
 import { emptyChina } from '../web/src/china-model';
 import { mutateChina } from './china-operations';
-import { canReadHistoricalWorkPerson, readWork, mutateWork, workFile, workCompanyIds, activeTaskCount } from './work-operations';
+import { boardDirectory, convertCompanyBoards, hasCompanyBoards, mutateBoard } from './kanban';
+import { publicWorkEntry, canReadHistoricalWorkPerson, readWork, mutateWork, workFile, workCompanyIds, activeTaskCount } from './work-operations';
 import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-cleanup';
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
@@ -1109,6 +1110,30 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const file = workFile(data, fileMatch[1], decodeURIComponent(fileMatch[2]), decodeURIComponent(fileMatch[3]), authorized(data));
         response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/'/g, '%27')}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
         response.end(Buffer.from(file.data!, 'base64')); return;
+      }
+      const boardMatch = pathname.match(/^\/api\/work\/boards(?:\/([^/]+))?$/);
+      if (boardMatch) {
+        let current = requestData;
+        requireSection(authorized(current), 'work');
+        const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
+        if (hasCompanyBoards(current)) {
+          await transact(base.provenance.sourceSha256, data => {
+            requireSection(authorized(data), 'work');
+            return { result: null, changed: convertCompanyBoards(data, currentWorkSnapshot(base, data)) };
+          });
+          current = await operations.read(base.provenance.sourceSha256);
+        }
+        if (request.method === 'GET' && !boardMatch[1]) {
+          const user = requireSection(authorized(current), 'work');
+          const { boards } = boardDirectory(current, user);
+          const ids = new Set(boards.map(b => b.id));
+          const tasks = current.work?.tasks.filter(t => t.boardId && ids.has(t.boardId)).map(publicWorkEntry) ?? [];
+          return write(response, 200, JSON.stringify({ boards, tasks }));
+        }
+        const body = await jsonBody(request, false, 80 * 1024);
+        const result = await transact(base.provenance.sourceSha256, data =>
+          mutateBoard(data, requireSection(authorized(data), 'work'), request.method ?? '', boardMatch[1], body));
+        return write(response, 200, JSON.stringify({ board: result }));
       }
       const workMatch = pathname.match(/^\/api\/work\/(tasks|companies|notes)(?:\/([^/]+))?$/);
       if(pathname === '/api/work' || workMatch){
