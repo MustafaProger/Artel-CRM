@@ -10,8 +10,8 @@ export async function verifyFocusFeedback(page, locator, name) {
     const colour = () => native ? style().outlineColor : style().borderTopColor;
     const finish = () => { colour(); surface.getAnimations().forEach(animation => animation.finish()); colour(); };
     const geometry = () => {
-      const rect = surface.getBoundingClientRect(), css = style();
-      return [rect.width, rect.height, ...['Top', 'Right', 'Bottom', 'Left'].map(side => css[`border${side}Width`])];
+      const css = style();
+      return [surface.offsetWidth, surface.offsetHeight, ...['Top', 'Right', 'Bottom', 'Left'].map(side => css[`border${side}Width`])];
     };
     const layers = () => ({ outline: style().outlineWidth, shadow: style().boxShadow, innerOutline: getComputedStyle(element).outlineWidth, innerShadow: getComputedStyle(element).boxShadow });
     const sample = () => {

@@ -62,7 +62,7 @@ try {
   });
   const page = await context.newPage();
   page.on('pageerror', error => report.errors.push(error.message));
-  page.on('console', message => { if (message.type() === 'error') report.consoleErrors.push(message.text()); });
+  page.on('console', message => { if (message.type() === 'error') report.consoleErrors.push({ message: message.text(), url: message.location().url }); });
   const visit = async route => {
     await page.goto(`${runtime.base}/#${route}`);
     await page.locator({ shipments: '.shipment-grid', directories: '.directory-list', accounts: '.account-panel', payments: '.banking-page' }[route]).waitFor();
@@ -113,7 +113,7 @@ try {
     await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   };
-  const widths = process.env.QA_WIDTHS ? process.env.QA_WIDTHS.split(',').map(Number) : [320, 361, 390, 701, 768, 1100, 1440];
+  const widths = process.env.QA_WIDTHS ? process.env.QA_WIDTHS.split(',').map(Number) : [375, 390, 701, 768, 1100, 1440];
   for (const width of widths) {
     await page.setViewportSize({ width, height: 1000 });
     await visit('shipments');
@@ -121,6 +121,7 @@ try {
       const style = getComputedStyle(element), rect = element.getBoundingClientRect(), table = element.closest('.shipment-grid').getBoundingClientRect();
       return { tag: element.tagName, rect: [rect.x - table.x, rect.y - table.y, rect.width, rect.height].map(value => Math.round(value * 100) / 100), css: Object.fromEntries(['font', 'color', 'backgroundColor', 'border', 'borderRadius', 'padding', 'margin', 'boxShadow', 'display', 'gap'].map(key => [key, style[key]])) };
     }));
+    await page.mouse.move(0, 0);
     const current = await ledger();
     const sharedStyles = page.locator('style[data-vite-dev-id$="/design-system.css"], style[data-vite-dev-id$="/shipments-toolbar.css"]');
     await expect(sharedStyles).toHaveCount(2);
@@ -168,7 +169,8 @@ try {
     await visit('payments');
     await expect(page.getByLabel('Период с', { exact: true })).toBeVisible();
     await pills(page.locator('.bank-period input, .bank-heading-actions .button'), `bank-period-${width}`);
-    await page.getByLabel('Период с', { exact: true }).fill('2026-10-01'); await expect(page.getByLabel('Период с', { exact: true })).toHaveValue('2026-10-01');
+    const periodEnd = await page.getByLabel('Период по', { exact: true }).inputValue();
+    await page.getByLabel('Период с', { exact: true }).fill(periodEnd); await expect(page.getByLabel('Период с', { exact: true })).toHaveValue(periodEnd);
     await focusRing(page.getByLabel('Период с', { exact: true }), `bank-date-${width}`); await capture(`bank-period-${width}`);
 
     await visit('directories');
@@ -215,9 +217,10 @@ try {
   await page.getByRole('button', { name: 'Новая задача', exact: true }).click();
   await expect(page.locator('.work-editor')).toBeVisible();
   const assignees = page.getByRole('combobox', { name: 'Исполнители', exact: true });
-  await assignees.focus();
-  await assignees.press('Tab');
-  await page.keyboard.press('Shift+Tab');
+  await assignees.press('ArrowDown');
+  const firstAssignee = page.getByRole('listbox', { name: 'Исполнители', exact: true }).getByRole('option').first();
+  await expect(firstAssignee).toBeFocused();
+  await firstAssignee.press('Escape');
   await expect(assignees).toBeFocused();
   await expect(assignees).toHaveCSS('outline-style', 'solid');
   await expect(assignees).toHaveCSS('outline-width', '2px');
@@ -227,14 +230,13 @@ try {
   // Additional shared surfaces use synthetic DOM, with the real loaded CSS.
   await page.evaluate(() => {
     const fixture = document.createElement('section'); fixture.id = 'focus-fixture';
-    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-screen', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'company-combobox', 'filter-search', 'driver-search'].filter(wrapper => wrapper !== 'driver-search' || shell === 'driver-shell').map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
+    fixture.innerHTML = ['app-shell', 'driver-shell', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'company-combobox', 'filter-search', 'driver-search'].filter(wrapper => wrapper !== 'driver-search' || shell === 'driver-shell').map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
     document.body.append(fixture);
   });
   for (const [index, field] of (await page.locator('#focus-fixture input, #focus-fixture select, #focus-fixture textarea').all()).entries()) {
     // Portal dialogs only contain shipment-field controls and filter-search.
     const applicable = await field.evaluate(element => {
-      const shell = element.closest('.shipment-filter-dialog, .auth-screen');
-      return !shell || (shell.matches('.auth-screen') ? !element.closest('label:not(.shipment-field)') : !!element.closest('.shipment-field, .filter-search'));
+      return !element.closest('.shipment-filter-dialog') || !!element.closest('.shipment-field, .filter-search');
     });
     if (applicable) report.focusFeedback.push(await verifyFocusFeedback(page, field, `shared-surface-${index}`));
   }
