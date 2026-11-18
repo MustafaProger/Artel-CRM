@@ -358,10 +358,50 @@ test('developer authority is protected and a director can be given individual se
     assert.equal((await developer(path, 'PATCH', update(user, { active: false }))).status, 409);
     assert.equal((await developer('/api/work')).status, 200);
     assert.equal((await developer('/api/shipments')).status, 200);
-    for (const [path, method] of [
-      ['/api/shipments', 'POST'], ['/api/shipments/example', 'PATCH'], ['/api/shipments/example', 'DELETE'],
-      ['/api/shipment-trips', 'POST'], ['/api/shipment-trips/example', 'PATCH'], ['/api/shipment-trips/example', 'DELETE'],
-    ]) assert.equal((await developer(path, method, {})).status, 403);
+    assert.equal(user.managerId, null);
+    const shipment = await developer('/api/shipments', 'POST', { fields: f.azs(f.users[0].managerId!) });
+    assert.equal(shipment.status, 201, JSON.stringify(shipment.body));
+    const shipmentPath = '/api/shipments/' + shipment.body.shipment.id;
+    const editedShipment = await developer(shipmentPath, 'PATCH', {
+      version: shipment.body.shipment.version, fields: { quantity_litres: '1200' },
+    });
+    assert.equal(editedShipment.status, 200, JSON.stringify(editedShipment.body));
+    assert.equal(editedShipment.body.shipment.fields.quantity_litres, '1200');
+    assert.equal((await developer(shipmentPath, 'DELETE', { version: editedShipment.body.shipment.version })).status, 200);
+    assert.equal((await developer(shipmentPath)).status, 404);
+
+    const catalog = f.snapshot.directories!;
+    const tripBody = {
+      fields: {
+        date: '2026-09-01', supplier_id: f.snapshot.companies[1].id, product_id: catalog.products[0].id,
+        purchase_price_unspecified_unit: '60000', quantity_tonnes: '16', driver_id: catalog.drivers[0].id, additional_costs: '0',
+      },
+      customers: f.users.map(owner => ({
+        fields: {
+          customer_id: f.snapshot.companies[0].id, manager_id: owner.managerId, payment_form_id: catalog.paymentForms[0].id,
+          quantity_litres: '8000', sale_price_per_litre: '65', transport_amount: '1000',
+        },
+      })),
+    };
+    await prepareTripRequestFixture(f.store, base, tripBody, f.users[0]);
+    const createdTrip = await developer('/api/shipment-trips', 'POST', tripBody);
+    assert.equal(createdTrip.status, 201, JSON.stringify(createdTrip.body));
+    const trip = createdTrip.body.trip as ShipmentTrip;
+    assert.equal(trip.customers.length, 2);
+    const tripPath = '/api/shipment-trips/' + trip.id;
+    assert.equal((await developer(tripPath)).status, 200);
+    const editedTrip = await developer(tripPath, 'PATCH', {
+      fields: { ...tripBody.fields, trip_notes: 'Updated by developer' },
+      customers: trip.customers.map(row => ({ id: row.id, fields: row.fields })),
+      versions: Object.fromEntries(trip.customers.map(row => [row.id, row.version])),
+    });
+    assert.equal(editedTrip.status, 200, JSON.stringify(editedTrip.body));
+    const updatedTrip = editedTrip.body.trip as ShipmentTrip;
+    assert.equal(updatedTrip.fields.trip_notes, 'Updated by developer');
+    assert.equal((await developer(tripPath, 'DELETE', {
+      versions: Object.fromEntries(updatedTrip.customers.map(row => [row.id, row.version])),
+    })).status, 200);
+    assert.equal((await developer(tripPath)).status, 404);
 
     const directorPath = '/api/auth/users/' + director.id;
     const changed = await developer(directorPath, 'PATCH', update(director, {

@@ -8,15 +8,15 @@ export const maxPasswordLength = 256;
 export type AccountRole = 'developer' | 'director' | 'admin' | 'employee' | 'manager' | 'accountant' | 'logistician' | 'driver';
 export const roleNames: Record<AccountRole, string> = { developer: 'Разработчик', director: 'Директор', admin: 'Администратор', employee: 'Сотрудник', manager: 'Менеджер', accountant: 'Бухгалтер', logistician: 'Логист', driver: 'Водитель' };
 export const selectableRoles = Object.entries(roleNames) as [AccountRole, string][];
-export const canWriteShipments = (user: Pick<AccountUser, 'role'>) =>
-  user.role === 'director' || user.role === 'accountant' || user.role === 'logistician';
-export const canDeleteShipments = (user: Pick<AccountUser, 'role'>) => user.role === 'director';
 export const isScopedEmployee = (user: Pick<AccountUser, 'role'>) => ['employee', 'manager', 'accountant', 'logistician'].includes(user.role);
 export const sections = permissionSections;
 // Keep the removed identifier readable for existing account records.
 export type SectionId = typeof sections[number]['id'] | 'settlements';
 export interface AccountUser { id: string; name: string; login: string; role: AccountRole; managerId: string | null; driverId?: string; active: boolean; version: number; avatarUrl?: string; avatarPreset?: AvatarPresetId; sections?: SectionId[]; customSections?: true; directoryGrants?: SharedDirectory[]; deletedAt?: string }
 export const isDeveloper = (user: Pick<AccountUser, 'role'>) => user.role === 'developer';
+export const canDeleteShipments = (user: Pick<AccountUser, 'role'>) => isDeveloper(user) || user.role === 'director';
+export const canWriteShipments = (user: Pick<AccountUser, 'role'>) =>
+  canDeleteShipments(user) || user.role === 'accountant' || user.role === 'logistician';
 export const canOverseeTripRequests = (user: Pick<AccountUser, 'role'>) => isDeveloper(user) || user.role === 'director';
 export const isAdministrator = (user: Pick<AccountUser, 'role'>) => canOverseeTripRequests(user) || user.role === 'admin';
 export const allSectionIds = sections.map(section => section.id);

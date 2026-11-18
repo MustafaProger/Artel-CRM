@@ -13,9 +13,9 @@ export function requireTripSection(actor: AccountUser, saby = false) {
   return actor;
 }
 export function requireShipmentMutation(actor: AccountUser, method: string) {
-  if (method === 'DELETE' && !canDeleteShipments(actor)) throw new ApiError(403, 'Удалять отгрузки может только директор.');
+  if (method === 'DELETE' && !canDeleteShipments(actor)) throw new ApiError(403, 'Удалять отгрузки могут разработчик и директор.');
   if ((method === 'POST' || method === 'PATCH') && !canWriteShipments(actor)) {
-    throw new ApiError(403, 'Добавлять и редактировать отгрузки могут директор, бухгалтер и логист.');
+    throw new ApiError(403, 'Добавлять и редактировать отгрузки могут разработчик, директор, бухгалтер и логист.');
   }
 }
 
