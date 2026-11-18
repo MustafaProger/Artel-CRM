@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { downloadFile } from './utils'
 import { apiFetch } from './workspace-api'
 
-function useExcelDownload() {
+function useExportDownload() {
   const request = useRef<AbortController | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
@@ -36,15 +36,15 @@ function useExcelDownload() {
   return { download, pending, error, clearError: () => setError('') }
 }
 
-function ExportButton({ pending, label }: { pending: boolean; label: string }) {
+function ExportButton({ pending, label, format = 'Excel' }: { pending: boolean; label: string; format?: 'Excel' | 'ZIP' }) {
   return <button type="submit" className="button" aria-label={pending ? 'Подготовка файла' : label} disabled={pending}>
     {pending ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <ArrowDownToLine size={16} aria-hidden="true"/>}
-    {pending ? 'Подготовка…' : 'Excel'}
+    {pending ? 'Подготовка…' : format}
   </button>
 }
 
-export default function SettingsExports({ directories, shipments }: { directories: boolean; shipments: boolean }) {
-  if (!directories && !shipments) return null
+export default function SettingsExports({ directories, documents, shipments }: { directories: boolean; documents: boolean; shipments: boolean }) {
+  if (!directories && !documents && !shipments) return null
 
   return <section className="panel personal-settings-card settings-export" aria-labelledby="settings-export-title">
     <header className="personal-settings-card-heading">
@@ -52,26 +52,31 @@ export default function SettingsExports({ directories, shipments }: { directorie
       <h2 id="settings-export-title">Выгрузка данных</h2>
     </header>
     {shipments && <ShipmentExport/>}
-    {directories && <DirectoryExport/>}
+    {directories && <SingleFileExport id="directory-export-title" title="Справочники" format="Excel"
+      label="Скачать Excel со справочниками" url="/api/directories/export.xlsx" filename="Артэль-справочники.xlsx"/>}
+    {documents && <SingleFileExport id="document-export-title" title="Документы" format="ZIP"
+      label="Скачать ZIP со всеми документами" url="/api/documents/export.zip" filename="Артэль-документы.zip"/>}
   </section>
 }
 
-function DirectoryExport() {
-  const { download, pending, error } = useExcelDownload()
-  return <form className="settings-export-form" aria-labelledby="directory-export-title" aria-busy={pending} onSubmit={event => {
+function SingleFileExport({ id, title, format, label, url, filename }: {
+  id: string; title: string; format: 'Excel' | 'ZIP'; label: string; url: string; filename: string
+}) {
+  const { download, pending, error } = useExportDownload()
+  return <form className="settings-export-form" aria-labelledby={id} aria-busy={pending} onSubmit={event => {
     event.preventDefault()
-    void download('/api/directories/export.xlsx', 'Артэль-справочники.xlsx')
+    void download(url, filename)
   }}>
-    <div className="settings-export-row settings-export-directory">
-      <h3 id="directory-export-title">Справочники</h3>
-      <ExportButton pending={pending} label="Скачать Excel со справочниками"/>
+    <div className="settings-export-row settings-export-single">
+      <h3 id={id}>{title}</h3>
+      <ExportButton pending={pending} label={label} format={format}/>
     </div>
     {error && <p role="alert">{error}</p>}
   </form>
 }
 
 function ShipmentExport() {
-  const { download, pending, error, clearError } = useExcelDownload()
+  const { download, pending, error, clearError } = useExportDownload()
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { chromium, expect, webkit } from '@playwright/test';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { shipmentTemplates, azsShipmentTemplates } from '../web/src/shipment-templates.ts';
 import { emptyDirectories } from '../server/directory-operations.ts';
 import { OperationsStore } from '../server/operations-store.ts';
@@ -21,6 +22,7 @@ const own = 'Клиент QA', other = 'Чужой клиент QA', supplier = 
 const dates = 'from=2026-11-10&to=2026-11-12';
 const rangePath = '/api/shipments/export.xlsx';
 const catalogPath = '/api/directories/export.xlsx';
+const documentPath = '/api/documents/export.zip';
 const views = [
   ['Бензовозы — Расширенный', shipmentTemplates.expanded, 'start'],
   ['Бензовозы — Стандарт', shipmentTemplates.standard, 'start'],
@@ -58,9 +60,34 @@ try {
       company('supplier', supplier, 'supplier'),
       company('archived', 'Архивный клиент QA', 'customer', { directoryArchived: true }),
     ];
+    const metadata = { createdAt: '2026-11-18T08:00:00Z', createdBy: 'qa' };
+    const attachment = (id, categoryId, itemId, title, fileName, bytes) => ({
+      ...metadata, id, categoryId, itemId, title, fileName, expiresOn: null,
+      data: Buffer.from(bytes).toString('base64'), size: Buffer.byteLength(bytes),
+    });
+    data.documentArchive = {
+      categories: [
+        { ...metadata, id: 'drivers', name: 'Водители' },
+        { ...metadata, id: 'vehicles', name: 'Машины' },
+        { ...metadata, id: 'company', name: 'АРТЭЛЬ' },
+        { ...metadata, id: 'legacy', name: 'НК' },
+      ],
+      items: [
+        { ...metadata, id: 'driver', categoryId: 'drivers', name: 'Горбунов Геннадий' },
+        { ...metadata, id: 'vehicle', categoryId: 'vehicles', name: 'А123АА 77' },
+        { ...metadata, id: 'empty-card', categoryId: 'vehicles', name: 'Пустая карточка' },
+      ],
+      documents: [
+        attachment('license', 'drivers', 'driver', 'VU Горбунов', 'scan.pdf', 'license'),
+        attachment('duplicate', 'drivers', 'driver', 'vu Горбунов.PDF', 'other.pdf', 'other'),
+        attachment('extra', 'drivers', 'driver', 'доп. Горбунов', 'other.JPG', 'extra'),
+        attachment('vehicle-pdf', 'vehicles', 'vehicle', '../СТС: А123АА', 'file.pdf', 'vehicle'),
+        attachment('old', 'legacy', undefined, 'Карточка', 'old.zip', 'old'),
+      ],
+    };
     data.directories = {
       ...emptyDirectories(), fleetSeedApplied: true,
-      managers: [{ id: 'employee', name: 'Менеджер QA' }, { id: 'other-manager', name: 'Другой менеджер QA' }],
+      managers: [{ id: 'employee', name: 'Менеджер QA' }, { id: 'other-manager', name: 'Другой менеджер QA' }, { id: 'document-manager', name: 'Менеджер документов QA' }],
       products: [{ id: 'fuel', name: 'ДТ QA' }],
       oilDepots: [{ id: 'depot', name: depot, address: 'Адрес нефтебазы QA' }],
       addresses: [
@@ -98,12 +125,37 @@ try {
     return session.headers.get('set-cookie').split(';')[0];
   }
 
-  const employee = await createEmployee('export-employee', 'employee', ['shipments', 'directories'], ['oilDepots']);
+  const employee = await createEmployee('export-employee', 'employee', ['shipments', 'directories', 'documents'], ['oilDepots']);
   const restricted = await createEmployee('export-restricted', 'other-manager', ['work'], []);
-  for (const path of [catalogPath, rangePath + '?' + dates]) {
+  for (const path of [catalogPath, rangePath + '?' + dates, documentPath]) {
     assert.equal((await request(path)).status, 401);
     assert.equal((await request(path, restricted)).status, 403);
   }
+  const documentsOnly = await createEmployee('export-documents-only', 'document-manager', ['documents'], []);
+  const exported = await request(documentPath, documentsOnly);
+  assert.equal(exported.status, 200);
+  assert.equal(exported.headers.get('content-type'), 'application/zip');
+  assert.equal(exported.headers.get('cache-control'), 'private, no-store');
+  assert.match(exported.headers.get('content-disposition'), /^attachment;/);
+  assert.equal((await request(documentPath, documentsOnly, {})).status, 405);
+
+  async function verifyDocuments(bytes) {
+    const zip = await JSZip.loadAsync(bytes, { checkCRC32: true });
+    const documents = {
+      'Водители/Горбунов Геннадий/VU Горбунов.pdf': 'license',
+      'Водители/Горбунов Геннадий/vu Горбунов (2).pdf': 'other',
+      'Водители/Горбунов Геннадий/доп. Горбунов.JPG': 'extra',
+      'Машины/А123АА 77/.._СТС_ А123АА.pdf': 'vehicle',
+      'НК/Документы категории/Карточка.zip': 'old',
+    };
+    assert.deepEqual(Object.keys(zip.files).filter(path => !zip.files[path].dir).sort(), Object.keys(documents).sort());
+    for (const [path, contents] of Object.entries(documents)) {
+      assert.equal(await zip.file(path).async('string'), contents);
+    }
+    assert.ok(zip.files['АРТЭЛЬ/'].dir);
+    assert.ok(zip.files['Машины/Пустая карточка/'].dir);
+  }
+  await verifyDocuments(await exported.arrayBuffer());
   for (const invalid of ['', '?from=2026-11-10', '?from=2026-11-31&to=2026-12-01', '?from=2026-11-12&to=2026-11-10', '?from=2026-11-10&from=2026-11-09&to=2026-11-12']) {
     assert.equal((await request(rangePath + invalid, employee)).status, 400, invalid);
   }
@@ -146,8 +198,13 @@ try {
       const exports = page.getByRole('region', { name: 'Выгрузка данных' });
       const directoryForm = exports.getByRole('form', { name: 'Справочники' });
       const shipmentForm = exports.getByRole('form', { name: 'Отгрузки за период' });
+      const documentForm = exports.getByRole('form', { name: 'Документы' });
+      const documentButton = documentForm.getByRole('button', { name: 'Скачать ZIP со всеми документами' });
       await expect(directoryForm).toBeVisible();
       await expect(shipmentForm).toBeVisible();
+      await expect(documentForm).toBeVisible();
+      await expect(exports.getByRole('heading', { level: 3 })).toHaveText(['Отгрузки за период', 'Справочники', 'Документы']);
+      await expect(documentButton).toHaveClass(await directoryForm.getByRole('button').getAttribute('class'));
       const notifications = await page.getByRole('region', { name: 'Уведомления' }).boundingBox();
       const exportBox = await exports.boundingBox();
       assert.equal(Math.round(exportBox.x), Math.round(notifications.x));
@@ -193,6 +250,16 @@ try {
         }
       }
       await page.setViewportSize({ width: 375, height: 900 });
+      await page.route('**/api/documents/export.zip', route => route.fulfill({ status: 503, json: { error: 'Повторите выгрузку' } }), { times: 1 });
+      await documentButton.click();
+      await expect(documentForm.getByRole('alert')).toHaveText('Повторите выгрузку');
+      assert.equal((await documentButton.boundingBox()).x, (await directoryForm.getByRole('button').boundingBox()).x);
+      const documentDownload = page.waitForEvent('download');
+      await documentButton.click();
+      const documentFile = await documentDownload;
+      assert.equal(documentFile.suggestedFilename(), 'Артэль-документы.zip');
+      await verifyDocuments(await readFile(await documentFile.path()));
+      await expect(documentForm.getByRole('alert')).toHaveCount(0);
       const shipmentBook = await download(page, shipmentButton);
       assert.deepEqual(shipmentBook.worksheets.map(sheet => sheet.name), views.map(([name]) => name));
       for (const [name, template, id] of views) {
@@ -221,7 +288,7 @@ try {
       await expect(restrictedPage.getByRole('heading', { name: 'Настройки', exact: true })).toBeVisible();
       await expect(restrictedPage.getByRole('heading', { name: /Выгрузка/ })).toHaveCount(0);
       assert.deepEqual(pageErrors, []);
-      console.log(`${runtime.mode} ${name}: scope, real downloads, dates, CSV and 375 px layout passed`);
+      console.log(`${runtime.mode} ${name}: permissions, Excel and ZIP downloads, dates, CSV and 375 px layout passed`);
     } finally {
       await browser.close();
     }

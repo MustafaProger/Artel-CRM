@@ -39,7 +39,8 @@ export default function PersonalSettings({ user, onUserChanged, visible }: {
           <NotificationSources userId={user.id} sources={sources} visible={visible}/>
         </PushSettings> : <p className="personal-settings-empty">Для вашей учётной записи пока нет доступных источников уведомлений.</p>}
       </section>
-      {visible && <SettingsExports key={user.id} directories={hasSection(user, 'directories')} shipments={hasSection(user, 'shipments')}/>}
+      {visible && <SettingsExports key={user.id} directories={hasSection(user, 'directories')}
+        documents={hasSection(user, 'documents')} shipments={hasSection(user, 'shipments')}/>}
     </div>
   </div>
 }

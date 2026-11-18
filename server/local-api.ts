@@ -1071,6 +1071,21 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         return write(response, result.created ? 201 : 200, JSON.stringify(result));
       }
       if (pathname === '/api/documents' || pathname.startsWith('/api/documents/')) {
+        if (pathname === '/api/documents/export.zip') {
+          requireSection(actor ?? authorized(requestData), 'documents');
+          if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
+          const { documentArchiveZip } = await import('./document-export');
+          const archive = await documentArchiveZip(requestData.documentArchive);
+          response.writeHead(200, {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': `attachment; filename="artel-documents.zip"; filename*=UTF-8''${encodeURIComponent('Артэль-документы.zip')}`,
+            'Content-Length': archive.length,
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Cross-Origin-Resource-Policy': 'same-origin',
+          });
+          return response.end(archive);
+        }
         const match = pathname.match(/^\/api\/documents(?:\/(categories|items|entries|cards)(?:\/([a-z0-9-]+)(\/file)?)?)?$/);
         if (!match) throw new ApiError(404, 'Маршрут не найден.');
         if (request.method === 'GET') {

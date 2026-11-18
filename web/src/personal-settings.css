@@ -57,7 +57,7 @@
 .settings-export-form > h3 { margin-bottom: 15px; }
 .settings-export-form [role=alert] { margin-top: 8px; font-size: 14px; line-height: 1.5; }
 .settings-export-row { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; }
-.settings-export-directory { align-items: center; }
+.settings-export-single { align-items: center; }
 .settings-export-row > .button { margin-inline-start: auto; min-width: 108px; }
 .settings-export-dates {
   display: grid;
