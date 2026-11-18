@@ -264,7 +264,6 @@ export function validateTripSabyData(value: unknown): asserts value is TripSabyD
     if (record.phase === 'completed' && (!record.carrierEvidence || record.deliveries.some(row => (row as DeliveryRecord).status !== 'draft'))) throw new Error('Invalid completed Saby workflow');
   }
 }
-export function hasTripSabyWorkflow(data: OperationsData, tripId: string): boolean { return !!data.tripSaby?.trips[tripId]; }
 const legacyBlockers = (data: OperationsData, tripId: string) => data.saby?.trips[tripId]?.documents.some(doc => doc.status !== 'error' || doc.id) || Object.values(data.etrn?.trips[tripId]?.deliveries ?? {}).some(row => row.document && (row.document.status !== 'error' || row.document.id)) ? ['По рейсу уже есть документы прежнего обмена. Проверьте сохранённые связи в Saby; общая заявка автоматически не создаётся.'] : [];
 function preparationBlockers(preparation: TripSabyPreparation, trip: ShipmentTrip, data: OperationsData): string[] {
   const ids = preparation.deliveries.map(row => row.shipmentId);

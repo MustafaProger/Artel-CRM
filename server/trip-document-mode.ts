@@ -5,8 +5,6 @@ import type { OperationsData } from './operations-store';
 /** Assigned by the server only when a driver trip is first created. */
 export const TRIP_DOCUMENT_POLICY_VERSION = 'nk-direct-autostart-v1';
 export const NK_DIRECT_ETRN_MESSAGE = 'НК АРТЭЛЬ оформляет ЭТрН напрямую как отправитель и перевозчик. Для новых рейсов подписание и отправка запускаются автоматически после сохранённого убытия водителя.';
-/** Historical name retained for callers protecting the legacy order endpoints. */
-export const NK_SUPPLY_DELIVERY_MESSAGE = NK_DIRECT_ETRN_MESSAGE;
 export const validTripDocumentPolicy = (value: unknown) => value === TRIP_DOCUMENT_POLICY_VERSION || value === 'nk-direct-etrn-v1' || value === 'supply-delivery-v1';
 
 /** An attempted external exchange always retains its original document workflow. */

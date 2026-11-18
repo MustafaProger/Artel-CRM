@@ -228,9 +228,6 @@ to{transform:translateX(0);opacity:1}
 .bank-account-panel .bank-connection-line{font-size:11px;gap:8px 20px;margin:0;line-height:1.7}
 .bank-account-panel .bank-auto-sync{margin:8px 0 0;font-size:11px}
 .bank-account-panel input:disabled{background:#f7f9f8;color:#69766e;cursor:not-allowed}
-.banking-page .bank-disconnected{min-height:240px;gap:14px}
-.bank-disconnected .bank-emblem{width:56px;height:56px;border-radius:16px;margin-bottom:4px}
-.bank-disconnected h3{font-size:18px;font-weight:600;color:#293c33}
 .bank-table td{color:#293c33;font-size:13px}
 .bank-table td strong,.bank-amount{font-size:13px}
 .bank-table td.bank-incoming{color:#28814e}

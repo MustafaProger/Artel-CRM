@@ -101,8 +101,8 @@
 .shipment-field{display:flex;flex-direction:column;gap:8px;min-width:0}
 .shipment-field>span,.company-picker>label{font-size:14px;font-weight:550;color:#3e5c49;display:flex;align-items:center;justify-content:space-between;gap:8px}
 .shipment-field>span>small{font-size:12px;color:#657e6e;font-weight:400}
-.shipment-field input,.shipment-field select,.company-combobox,.company-add input{font-size:15px;min-height:44px;border:1px solid #b7ccbd;background:#fff;border-radius:7px;color:#2b4836;padding:10px 11px;min-width:0;width:100%}
-.shipment-field input::placeholder,.company-combobox input::placeholder,.company-add input::placeholder{color:#789182;font-size:14px}
+.shipment-field input,.shipment-field select,.company-combobox{font-size:15px;min-height:44px;border:1px solid #b7ccbd;background:#fff;border-radius:7px;color:#2b4836;padding:10px 11px;min-width:0;width:100%}
+.shipment-field input::placeholder,.company-combobox input::placeholder{color:#789182;font-size:14px}
 .shipment-field>small{font-size:12px;color:#667e6e;line-height:1.5}
 .company-picker{grid-column:span 2;position:relative;min-width:0}
 .company-picker>label{margin-bottom:8px}
@@ -117,9 +117,6 @@
 .company-options button.active,.company-options button:hover{background:#e7f3eb}
 .company-options small{font-size:12px;color:#637e6b;display:block;margin-top:4px}
 .company-options p{padding:10px;font-size:13px;color:#627c6b;line-height:1.5}
-.company-add{display:flex;gap:8px;margin-top:8px}
-.company-add input{font-size:14px;min-height:40px;padding:8px 10px;flex:1;width:0}
-.shipment-editor .company-add .button{font-size:13px;min-height:40px;padding:8px 10px}
 .shipment-original-fields{border-top:1px solid #d5e2d9;padding-top:16px;font-size:14px;color:#5e7867}
 .shipment-original-fields summary{cursor:pointer;padding:5px 0}
 .shipment-original-fields .shipment-field{margin-top:16px;max-width:300px}

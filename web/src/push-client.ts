@@ -55,7 +55,6 @@ export function formatPushDiagnostics(capabilities: ReturnType<typeof inspectPus
     'Доставка на телефон этой проверкой не подтверждается.',
   ].join('\n');
 }
-export const pushSupported = () => readPushCapabilities().supported;
 let registration: Promise<ServiceWorkerRegistration> | undefined;
 let subscriptionRequest: { publicKey: string; promise: Promise<PushSubscription> } | undefined;
 export function waitForPush<T>(operation: Promise<T>, milliseconds: number, message: string): Promise<T> {
@@ -92,12 +91,6 @@ export async function pushRequest(path: string, method = 'GET', body?: unknown, 
     if (controller.signal.aborted) throw new Error('Сервер не ответил за 15 секунд. Результат действия пока не подтверждён; повторите проверку.', { cause: error });
     throw error;
   } finally { window.clearTimeout(timer); }
-}
-export async function disconnectPushDevice() {
-  if ('serviceWorker' in navigator) {
-    const worker = await navigator.serviceWorker.getRegistration('/');
-    await (await worker?.pushManager.getSubscription())?.unsubscribe();
-  }
 }
 export async function currentPushEndpoint(updateWorker = false) {
   if (!('serviceWorker' in navigator)) return null;

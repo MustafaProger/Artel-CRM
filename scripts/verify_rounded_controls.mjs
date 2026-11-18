@@ -111,7 +111,6 @@ try {
   };
   const cancelDirty = async dialog => {
     await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
-    await dialog.getByRole('button', { name: /^(Не сохранять|Закрыть без сохранения)$/ }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   };
   const widths = process.env.QA_WIDTHS ? process.env.QA_WIDTHS.split(',').map(Number) : [320, 361, 390, 701, 768, 1100, 1440];
@@ -141,7 +140,7 @@ try {
     await pills(shipment.locator('input:not([type="checkbox"]), select, .shipment-editor-footer .button'), `shipment-form-${width}`);
     const textareas = await shipment.locator('textarea').evaluateAll(elements => elements.map(element => ({ radius: parseFloat(getComputedStyle(element).borderRadius), height: element.getBoundingClientRect().height })));
     assert.ok(textareas.length && textareas.every(value => value.radius === 16 && value.height >= 60), `Multiline fields retain usable rounded rectangles ${width}px: ${JSON.stringify(textareas)}`);
-    const date = shipment.getByLabel('Дата отгрузки / погрузки', { exact: true }), time = shipment.getByLabel('Дата отгрузки / погрузки — время', { exact: true });
+    const date = shipment.getByLabel('Плановая дата рейса · Москва', { exact: true }), time = shipment.getByLabel('Плановая дата рейса · Москва — время', { exact: true });
     const dateLayout = await shipment.locator('.trip-date-controls').first().evaluate(element => {
       const controls = [...element.querySelectorAll('input')].map(input => { const rect = input.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, width: rect.width }; });
       return { width: element.getBoundingClientRect().width, controls };
@@ -215,18 +214,20 @@ try {
   await page.goto(`${runtime.base}/#work`);
   await page.getByRole('button', { name: 'Новая задача', exact: true }).click();
   await expect(page.locator('.work-editor')).toBeVisible();
-  for (const [index, field] of (await page.locator('.work-editor input:not([type="checkbox"]), .work-editor textarea, .work-editor select').all()).entries()) {
-    if (await field.isVisible() && await field.isEnabled()) report.focusFeedback.push(await verifyFocusFeedback(page, field, `work-field-${index}`));
-  }
-  await page.getByLabel('Название', { exact: true }).focus();
-  await page.screenshot({ path: resolve(output, 'work-border-focus.png'), fullPage: true });
-  await page.locator('.work-editor').getByRole('button', { name: 'Отмена', exact: true }).click();
-  // Include the optional team screen's own stylesheet and variable scope.
-  await page.addStyleTag({ path: resolve(root, 'web/src/team.css') });
+  const assignees = page.getByRole('combobox', { name: 'Исполнители', exact: true });
+  await assignees.focus();
+  await assignees.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  await expect(assignees).toBeFocused();
+  await expect(assignees).toHaveCSS('outline-style', 'solid');
+  await expect(assignees).toHaveCSS('outline-width', '2px');
+  report.checks.push('Work assignee selector shows its keyboard focus ring');
+  await page.screenshot({ path: resolve(output, 'work-focus.png'), fullPage: true });
+  await page.locator('.work-editor').getByRole('button', { name: 'Закрыть рабочую запись', exact: true }).click();
   // Additional shared surfaces use synthetic DOM, with the real loaded CSS.
   await page.evaluate(() => {
     const fixture = document.createElement('section'); fixture.id = 'focus-fixture';
-    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-screen', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'team-search', 'company-combobox', 'filter-search', 'driver-search'].filter(wrapper => wrapper !== 'driver-search' || shell === 'driver-shell').map(wrapper => `<div class="${wrapper === 'team-search' ? 'team-page' : ''}"><label class="${wrapper}"><input type="text"></label></div>`).join('')}</div>`).join('');
+    fixture.innerHTML = ['app-shell', 'driver-shell', 'auth-screen', 'shipment-filter-dialog'].map(shell => `<div class="${shell}">${['text', 'search', 'password', 'email', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'file', 'checkbox', 'radio', 'range'].map(type => `<label class="shipment-field"><input type="${type}"></label>`).join('')}<label class="shipment-field"><select><option>QA</option></select></label><textarea></textarea>${['shipment-search', 'table-search', 'overview-search', 'bank-search', 'company-combobox', 'filter-search', 'driver-search'].filter(wrapper => wrapper !== 'driver-search' || shell === 'driver-shell').map(wrapper => `<label class="${wrapper}"><input type="text"></label>`).join('')}</div>`).join('');
     document.body.append(fixture);
   });
   for (const [index, field] of (await page.locator('#focus-fixture input, #focus-fixture select, #focus-fixture textarea').all()).entries()) {

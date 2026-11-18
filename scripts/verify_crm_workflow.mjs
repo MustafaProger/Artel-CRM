@@ -98,8 +98,10 @@ try {
   await a.page.getByRole('button', { name: 'Новая задача', exact: true }).click()
   let editor = a.page.locator('dialog[open]')
   await editor.getByLabel('Название', { exact: true }).fill('QA назначение коллеге')
-  await editor.getByRole('combobox', { name: /Исполнитель/ }).click()
+  const assignees = editor.getByRole('combobox', { name: 'Исполнители', exact: true })
+  await assignees.click()
   await editor.getByRole('option', { name: bob.name, exact: true }).click()
+  await assignees.press('Escape')
   await editor.locator('button[type=submit]').click()
   await expect(editor).toHaveCount(0)
   await visit(b.page, 'work', '.work-companies')
@@ -163,8 +165,11 @@ try {
   await expect(d.page.locator('dialog[open]')).toHaveCount(0)
   await visit(d.page, 'accounts', '.account-management')
   await d.page.getByRole('button', { name: 'Добавить пользователя', exact: true }).click()
-  await expect(d.page.getByRole('option', { name: 'Логист', exact: true, includeHidden: true })).toHaveCount(0)
-  console.log('PASS nine directory tabs, cancel, one-click deletion, retired role')
+  const roleSelect = d.page.getByLabel('Полномочия', { exact: true })
+  for (const role of ['Логист', 'Бухгалтер']) {
+    await expect(roleSelect.getByRole('option', { name: role, exact: true, includeHidden: true })).toBeEnabled()
+  }
+  console.log('PASS nine directory tabs, cancel, one-click deletion and assignable staff roles')
 
   await visit(d.page, 'operator', '.operator-workspace')
   for (const name of [/Задания/, /^Возвраты/, /^Ожидают заправки/, 'Сверки', 'Операции']) {

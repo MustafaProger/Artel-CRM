@@ -8,7 +8,6 @@ import { defaultSberConnection, type SberConnection } from './sber-connections';
 import type { SberTokens } from './sber-client';
 
 export const SBER_ACCOUNT = defaultSberConnection.account;
-export const SBER_COMPANY = defaultSberConnection.company;
 export const SBER_INN = defaultSberConnection.inn;
 export const SBER_CONNECTION = defaultSberConnection.id;
 export const SBER_FIRST_DAY = '2026-09-01';

@@ -55,11 +55,9 @@ div.scrollable-segments[class] > button {
 
 /* Solid surfaces, a single radius and restrained depth across sections. */
 :is(.overview-card, .trip-card, .directory-list, .account-panel, .bank-ledger,
-  .team-stats, .team-role-list, .team-role-detail, .team-source-panel,
   .china-page, .archive-ledger, .bank-card, .invoice-tab-panel, .work-lane,
   .work-calendar, .work-column, .work-note).panel,
 :is(.overview-card, .trip-card, .directory-list, .account-panel, .bank-ledger,
-  .team-stats, .team-role-list, .team-role-detail, .team-source-panel,
   .china-page, .archive-ledger, .bank-card),
 .work-page :is(.panel, .work-lane, .work-calendar, .work-column, .work-note) {
   border-radius: var(--ui-card-radius);
@@ -88,7 +86,7 @@ div.scrollable-segments[class] > button {
  * Embedded search/combobox inputs retain their borderless inner presentation.
  * Table editors, checkboxes, radios, ranges and switch controls are excluded.
  */
-:is(.app-shell.app-shell, .driver-shell.driver-shell, .auth-shell.auth-shell) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input, .personal-profile-identity input)),
+:is(.app-shell.app-shell, .driver-shell.driver-shell, .auth-shell.auth-shell) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="hidden"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .table-search > input, .driver-search > input, .filter-search > input, .personal-profile-identity input)),
 .shipment-filter-dialog .shipment-field :is(input, select) {
   box-sizing: border-box;
   min-width: 0;
@@ -103,15 +101,15 @@ div.scrollable-segments[class] > button {
   box-shadow: none;
 }
 :is(.directory-toolbar, .trips-toolbar) .shipment-search,
-:is(.overview-search, .team-search, .bank-search, .table-search, .company-combobox):not(:where(.shipment-grid *, table *)) {
+:is(.overview-search, .bank-search, .table-search, .company-combobox):not(:where(.shipment-grid *, table *)) {
   min-height: var(--ui-control-size);
   border-radius: var(--ui-field-radius);
   border-color: var(--border);
   box-shadow: none;
 }
-:is(.directory-toolbar, .trips-toolbar, .overview-search, .team-search, .bank-search, .table-search) input:not(:where(.shipment-grid *, table *)) { font-size: var(--ui-field-font); }
+:is(.directory-toolbar, .trips-toolbar, .overview-search, .bank-search, .table-search) input:not(:where(.shipment-grid *, table *)) { font-size: var(--ui-field-font); }
 /* The wrapper owns the focus ring, including keyboard focus. */
-.app-shell :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search):not(:where(table *)) > input:focus-visible { outline: 0; box-shadow: none; }
+.app-shell :is(.shipment-search, .table-search, .overview-search, .bank-search, .company-combobox, .filter-search):not(:where(table *)) > input:focus-visible { outline: 0; box-shadow: none; }
 
 /* Multiline text keeps usable corners; single-line fields share the search capsule.
  * Native date/time pickers and select menus retain platform keyboard behaviour. */
@@ -216,15 +214,15 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
 
 /* A single capsule shape for every search surface, including editors and driver UI.
  * The wrapper owns the border/focus; its input must remain borderless. */
-:is(.app-shell.app-shell, .driver-shell.driver-shell) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .company-combobox, .filter-search):not(:where(.shipment-grid *)) {
+:is(.app-shell.app-shell, .driver-shell.driver-shell) :is(.shipment-search, .overview-search, .bank-search, .table-search, .driver-search, .company-combobox, .filter-search):not(:where(.shipment-grid *)) {
   border-radius: var(--ui-search-radius);
   min-height: var(--ui-control-size);
 }
-:is(.app-shell.app-shell, .driver-shell.driver-shell) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search):not(:where(.shipment-grid *)) {
+:is(.app-shell.app-shell, .driver-shell.driver-shell) :is(.shipment-search, .overview-search, .bank-search, .table-search, .driver-search, .filter-search):not(:where(.shipment-grid *)) {
   padding: 0 16px;
   gap: 10px;
 }
-:is(.app-shell.app-shell, .driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .company-combobox, .filter-search):not(:where(.shipment-grid *)) > input {
+:is(.app-shell.app-shell, .driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog) :is(.shipment-search, .overview-search, .bank-search, .table-search, .driver-search, .company-combobox, .filter-search):not(:where(.shipment-grid *)) > input {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -235,7 +233,7 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
   box-shadow: none;
   outline: 0;
 }
-:is(.app-shell, .driver-shell) :is(.shipment-search, .overview-search, .bank-search, .team-search, .table-search, .driver-search, .filter-search) > svg { flex-shrink: 0; }
+:is(.app-shell, .driver-shell) :is(.shipment-search, .overview-search, .bank-search, .table-search, .driver-search, .filter-search) > svg { flex-shrink: 0; }
 
 /* Column filters use the shared form/actions and grow only to their content. */
 .shipment-filter-dialog.shipment-filter-dialog {
@@ -401,15 +399,15 @@ dialog:is(.detail-dialog, .shipment-editor, .work-editor, .account-delete-dialog
 /* Focus recolours the existing border only, in both directions. Search and
  * authentication inputs delegate to their single bordered surface. Ledger
  * editors and borderless native controls retain their keyboard indicators. */
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen) :is(input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input, .auth-input-wrap > input, .personal-profile-identity input)),
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog, .auth-screen.auth-screen.auth-screen) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search, .auth-input-wrap):not(:where(.shipment-grid *, table *)),
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen) :is(input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .table-search > input, .driver-search > input, .filter-search > input, .auth-input-wrap > input, .personal-profile-identity input)),
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog, .auth-screen.auth-screen.auth-screen) :is(.shipment-search, .table-search, .overview-search, .bank-search, .company-combobox, .filter-search, .driver-search, .auth-input-wrap):not(:where(.shipment-grid *, table *)),
 .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog .shipment-field :is(input:not([type="checkbox"], [type="radio"]), select) {
   outline: 0;
   box-shadow: none;
   transition: border-color var(--ui-feedback);
 }
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen) :is(input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .team-search > input, .table-search > input, .driver-search > input, .filter-search > input, .auth-input-wrap > input, .personal-profile-identity input)):focus,
-:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog, .auth-screen.auth-screen.auth-screen) :is(.shipment-search, .table-search, .overview-search, .bank-search, .team-search, .company-combobox, .filter-search, .driver-search, .auth-input-wrap):not(:where(.shipment-grid *, table *)):focus-within,
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .auth-screen.auth-screen.auth-screen) :is(input:not([type="hidden"], [type="checkbox"], [type="radio"]), select, textarea):not(:where(.shipment-grid *, table *, .company-combobox > input, .shipment-search > input, .overview-search > input, .bank-search > input, .table-search > input, .driver-search > input, .filter-search > input, .auth-input-wrap > input, .personal-profile-identity input)):focus,
+:is(.app-shell.app-shell.app-shell, .driver-shell.driver-shell.driver-shell, .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog, .auth-screen.auth-screen.auth-screen) :is(.shipment-search, .table-search, .overview-search, .bank-search, .company-combobox, .filter-search, .driver-search, .auth-input-wrap):not(:where(.shipment-grid *, table *)):focus-within,
 .shipment-filter-dialog.shipment-filter-dialog.shipment-filter-dialog .shipment-field :is(input:not([type="checkbox"], [type="radio"]), select):focus {
   border-color: var(--accent);
   outline: 0;

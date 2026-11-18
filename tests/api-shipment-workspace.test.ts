@@ -11,7 +11,6 @@ import { currentSnapshot, shipmentPage, prepareShipmentFields } from '../server/
 import { OperationsStore, type OperationsData } from '../server/operations-store';
 import { emptyDirectories } from '../server/directory-operations';
 import { calculateShipment, overdueDays } from '../web/src/shipment-calculations';
-import { allocatePayment } from '../server/payment-allocations';
 import type { CalculationRules, Snapshot } from '../web/src/model';
 import Decimal from 'decimal.js';
 import { settlementKind } from '../web/src/shipment-settlement';
@@ -58,10 +57,13 @@ test('partial payments, overpayment, settlement date and overdue use linked oper
   const legacy=calculateShipment({...input,customer_amount:'100',paid_amount_source:'20',opening_paid_amount:'20'},rules,{historical:true,allocations:[allocation('p1','30','2026-09-11')]}).fields;
   assert.equal(legacy.paid_amount_source,'50');assert.equal(calculateShipment(legacy,rules,{historical:true,allocations:[allocation('p1','30','2026-09-11')]}).fields.paid_amount_source,'50');
   assert.equal(calculateShipment({...input,customer_amount:'100',paid_amount_source:null,debt_overpayment_source:'0'},rules,{historical:true}).fields.overdue_days,null);
-  const data=empty(), snapshot=currentSnapshot(base,data), payment=snapshot.payments.find(p=>p.date&&Number(p.incoming)>10)!;
-  const result=allocatePayment(snapshot,data,snapshot.shipments[0].id,payment.id,'1');assert.equal(result.created,true);assert.equal(allocatePayment(snapshot,data,snapshot.shipments[0].id,payment.id,'1').created,false);
-  assert.throws(()=>allocatePayment(snapshot,data,snapshot.shipments[0].id,payment.id,'2'),/другую сумму/);
-  assert.throws(()=>allocatePayment(snapshot,data,snapshot.shipments[1].id,payment.id,payment.incoming!),/превышает/);
+  const data = empty();
+  const snapshot = currentSnapshot(base, data);
+  const shipment = snapshot.shipments.find(row => row.fields.opening_paid_amount != null)!;
+  const payment = snapshot.payments.find(row => row.date && Number(row.incoming) > 1)!;
+  data.paymentAllocations = [{ id: 'saved-allocation', shipmentId: shipment.id, paymentId: payment.id, amount: '1', date: payment.date! }];
+  const updated = currentSnapshot(base, data).shipments.find(row => row.id === shipment.id)!;
+  assert.equal(updated.fields.paid_amount_source, new Decimal(shipment.fields.opening_paid_amount!).plus(1).toFixed());
 });
 
 test('column filters, facets and exact numeric sorting operate before pagination',()=>{

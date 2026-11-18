@@ -5,7 +5,13 @@
 !app-dist/**
 !server-render/
 !server-render/production.mjs
+!server-render/export-operations.mjs
+!server-render/work-storage.mjs
+!server-render/grant-invoice-access.mjs
+!server-render/provision-developer.mjs
 !ops/
 !ops/production/
 !ops/production/Dockerfile
 !ops/production/entrypoint.sh
+**/.DS_Store
+**/._*

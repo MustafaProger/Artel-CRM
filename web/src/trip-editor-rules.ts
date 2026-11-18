@@ -10,7 +10,3 @@ export function driverVehicleId(directories: Directories, driverId: string) {
 export function loadingDateFields(value: string) {
   return { loading_at: value, date: value.slice(0, 10), loading_planned_at: value }
 }
-
-export function initialUnloadingFields(value: string) {
-  return { unloading_planned_at: value, unloading_actual_at: value }
-}

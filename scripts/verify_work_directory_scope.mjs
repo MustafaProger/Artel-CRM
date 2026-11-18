@@ -47,14 +47,15 @@ try {
   for(const width of [1440,390]){
    await page.setViewportSize({width,height:1000});await page.goto(runtime.base+'/#work');
    await page.getByRole('button',{name:'Новая задача',exact:true}).click();const dialog=page.getByRole('dialog');const combo=dialog.getByRole('combobox',{name:/^Компания/});
+   const closeEditor=dialog.getByRole('button',{name:'Закрыть рабочую запись',exact:true});
    await combo.click();const options=dialog.getByRole('listbox',{name:'Компания',exact:true}).getByRole('option');
    await expect(options).toHaveCount(3);assert.deepEqual((await options.allTextContents()).sort(),['QA Клиент','QA Обе роли','QA Поставщик']);
    await combo.fill('Бигуняк');await expect(options).toHaveCount(0);
-   await combo.fill('');await dialog.getByRole('button',{name:'Отмена',exact:true}).click();
+   await combo.fill('');await closeEditor.click();
    await page.getByRole('button',{name:'Задача: Историческая задача QA',exact:true}).click();await expect(combo).toHaveValue('QA Бигуняк');
-   await dialog.getByRole('button',{name:'Отмена',exact:true}).click();
+   await closeEditor.click();
    await page.getByRole('button',{name:'Новая задача',exact:true}).click();await combo.click();await expect(options).toHaveCount(3);
-   await page.screenshot({path:resolve(output,engine+'-'+width+'.png')});await dialog.getByRole('button',{name:'Отмена',exact:true}).click();
+   await page.screenshot({path:resolve(output,engine+'-'+width+'.png')});await closeEditor.click();
    report.checks.push({engine,width,clientsSuppliersOnly:true,dualRoleOnce:true,bankExcluded:true,historyPreserved:true});
   }
   await browser.close();browser=null;

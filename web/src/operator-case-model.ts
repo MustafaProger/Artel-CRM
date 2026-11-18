@@ -26,7 +26,6 @@ export interface OperatorCase {
 export interface OperatorCaseSummary extends OperatorCase {
   remainingLitres: string; remainingAmount: string; status: 'open' | 'completed';
 }
-export interface OperatorCarryoverInput { caseId: string; version: number; litres: string }
 export interface OperatorCarryover {
   caseId: string; settlementId: string; litres: string; driverName: string; amount?: string;
 }

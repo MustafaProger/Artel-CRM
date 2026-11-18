@@ -195,7 +195,7 @@ def check_roles(path, checks, shipments):
     return {"path": str(path.resolve()), "sha256": sha256(path), "authorization_implemented": roles.get("authorization_implemented")}
 
 
-def verify(source, export, roles_path):
+def verify(source, export, roles_path=None):
     checks = Checks()
     source_hash = sha256(source)
     manifest = json.loads((export / "manifest.json").read_text(encoding="utf-8"))
@@ -280,6 +280,7 @@ def verify(source, export, roles_path):
                 checks.equal(item["fields"].get(field), value, "field_mapping", location + " " + field)
             links = [("D", "customer_id", "customer"), ("M", "supplier_id", "supplier"), ("P", "carrier_id", "carrier")] if dataset == "shipments" else [("F", "counterparty_id", "payment_counterparty")]
             for col, field, role in links:
+                checks.check(field in item, "links", location + " missing " + field)
                 company_id = source_company(row_cells.get(col, {}).get("value"), sheet, col + str(row), role, item["id"])
                 checks.equal(item.get(field), company_id, "links", location + " " + field)
             if dataset == "payments":
@@ -389,22 +390,25 @@ def verify(source, export, roles_path):
     for key, value in expected_issues.items():
         checks.equal(report["issue_counts"].get(key), value, "counts", key)
     checks.equal(Counter(i["code"] for i in report["cell_issues"]), Counter(report["issue_counts"]), "counts", "issue details match counts")
-    roles_result = check_roles(roles_path, checks, datasets["shipments"])
+    legacy_role_report = {}
+    if roles_path is not None:
+        legacy_role_report["roles"] = check_roles(roles_path, checks, datasets["shipments"])
+        legacy_role_report["authorization_implemented"] = legacy_role_report["roles"]["authorization_implemented"]
     return {"status": "passed" if not checks.failed else "failed", "checked_at_utc": datetime.now(timezone.utc).isoformat(),
             "source": {"file": str(source.resolve()), "sha256": source_hash}, "export": str(export.resolve()),
             "method": "Independent source ZIP/XML and openpyxl comparison; exact Decimal sums; no imported exporter code; no formula recalculation.",
-            "google_verified": False, "registry_verified": False, "authorization_implemented": False,
+            "google_verified": False, "registry_verified": False,
             "checks_run": sum(checks.checked.values()), "checks_by_category": dict(checks.checked),
             "failed_checks": sum(checks.failed.values()), "failures_by_category": dict(checks.failed),
             "failures": checks.failures, "failure_details_truncated": sum(checks.failed.values()) > len(checks.failures),
-            "source_counts": expected_counts, "independent_totals": monetary, "roles": roles_result}
+            "source_counts": expected_counts, "independent_totals": monetary, **legacy_role_report}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--export", type=Path, required=True)
-    parser.add_argument("--roles", type=Path, default=Path(__file__).resolve().parents[1] / "config/roles.json")
+    parser.add_argument("--roles", type=Path, help="Also validate an explicitly supplied historical export role specification")
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / "qa/verification.json")
     args = parser.parse_args()
     try:

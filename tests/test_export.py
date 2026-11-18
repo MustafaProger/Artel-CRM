@@ -176,15 +176,11 @@ class ExportTests(unittest.TestCase):
         self.assertFalse(managers[0]["is_user_account"])
         self.assertIsNone(managers[0]["user_id"])
         self.assertEqual(len(managers[0]["shipment_ids"]), 2)
-        roles = json.loads((ROOT / "config/roles.json").read_text(encoding="utf-8"))
-        self.assertEqual(roles["status"], "specification_only")
-        self.assertFalse(roles["authorization_implemented"])
-        self.assertEqual(roles["accounts"], [])
-        self.assertEqual(roles["ownership_assignments"], [])
 
     def test_independent_verifier_accepts_valid_fixture(self):
-        result = verifier.verify(self.source, self.output, ROOT / "config/roles.json")
+        result = verifier.verify(self.source, self.output)
         self.assertEqual(result["status"], "passed", result["failures"])
+        self.assertNotIn("roles", result)
 
     def changed_snapshot(self, name, edit, repair_manifest=True):
         temp = tempfile.TemporaryDirectory(prefix="artel-corrupt-test-")
@@ -200,7 +196,7 @@ class ExportTests(unittest.TestCase):
             manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
             manifest["files"][file.name] = {"sha256": hashlib.sha256(file.read_bytes()).hexdigest(), "bytes": file.stat().st_size}
             manifest_file.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-        return verifier.verify(self.source, target, ROOT / "config/roles.json")
+        return verifier.verify(self.source, target)
 
     def test_verifier_detects_rehashed_source_value_corruption(self):
         def corrupt(raw):
