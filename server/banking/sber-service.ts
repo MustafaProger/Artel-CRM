@@ -30,10 +30,9 @@ export class SberService {
     try { sberEncryptionKey(this.env); } catch { if (!missing.includes('Ключ защиты банковского доступа на сервере')) missing.push('Ключ защиты банковского доступа на сервере'); }
     return missing;
   }
-  async list(query: URLSearchParams): Promise<SberStatementsResult> { return this.listFromData(await this.read(), query); }
-  listFromData(data: OperationsData, query: URLSearchParams): SberStatementsResult {
+  async list(query: URLSearchParams): Promise<SberStatementsResult> {
     const period = sberPeriod(query.get('from') ?? SBER_FIRST_DAY, query.get('to') ?? today());
-    const state = data[this.connection.slot] ?? emptySber(this.connection), job = state.job;
+    const state = (await this.read())[this.connection.slot] ?? emptySber(this.connection), job = state.job;
     const direction = query.get('direction'), term = (query.get('q') ?? '').trim().toLocaleLowerCase('ru-RU');
     if (direction && !['incoming', 'outgoing'].includes(direction)) throw new ApiError(400, 'Некорректное направление платежа.');
     const operations = state.operations.filter(row => row.statementDate >= period.from && row.statementDate <= period.to && (!direction || row.direction === direction) && (!term || [row.payer.name, row.payee.name, row.payer.inn, row.payee.inn, row.payer.account, row.payee.account, row.purpose, row.documentNumber].some(value => value?.toLocaleLowerCase('ru-RU').includes(term))));
@@ -207,9 +206,8 @@ export class SberService {
       return { pending: !!(await this.read())[this.connection.slot]?.job };
     }) ?? { pending: true };
   }
-  async operation(id: string): Promise<BankOperation> { return this.operationFromData(await this.read(), id); }
-  operationFromData(data: OperationsData, id: string): BankOperation {
-    const row = data[this.connection.slot]?.operations.find(row => row.id === id);
+  async operation(id: string): Promise<BankOperation> {
+    const row = (await this.read())[this.connection.slot]?.operations.find(row => row.id === id);
     if (!row) throw new ApiError(404, 'Операция Сбера не найдена.');
     return row;
   }

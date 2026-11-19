@@ -20,6 +20,28 @@ test('reusing exact document payload validation never reuses metadata or trusts 
   assert.throws(()=>validateDocumentArchive(archive));
 });
 
+test('archives above the cache budget reuse part of the verified payloads and check replacements with identical metadata', t => {
+  const metadata = { createdBy: 'owner', createdAt: '2026-11-09T00:00:00Z' };
+  const size = 5 * 1024 * 1024;
+  const data = Buffer.alloc(size, 0x61).toString('base64');
+  const archive = { categories: [{ ...metadata, id: 'c', name: 'Категория' }], documents: Array.from({ length: 6 }, (_, i) => ({
+    ...metadata, id: 'file-' + i, categoryId: 'c', title: 'Файл', fileName: 'file.bin', expiresOn: null, size, data
+  })) };
+  let decodes = 0;
+  t.mock.method(Buffer, 'from', new Proxy(Buffer.from, { apply(original, receiver, args) {
+    if (args[1] === 'base64') decodes++;
+    return Reflect.apply(original, receiver, args);
+  } }));
+  validateDocumentArchive(archive);
+  assert.equal(decodes, 6);
+  decodes = 0;
+  archive.categories[0].name = 'Обновлено';
+  validateDocumentArchive(archive);
+  assert.equal(decodes, 2);
+  archive.documents[0].data = '!' + data.slice(1);
+  assert.throws(() => validateDocumentArchive(archive), /Invalid document file/);
+});
+
 test('both document upload paths allow 64 MiB total and reject one byte more', () => {
   const metadata = { createdBy: 'owner', createdAt: '2026-11-09T00:00:00Z' };
   const makeData = (): OperationsData => ({

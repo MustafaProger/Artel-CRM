@@ -91,9 +91,9 @@ function compose(core: OperationsData, auth: AuthState, work: WorkState, archive
  * escapes: readers receive fresh mutable nodes and reuse only immutable strings. */
 class PartReader {
   private cache?: { bytes: Buffer; raw: string; snapshot: JsonSnapshot };
-  remember(raw: string, snapshot?: JsonSnapshot) {
+  remember(raw: string, bytes: Buffer, snapshot?: JsonSnapshot) {
     if (this.cache?.raw === raw) return;
-    this.cache = { bytes: Buffer.from(raw), raw, snapshot: snapshot ?? new JsonSnapshot((JSON.parse(raw) as { data: unknown }).data) };
+    this.cache = { bytes, raw, snapshot: snapshot ?? new JsonSnapshot((JSON.parse(raw) as { data: unknown }).data) };
   }
   matches(value: unknown) { return !!this.cache && this.cache.raw === this.cache.snapshot.raw && this.cache.snapshot.matches(value); }
   encode(value: unknown) { return new JsonSnapshot(value, this.cache?.snapshot); }
@@ -168,11 +168,16 @@ export class AuthPartition {
     validate(compose(values.core as unknown as OperationsData, values.auth, values.work, values.archive), source);
     await this.bound(raw);
     await this.installRedo(changed as Part[], raw);
-    for (const part of changed as Part[]) this.readers[part].remember(raw[part]!);
     this.validated = raw;
   }
-  private async installRedo(parts: Part[], raw: RawParts) {
-    for (const part of parts) await atomicFile(this.partPath(part), raw[part]!);
+  private async installPart(part: Part, raw: string, snapshot?: JsonSnapshot) {
+    // The writer and the private cache share exactly the durable UTF-8 bytes.
+    const bytes = Buffer.from(raw);
+    await atomicFile(this.partPath(part), bytes);
+    this.readers[part].remember(raw, bytes, snapshot);
+  }
+  private async installRedo(parts: Part[], raw: RawParts, snapshots?: Partial<Record<Part, JsonSnapshot | undefined>>) {
+    for (const part of parts) await this.installPart(part, raw[part]!, snapshots?.[part]);
     await unlink(this.journalPath);
     const directory = await open(this.directory, 'r');
     try { await directory.sync(); } finally { await directory.close(); }
@@ -186,10 +191,9 @@ export class AuthPartition {
     const core = unseal(journal.core), auth = unseal(journal.auth), work = unseal(journal.work);
     identity(core, source); checkAuth(auth, source); checkWork(work, source);
     validate(compose(core as unknown as OperationsData, auth, work), source);
-    await atomicFile(this.corePath, journal.core); await atomicFile(this.authPath, journal.auth); await atomicFile(this.workPath, journal.work);
+    await this.installPart('core', journal.core); await this.installPart('auth', journal.auth); await this.installPart('work', journal.work);
     await unlink(this.journalPath);
     const directory = await open(this.directory, 'r'); try { await directory.sync(); } finally { await directory.close(); }
-    this.readers.core.remember(journal.core); this.readers.auth.remember(journal.auth); this.readers.work.remember(journal.work);
     this.validated = { core: journal.core, auth: journal.auth, work: journal.work };
   }
   private async auth(source: string) {
@@ -318,8 +322,7 @@ export class AuthPartition {
       const business = await Promise.all([this.corePath, this.workPath, ...(this.version === 2 ? [this.archivePath] : [])].map(path => stat(path)));
       if (business.some(part => !part.isFile())) throw new StoreError('Missing business partition');
       if (business.reduce((size, part) => size + part.size, 0) + Buffer.byteLength(raw) + 4096 > maxBytes) throw new StoreError('Combined storage is too large for a safe flat backup');
-      await atomicFile(this.authPath, raw);
-      this.readers.auth.remember(raw);
+      await this.installPart('auth', raw);
       // All changed auth domains were validated above, and business/Work data
       // were inaccessible to this callback. Future full reads still compare
       // exact core/Work bytes before reusing their previous validation.
@@ -381,15 +384,14 @@ export class AuthPartition {
           }
           const images = Object.fromEntries(parts.map(part => [part, next[part]]));
           await atomicFile(this.journalPath, seal({ format: 'artel-auth-redo-v2', sourceSha256: source, parts: images }));
-          await this.installRedo(parts, next);
+          await this.installRedo(parts, next, encoded);
         }
       }
-      else if (coreChanged) await atomicFile(this.corePath, next.core);
-      else if (authChanged) await atomicFile(this.authPath, next.auth);
-      else if (workChanged) await atomicFile(this.workPath, next.work);
-      else if (archiveChanged) await atomicFile(this.archivePath, next.archive!);
-      this.readers.core.remember(next.core, encoded.core); this.readers.auth.remember(next.auth, encoded.auth); this.readers.work.remember(next.work, encoded.work);
-      if (next.archive) { this.readers.archive.remember(next.archive, encoded.archive); this.validatedArchive = next.archive; }
+      else if (coreChanged) await this.installPart('core', next.core, encoded.core);
+      else if (authChanged) await this.installPart('auth', next.auth, encoded.auth);
+      else if (workChanged) await this.installPart('work', next.work, encoded.work);
+      else if (archiveChanged) await this.installPart('archive', next.archive!, encoded.archive);
+      if (next.archive) this.validatedArchive = next.archive;
       this.validated = next;
       this.checkedCore = { core: next.core, auth: next.auth };
       if (archiveChanged) this.archiveSummary = undefined;

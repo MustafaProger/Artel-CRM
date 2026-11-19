@@ -16,6 +16,26 @@ const edit = (data: OperationsData, parts: string[]) => {
   if (parts.includes('work')) data.work!.notes.push({ id: 'n', title: 'Synthetic', content: 'Synthetic', assigneeId: 'owner', createdBy: 'owner', updatedBy: 'owner', createdAt: stamp, updatedAt: stamp, version: 1 });
   if (parts.includes('archive')) data.documentArchive!.categories[0].name = 'Updated';
 };
+test('single and journaled archive writes install the exact sealed UTF-8 bytes read by the warm and restarted store', async () => {
+  const f = await archiveFixture();
+  try {
+    for (const mixed of [false, true]) {
+      const name = mixed ? 'Карточка 🚛' : 'Квитанция «№ 7»';
+      await f.store.mutate(source, data => {
+        data.documentArchive!.categories[0].name = name;
+        if (mixed) data.shipments.example.version++;
+        return { result: null, changed: true };
+      });
+      const bytes = await readFile(f.part.archivePath);
+      const archive = JSON.parse(bytes.toString('utf8')).data;
+      assert.equal(archive.documentArchive.categories[0].name, name);
+      assert.deepEqual(bytes, Buffer.from(seal(archive), 'utf8'));
+      assert.deepEqual((await f.store.readDocuments(source)).documentArchive, archive.documentArchive);
+      assert.deepEqual((await new OperationsStore(f.directory).read(source)).documentArchive, archive.documentArchive);
+    }
+  } finally { await f.close(); }
+});
+
 test('offline v2 split/current merge preserves exact logical state and historical v1 parts', async () => {
   const f = await archiveFixture(false); try {
     const before = await f.store.read(source), historical = await Promise.all(['core','auth','work'].map(part => readFile(resolve(f.directory, `auth-storage/${part}.json`))));

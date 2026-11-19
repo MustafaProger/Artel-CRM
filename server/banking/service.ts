@@ -54,13 +54,12 @@ export class BankingService {
     const scope = activeRows.filter(row => !query.get('connection') || row.connectionId === query.get('connection'));
     return { connections, items: rows.slice((page - 1) * size, page * size).map(row => ({ ...row, bankData: {} })), total: rows.length, page, pageSize: size, totals: totals(rows), statuses: [...new Set(scope.map(row => row.status ?? '__missing__'))].sort(), storedCount: scope.length, scheduleEnabled: this.env.ARTEL_BANK_SYNC_ENABLED === 'true' };
   }
-  rowsFromData(data: OperationsData, query: URLSearchParams) {
+  async rows(query: URLSearchParams) {
+    const data = await this.read();
     return filterOperations((data.banking?.operations ?? []).filter(row => row.provider === 'tbank'), query);
   }
-  async rows(query: URLSearchParams) { return this.rowsFromData(await this.read(), query); }
-  async operation(id: string) { return this.operationFromData(await this.read(), id); }
-  operationFromData(data: OperationsData, id: string) {
-    const row = data.banking?.operations.find(row => row.id === id);
+  async operation(id: string) {
+    const row = (await this.read()).banking?.operations.find(row => row.id === id);
     if (!row || row.provider !== 'tbank') throw new ApiError(404, 'Банковская операция не найдена.');
     return row;
   }

@@ -7,7 +7,7 @@ const archiveMaxBytes = 64 * 1024 * 1024;
 // Reuse only successful checks of the exact immutable payload string and size.
 // Metadata, membership and limits are still validated on every invocation.
 // Keep at most one archive's bounded payload references, never mutable records.
-let verifiedFiles: { data: string; size: number }[] = [];
+let verifiedFiles = new Map<string, { data: string; size: number }>();
 function text(value: unknown, label: string, max = 200): string {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > max || Array.from(value).some(char => char.charCodeAt(0) < 32)) return fail(`Проверьте поле «${label}» (до ${max} символов).`);
   return value.trim();
@@ -39,17 +39,23 @@ export function validateDocumentArchive(value: unknown): asserts value is Docume
     if (item.version !== undefined && (!Number.isSafeInteger(item.version) || item.version < 1)) throw new Error('Invalid item version');
     if (!a.categories.some(c => c.id === item.categoryId)) throw new Error('Invalid item category');
   }
+  const nextFiles = new Map<string, { data: string; size: number }>();
+  let remaining = 32 * 1024 * 1024;
   for (const d of a.documents) {
     if (d.itemId !== undefined && !a.items?.some(i => i.id === d.itemId && i.categoryId === d.categoryId)) throw new Error('Invalid document item');
     text(d.title, 'Название'); text(d.fileName, 'Файл'); expiry(d.expiresOn);
     if (!a.categories.some(c => c.id === d.categoryId) || typeof d.data !== 'string' || d.size <= 0 || d.size > documentMaxBytes) throw new Error('Invalid document file');
-    if (!verifiedFiles.some(file => file.size === d.size && file.data === d.data)) {
+    const previous = verifiedFiles.get(d.id);
+    if (!previous || previous.size !== d.size || previous.data !== d.data) {
       const bytes = Buffer.from(d.data, 'base64');
       if (bytes.length !== d.size || bytes.toString('base64') !== d.data) throw new Error('Invalid document file');
     }
+    if (d.data.length <= remaining) {
+      nextFiles.set(d.id, { data: d.data, size: d.size });
+      remaining -= d.data.length;
+    }
   }
-  verifiedFiles = a.documents.reduce((size, d) => size + d.data.length, 0) <= 32 * 1024 * 1024
-    ? a.documents.map(({ data, size }) => ({ data, size })) : [];
+  verifiedFiles = nextFiles;
 }
 export function createArchiveEntry(data: OperationsData, kind: string, input: unknown, actorId: string) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('Некорректный запрос.');

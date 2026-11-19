@@ -76,7 +76,7 @@ try {
       gate.requests.push(request); gate.enter(); await gate.wait;
       try {
         if (gate.response) await route.fulfill(gate.response);
-        else await route.fulfill({ response: await route.fetch() });
+        else await route.continue(); // Preserve WebKit’s browser-session cookies when releasing a real request.
       } finally { gate.finish(); }
     });
 

@@ -34,7 +34,7 @@ const snapshotDirectory = resolve(temporary, 'snapshot'), operationsDirectory = 
 await writeTripsQaSnapshot(snapshotDirectory);
 let runtime, browser, context;
 const selectors = { documents: '.document-archive', overview: '.overview-page', work: '.work-page', shipments: '.shipments-workspace', trips: '.trips-page', payments: '.banking-page', 'cabinet-balances': '.cabinet-page', china: '.china-page', invoices: '.invoice-workspace', operator: '.operator-workspace', accounts: '.account-management', directories: '.directories-page' };
-const endpoints = { overview: '/api/settlements', work: '/api/work', shipments: '/api/snapshot', trips: '/api/trip-requests/context', payments: '/api/banking', 'cabinet-balances': '/api/cabinets', china: '/api/china', invoices: '/api/invoices', operator: '/api/operator', accounts: '/api/auth/users', directories: '/api/directories', documents: '/api/documents' };
+const endpoints = { overview: '/api/settlements', work: '/api/work', shipments: '/api/shipments', trips: '/api/trip-requests/context', payments: '/api/banking', 'cabinet-balances': '/api/cabinets', china: '/api/china', invoices: '/api/invoices', operator: '/api/operator', accounts: '/api/auth/users', directories: '/api/directories', documents: '/api/documents' };
 const invoiceFixture = { integration: { status: 'read_only', message: 'Синтетический обработчик счетов', checkedAt: '2026-11-05T12:00:00Z' }, invoiceProfiles: [], invoiceCreation: { mode: 'live', connections: [] }, canPrepare: false, organizations: [], buyers: [], connections: [], defaultUnitPrice: '79', settings: { defaultUnitPrice: '79', revision: 1, updatedAt: null, updatedBy: null }, product: { name: 'Учебное топливо', unit: 'л', vatRate: '22', vatMode: 'included' }, canCreate: false, canEditDefaultPrice: false, history: { status: 'ready', items: [] } };
 const check = value => { report.observations.push(value); console.log('PASS', value); };
 const shot = async (page, name) => { const path = resolve(output, name + '.png'); await page.screenshot({ path, fullPage: true }); report.screenshots.push(path); };
@@ -101,11 +101,12 @@ try {
         await Promise.race([gate.entered, new Promise((_, reject) => setTimeout(() => reject(new Error(item.id + ': no gated GET')), 15000))]);
         // Prerequisite snapshot/context gates intentionally use neutral feedback;
         // only a page with its prerequisites ready can own a tailored skeleton.
-        const feedback = page.locator('#main-content .page-loading:visible, #main-content .loading-skeleton:visible').first();
+        const feedback = item.id === 'shipments' ? page.locator('#main-content .loading-skeleton-status') : page.locator('#main-content .page-loading:visible, #main-content .loading-skeleton:visible').first();
         await expect(feedback).toBeVisible();
         const skeleton = page.locator('#main-content .loading-skeleton:visible').first();
         if (await skeleton.count()) {
-          const labelBox = await skeleton.locator(':scope > .sr-only').evaluate(el => ({ width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height, overflow: getComputedStyle(el).overflow }));
+          const accessibleLabel = item.id === 'shipments' ? feedback : skeleton.locator(':scope > .sr-only');
+          const labelBox = await accessibleLabel.evaluate(el => ({ width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height, overflow: getComputedStyle(el).overflow }));
           assert.ok(labelBox.width <= 1 && labelBox.height <= 1 && labelBox.overflow === 'hidden', item.id + ': skeleton status label is visually hidden');
         }
         if (item.id === 'overview' && await skeleton.count()) {
@@ -122,7 +123,7 @@ try {
           assert.ok((await feedback.getAttribute('aria-label')) || (await feedback.textContent()).trim(), item.id + ': feedback has an accessible loading label');
           const motion = await feedback.evaluate(el => [...el.querySelectorAll('*')].flatMap(node => [getComputedStyle(node), getComputedStyle(node, '::after')]).filter(style => style.animationName !== 'none' && parseFloat(style.animationDuration) > 0.001).map(style => ({ name: style.animationName, duration: style.animationDuration })));
           assert.deepEqual(motion, [], item.id + ': reduced motion removes loading animation');
-          report.pages.push({ engine, id: item.id, state: 'loading', width, ...geometry, reducedMotion: true, loadingKind: await feedback.evaluate(el => el.classList.contains('loading-skeleton') ? 'skeleton' : 'neutral') });
+          report.pages.push({ engine, id: item.id, state: 'loading', width, ...geometry, reducedMotion: true, loadingKind: await skeleton.count() ? 'skeleton' : 'neutral' });
           if (['documents', 'trips', 'cabinet-balances', 'overview'].includes(item.id) && width !== 320) await shot(page, `${engine}-${item.id}-loading-${width}`);
         }
       } finally { await gate.close(); }

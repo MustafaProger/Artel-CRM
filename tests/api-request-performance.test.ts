@@ -15,6 +15,7 @@ import { OperationsStore } from '../server/operations-store';
 import { readOperator } from '../server/operator';
 import { currentSnapshot } from '../server/shipment-operations';
 import { readWork, workCompanyIds } from '../server/work-operations';
+import { fixtureDay } from './banking-fixtures';
 
 const base = await loadSnapshot(resolve('data/local-xlsx-final'));
 const source = base.provenance.sourceSha256;
@@ -232,12 +233,14 @@ test('the compact overview returns the exact organization projection and access 
 
 test('module reads preserve flat-store responses and use no full reads after archive migration', async t => {
   const f = await fixture(t), directory = dirname(f.store.path);
+  const period = `from=${fixtureDay}&to=${fixtureDay}`;
   const paths = ['/api/snapshot?shipments=omit', '/api/settlements?view=organizations', '/api/settlements', '/api/shipments', '/api/shipments/missing',
     '/api/shipment-trips?view=process', '/api/driver/trips', '/api/operator', '/api/china', '/api/cabinets', '/api/documents',
-    '/api/trip-requests', '/api/trip-requests/context', '/api/banking', '/api/banking/sber/sber-artel/statements', '/api/banking/sber/statements'];
+    '/api/trip-requests', '/api/trip-requests/context', '/api/banking', `/api/banking/sber/sber-artel/statements?${period}`, `/api/banking/sber/statements?${period}`];
   const values = new Map<string, { status: number; body: unknown }>();
   for (const path of paths) {
     const { status, body } = await f.get(path);
+    if (path.startsWith('/api/banking')) assert.equal(status, 200, path);
     assert.ok(status < 500, path);
     values.set(path, { status, body });
   }

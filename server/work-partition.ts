@@ -55,7 +55,7 @@ export async function partitionLock<T>(path: string, action: () => Promise<T>, p
     finally { await file.close(); await unlink(path); }
   } finally { release(); }
 }
-export async function atomicFile(path: string, bytes: string) {
+export async function atomicFile(path: string, bytes: string | Buffer) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, 'wx', 0o600);

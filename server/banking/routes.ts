@@ -1,4 +1,4 @@
-import { readAuthority } from '../request-views';
+import { readAuthority, readCore } from '../request-views';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireManage, requireUser } from '../auth';
 import { requireSection } from '../permissions';
@@ -11,19 +11,22 @@ export async function bankingRoutes(service: BankingService, request: IncomingMe
   const method = request.method, path = url.pathname;
   const listRequest = path === '/api/banking' && method === 'GET';
   const operation = path.match(/^\/api\/banking\/operations\/([a-f0-9]{64})(?:\/(refresh|print))?$/);
-  const exportRequest = method === 'GET' && path === '/api/banking/export';
-  const detailRequest = method === 'GET' && operation && !operation[2];
-  const localRead = listRequest || exportRequest || detailRequest;
-  const data = listRequest && requestData ? requestData : localRead ? await service.read() : await readAuthority(service.store, service.source);
-  guardDriver?.(data);
-  requireManage(requireSection(requireUser(data, request), 'payments'));
+  const requireBankAccess = (data: OperationsData) => {
+    guardDriver?.(data);
+    requireManage(requireSection(requireUser(data, request), 'payments'));
+  };
+  const authorize = async () => requireBankAccess(await readAuthority(service.store, service.source));
   const send = (value: unknown) => { response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
-  if (listRequest) return send(service.listFromData(data, url.searchParams));
-  if (detailRequest) return send({ operation: service.operationFromData(data, operation[1]) });
-  const authorize = async () => requireManage(requireSection(requireUser(await readAuthority(service.store, service.source), request), 'payments'));
+  if (listRequest) {
+    const data = requestData ?? await readCore(service.store, service.source, ['banking']);
+    requireBankAccess(data);
+    return send(service.listFromData(data, url.searchParams));
+  }
+  await authorize();
   const sendAuthorized = async (value: unknown) => { await authorize(); send(value); };
-  if (exportRequest) {
-    const output = csv(service.rowsFromData(data, url.searchParams));
+  if (method === 'GET' && path === '/api/banking/export') {
+    const output = csv(await service.rows(url.searchParams));
+    await authorize();
     response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="artel-bank-operations.csv"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(output); return;
   }
   const sync = path.match(/^\/api\/banking\/connections\/([a-z-]+)\/(sync|continue)$/);
@@ -34,6 +37,7 @@ export async function bankingRoutes(service: BankingService, request: IncomingMe
     return sendAuthorized(await service.tick(sync[1]) ?? { pending: true });
   }
   if (operation) {
+    if (!operation[2] && method === 'GET') return sendAuthorized({ operation: await service.operation(operation[1]) });
     if (operation[2] === 'refresh' && method === 'POST') { await readBody(); await authorize(); return sendAuthorized({ operation: await service.enrich(operation[1]) }); }
     if (operation[2] === 'print' && method === 'GET') {
       const buffer = await service.print(operation[1]);

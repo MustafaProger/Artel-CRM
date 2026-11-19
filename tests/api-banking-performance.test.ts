@@ -4,10 +4,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import type { StoredUser } from '../server/auth';
 import { ApiError } from '../server/api-error';
+import { migrateArchiveStorage, migrateAuthStorage } from '../server/auth-partition';
 import { normalizeTbank } from '../server/banking/adapters';
 import { operationId } from '../server/banking/domain';
 import { bankingRoutes } from '../server/banking/routes';
@@ -60,7 +61,7 @@ async function fixture(t: TestContext) {
     const response = await fetch(`${url}/api/banking?${query}`, { headers: { cookie: cookie(id) } });
     return { status: response.status, body: await response.json() as BankListResult, reads: store.reads };
   };
-  return { store, external, service, cookie, get, row, bankCalls: () => bankCalls };
+  return { store, external, service, cookie, get, row, url, bankCalls: () => bankCalls };
 }
 
 test('bank list uses one fresh read with identical filters, pagination, exact totals and redacted data', async t => {
@@ -127,4 +128,37 @@ test('non-list bank routes ignore an earlier view and reject revoked sessions be
     assert.equal(response.status, 401, path); assert.equal(f.store.reads, 1, path);
   }
   assert.equal(bodies, 0); assert.equal(f.bankCalls(), 0);
+});
+
+
+for (const change of ['revoke', 'demote'] as const) test(`bank export and Sber responses withhold results after a committed ${change} during a scoped read`, async t => {
+  const f = await fixture(t), directory = dirname(f.store.path);
+  await migrateAuthStorage(directory, source);
+  await migrateArchiveStorage(directory, source);
+  const original = f.store.readCoreFields.bind(f.store);
+  let reads = 0;
+  f.store.readCoreFields = async (key, fields) => {
+    const result = await original(key, fields);
+    reads++;
+    await f.external.mutateAuth(key, data => {
+      if (change === 'revoke') data.accounts!.sessions = data.accounts!.sessions.filter(row => row.userId !== 'admin');
+      else data.accounts!.users.find(row => row.id === 'admin')!.role = 'employee';
+      return { changed: true, result: null };
+    });
+    return result;
+  };
+  const initialAccounts = (await f.external.readAuth(source)).accounts!;
+  for (const path of ['/api/banking/export', `/api/banking/sber/statements?from=${fixtureDay}&to=${fixtureDay}`]) {
+    await f.external.mutateAuth(source, data => {
+      data.accounts = structuredClone(initialAccounts);
+      return { changed: true, result: null };
+    });
+    const count = reads;
+    const response = await fetch(f.url + path, { headers: { cookie: f.cookie('admin') } });
+    assert.equal(reads, count + 1, path);
+    assert.equal(response.status, change === 'revoke' ? 401 : 403, path);
+    assert.equal(response.headers.get('content-disposition'), null, path);
+    assert.deepEqual(Object.keys(await response.json()), ['error'], path);
+    assert.equal(f.bankCalls(), 0);
+  }
 });

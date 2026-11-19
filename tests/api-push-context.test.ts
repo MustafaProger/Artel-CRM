@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { createSnapshotMiddleware } from '../server/local-api';
+import { currentSnapshot } from '../server/shipment-operations';
 import { integrationRuntime } from './helpers/trip-saby-integration';
 import { migrateAuthStorage, migrateArchiveStorage } from '../server/auth-partition';
 import { dirname } from 'node:path';
@@ -91,7 +92,9 @@ for (const version of [1, 2]) test(`push config uses the fresh narrow authority 
     await migrateAuthStorage(dirname(f.store.path), f.source);
     if (version === 2) await migrateArchiveStorage(dirname(f.store.path), f.source);
     const read = f.store.read.bind(f.store);
-    let businessReads = 0;
+    const readFields = f.store.readCoreFields.bind(f.store);
+    let businessReads = 0, selectedReads = 0;
+    f.store.readCoreFields = async (source, fields) => { selectedReads++; return readFields(source, fields); };
     f.store.read = async source => { businessReads++; return read(source); };
     assert.equal((await f.request('/api/push/config', 'GET', undefined, f.admin)).status, 200);
     assert.equal((await f.request('/api/push/config', 'GET', undefined, f.operator)).status, 200);
@@ -100,10 +103,17 @@ for (const version of [1, 2]) test(`push config uses the fresh narrow authority 
     assert.equal((await f.request('/api/push/config', 'GET', undefined, f.operator)).status, 401);
     assert.equal((await f.request('/api/auth/session', 'GET', undefined, f.admin)).body.user.role, 'director');
     assert.equal(businessReads, 0);
+    assert.equal(selectedReads, 0, 'authentication and push configuration use only the authority view');
     assert.equal((await f.request('/api/navigation', 'GET', undefined, f.admin)).status, 200);
     assert.equal(businessReads, 0, 'navigation uses its workspace projection');
     assert.equal((await f.request('/api/navigation', 'GET', undefined, f.operator)).status, 401);
-    assert.equal((await f.request('/api/snapshot?shipments=omit', 'GET', undefined, f.admin)).status, 200);
-    assert.ok(businessReads > 0, 'the full snapshot route still reads all business domains');
+    const expected = currentSnapshot(f.base, await read(f.source));
+    assert.ok(expected.shipments.length > 0);
+    const snapshot = await f.request('/api/snapshot?shipments=omit', 'GET', undefined, f.admin);
+    assert.equal(snapshot.status, 200);
+    assert.deepEqual(snapshot.body, JSON.parse(JSON.stringify({ ...expected, shipments: [] })));
+    assert.equal(selectedReads, 1, 'the snapshot reads the financial and shipment fields once');
+    assert.equal(businessReads, 0, 'the financial response does not need the complete store');
+    assert.equal((await f.request('/api/snapshot?shipments=omit', 'GET', undefined, f.operator)).status, 401);
   } finally { await f.close(); }
 });
