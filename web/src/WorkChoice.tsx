@@ -76,10 +76,11 @@ export default function WorkChoice({ label, value, options, onChange, disabled =
   const renderOption = (option: ChoiceOption) => <button key={option.value} type="button" role="option"
     tabIndex={projectHeading ? -1 : undefined} title={projectHeading ? option.name : undefined} aria-selected={selected.includes(option)} disabled={option.disabled}
     onMouseDown={projectHeading ? event => event.preventDefault() : undefined}
-    onClick={() => {
+    onClick={event => {
       onChange(option.value);
       if (!selectedValues) {
         setOpen(false);
+        if (projectHeading) trigger.current?.toggleAttribute('data-pointer-focus', event.detail > 0);
         trigger.current?.focus({ preventScroll: true });
       }
     }}>
@@ -108,8 +109,13 @@ export default function WorkChoice({ label, value, options, onChange, disabled =
   const Chevron = projectHeading ? ChevronRight : ChevronDown;
   const control = <button ref={trigger} type="button" className={`work-choice-trigger${placeholder ? ' is-placeholder' : ''}`} role="combobox" aria-labelledby={`${id}-label`} aria-controls={`${id}-options`} aria-expanded={open} aria-haspopup="listbox" disabled={disabled}
     onMouseDown={projectHeading ? event => event.preventDefault() : undefined}
-    onClick={() => {
-      if (projectHeading) trigger.current?.focus({ preventScroll: true });
+    onBlur={projectHeading ? event => event.currentTarget.removeAttribute('data-pointer-focus') : undefined}
+    onKeyDown={projectHeading ? event => event.currentTarget.removeAttribute('data-pointer-focus') : undefined}
+    onClick={event => {
+      if (projectHeading) {
+        event.currentTarget.toggleAttribute('data-pointer-focus', event.detail > 0);
+        event.currentTarget.focus({ preventScroll: true });
+      }
       setOpen(previous => !previous);
     }}>
       {priority && !placeholder && <span className={`work-priority-dot work-priority-${value}`} aria-hidden="true"/>}

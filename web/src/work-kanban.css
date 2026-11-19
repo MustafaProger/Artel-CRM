@@ -50,8 +50,8 @@
   text-align: left;
   cursor: pointer;
 }
-.kb-picker .work-choice-trigger:focus:not(:focus-visible) { outline: none; }
-.kb-picker .work-choice-trigger:focus-visible { outline: 2px solid var(--kb-green); outline-offset: 3px; }
+.kb-picker .work-choice-trigger:focus { outline: none; }
+.kb-picker .work-choice-trigger:focus-visible:not([data-pointer-focus]) { outline: 2px solid var(--kb-green); outline-offset: 3px; }
 .kb-picker .work-choice-value, .kb-picker .work-choice-options button span {
   min-width: 0;
   overflow: hidden;
