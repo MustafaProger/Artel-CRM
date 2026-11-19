@@ -314,7 +314,6 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       <div className="work-toolbar-actions"><button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => { if (view === 'kanban') setBoardRefresh(n => n + 1); void refresh(true); }} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
       </div>
     </div>
-    {Object.keys(pendingTasks).length > 0 && <p role="status" className="work-notice">Сохраняем изменения задач…</p>}
     {notice && <p className="work-notice" role="status">{notice}</p>}
     {hiddenError && <p className="shipment-error" role="alert">{hiddenError[1]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
     {error && <p className="shipment-error" role="alert">{error}</p>}
