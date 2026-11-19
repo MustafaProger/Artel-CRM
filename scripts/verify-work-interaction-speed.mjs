@@ -199,12 +199,16 @@ try {
         conflictPath = '';
         // Lose the HTTP acknowledgement after the server committed. Reconciliation
         // must move the row back to the archive without resending the mutation.
+        const lostResponse = Promise.withResolvers();
         await page.route('**/api/work/tasks/' + other.id, async route => {
-          assert.ok((await route.fetch()).ok());
+          const response = await route.fetch({ headers: { ...await route.request().allHeaders(), origin: runtime.base, cookie } });
+          lostResponse.resolve({ status: response.status(), body: await response.text() });
           await route.abort('failed');
         }, { times: 1 });
         await listBox.click();
         await expect(listBox).toHaveCount(0);
+        const committed = await lostResponse.promise;
+        assert.equal(committed.status, 200, committed.body);
         await page.getByRole('button', { name: 'Архив задач', exact: true }).click();
         await expect(listBox).toBeChecked();
         await expect(listBox).toBeEnabled();
