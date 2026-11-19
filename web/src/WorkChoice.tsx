@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight } from 'lucide-react';
 
 type ChoiceOption = { value: string; name: string; disabled?: boolean; group?: string };
 
@@ -47,6 +47,17 @@ export default function WorkChoice({ label, value, options, onChange, disabled =
     window.addEventListener('scroll', place, true);
     return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [open, portalMenu, priority]);
+  useLayoutEffect(() => {
+    const list = menu.current;
+    if (!open || !projectHeading || !list) return;
+    const active = list.querySelector('[aria-selected="true"]');
+    if (!active) return;
+    const { left, right } = active.getBoundingClientRect();
+    const listLeft = list.getBoundingClientRect().left + list.clientLeft;
+    const listRight = listLeft + list.clientWidth;
+    if (left < listLeft) list.scrollLeft += left - listLeft - 5;
+    if (right > listRight) list.scrollLeft += right - listRight + 5;
+  }, [open, projectHeading, value]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node) && !menu.current?.contains(event.target as Node)) setOpen(false); };
@@ -57,8 +68,13 @@ export default function WorkChoice({ label, value, options, onChange, disabled =
     const choices = Array.from((menu.current ?? root.current)?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? []);
     choices[(index + choices.length) % choices.length]?.focus();
   };
+  const stepForKey = (key: string) => {
+    if (key === 'ArrowDown' || (projectHeading && key === 'ArrowRight')) return 1;
+    if (key === 'ArrowUp' || (projectHeading && key === 'ArrowLeft')) return -1;
+    return 0;
+  };
   const renderOption = (option: ChoiceOption) => <button key={option.value} type="button" role="option"
-    tabIndex={projectHeading ? -1 : undefined} aria-selected={selected.includes(option)} disabled={option.disabled}
+    tabIndex={projectHeading ? -1 : undefined} title={projectHeading ? option.name : undefined} aria-selected={selected.includes(option)} disabled={option.disabled}
     onMouseDown={projectHeading ? event => event.preventDefault() : undefined}
     onClick={() => {
       onChange(option.value);
@@ -68,40 +84,48 @@ export default function WorkChoice({ label, value, options, onChange, disabled =
       }
     }}>
     {priority && <span className={`work-priority-dot work-priority-${option.value}`} aria-hidden="true"/>}
-    <span>{option.name}</span>{selected.includes(option) && <Check size={15} aria-hidden="true"/>}
+    <span>{option.name}</span>{!projectHeading && selected.includes(option) && <Check size={15} aria-hidden="true"/>}
   </button>;
   const groups = [...new Set(options.map(option => option.group))];
-  const choices = <div ref={menu} id={`${id}-options`} className={`work-choice-options${portalMenu ? ` work-choice-portal${menuPosition.above ? '' : ' is-below'}` : ''}`} role="listbox" aria-multiselectable={selectedValues ? true : undefined} aria-labelledby={`${id}-label`} style={portalMenu ? { top: menuPosition.top, left: menuPosition.left, width: menuPosition.width, maxHeight: menuPosition.maxHeight } : undefined} onKeyDown={event => {
+  const choices = <div ref={menu} id={`${id}-options`} className={`work-choice-options${portalMenu ? ` work-choice-portal${menuPosition.above ? '' : ' is-below'}` : ''}`} role="listbox" aria-orientation={projectHeading ? 'horizontal' : undefined} aria-multiselectable={selectedValues ? true : undefined} aria-labelledby={`${id}-label`} style={portalMenu ? { top: menuPosition.top, left: menuPosition.left, width: menuPosition.width, maxHeight: menuPosition.maxHeight } : undefined} onKeyDown={event => {
     event.stopPropagation();
     if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus(); }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const step = stepForKey(event.key);
+    if (step) {
       event.preventDefault();
       const available = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? []);
-      focusOption(available.indexOf(document.activeElement as HTMLButtonElement) + (event.key === 'ArrowDown' ? 1 : -1));
+      focusOption(available.indexOf(document.activeElement as HTMLButtonElement) + step);
     }
   }}>{groups.some(Boolean) ? groups.map((group, index) => {
     const groupLabel = `${id}-group-${index}`;
     return <div key={group ?? ''} role="group" aria-labelledby={groupLabel}>
       <span id={groupLabel} className="work-choice-group-label">{group || 'Без группы'}</span>
-      {options.filter(option => option.group === group).map(renderOption)}
+      <div className="work-choice-group-options">{options.filter(option => option.group === group).map(renderOption)}</div>
     </div>;
   }) : options.map(renderOption)}</div>;
   const host = portalMenu ? root.current?.closest('dialog') : null;
   const selectedName = selected.map(option => option.name).join(', ');
-  const control = <button ref={trigger} type="button" className={`work-choice-trigger${placeholder ? ' is-placeholder' : ''}`} role="combobox" aria-labelledby={`${id}-label`} aria-controls={`${id}-options`} aria-expanded={open} aria-haspopup="listbox" disabled={disabled} onClick={() => setOpen(previous => !previous)} onKeyDown={event => {
-      if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !open) { event.preventDefault(); setOpen(true); requestAnimationFrame(() => focusOption(event.key === 'ArrowDown' ? 0 : options.length - 1)); }
+  const Chevron = projectHeading ? ChevronRight : ChevronDown;
+  const control = <button ref={trigger} type="button" className={`work-choice-trigger${placeholder ? ' is-placeholder' : ''}`} role="combobox" aria-labelledby={`${id}-label`} aria-controls={`${id}-options`} aria-expanded={open} aria-haspopup="listbox" disabled={disabled}
+    onMouseDown={projectHeading ? event => event.preventDefault() : undefined}
+    onClick={() => {
+      if (projectHeading) trigger.current?.focus({ preventScroll: true });
+      setOpen(previous => !previous);
     }}>
       {priority && !placeholder && <span className={`work-priority-dot work-priority-${value}`} aria-hidden="true"/>}
       <span className="work-choice-value" title={selectedName}>{placeholder ? label.replace(' *', '') : selectedName || label}</span>
-      <ChevronDown size={15} aria-hidden="true"/>
+      <Chevron size={15} aria-hidden="true"/>
     </button>;
   return <div ref={root} className={`work-field work-choice${projectHeading ? ' kb-picker' : ''}${priority ? ' work-priority-field' : ''}`} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget) && !menu.current?.contains(event.relatedTarget)) setOpen(false); }} onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.preventDefault(); setOpen(false); trigger.current?.focus(); }
-    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && open) {
-      event.preventDefault();
-      const available = Array.from((menu.current ?? root.current)?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? []);
-      const current = available.indexOf(document.activeElement as HTMLButtonElement);
-      focusOption(current < 0 ? (event.key === 'ArrowDown' ? 0 : available.length - 1) : current + (event.key === 'ArrowDown' ? 1 : -1));
+    const step = stepForKey(event.key);
+    if (!step) return;
+    event.preventDefault();
+    if (!open) {
+      setOpen(true);
+      requestAnimationFrame(() => focusOption(step > 0 ? 0 : -1));
+    } else {
+      focusOption(step > 0 ? 0 : -1);
     }
   }}>
     <span id={`${id}-label`} className={projectHeading ? 'work-choice-label' : undefined}>{label}</span>

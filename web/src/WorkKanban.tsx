@@ -5,13 +5,12 @@ import { commonBoardId, legacyBoardTask, type BoardColumn, type BoardDirectory, 
 import { isClosedWorkStatus, type WorkTask } from './work-model';
 import WorkTaskCheck from './WorkTaskCheck';
 import WorkChoice from './WorkChoice';
-import ScrollableSegments from './ScrollableSegments';
 import LoadingSkeleton from './LoadingSkeleton';
 import { useDialogMotion } from './useDialogMotion';
 import { useViewEntrance } from './useViewEntrance';
 import './work-kanban.css';
 
-type Scope = 'personal' | 'shared' | 'common';
+type ProjectVisibility = 'personal' | 'shared';
 type Editor = { kind: 'board' | 'column'; board?: WorkBoard; column?: BoardColumn };
 type Mutation = (board: WorkBoard | undefined, method: string, fields: Record<string, unknown>) => Promise<void>;
 
@@ -20,7 +19,6 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
   onTasksChanged: () => void; openTask: (placement: TaskPlacement, entry?: WorkTask) => void;
 }) {
   const [directory, setDirectory] = useState<BoardDirectory>();
-  const [scope, setScope] = useState<Scope>('common');
   const [selection, setSelection] = useState('');
   const [editor, setEditor] = useState<Editor | null>(null);
   const [error, setError] = useState('');
@@ -56,12 +54,15 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
     return () => { read.current?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [refresh, refreshKey]);
 
-  const projectScope = (b: WorkBoard): Scope => b.id === commonBoardId ? 'common' : b.memberIds?.length ? 'shared' : 'personal';
-  const boards = directory?.boards.filter(b => projectScope(b) === scope) ?? [];
-  const groups = [...new Set(boards.map(b => b.group ?? ''))].sort((a, b) => a.localeCompare(b, 'ru'));
+  const projects = directory?.boards.filter(board => board.id !== commonBoardId) ?? [];
+  const groups = [...new Set(projects.map(project => project.group ?? ''))].sort((a, b) => a.localeCompare(b, 'ru'));
   const people = users.filter(u => u.id !== actor.id && hasSection(u, 'work'));
   const taskById = new Map(directory?.tasks.map(t => [t.id, t]));
-  const board = boards.find(b => b.id === selection) ?? boards[0];
+  const board = projects.find(project => project.id === selection) ?? projects[0];
+  const participants = board?.memberIds?.length
+    ? [board.ownerId, ...board.memberIds].map(id => users.find(user => user.id === id)?.name ?? 'Бывший сотрудник').join(', ')
+    : '';
+  const projectDetails = [board?.group, participants].filter(Boolean).join(' · ');
   const lanes = useViewEntrance<HTMLDivElement>(board?.id ?? '', '.kb-lane', 5);
   useLayoutEffect(() => {
     if (!focusCard.current || editor || saving || !lanes.current) return;
@@ -100,7 +101,7 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
         const boards = previous.boards.filter(row => row.id !== id);
         return { ...previous, boards: (updated ? [...boards, updated] : boards).sort((a, b) => a.title.localeCompare(b.title, 'ru')) };
       });
-      if (updated) { setScope(projectScope(updated)); setSelection(updated.id); }
+      if (updated) setSelection(updated.id);
     } catch (reason) {
       needsRefresh = true;
       throw reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason : new Error('Не удалось подтвердить сохранение. Проверьте доску перед повтором.');
@@ -141,15 +142,8 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
     const cardId = drag;
     setDrag(''); setDrop(undefined);
     if (!board || !cardId || cardId === beforeId) return;
-    if (board.id === commonBoardId) {
-      const task = taskById.get(cardId);
-      if (task) await saveTask(task, {
-        placement: { boardId: board.id, version: board.version, columnId: column.id, beforeId: beforeId ?? null },
-      }, 'Не удалось перенести задачу.');
-    } else {
-      try { await mutate(board, 'PATCH', { action: 'moveCard', cardId, columnId: column.id, beforeId }); }
-      catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось перенести задачу.'); }
-    }
+    try { await mutate(board, 'PATCH', { action: 'moveCard', cardId, columnId: column.id, beforeId }); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось перенести задачу.'); }
   };
 
   const toggleTask = (task: WorkTask, board: WorkBoard, column: BoardColumn) => {
@@ -160,28 +154,31 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
     }, 'Не удалось изменить состояние задачи.', true);
   };
 
+  const newProject = <button type="button" className="button primary mobile-icon-action" aria-label="Новый проект"
+    disabled={saving} title="Новый проект" onClick={() => setEditor({ kind: 'board' })}>
+    <Plus size={16} aria-hidden="true"/><span className="mobile-action-label">Новый проект</span>
+  </button>;
+
   return <section className="panel kb-panel" aria-label="Канбан">
-    <header className="kb-toolbar">
-      <ScrollableSegments className="kb-scopes work-green-segments" label="Проекты" value={scope}>
-        <button aria-pressed={scope === 'common'} onClick={() => setScope('common')}>Общий</button>
-        <button aria-pressed={scope === 'shared'} onClick={() => setScope('shared')}>Совместные</button>
-        <button aria-pressed={scope === 'personal'} onClick={() => setScope('personal')}>Личные</button>
-      </ScrollableSegments>
-      <button className="button primary mobile-icon-action" aria-label="Новый проект" title="Новый проект" disabled={!directory || saving} onClick={() => setEditor({ kind: 'board' })}><Plus size={16}/><span className="mobile-action-label">Новый проект</span></button>
-    </header>
     {error && <p role="alert" className="shipment-error">{error}</p>}
     {!directory && !error && <LoadingSkeleton label="Загружаем доски" rows={3}/>}
     {directory && (board ? <>
-      {scope !== 'common' && <div className="kb-heading">
+      <header className="kb-heading">
         <div className="kb-board-name">
           <WorkChoice projectHeading label="Выбрать проект" value={board.id} disabled={saving} onChange={setSelection}
-            options={groups.flatMap(group => boards.filter(project => (project.group ?? '') === group)
+            options={groups.flatMap(group => projects.filter(project => (project.group ?? '') === group)
               .map(project => ({ value: project.id, name: project.title, group })))}/>
-          {(board.group || scope === 'shared') && <small>{[board.group, scope === 'shared' && [board.ownerId, ...(board.memberIds ?? [])].map(id => users.find(u => u.id === id)?.name ?? 'Бывший сотрудник').join(', ')].filter(Boolean).join(' · ')}</small>}
+          {projectDetails && <small>{projectDetails}</small>}
         </div>
-        {board.ownerId === actor.id && <button className="icon-button" aria-label="Настройки проекта" title="Настройки проекта" disabled={saving} onClick={() => setEditor({ kind: 'board', board })}><Settings2 size={18}/></button>}
-      </div>}
-      <div className={`kb-lanes${scope === 'common' ? ' kb-common-lanes' : ''}`} ref={lanes} aria-label={scope === 'common' ? 'Колонки общего канбана' : 'Колонки доски'} key={board.id}>
+        <div className="kb-project-actions" role="group" aria-label="Действия с проектами">
+          {newProject}
+          {board.ownerId === actor.id && <button type="button" className="icon-button" aria-label="Настройки проекта"
+            title="Настройки проекта" disabled={saving} onClick={() => setEditor({ kind: 'board', board })}>
+            <Settings2 size={18} aria-hidden="true"/>
+          </button>}
+        </div>
+      </header>
+      <div className="kb-lanes" ref={lanes} aria-label="Колонки доски" key={board.id}>
         {board.columns.map((column, index) => <section className={'kb-lane' + (drop?.columnId === column.id ? ' kb-hover' : '')}
           key={column.id} aria-label={column.title}
           onDragOver={event => {
@@ -198,7 +195,7 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(undefined); }}
           onDrop={event => { event.preventDefault(); void move(column, drop?.columnId === column.id ? drop.beforeId : undefined); }}>
           <header><span className={'kb-dot kb-tone-' + index % 4}/><h3>{column.title}</h3><span className="kb-count">{column.cards.length}</span>
-            {scope !== 'common' && <button className="icon-button" title="Настройки колонки" aria-label={'Настройки колонки ' + column.title} disabled={saving} onClick={() => setEditor({ kind: 'column', board, column })}><Pencil size={14}/></button>}
+            <button className="icon-button" title="Настройки колонки" aria-label={'Настройки колонки ' + column.title} disabled={saving} onClick={() => setEditor({ kind: 'column', board, column })}><Pencil size={14}/></button>
           </header>
           <div className="kb-cards">{column.cards.map(card => {
             const task = taskById.get(card.id) ?? legacyBoardTask(board, card);
@@ -216,11 +213,14 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
           })}</div>
           <button className={'kb-add' + (drop?.columnId === column.id && !drop.beforeId ? ' kb-insert' : '')} disabled={saving} onClick={() => openTask({ board, column })}><Plus size={15}/>Добавить задачу</button>
         </section>)}
-        {scope !== 'common' && <button className="kb-new-column" disabled={saving} onClick={() => setEditor({ kind: 'column', board })}><Plus size={16}/>Добавить колонку</button>}
+        <button className="kb-new-column" disabled={saving} onClick={() => setEditor({ kind: 'column', board })}><Plus size={16}/>Добавить колонку</button>
       </div>
-    </> : <div className="kb-empty"><FolderKanban size={30}/><h2>{scope === 'personal' ? 'Личных проектов пока нет' : 'Совместных проектов пока нет'}</h2>
-      <p>{scope === 'personal' ? 'Создайте проект и разложите задачи по колонкам.' : 'Выберите участников при создании проекта или в настройках личного проекта.'}</p></div>)}
-    {editor && directory && <BoardEditor editor={editor} scope={scope} actor={actor} people={people} groups={[...new Set(directory.boards.map(b => b.group).filter((g): g is string => !!g))]} mutate={mutate} onClose={() => setEditor(null)}/>}
+    </> : <div className="kb-empty">
+      <FolderKanban size={30} aria-hidden="true"/><h2>Проектов пока нет</h2>
+      {newProject}
+    </div>)}
+    {editor && directory && <BoardEditor editor={editor} actor={actor} people={people}
+      groups={groups.filter(Boolean)} mutate={mutate} onClose={() => setEditor(null)}/>}
   </section>;
 }
 
@@ -232,15 +232,15 @@ function CardDetails({ task }: { task: WorkTask }) {
   return details.length ? <small className="kb-card-details">{details.join(' · ')}</small> : null;
 }
 
-function BoardEditor({ editor, scope, actor, people, groups, mutate, onClose }: {
-  editor: Editor; scope: Scope; actor: AccountUser; people: AccountUser[]; groups: string[]; mutate: Mutation; onClose: () => void;
+function BoardEditor({ editor, actor, people, groups, mutate, onClose }: {
+  editor: Editor; actor: AccountUser; people: AccountUser[]; groups: string[]; mutate: Mutation; onClose: () => void;
 }) {
   const { board, column, kind } = editor;
   const dialog = useRef<HTMLDialogElement>(null);
   const { close } = useDialogMotion(dialog, onClose);
   const [requestId] = useState(() => crypto.randomUUID());
   const [title, setTitle] = useState((kind === 'board' ? board : column)?.title ?? '');
-  const [visibility, setVisibility] = useState<Scope>(board ? board.memberIds?.length ? 'shared' : 'personal' : scope === 'shared' ? 'shared' : 'personal');
+  const [visibility, setVisibility] = useState<ProjectVisibility>(board?.memberIds?.length ? 'shared' : 'personal');
   const [memberIds, setMemberIds] = useState((board?.memberIds ?? []).filter(id => people.some(p => p.id === id)));
   const [group, setGroup] = useState(board?.group ?? '');
   const [confirm, setConfirm] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -271,7 +271,7 @@ function BoardEditor({ editor, scope, actor, people, groups, mutate, onClose }: 
           {kind === 'board' && <>
             <label className="work-field"><span>Группа проектов</span><input list="kb-project-groups" value={group} maxLength={100} disabled={busy} onChange={e => setGroup(e.target.value)} placeholder="Например, Самообразование"/></label>
             <datalist id="kb-project-groups">{groups.map(g => <option key={g} value={g}/>)}</datalist>
-            <label className="work-field"><span>Кто видит проект</span><select value={visibility} onChange={e => setVisibility(e.target.value as Scope)} disabled={busy}>
+            <label className="work-field"><span>Кто видит проект</span><select value={visibility} onChange={e => setVisibility(e.target.value as ProjectVisibility)} disabled={busy}>
               <option value="personal">Только я</option><option value="shared">Выбранные сотрудники</option></select></label>
             {visibility === 'shared' && <fieldset className="kb-members"><legend>Участники проекта</legend>
               {people.map(person => <label key={person.id}><input type="checkbox" disabled={busy} checked={memberIds.includes(person.id)}
