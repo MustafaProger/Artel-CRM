@@ -286,7 +286,9 @@ test('request queue isolates owners and admins; only directors see everyone, wit
     assert.equal((await f.request('/api/shipment-trips', 'POST', f.tripBody([foreign]), f.two.cookie)).status, 404);
     assert.equal(listed.body.addresses.filter((row: { companyId: string }) => row.companyId === 'customer').length, 2);
     assert.equal(listed.body.addresses.find((row: { id: string }) => row.id === 'delivery-2').address, 'Другой синтетический адрес');
-    assert.doesNotMatch(JSON.stringify(listed.body), /PRIVATE-OTHER-CUSTOMER-BANK|bankName|receiverPhone/);
+    assert.equal(listed.body.addresses.find((row: { id: string }) => row.id === 'delivery').receiverName, 'ПриёмщикТестовый Тест');
+    assert.equal(listed.body.addresses.find((row: { id: string }) => row.id === 'delivery').receiverPhone, '+70000000009');
+    assert.doesNotMatch(JSON.stringify(listed.body), /PRIVATE-OTHER-CUSTOMER-BANK|bankName/);
     const input = f.tripBody(sources.slice(0, 2)); input.customers[0].fields.quantity_litres = '900';
     const created = await f.request('/api/shipment-trips', 'POST', input, f.two.cookie);
     assert.equal(created.status, 201, JSON.stringify(created.body));

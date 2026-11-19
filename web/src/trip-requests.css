@@ -17,3 +17,12 @@
   font-size: 16px;
   font-weight: 700;
 }
+
+.trip-request-card .trip-request-actions .button{flex:0 0 44px;width:44px;min-width:44px;height:44px;padding:0}
+.trip-request-actions .trip-request-copy{color:var(--accent);background:var(--surface-soft,#f6f7f9);border-color:var(--border)}
+.trip-request-actions .trip-request-copy:hover{background:#e7f2eb}
+.trip-request-copy-notice{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.trip-request-card .trip-request-actions:has(.trip-request-copy-fallback){width:100%}
+.trip-request-copy-fallback{order:1;flex-basis:100%;min-width:0;font-size:13px}
+.trip-request-copy-fallback textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;font:inherit;line-height:1.5;resize:vertical}
+.trip-request-card .trip-request-copy-fallback .button{width:auto;height:auto;padding:8px 14px;margin-top:8px}

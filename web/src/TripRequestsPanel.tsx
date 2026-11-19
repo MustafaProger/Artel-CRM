@@ -7,6 +7,7 @@ import { compareRequestDates, requestDateLabel } from './trip-request-schedule'
 import type { TripRequest } from './trip-request-model'
 import { getDeliveryPlaceDisplay } from './trip-request-display'
 import TripRequestEditor from './TripRequestEditor'
+import TripRequestCopyButton from './TripRequestCopyButton'
 import { apiFetch as fetch } from './workspace-api'
 import { mapLink } from './map-link'
 import { tripRequestMapCoordinates } from './trip-request-map-coordinates'
@@ -49,7 +50,7 @@ export default function TripRequestsPanel({ requests, loading, loaded = requests
           </dl>
           {request.comment.trim() && <section className="trip-request-comment" aria-label="Комментарий"><h3>Комментарий</h3><p>{request.comment}</p></section>}
           <small className="trip-creation-meta">Создана: {request.createdByName ?? 'автор неизвестен'} · <time dateTime={request.createdAt}>{creationTime(request.createdAt)}</time></small>
-          <footer>{link && <a href={link.href} target="_blank" rel="noreferrer">{link.label} <ArrowUpRight size={14}/></a>}<div className="trip-request-actions"><button type="button" className="button trip-request-edit" aria-label={`Изменить заявку: ${request.companyName}, ${request.addressName}`} onClick={() => setEditor({ request })}><Pencil size={16}/><span>Изменить</span></button><button type="button" className="button trip-request-delete" aria-label={`Удалить заявку: ${request.companyName}, ${request.addressName}`} disabled={!!removal.pending} onClick={() => void remove(request)}>{removal.pending === request.id ? <LoaderCircle size={16} className="spin"/> : <Trash2 size={16}/>}<span>Удалить</span></button></div></footer>
+          <footer>{link && <a href={link.href} target="_blank" rel="noreferrer">{link.label} <ArrowUpRight size={14}/></a>}<div className="trip-request-actions"><TripRequestCopyButton request={request} addresses={directories.addresses}/><button type="button" className="button trip-request-edit" title="Изменить заявку" aria-label={`Изменить заявку: ${request.companyName}, ${request.addressName}`} onClick={() => setEditor({ request })}><Pencil size={16} aria-hidden="true"/></button><button type="button" className="button trip-request-delete" title="Удалить заявку" aria-label={`Удалить заявку: ${request.companyName}, ${request.addressName}`} disabled={!!removal.pending} onClick={() => void remove(request)}>{removal.pending === request.id ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Trash2 size={16} aria-hidden="true"/>}</button></div></footer>
         </article>
       })}</div>
       {!visible.length && !error && <div className="panel trips-empty trip-requests-empty"><ClipboardList size={30}/><h2>{query ? 'Заявки не найдены' : 'Заявок пока нет'}</h2>{query && <p>Измените поисковый запрос.</p>}{!query && <button type="button" className="button primary" onClick={() => setEditor({})}><Plus size={17}/>Создать заявку</button>}</div>}
