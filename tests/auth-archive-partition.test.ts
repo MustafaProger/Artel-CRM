@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile, stat } from 'node:fs/promises';
+import fs, { open, readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { OperationsStore, LegacyOperationsStore, type OperationsData } from '../server/operations-store';
 import { authPartitionVersion, migrateArchiveStorage, mergeAuthStorage } from '../server/auth-partition';
 import { archiveFixture } from './helpers/auth-archive-fixture';
+import { validateWorkData } from '../server/work-operations';
 const source = 'a'.repeat(64), stamp = '2026-11-09T00:00:00Z';
 const seal = (data: unknown) => JSON.stringify({ sha256: createHash('sha256').update(JSON.stringify(data)).digest('hex'), data });
 const edit = (data: OperationsData, parts: string[]) => {
@@ -96,4 +98,107 @@ test('v2 fresh reader reuses checksum serialization and preserves noncanonical-b
     assert.equal(raw, seal(JSON.parse(raw).data));
     assert.equal((await f.store.read(source)).revision, current.revision + 1);
   } finally { await f.close(); }
+});
+
+test('Work view preserves global revision across external changes and commits task + notification atomically', async () => {
+  const f = await archiveFixture();
+  try {
+    const external = new OperationsStore(f.directory), before = await external.read(source);
+    const archiveBytes = await readFile(f.part.archivePath);
+    const updateWork = (d: OperationsData) => {
+      d.work!.notes.push({ id: 'n', title: 'Work', content: 'Work', assigneeId: 'owner', createdBy: 'owner', updatedBy: 'owner', createdAt: stamp, updatedAt: stamp, version: 1 });
+      d.push!.taskCompletions = { n: { version: 1, at: Date.now(), completedByName: 'Owner' } };
+      return { result: null, changed: true };
+    };
+    const projected = await f.store.readWorkspace(source);
+    const { documentArchive: _archive, ...business } = before;
+    assert.deepEqual(projected, business);
+    await f.store.mutateWork(source, updateWork, 'workspace');
+    const after = await external.read(source);
+    assert.equal(after.work!.notes.length, 1);
+    assert.equal(after.push!.taskCompletions!.n.version, 1);
+    assert.equal(after.revision, before.revision + 2);
+    assert.deepEqual(await readFile(f.part.archivePath), archiveBytes);
+    await external.mutate(source, d => { d.documentArchive!.categories[0].name = 'Externally updated'; d.accounts!.users[0].active = false; return { result: null, changed: true }; });
+    assert.equal((await f.store.readWorkspace(source)).revision, after.revision + 2);
+    assert.equal((await f.store.readBoards(source)).accounts!.users[0].active, false);
+    for (const bad of [(d: OperationsData) => { d.accounts!.users[0].active = true; }, (d: OperationsData) => { d.sourceOperationsCleared = true; }, (d: OperationsData) => { d.documentArchive = before.documentArchive; }]) {
+      await assert.rejects(f.store.mutateWork(source, d => { bad(d); return { result: null, changed: true }; }, 'workspace'), /another domain/);
+    }
+    assert.deepEqual((await external.read(source)).work, after.work);
+  } finally { await f.close(); }
+});
+
+test('Work detects changed archive checksum, source, shape and invalid binary payload after a warm read', async () => {
+  const f = await archiveFixture();
+  try {
+    const raw = await readFile(f.part.archivePath, 'utf8');
+    const original = JSON.parse(raw).data;
+    const workBytes = await readFile(f.part.workPath);
+    const corrupt = structuredClone(original);
+    corrupt.documentArchive.documents[0].size++;
+    for (const bad of [raw.replace('YWJj', 'YWJk'), seal({ ...original, sourceSha256: 'b'.repeat(64) }), seal({ ...original, unknown: true }), seal(corrupt)]) {
+      await f.store.readWorkspace(source);
+      await writeFile(f.part.archivePath, bad);
+      let called = false;
+      await assert.rejects(f.store.mutateWork(source, () => { called = true; return { changed: true, result: null }; }, 'workspace'));
+      assert.equal(called, false);
+      assert.deepEqual(await readFile(f.part.workPath), workBytes);
+      await writeFile(f.part.archivePath, raw);
+    }
+  } finally { await f.close(); }
+});
+
+test('Work projection counts actual on-disk archive bytes toward the combined backup limit', async () => {
+  const f = await archiveFixture();
+  try {
+    const workBefore = await readFile(f.part.workPath);
+    const archiveBefore = await readFile(f.part.archivePath, 'utf8');
+    const buffer = Buffer.alloc(1024 * 1024, 32);
+    const file = await open(f.part.archivePath, 'a');
+    try {
+      let left = 128 * 1024 * 1024 - 4096 - Buffer.byteLength(archiveBefore);
+      while (left > 0) { const { bytesWritten } = await file.write(buffer, 0, Math.min(left, buffer.length)); left -= bytesWritten; }
+    } finally { await file.close(); }
+    await assert.rejects(f.store.mutateWork(source, d => { d.work!.boards = []; return { result: null, changed: true }; }, 'workspace'), /safe flat backup/);
+    assert.deepEqual(await readFile(f.part.workPath), workBefore);
+  } finally { await f.close(); }
+});
+
+test('Work outbox and entry recover together if the second file rename fails', async t => {
+  const f = await archiveFixture();
+  try {
+    const before = await f.store.readWorkspace(source), rename = fs.rename;
+    const fail = t.mock.method(fs, 'rename', async (from, to) => {
+      if (to === f.part.workPath) throw new Error('Simulated interrupted commit');
+      return rename(from, to);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(f.store.mutateWork(source, d => {
+        d.work!.notes.push({ id: 'notify', title: 'Saved', content: 'Saved', assigneeId: 'owner', createdBy: 'owner', updatedBy: 'owner', createdAt: stamp, updatedAt: stamp, version: 1 });
+        d.push!.taskCompletions = { notify: { version: 1, at: 1, completedByName: 'Owner' } };
+        return { result: null, changed: true };
+      }, 'workspace'), /interrupted/);
+    } finally { fail.mock.restore(); syncBuiltinESMExports(); }
+    const recovered = await new OperationsStore(f.directory).readWorkspace(source);
+    assert.equal(recovered.revision, before.revision + 2);
+    assert.equal(recovered.work!.notes[0].id, 'notify');
+    assert.equal(recovered.push!.taskCompletions!.notify.version, 1);
+    await assert.rejects(stat(f.part.journalPath), { code: 'ENOENT' });
+  } finally { await f.close(); }
+});
+
+test('Work payload cache requires exact content and length and always rechecks file metadata', () => {
+  const file = { id: 'file', data: 'YWJj', size: 3, authorId: 'owner', createdAt: stamp, name: 'a.txt' };
+  const entry = { id: 'task', createdBy: 'owner', updatedBy: 'owner', assigneeId: 'owner', createdAt: stamp, updatedAt: stamp, version: 1,
+    title: 'Test', description: '', status: 'todo', companyId: null, dueDate: null, reminderAt: null, attachments: [file] };
+  const work = { tasks: [entry], notes: [], companyRecords: [] };
+  validateWorkData(work);
+  for (const fields of [{ data: 'YWJ!' }, { size: 2 }, { name: '../file' }, { createdAt: 'invalid' }]) {
+    const copy = structuredClone(work);
+    Object.assign(copy.tasks[0].attachments[0], fields);
+    assert.throws(() => validateWorkData(copy));
+    validateWorkData(work);
+  }
 });

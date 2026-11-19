@@ -11,7 +11,7 @@ import ScrollableSegments from './ScrollableSegments'
 import RoleFilter, { type RoleFilterValue } from './RoleFilter'
 import { hasScopedSupplierDirectory, roleNames, type AccountRole, type AccountUser } from './auth-model'
 import { apiFetch as fetch, fetchDirectoryData, isLogisticsWorkspace } from './workspace-api'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, LoaderCircle, Pencil, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import type { Company, ShipmentAddress, DirectoryData, Vehicle } from './model'
 import DirectorySelect from './DirectorySelect'
@@ -102,13 +102,31 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
     return () => { stop(); controller.abort(); setOnlineUsers(new Set()) }
   }, [personnel])
   const catalog = data.directories!
-  const operatorCatalog = readOperatorCatalog(catalog)
-  const rows: DirectoryRow[] = companyTab(tab) ? data.companies.filter(company => !company.directoryArchived && company.roles.includes(tabRole(tab))).map(company => ({
-    id: company.id, name: company.name, version: company.version, roles: company.roles,
-    detail: [company.inn ? `ИНН ${company.inn}` : 'ИНН не указан', ...company.roles.filter(r => r in roleLabels).map(r => roleLabels[r as keyof typeof roleLabels])].join(' · '),
-    manager: catalog.managers.find(manager => manager.id === customerManagerId(catalog, company.id))?.name || 'Не назначен',
-    addresses: catalog.addresses.filter(address => address.companyId === company.id).map(address => address.name).join('; '),
-  })) : tab === 'vehicles' ? catalog.vehicles.map(vehicle => ({...vehicle,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))
+  const operatorCatalog = useMemo(() => readOperatorCatalog(catalog), [catalog])
+  const rows = useMemo<DirectoryRow[]>(() => {
+    if (companyTab(tab)) {
+      const managerNames = new Map(catalog.managers.map(manager => [manager.id, manager.name]))
+      const assignedManagers = new Map<string, string>()
+      for (const assignment of catalog.customerManagers ?? []) {
+        if (!assignedManagers.has(assignment.companyId)) assignedManagers.set(assignment.companyId, assignment.managerId)
+      }
+      const addresses = new Map<string, string[]>()
+      for (const address of catalog.addresses) {
+        const names = addresses.get(address.companyId)
+        if (names) names.push(address.name)
+        else addresses.set(address.companyId, [address.name])
+      }
+      return data.companies.filter(company => !company.directoryArchived && company.roles.includes(tabRole(tab))).map(company => {
+        const managerId = catalog.currentEmployeeId === undefined ? assignedManagers.get(company.id) : catalog.currentEmployeeId
+        return {
+          id: company.id, name: company.name, version: company.version, roles: company.roles,
+          detail: [company.inn ? `ИНН ${company.inn}` : 'ИНН не указан', ...company.roles.filter(r => r in roleLabels).map(r => roleLabels[r as keyof typeof roleLabels])].join(' · '),
+          manager: managerNames.get(managerId ?? '') || 'Не назначен',
+          addresses: addresses.get(company.id)?.join('; ') ?? '',
+        }
+      })
+    }
+    return tab === 'vehicles' ? catalog.vehicles.map(vehicle => ({...vehicle,name:vehicleName(vehicle),detail:vehicleDetail(vehicle)}))
     : tab === 'operatorServices' ? operatorCatalog.services.map(row => ({...row,detail:`Скидка: ${row.discountPercent.replace('.', ',')}%`}))
     : tab === 'products' ? catalog.products.map(product => ({...product,detail:[product.documentName,product.transportProductKind==='diesel'?'Дизель: транспортные документы':''].filter(Boolean).join(' · ')}))
     : tab === 'drivers' ? catalog.drivers.map(driver => ({ ...driver, detail: [driver.phone, catalog.vehicles.find(vehicle => vehicle.id === driver.vehicleId)].map(value => typeof value === 'object' ? vehicleName(value) : value).filter(Boolean).join(' · ') }))
@@ -116,13 +134,15 @@ export default function DirectoriesPage({data,onChanged,canManage:baseCanManage=
     : tab === 'addresses' ? catalog.addresses.map(address => ({...address,detail:[address.kind === 'loading' ? 'Загрузка' : 'Выгрузка',data.companies.find(company=>company.id===address.companyId)?.name,address.address].filter(Boolean).join(' · ')}))
     : tab === 'customerManagers' ? (catalog.customerManagers??[]).map(row=>({id:row.companyId,name:data.companies.find(company=>company.id===row.companyId)?.name??'Компания',detail:catalog.managers.find(manager=>manager.id===row.managerId)?.name??'',managerId:row.managerId}))
     : catalog[tab as 'managers'|'products'|'paymentForms'].map(row => ({...row,detail:''}))
+  }, [catalog, data.companies, operatorCatalog, tab])
   const personnelRows: DirectoryRow[] = personnel ? ([...catalog.managers.map(row=>({...row,kind:'managers' as const})),...catalog.drivers.filter(row=>!catalog.deletedEntries?.drivers?.includes(row.id)).map(row=>({...row,kind:'drivers' as const}))]).map(row=>{
     const linked=accessUsers?.filter(user=>!user.deletedAt&&(row.kind==='drivers'?user.role==='driver'&&user.driverId===row.id:user.role!=='driver'&&user.managerId===row.id))??[]
     const accountRoles=[...new Set(linked.map(user=>user.role))]
     return {...row,accountRoles,online:linked.some(user=>user.active&&onlineUsers.has(user.id)),detail:accessUsers?accountRoles.length?accountRoles.map(role=>roleNames[role]).join(', ')+(linked.some(user=>user.active)?'':' · Доступ отключён'):(row.kind==='drivers'?'Водитель':'Сотрудник')+' · Доступ не выдан':'Полномочия недоступны'}
   }) : rows
   const roleRows=personnel&&roleFilter!=='all'?personnelRows.filter(row=>accessUsers&&(roleFilter==='none'?!row.accountRoles?.length:row.accountRoles?.includes(roleFilter))):personnelRows
-  const visible = roleRows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')))
+  const search = query.trim().toLocaleLowerCase('ru')
+  const visible = useMemo(() => search ? roleRows.filter(row => [row.name, row.detail, row.manager, row.addresses].join(' ').toLocaleLowerCase('ru').includes(search)) : roleRows, [roleRows, search])
   const lastPage = Math.max(0, Math.ceil(visible.length / 30) - 1), currentPage = Math.min(page, lastPage)
   if (allowedTabs && !allowedTabs.length && !hasScopedSuppliers) return <p className="empty-state">Нет доступных справочников. Обратитесь к администратору.</p>
   return <div className="directories-page">

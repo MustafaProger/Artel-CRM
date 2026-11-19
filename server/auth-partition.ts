@@ -5,6 +5,7 @@ import { mkdir, open, stat, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { LegacyOperationsStore, StoreError, encodeOperations, validate, type OperationsData } from './operations-store';
 import { WorkPartition, isWorkPartition, atomicFile, partitionLock, type Update } from './work-partition';
+import { validateDocumentArchive } from './document-archive';
 import { validateWorkData } from './work-operations';
 
 const format = 'artel-auth-partition-v1';
@@ -134,6 +135,8 @@ export class AuthPartition {
   readonly latch: string;
   private readers = { core: new PartReader(), auth: new PartReader(), work: new PartReader(), archive: new PartReader() };
   private validated?: RawParts;
+  private validatedArchive?: string;
+  private archiveSummary?: { source: string; version: string; revision: number };
   constructor(readonly rootPath: string, readonly version: 1 | 2 = 1) {
     this.directory = resolve(dirname(rootPath), version === 1 ? 'auth-storage' : 'auth-storage-v2');
     this.corePath = resolve(this.directory, 'core.json'); this.authPath = resolve(this.directory, 'auth.json'); this.workPath = resolve(this.directory, 'work.json');
@@ -155,11 +158,15 @@ export class AuthPartition {
     identity(values.core, source); checkAuth(values.auth, source); checkWork(values.work, source); checkArchive(values.archive, source);
     validate(compose(values.core as unknown as OperationsData, values.auth, values.work, values.archive), source);
     await this.bound(raw);
-    for (const part of changed as Part[]) await atomicFile(this.partPath(part), raw[part]!);
-    await unlink(this.journalPath);
-    const directory = await open(this.directory, 'r'); try { await directory.sync(); } finally { await directory.close(); }
+    await this.installRedo(changed as Part[], raw);
     for (const part of changed as Part[]) this.readers[part].remember(raw[part]!);
     this.validated = raw;
+  }
+  private async installRedo(parts: Part[], raw: RawParts) {
+    for (const part of parts) await atomicFile(this.partPath(part), raw[part]!);
+    await unlink(this.journalPath);
+    const directory = await open(this.directory, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
   }
   private async recover(source: string) {
     let bytes;
@@ -181,23 +188,65 @@ export class AuthPartition {
     const value = performanceSpan('partition.validate-auth', () => { checkAuth(row.value, source); return row.value; });
     return { value, raw: row.raw };
   }
-  private async load(source: string) {
+  private async archivedRevision(source: string) {
+    // Work needs the global revision but no document payloads. Compliant writers
+    // atomically replace the file under this latch. ctime also catches in-place
+    // repairs, including same-size edits with restored modification timestamps.
+    const info = await stat(this.archivePath, { bigint: true });
+    if (!info.isFile()) throw new StoreError('Missing archive partition');
+    const version = [info.dev, info.ino, info.size, info.ctimeNs, info.mtimeNs].join('/');
+    if (this.archiveSummary?.source === source && this.archiveSummary.version === version) return this.archiveSummary.revision;
+    const row = await this.readers.archive.read(this.archivePath);
+    checkArchive(row.value, source);
+    if (row.raw !== this.validatedArchive && row.value.documentArchive !== undefined) validateDocumentArchive(row.value.documentArchive);
+    this.validatedArchive = row.raw;
+    this.archiveSummary = { source, version, revision: row.value.revision };
+    return row.value.revision;
+  }
+  private async load(source: string, workspace = false) {
     await performanceSpan('partition.recover', () => this.recover(source));
     const c = await performanceSpan('partition.read-core', () => this.readers.core.read(this.corePath)), a = await performanceSpan('partition.read-auth', () => this.auth(source)), w = await performanceSpan('partition.read-work', () => this.readers.work.read(this.workPath));
     identity(c.value, source); checkWork(w.value, source);
     const core = c.value as unknown as OperationsData, auth = a.value, work = w.value;
-    const archiveRow = this.version === 2 ? await performanceSpan('partition.read-archive', () => this.readers.archive.read(this.archivePath)) : undefined;
+    const archiveRow = this.version === 2 && !workspace ? await performanceSpan('partition.read-archive', () => this.readers.archive.read(this.archivePath)) : undefined;
     if (archiveRow) checkArchive(archiveRow.value, source);
     const archive = archiveRow?.value as ArchiveState | undefined;
+    if (workspace && 'documentArchive' in core) throw new StoreError('Duplicate archive partition domain');
     const data = compose(core, auth, work, archive);
+    if (workspace) data.revision += await this.archivedRevision(source);
     const raw: RawParts = { core: c.raw, auth: a.raw, work: w.raw, ...(archiveRow ? { archive: archiveRow.raw } : {}) };
-    if (this.validated?.core !== c.raw || this.validated?.auth !== a.raw || this.validated?.work !== w.raw || this.validated?.archive !== archiveRow?.raw) { performanceSpan('partition.validate-full', () => validate(data, source)); this.validated = raw; }
+    if (this.validated?.core !== c.raw || this.validated?.auth !== a.raw || this.validated?.work !== w.raw || this.validated?.archive !== archiveRow?.raw) {
+      // Archive metadata and payloads have no links into other partitions. Its
+      // bytes were independently checked on this read by PartReader.
+      const validatedArchive = archiveRow && this.validatedArchive === archiveRow.raw;
+      performanceSpan('partition.validate-full', () => validate(validatedArchive ? { ...data, documentArchive: undefined } : data, source));
+      if (archiveRow) this.validatedArchive = archiveRow.raw;
+      this.validated = raw;
+    }
     return { core, auth, work, archive, data, raw };
   }
   read(source: string) { return partitionLock(this.latch, async () => (await this.load(source)).data); }
   readAuth(source: string) { return partitionLock(this.latch, async () => { await performanceSpan('partition.recover', () => this.recover(source)); return authView((await this.auth(source)).value); }, 'interactive'); }
+  readWorkspace(source: string) {
+    return partitionLock(this.latch, async () => (await this.load(source, this.version === 2)).data, 'interactive');
+  }
+  async readBoards(source: string) {
+    return partitionLock(this.latch, async () => {
+      await this.recover(source);
+      const { value: authority } = await this.auth(source);
+      const { value: work } = await this.readers.work.read(this.workPath);
+      checkWork(work, source);
+      return { ...authView(authority), ...work };
+    }, 'interactive');
+  }
   private async bound(raw: RawParts) {
-    if (Object.entries(raw).reduce((size, [part, value]) => size + this.readers[part as Part].byteLength(value), 0) + 4096 > maxBytes) throw new StoreError('Combined storage is too large for a safe flat backup');
+    let bytes = Object.entries(raw).reduce((size, [part, value]) => size + this.readers[part as Part].byteLength(value), 0);
+    if (this.version === 2 && !raw.archive) {
+      const archive = await stat(this.archivePath);
+      if (!archive.isFile()) throw new StoreError('Missing archive partition');
+      bytes += archive.size;
+    }
+    if (bytes + 4096 > maxBytes) throw new StoreError('Combined storage is too large for a safe flat backup');
   }
   mutateAuth<T>(source: string, update: Update<T>): Promise<T> {
     return partitionLock(resolve(this.directory, 'interactive-queue.lock'), () => partitionLock(this.latch, async () => {
@@ -223,19 +272,23 @@ export class AuthPartition {
       return result;
     }, 'interactive'));
   }
-  mutate<T>(source: string, update: Update<T>, workOnly = false, interactive = false): Promise<T> {
+  mutate<T>(source: string, update: Update<T>, workOnly = false, interactive = false, view?: 'workspace'): Promise<T> {
+    const workspace = workOnly && this.version === 2 && view === 'workspace';
     return partitionLock(resolve(this.directory, workOnly ? 'work-queue.lock' : interactive ? 'interactive-queue.lock' : 'core-queue.lock'), () => partitionLock(this.latch, async () => {
-      const before = await performanceSpan('partition.load-full', () => this.load(source)), { data } = before;
+      const before = await performanceSpan(workspace ? 'partition.load-workspace' : 'partition.load-full', () => this.load(source, workspace)), { data } = before;
       const authGuard = workAuthority(before.auth);
       const { result, changed } = await performanceSpan('partition.update', () => update(data));
       if (!changed) return result;
-      performanceSpan('partition.validate-full', () => validate(data, source));
+      if (workspace && data.documentArchive !== undefined) throw new StoreError('Work transaction tried to change another domain');
       const core = extractCore(data, before.core.revision, this.version === 2), auth = extractAuth(data, before.auth.revision), work = extractWork(data, before.work.revision);
-      const archive = this.version === 2 ? extractArchive(data, before.archive!.revision) : undefined;
+      const archive = before.archive ? extractArchive(data, before.archive.revision) : undefined;
       const archiveChanged = !!archive && !performanceSpan('partition.matches-archive', () => this.readers.archive.matches(archive));
       const authChanged = !performanceSpan('partition.matches-auth', () => this.readers.auth.matches(auth)), workChanged = !performanceSpan('partition.matches-work', () => this.readers.work.matches(work));
       const coreChanged = !performanceSpan('partition.matches-core', () => this.readers.core.matches(core)) || !workOnly && !authChanged && !workChanged && !archiveChanged;
       if (workOnly && (coreChanged || archiveChanged || workAuthority(auth) !== authGuard)) throw new StoreError('Work transaction tried to change another domain');
+      // load() validated the committed snapshot. Unchanged sealed archive bytes
+      // are still valid, including when another domain changed in this callback.
+      performanceSpan('partition.validate-full', () => validate(archive && !archiveChanged ? { ...data, documentArchive: undefined } : data, source));
       if (coreChanged) core.revision++;
       if (authChanged) auth.revision++;
       if (workChanged) work.revision++;
@@ -246,21 +299,28 @@ export class AuthPartition {
         work: workChanged ? performanceSpan('partition.seal-work', () => this.readers.work.encode(work)) : undefined,
         archive: archiveChanged ? performanceSpan('partition.seal-archive', () => this.readers.archive.encode(archive)) : undefined,
       };
-      const next: RawParts = { core: encoded.core?.raw ?? before.raw.core, auth: encoded.auth?.raw ?? before.raw.auth, work: encoded.work?.raw ?? before.raw.work, ...(this.version === 2 ? { archive: encoded.archive?.raw ?? before.raw.archive! } : {}) };
+      const next: RawParts = { core: encoded.core?.raw ?? before.raw.core, auth: encoded.auth?.raw ?? before.raw.auth, work: encoded.work?.raw ?? before.raw.work, ...(before.raw.archive ? { archive: encoded.archive?.raw ?? before.raw.archive } : {}) };
       await this.bound(next);
       const changedCount = Number(coreChanged) + Number(authChanged) + Number(workChanged) + Number(archiveChanged);
       if (changedCount > 1) {
         const journal = this.version === 1 ? { sourceSha256: source, ...next } : { format: 'artel-auth-redo-v2', sourceSha256: source, parts: Object.fromEntries(Object.entries(encoded).filter(([, value]) => value !== undefined).map(([part, value]) => [part, value!.raw])) };
-        await atomicFile(this.journalPath, seal(journal)); await performanceSpan('partition.recover', () => this.recover(source)); }
+        await atomicFile(this.journalPath, seal(journal));
+        if (workspace) {
+          // Locked, validated Work and outbox images. A crash leaves the same
+          // durable redo journal for recoverV2 before any subsequent access.
+          const parts = (['auth', 'work'] as const).filter(part => encoded[part]);
+          await this.installRedo(parts, next);
+        } else await performanceSpan('partition.recover', () => this.recover(source));
+      }
       else if (coreChanged) await atomicFile(this.corePath, next.core);
       else if (authChanged) await atomicFile(this.authPath, next.auth);
       else if (workChanged) await atomicFile(this.workPath, next.work);
       else if (archiveChanged) await atomicFile(this.archivePath, next.archive!);
       this.readers.core.remember(next.core, encoded.core); this.readers.auth.remember(next.auth, encoded.auth); this.readers.work.remember(next.work, encoded.work);
-      if (next.archive) this.readers.archive.remember(next.archive, encoded.archive);
+      if (next.archive) { this.readers.archive.remember(next.archive, encoded.archive); this.validatedArchive = next.archive; }
       this.validated = next;
       return result;
-    }));
+    }, workspace ? 'interactive' : undefined));
   }
 }
 

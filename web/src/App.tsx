@@ -10,7 +10,7 @@ import ScrollableSegments from './ScrollableSegments'
 import { useViewEntrance } from './useViewEntrance'
 import { Component, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LogOut, Menu, PackageCheck, Route, Search, Settings, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
-import type { Snapshot, Company, Shipment, Payment } from './model'
+import type { Snapshot, Company, Shipment, Payment, DirectoryData } from './model'
 const pageModules = {
   invoices: () => import('./InvoicePage'),
   operator: () => import('./OperatorPage'),
@@ -38,7 +38,7 @@ const DocumentsPage = lazy(pageModules.documents)
 const WorkPage = lazy(pageModules.work)
 import AuthGate from './AuthGate'
 const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
-import { hasSection, hasDirectoryGrant, availableDirectoryTabs, canDeleteShipments, canWriteShipments, isAdministrator, type AccountUser } from './auth-model'
+import { hasSection, hasDirectoryGrant, hasFullDirectoryAccess, availableDirectoryTabs, canDeleteShipments, canWriteShipments, isAdministrator, type AccountUser } from './auth-model'
 const AccountManagement = lazy(pageModules.accounts)
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
@@ -78,6 +78,7 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
   const canManage=isAdministrator(user)
   const availablePages = pages.filter(item => hasPageAccess(user, item.id))
   const [data,setData] = useState<Snapshot | null>(null)
+  const [directoryRead, setDirectoryRead] = useState<{ data: DirectoryData; userId: string; userVersion: number; fetchedAt: number } | null>(null)
   const [snapshotPage,setSnapshotPage] = useState<Page | null>(null)
   const [todayTaskCount,setTodayTaskCount] = useState<number | undefined>(undefined)
   const [shipmentCount,setShipmentCount] = useState<number | undefined>(undefined)
@@ -129,25 +130,52 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
   const snapshotRequest = useRef(0)
   const snapshotController = useRef<AbortController | null>(null)
   const requiresSnapshot = ['accounts', 'shipments', 'directories', 'payments'].includes(page)
-  const snapshotReady = !!data && snapshotPage === page
-  const fetchData = () => {
+  // Only unrestricted administrators see the same companies independently of ownership assignments.
+  const reuseDirectories = canManage && !user.customSections && hasFullDirectoryAccess(user)
+  const directoryData = directoryRead?.userId === user.id && directoryRead.userVersion === user.version &&
+    (snapshotPage === 'directories' || reuseDirectories && Date.now() - directoryRead.fetchedAt < 30_000)
+    ? directoryRead.data : null
+  const snapshotReady = page === 'directories' ? !!directoryData : !!data && snapshotPage === page
+  const fetchData = async () => {
     // A completed save in a departed page must not cancel the new page's read.
-    if (activeView.current.page !== page || activeView.current.userVersion !== user.version) return Promise.resolve()
+    if (activeView.current.page !== page || activeView.current.userVersion !== user.version) return
     const request = ++snapshotRequest.current
     snapshotController.current?.abort()
     const controller = new AbortController()
     snapshotController.current = controller
+    const current = () => request === snapshotRequest.current && !controller.signal.aborted &&
+      activeView.current.page === page && activeView.current.userVersion === user.version
     setError('')
-    return fetch('/api/snapshot?shipments=omit' + (page === 'directories' && hasSection(user, 'directories') ? '&context=directories' : ''), { cache: 'no-store', signal: controller.signal })
-      .then(r => { if ([401, 403].includes(r.status) && request === snapshotRequest.current && !controller.signal.aborted) { setData(null); setSnapshotPage(null) } if (!r.ok) throw new Error('Не удалось загрузить данные раздела.'); return r.json() })
-      .then(snapshot => { if (request === snapshotRequest.current && !controller.signal.aborted) { setData(snapshot); setSnapshotPage(page); setShipmentCount(snapshot.overview.shipmentCount) } })
-      .catch(e => { if (request === snapshotRequest.current && !controller.signal.aborted) setError(e.message) })
+    try {
+      const response = await fetch(page === 'directories' ? '/api/directories' : '/api/snapshot?shipments=omit', { cache: 'no-store', signal: controller.signal })
+      if (!response.ok) {
+        if (current() && [401, 403].includes(response.status)) {
+          setData(null); setSnapshotPage(null); setDirectoryRead(null)
+        }
+        throw new Error('Не удалось загрузить данные раздела.')
+      }
+      const result = await response.json()
+      if (!current()) return
+      if (page === 'directories') {
+        setDirectoryRead({ data: result, userId: user.id, userVersion: user.version, fetchedAt: Date.now() })
+      } else {
+        setData(result)
+        setShipmentCount(result.overview.shipmentCount)
+      }
+      setSnapshotPage(page)
+    } catch (reason) {
+      if (current()) setError(reason instanceof Error ? reason.message : 'Не удалось загрузить данные раздела.')
+    }
+  }
+  const refreshDirectories = () => {
+    setDirectoryRead(previous => previous?.userId === user.id && previous.userVersion === user.version ? { ...previous, fetchedAt: 0 } : previous)
+    return fetchData()
   }
   useEffect(() => {
     setError(''); setSnapshotPage(null)
     if (!pageAllowed) return
     if (requiresSnapshot) void fetchData()
-    if (requiresSnapshot && !hasSection(user, 'work')) return () => snapshotController.current?.abort()
+    if (requiresSnapshot && page !== 'directories' && !hasSection(user, 'work')) return () => snapshotController.current?.abort()
     // These pages fetch their own scoped data. The sidebar count must neither
     // build a financial snapshot nor delay mounting the page and its first GET.
     const controller = new AbortController()
@@ -155,7 +183,7 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
       .then(async response => { if (!response.ok) throw new Error('Navigation unavailable'); return response.json() })
       .then(result => {
         if (controller.signal.aborted) return
-        if (!requiresSnapshot) setShipmentCount(result.shipmentCount)
+        if (!requiresSnapshot || page === 'directories') setShipmentCount(result.shipmentCount)
         if (page !== 'work') setTodayTaskCount(result.todayTaskCount)
       })
       .catch(() => { if (!controller.signal.aborted && !requiresSnapshot) setShipmentCount(undefined) })
@@ -220,7 +248,7 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
       {page === 'work' && <WorkPage onTaskCount={setTodayTaskCount}/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
       {page === 'shipments' && data && <ShipmentsPage canWrite={canWriteShipments(user)} canDelete={canDeleteShipments(user)} canFilterManagers={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
-      {page === 'directories' && data && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={hasSection(user, 'accounts')} data={data} onChanged={fetchData}/>}
+      {page === 'directories' && directoryData && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={hasSection(user, 'accounts')} data={directoryData} onChanged={refreshDirectories}/>}
       {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} canWrite={canWriteShipments(user)} allowDelete={canDeleteShipments(user)} canManagePlaces={canManage && availableDirectoryTabs(user).includes('addresses')}/>}
       {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
       </div></Suspense></PageLoadBoundary>)}

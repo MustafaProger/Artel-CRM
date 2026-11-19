@@ -27,7 +27,7 @@ test('logistics components read only their context and namespace document downlo
   }
 });
 
-test('main CRM retains its API and fresh-directory snapshot outside the logistics entry', async () => {
+test('main CRM retains its API and scoped directory read outside the logistics entry', async () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
@@ -36,7 +36,7 @@ test('main CRM retains its API and fresh-directory snapshot outside the logistic
     globalThis.fetch = async input => { calls.push(String(input)); return new Response(JSON.stringify({ companies: [], directories: {} })); };
     await fetchDirectoryData();
     await apiFetch('/api/auth/session');
-    assert.deepEqual(calls, ['/api/snapshot?shipments=omit&context=directories', '/api/auth/session']);
+    assert.deepEqual(calls, ['/api/directories', '/api/auth/session']);
     assert.equal(apiUrl('/api/shipment-trips/trip-synthetic'), '/api/shipment-trips/trip-synthetic');
   } finally {
     globalThis.fetch = originalFetch;

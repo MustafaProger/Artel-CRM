@@ -101,6 +101,9 @@ for (const version of [1, 2]) test(`push config uses the fresh narrow authority 
     assert.equal((await f.request('/api/auth/session', 'GET', undefined, f.admin)).body.user.role, 'director');
     assert.equal(businessReads, 0);
     assert.equal((await f.request('/api/navigation', 'GET', undefined, f.admin)).status, 200);
-    assert.ok(businessReads > 0, 'business routes retain the full authority and business snapshot');
+    assert.equal(businessReads, 0, 'navigation uses its workspace projection');
+    assert.equal((await f.request('/api/navigation', 'GET', undefined, f.operator)).status, 401);
+    assert.equal((await f.request('/api/snapshot?shipments=omit', 'GET', undefined, f.admin)).status, 200);
+    assert.ok(businessReads > 0, 'the full snapshot route still reads all business domains');
   } finally { await f.close(); }
 });

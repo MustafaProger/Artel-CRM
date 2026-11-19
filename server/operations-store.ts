@@ -240,7 +240,7 @@ export function encodeOperations(data: OperationsData, sourceSha256 = data.sourc
   return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth' | 'readAuth'>>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth' | 'readAuth' | 'readBoards' | 'readWorkspace'>>;
 
 export class LegacyOperationsStore {
   readonly path: string;
@@ -352,6 +352,14 @@ export class OperationsStore extends LegacyOperationsStore {
     if (auth) return auth.read(source);
     return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
   }
+  async readWorkspace(source: string): Promise<OperationsData> {
+    const auth = await this.authStore(source);
+    return auth ? auth.readWorkspace(source) : this.read(source);
+  }
+  async readBoards(source: string): Promise<OperationsData> {
+    const auth = await this.authStore(source);
+    return auth ? auth.readBoards(source) : this.read(source);
+  }
   async readAuth(source: string): Promise<OperationsData> {
     const auth = await this.authStore(source);
     return auth ? auth.readAuth(source) : this.read(source);
@@ -385,9 +393,9 @@ export class OperationsStore extends LegacyOperationsStore {
   mutateAuth<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
     return this.mutateInteractive(source, update, true);
   }
-  async mutateWork<T>(source: string, update: import('./work-partition').Update<T>): Promise<T> {
+  async mutateWork<T>(source: string, update: import('./work-partition').Update<T>, view?: 'workspace'): Promise<T> {
     const auth = await this.authStore(source);
-    if (auth) return auth.mutate(source, update, true);
+    if (auth) return auth.mutate(source, update, true, false, view);
     return await isWorkPartition(this.path, source) ? this.partition.mutate(source, update, true) : super.mutate(source, update);
   }
 }

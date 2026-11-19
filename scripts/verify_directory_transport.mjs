@@ -116,11 +116,11 @@ try {
   console.log('PASS concurrent write after preflight retries safely within the same save');
 
   dialog=await edit('QA машина 991');await dialog.getByLabel('Номер договора',{exact:true}).fill('QA-OFFLINE');
-  await page.route('**/api/snapshot?shipments=omit&context=directories',route=>route.abort());
+  await page.route('**/api/directories',route=>route.request().method()==='GET'?route.abort():route.continue());
   await dialog.getByRole('button',{name:'Сохранить',exact:true}).click();
   await expect(dialog.getByRole('alert')).toBeVisible();await expect(dialog.getByLabel('Номер договора',{exact:true})).toHaveValue('QA-OFFLINE');
   assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-RACE');
-  await page.unroute('**/api/snapshot?shipments=omit&context=directories');await save(dialog);
+  await page.unroute('**/api/directories');await save(dialog);
   assert.equal((await currentVehicle()).leaseDocumentNumber,'QA-OFFLINE');
   console.log('PASS failed read preserves input and allows retry');
 

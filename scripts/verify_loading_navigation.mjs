@@ -81,13 +81,13 @@ try {
     });
 
     // App's snapshot failure must end loading, and explicit retry must leave the error view.
-    let gate = hold('/api/snapshot', { status: 503, json: { error: 'Учебная ошибка снимка' } });
+    let gate = hold('/api/directories', { status: 503, json: { error: 'Учебная ошибка снимка' } });
     await page.goto(runtime.base + '/#directories'); await reach(gate);
     await expect(pendingUi(page).first()).toBeVisible();
     await release(gate);
     await expect(page.getByRole('heading', { name: 'Данные пока недоступны', exact: true })).toBeVisible();
     await expect(pendingUi(page)).toHaveCount(0);
-    gate = hold('/api/snapshot');
+    gate = hold('/api/directories');
     await page.getByRole('button', { name: 'Повторить загрузку', exact: true }).click(); await reach(gate);
     await expect(page.getByRole('heading', { name: 'Данные пока недоступны', exact: true })).toHaveCount(0);
     await expect(pendingUi(page).first()).toBeVisible();
@@ -109,11 +109,11 @@ try {
     report.checks.push({ label, scenario: 'trip context initial failure and retry', passed: true });
 
     // A1 → B → A2, finish A2 first and release both obsolete responses afterwards.
-    const oldA = hold('/api/snapshot', { json: markerSnapshot(snapshot, 'УСТАРЕВШИЙ A1') });
+    const oldA = hold('/api/directories', { json: markerSnapshot(snapshot, 'УСТАРЕВШИЙ A1') });
     await page.evaluate(() => { location.hash = 'directories'; }); await reach(oldA);
     const oldB = hold('/api/snapshot', { json: markerSnapshot(snapshot, 'УСТАРЕВШИЙ B') });
     await page.evaluate(() => { location.hash = 'shipments'; }); await reach(oldB);
-    const freshA = hold('/api/snapshot', { json: markerSnapshot(snapshot, 'АКТУАЛЬНЫЙ A2') });
+    const freshA = hold('/api/directories', { json: markerSnapshot(snapshot, 'АКТУАЛЬНЫЙ A2') });
     await page.evaluate(() => { location.hash = 'directories'; }); await reach(freshA);
     await release(freshA); await expect(page.locator('.directory-list')).toBeVisible();
     await page.getByRole('group', { name: 'Справочники', exact: true }).getByRole('button', { name: 'Товары', exact: true }).click();
@@ -155,14 +155,14 @@ try {
     await editor.getByLabel('Новый сотрудник', { exact: true }).fill(`Поздний учебный сотрудник ${label}`);
     const mutation = hold('/api/auth/employees', undefined, 'POST');
     await editor.getByRole('button', { name: 'Добавить сотрудника', exact: true }).click(); await reach(mutation);
-    const currentSnapshot = hold('/api/snapshot');
+    const currentSnapshot = hold('/api/directories');
     await page.evaluate(() => { location.hash = 'directories'; }); await reach(currentSnapshot);
     const originalSnapshotRequest = currentSnapshot.requests[0];
     const mutationResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/employees' && response.request().method() === 'POST').then(response => response.finished());
     await release(mutation); await mutationResponse; await paint(page);
     assert.equal(currentSnapshot.requests.length, 1, 'Old account callback superseded the new directory snapshot');
     assert.equal(originalSnapshotRequest.failure(), null, 'Old account callback aborted the active snapshot');
-    assert.equal(new URL(originalSnapshotRequest.url()).searchParams.get('context'), 'directories');
+    assert.equal(new URL(originalSnapshotRequest.url()).pathname, '/api/directories');
     await release(currentSnapshot); await expect(page.locator('.directory-list')).toBeVisible();
     await expect(pendingUi(page)).toHaveCount(0);
     assert.equal(new URL(page.url()).hash, '#directories');

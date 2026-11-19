@@ -5,7 +5,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { migrateAuthStorage, migrateArchiveStorage } from '../server/auth-partition';
 import { test, type TestContext } from 'node:test';
 import { activeUsers, publicUser, type StoredUser } from '../server/auth';
 import { scopeSnapshot } from '../server/auth-scope';
@@ -154,4 +155,58 @@ test('financial output and store bytes remain unchanged after lightweight naviga
   await f.get('/api/auth/users');
   assert.deepEqual((await f.get('/api/snapshot')).body, financial);
   assert.equal(await readFile(f.store.path, 'utf8'), before);
+});
+
+test('archive-separated Work, navigation and directory reads retain responses and permissions for every role', async t => {
+  const f = await fixture(t);
+  const requests = ['/api/work', '/api/work/boards', '/api/navigation', '/api/directories', '/api/snapshot?shipments=omit&context=directories'];
+  const capture = async () => {
+    const results = [];
+    for (const user of f.users) {
+      for (const path of requests) {
+        const { status, body } = await f.get(path, user.id);
+        results.push({ user: user.id, path, status, body });
+      }
+    }
+    return results;
+  };
+  const expected = await capture();
+  const directory = dirname(f.external.path);
+  await migrateAuthStorage(directory, source);
+  await migrateArchiveStorage(directory, source);
+  assert.deepEqual(await capture(), expected);
+});
+
+test('pending Work and board writes bind to their initiating account, including after body admission', async t => {
+  const f = await fixture(t);
+  const post = async (path: string, expected: string, body: Record<string, unknown>) => fetch(f.url + path, {
+    method: 'POST', headers: { cookie: f.cookie('owner'), 'X-Artel-Account': expected, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const board = { requestId: 'f11914ef-53f9-43d0-a125-278391738620', title: 'Shared', memberIds: ['employee'] };
+  assert.equal((await post('/api/work/boards', 'employee', board)).status, 409);
+  assert.equal((await post('/api/work/tasks', 'employee', { title: 'Wrong account' })).status, 409);
+  assert.equal((await f.external.read(source)).work, undefined);
+  assert.equal((await post('/api/work/boards', 'owner', board)).status, 200);
+  let admitted!: () => void;
+  const initialRead = new Promise<void>(done => { admitted = done; });
+  f.store.readStarted = admitted;
+  const body = JSON.stringify({ title: 'Delayed task' });
+  const status = new Promise<number>((done, reject) => {
+    const request = httpRequest(f.url + '/api/work/tasks', { method: 'POST', headers: {
+      cookie: f.cookie('employee'), 'X-Artel-Account': 'employee', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+    } }, reply => { reply.resume(); reply.on('end', () => done(reply.statusCode!)); });
+    request.on('error', reject);
+    request.write(body.slice(0, 1));
+    void (async () => {
+      await initialRead;
+      f.store.readStarted = undefined;
+      await f.external.mutate(source, data => {
+        data.accounts!.sessions.find(row => row.userId === 'employee')!.userId = 'owner';
+        return { result: null, changed: true };
+      });
+      request.end(body.slice(1));
+    })().catch(reject);
+  });
+  assert.equal(await status, 409);
+  assert.equal((await f.external.read(source)).work?.tasks.length, 0);
 });

@@ -474,7 +474,17 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       const onlineUsersOnly = !logistics && pathname === '/api/auth/users' && url.searchParams.get('online') === '1';
       const authOnly = (onlineUsersOnly || avatarUserId || ['/api/auth/session', '/api/push/config', '/api/push/preferences'].includes(pathname)) && request.method === 'GET' || ['/api/auth/login', '/api/auth/logout'].includes(pathname) && request.method === 'POST'
         || pathname === '/api/auth/profile' && request.method === 'PATCH';
-      const requestData = await performanceSpan(authOnly ? 'request.read-auth' : 'request.read-full', () => authOnly && operations.readAuth ? operations.readAuth(base.provenance.sourceSha256) : operations.read(base.provenance.sourceSha256));
+      const boardView = /^\/api\/work\/boards(?:\/[^/]+)?$/.test(pathname) || /^\/api\/work\/(tasks|companies)\/[^/]+\/files\/[^/]+$/.test(pathname);
+      const workspaceRead = request.method === 'GET' && (pathname === '/api/work' || pathname === '/api/navigation' || pathname === '/api/directories'
+        || pathname === '/api/snapshot' && url.searchParams.get('context') === 'directories');
+      const workWrite = request.method !== 'GET' && /^\/api\/work\/(tasks|companies|notes)(?:\/[^/]+)?$/.test(pathname);
+      const source = base.provenance.sourceSha256;
+      const requestData = await performanceSpan(boardView ? 'request.read-boards' : workspaceRead ? 'request.read-workspace' : authOnly || workWrite ? 'request.read-auth' : 'request.read-full', () => {
+        if (boardView && operations.readBoards) return operations.readBoards(source);
+        if (workspaceRead && operations.readWorkspace) return operations.readWorkspace(source);
+        if ((authOnly || workWrite) && operations.readAuth) return operations.readAuth(source);
+        return operations.read(source);
+      });
       const boundaryUser = authenticate(requestData, request);
       if (boundaryUser) requireDriverRoute(boundaryUser, pathname, request.method ?? '');
       if (pathname === '/api/cabinets' || pathname.startsWith('/api/cabinets/')) return cabinetRoutes(operations, base.provenance.sourceSha256, options.cabinetEnvironment ?? process.env, request, response, () => jsonBody(request, false, 16384));
@@ -716,6 +726,10 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (logistics) requireTripSection(user, true);
         if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
+        if (request.method !== 'GET' && pathname.startsWith('/api/work/')) {
+          const expectedUser = request.headers['x-artel-account'];
+          if (expectedUser !== undefined && expectedUser !== user.id) throw new ApiError(409, 'Пользователь изменился. Обновите страницу.');
+        }
         if (pathname.startsWith('/api/push/')) {
           if (user.role !== 'driver' && !hasSection(user, 'work') && !hasSection(user, 'invoices') && !hasSection(user, 'operator') && !hasSection(user, 'trips')) throw new ApiError(403, 'Раздел недоступен. Обратитесь к администратору.');
           if (request.headers['x-artel-account'] !== undefined && request.headers['x-artel-account'] !== user.id) throw new ApiError(401, 'Пользователь изменился. Обновите страницу.');
@@ -1118,6 +1132,8 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         });
         return write(response, request.method === 'PATCH' ? 200 : 201, JSON.stringify(result));
       }
+      const workTransaction = <T,>(update: import('./work-partition').Update<T>) =>
+        operations.mutateWork ? operations.mutateWork(source, update, 'workspace') : operations.mutate(source, update);
       const fileMatch = pathname.match(/^\/api\/work\/(tasks|companies)\/([^/]+)\/files\/([^/]+)$/);
       if (fileMatch) {
         if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
@@ -1130,13 +1146,12 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (boardMatch) {
         let current = requestData;
         requireSection(authorized(current), 'work');
-        const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
         if (hasCompanyBoards(current)) {
-          await transact(base.provenance.sourceSha256, data => {
+          await workTransaction(data => {
             requireSection(authorized(data), 'work');
             return { result: null, changed: convertCompanyBoards(data, currentWorkSnapshot(base, data)) };
           });
-          current = await operations.read(base.provenance.sourceSha256);
+          current = await (operations.readBoards?.(source) ?? operations.read(source));
         }
         if (request.method === 'GET' && !boardMatch[1]) {
           const user = requireSection(authorized(current), 'work');
@@ -1146,7 +1161,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           return write(response, 200, JSON.stringify({ boards, tasks }));
         }
         const body = await jsonBody(request, false, 80 * 1024);
-        const result = await transact(base.provenance.sourceSha256, data =>
+        const result = await workTransaction(data =>
           mutateBoard(data, requireSection(authorized(data), 'work'), request.method ?? '', boardMatch[1], body));
         return write(response, 200, JSON.stringify({ board: result }));
       }
@@ -1160,15 +1175,14 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         }
         if(!workMatch)throw new ApiError(405,'Метод не поддерживается.');
         const body=await jsonBody(request, false, 28 * 1024 * 1024);
-        const transact = operations.mutateWork?.bind(operations) ?? operations.mutate.bind(operations);
-        const { response: result, completionQueued } = await transact(base.provenance.sourceSha256,data=>{
+        const { response: result, completionQueued } = await workTransaction(data=>{
           const currentActor=authorized(data);
           const result=mutateWork(data,scopeSnapshot(currentWorkSnapshot(base,data),currentActor,'work',workCompanyIds(data,currentActor)),workMatch[1],body,workMatch[2]?decodeURIComponent(workMatch[2]):undefined,request.method??'',currentActor,activeUsers(data));
           const { completionQueued, ...response } = result;
-          return {result: { response: { ...response, todayTaskCount: activeTaskCount(data, currentActor) }, completionQueued },changed:result.changed};
+          return {result: { response: { ...response, ...(workMatch[1] === 'tasks' ? { board: result.board ?? null } : {}), todayTaskCount: activeTaskCount(data, currentActor) }, completionQueued },changed:result.changed};
         });
         // Status, archive and comment edits keep the assignment unchanged.
-        const keepsAssignment = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status' || key === 'archived' || key === 'comment');
+        const keepsAssignment = request.method === 'PATCH' && Object.keys(body).every(key => key === 'version' || key === 'status' || key === 'archived' || key === 'comment' || key === 'placement');
         if (workMatch[1] === 'tasks' && result.entry && (completionQueued || !keepsAssignment) && pushReady(config)) {
           if (options.workNotificationWakeup) {
             write(response,result.created?201:200,JSON.stringify(result));

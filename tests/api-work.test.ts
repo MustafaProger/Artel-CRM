@@ -455,7 +455,10 @@ test('project membership protects rich tasks and files and the common board sync
       assigneeIds: [f.users[2].id], addAttachments: [{ name: 'plan.txt', data: 'WA==' }] };
     const created = await f.bob(tasks, 'POST', rich);
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    assert.equal((await f.bob(tasks, 'POST', rich)).status, 200);
+    assert.equal(created.body.board.version, 3);
+    const replayed = await f.bob(tasks, 'POST', rich);
+    assert.equal(replayed.status, 200);
+    assert.deepEqual(replayed.body.board, created.body.board);
     const task = created.body.entry;
     const card = tasks + '/' + task.id;
     assert.equal((await f.alice(path)).body.tasks[0].subtasks[0].title, 'Уточнить время');
@@ -483,6 +486,7 @@ test('project membership protects rich tasks and files and the common board sync
     assert.equal((await f.alice(ordinaryPath,'PATCH',publish)).body.entry.id,ordinary.id);
     const complete = await f.bob(ordinaryPath,'PATCH',{version:2,status:'done'});
     assert.equal(complete.body.entry.status,'done');
+    assert.equal(complete.body.board.id,common.id);
     assert.ok(complete.body.entry.archivedAt);
     const updated = (await list(f.bob))[0];
     assert.equal(updated.columns.find((c:{id:string}) => c.id === 'done').cards[0].id,ordinary.id);

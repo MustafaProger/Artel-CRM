@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hasSection, isAdministrator, isScopedEmployee, type AccountUser } from '../web/src/auth-model';
 import type { Snapshot } from '../web/src/model';
 import { isWorkDirectoryCompany, emptyWork, isClosedWorkStatus, isMyWork, workAssigneeIds, workFileLimit, workFilesTotalLimit, workStatuses, workPriorities, workSubtaskLimit, type WorkSubtask, type WorkAttachment, type AnyWorkEntry, type WorkCompanyRecord, type WorkData, type WorkKind, type WorkNote, type WorkResponse, type WorkTask } from '../web/src/work-model';
-import { commonBoardId, isBoardMember, legacyBoardTask } from '../web/src/kanban-model';
+import { commonBoardId, isBoardMember, legacyBoardTask, type WorkBoard } from '../web/src/kanban-model';
 import { canReadBoardTask, getBoard, persistBoard, validBoards } from './kanban';
 import { ApiError } from './api-error';
 import { StoreError, type OperationsData } from './operations-store';
@@ -38,11 +38,16 @@ function validSubtasks(value: unknown): value is WorkSubtask[] {
   return true;
 }
 
+// Reuse only the validated immutable file bytes. Card and file metadata are always checked.
+let verifiedFiles = new Map<string, { data: string; size: number }>();
+
 /** Old stores may omit work entirely. Existing malformed work is never silently discarded. */
 export function validateWorkData(value: unknown): asserts value is WorkData | undefined {
   if (value === undefined) return;
   if (!object(value) || !Array.isArray(value.tasks) || !Array.isArray(value.companyRecords) || !Array.isArray(value.notes) || !validBoards(value.boards)) throw new StoreError('Invalid work storage');
   const ids = new Set<string>();
+  const checkedFiles = new Map<string, { data: string; size: number }>();
+  let checkedBytes = 0;
   for (const kind of ['tasks', 'companyRecords', 'notes'] as const) {
     const rows = value[kind];
     if (!Array.isArray(rows)) throw new StoreError('Invalid work collection');
@@ -62,8 +67,16 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
           let total = 0;
           const fileIds = new Set<string>();
           for (const file of row.attachments) {
-            if (!object(file) || !identifier(file.id) || fileIds.has(file.id) || !boundedText(file.name, 200, true) || (/[\\/]/.test(file.name) || [...file.name].some(char => char.charCodeAt(0) < 32)) || !instant(file.createdAt) || !identifier(file.authorId) || !Number.isSafeInteger(file.size) || Number(file.size) < 0 || Number(file.size) > workFileLimit || typeof file.data !== 'string' || Buffer.from(file.data, 'base64').toString('base64') !== file.data || Buffer.from(file.data, 'base64').length !== file.size) throw new StoreError('Invalid attachment');
-            fileIds.add(file.id); total += Number(file.size);
+            if (!object(file) || !identifier(file.id) || fileIds.has(file.id) || !boundedText(file.name, 200, true) || (/[\\/]/.test(file.name) || [...file.name].some(char => char.charCodeAt(0) < 32)) || !instant(file.createdAt) || !identifier(file.authorId) || !Number.isSafeInteger(file.size) || Number(file.size) < 0 || Number(file.size) > workFileLimit || typeof file.data !== 'string') throw new StoreError('Invalid attachment');
+            const previous = verifiedFiles.get(file.id);
+            if (!previous || previous.data !== file.data || previous.size !== file.size) {
+              const bytes = Buffer.from(file.data, 'base64');
+              if (bytes.length !== file.size || bytes.toString('base64') !== file.data) throw new StoreError('Invalid attachment');
+            }
+            const size = Number(file.size);
+            checkedBytes += file.data.length;
+            if (checkedBytes <= 32 * 1024 * 1024) checkedFiles.set(file.id, { data: file.data, size });
+            fileIds.add(file.id); total += size;
           }
           if (total > workFilesTotalLimit) throw new StoreError('Attachments too large');
         }
@@ -82,6 +95,7 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
       }
     }
   }
+  verifiedFiles = checkedFiles;
 }
 
 function workPersonIds(row: AnyWorkEntry) {
@@ -141,7 +155,7 @@ export function workFile(data: OperationsData, kind: string, id: string, fileId:
   if (!file) throw new ApiError(404, 'Файл не найден или недоступен.');
   return file;
 }
-export interface WorkMutationResult { entry?: AnyWorkEntry; deleted?: boolean; id?: string; created?: boolean; changed: boolean; completionQueued?: boolean }
+export interface WorkMutationResult { entry?: AnyWorkEntry; deleted?: boolean; id?: string; created?: boolean; changed: boolean; completionQueued?: boolean; board?: WorkBoard }
 
 /** Called inside the existing storage transaction; both authorization and version checks are atomic. */
 export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: string, body: Record<string, unknown>, id: string | undefined, method: string, actor: AccountUser, users: AccountUser[]): WorkMutationResult {
@@ -176,7 +190,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   }
   const eligible = users.filter(u => isBoardMember(board, u.id));
   const result = saveWorkEntry(data, snapshot, kindValue, fields, id, method, actor, eligible, board.id);
-  if (!result.changed) return result;
+  if (!result.changed) return replay ? { ...result, board } : result;
   if (result.deleted && card && source) source.cards.splice(source.cards.indexOf(card), 1);
   const task = result.entry as WorkTask | undefined;
   if (task) {
@@ -193,7 +207,7 @@ export function mutateWork(data: OperationsData, snapshot: Snapshot, kindValue: 
   }
   persistBoard(data, board);
   board.version++;
-  return result;
+  return { ...result, board };
 }
 
 function saveWorkEntry(data: OperationsData, snapshot: Snapshot, kindValue: string, body: Record<string, unknown>, id: string | undefined, method: string, actor: AccountUser, users: AccountUser[], boardId?: string): WorkMutationResult {

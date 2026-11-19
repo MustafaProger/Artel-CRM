@@ -24,7 +24,7 @@ try {
   };
   for (const [browserName, launcher, options] of [['chromium', chromium, { executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }], ['webkit', webkit, {}]]) {
     browser = await launcher.launch({ headless: true, ...options });
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     await authenticateContext(page.context(), runtime.base, auth.cookie);
     const depotNames = [`QA Нефтебаза Северная с длинным названием ${browserName}`, `QA Нефтебаза Южная ${browserName}`];
@@ -68,14 +68,14 @@ try {
     const patchListener = request => { if (request.method() === 'PATCH' && new URL(request.url()).pathname === `/api/directories/companies/${companyId}`) patchStarted = true; };
     page.on('request', patchListener);
     const holdSnapshot = async route => {
-      if (patchStarted) {
+      if (patchStarted && route.request().method() === 'GET') {
         refreshBlocked = true; await refreshGate;
         try { await route.continue(); } finally { finishRefresh(); }
         return;
       }
       await route.continue();
     };
-    await page.route('**/api/snapshot?shipments=omit&context=directories', holdSnapshot);
+    await page.route('**/api/directories', holdSnapshot);
     try {
       await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
       await expect.poll(() => refreshBlocked).toBe(true);
@@ -83,12 +83,12 @@ try {
       // The dialog must still be open and prevent reopening from stale props.
       await page.waitForTimeout(500);
       await expect(dialog).toBeVisible();
-      await expect(dialog.getByRole('button', { name: 'Сохраняем…', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Сохранить', exact: true })).toBeDisabled();
     } finally {
       releaseRefresh();
       if (refreshBlocked) await refreshHandled;
       page.off('request', patchListener);
-      await page.unroute('**/api/snapshot?shipments=omit&context=directories', holdSnapshot);
+      await page.unroute('**/api/directories', holdSnapshot);
     }
     await expect(dialog).toHaveCount(0); dialog = await open();
     await expect(distance(dialog)).toHaveValue('12.75'); await expect(distance(dialog, 1)).toHaveValue('0'); await expect(distance(dialog, 0, 2)).toHaveValue('89');

@@ -1,6 +1,6 @@
 import WorkTaskCheck from './WorkTaskCheck';
 import { commonBoardId, isBoardMember, type TaskPlacement, type WorkBoard } from './kanban-model';
-import WorkKanban from './WorkKanban';
+import WorkKanban, { type SavedKanbanTask } from './WorkKanban';
 import { useDialogMotion } from './useDialogMotion'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
@@ -67,19 +67,24 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     ? '.work-calendar-heading > h2, .work-calendar-scroll, .work-calendar-legend'
     : `${view === 'archive' ? '.work-section-heading h2, ' : ''}${taskTargets}`, 6);
   const [selectedWeek, setSelectedWeek] = useState(() => weekStart(new Date()));
+  const [kanbanTask, setKanbanTask] = useState<SavedKanbanTask>();
   const [boardRefresh, setBoardRefresh] = useState(0);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const request = useRef<AbortController | null>(null), active = useRef(true);
   const completing = useRef(new Set<string>());
-  const editorSaving = useRef(false);
+  const editorSaving = useRef(false), editorClosing = useRef(false);
+  const activeWrites = useRef(0), refreshAfterWrites = useRef(false);
   const openEditor = (next: Editor) => { if (!editorSaving.current) setEditor(next); };
-  const navigate = (update: () => void) => { if (!editorSaving.current) update(); };
-  const [pendingTasks, setPendingTasks] = useState<Record<string, WorkTask['status']>>({});
+  const navigate = (update: () => void) => { if (!editorSaving.current || editorClosing.current) update(); };
+  const [pendingTasks, setPendingTasks] = useState<Record<string, Pick<WorkTask, 'status' | 'archivedAt'>>>({});
   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
   const effectiveFilter = view === 'kanban' ? '' : filter;
-  const refresh = useCallback(async (visible = false) => {
-    if (completing.current.size || editorSaving.current) return;
+  const refresh = useCallback(async (visible = false, keepTaskErrors = false) => {
+    if (activeWrites.current) {
+      if (visible) refreshAfterWrites.current = true;
+      return;
+    }
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -87,8 +92,11 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     try {
       const response = await fetch(`/api/work${effectiveFilter ? `?assigneeId=${encodeURIComponent(effectiveFilter)}` : ''}`, { signal: controller.signal, cache: 'no-store' });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Не удалось загрузить рабочее пространство.');
-      if (!controller.signal.aborted && active.current) { setData(result); onTaskCount(result.todayTaskCount); setError(''); setTaskErrors({}); }
+      if (!response.ok) {
+        if (!controller.signal.aborted && (response.status === 401 || response.status === 403)) { setData(null); setEditor(null); }
+        throw new Error(result.error || 'Не удалось загрузить рабочее пространство.');
+      }
+      if (!controller.signal.aborted && active.current) { setData(result); onTaskCount(result.todayTaskCount); setError(''); if (!keepTaskErrors) setTaskErrors({}); }
     } catch (reason) {
       if (!controller.signal.aborted && active.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.');
     } finally { if (!controller.signal.aborted && active.current) setLoading(false); }
@@ -98,8 +106,14 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     void refresh(true);
     const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
     const timer = window.setInterval(onVisible, 30000);
+    const onWriteFromPreviousVisit = () => { setBoardRefresh(n => n + 1); void refresh(true); };
     document.addEventListener('visibilitychange', onVisible);
-    return () => { active.current = false; request.current?.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+    window.addEventListener('artel:work-updated', onWriteFromPreviousVisit);
+    return () => {
+      active.current = false; request.current?.abort(); window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('artel:work-updated', onWriteFromPreviousVisit);
+    };
   }, [refresh]);
   useEffect(() => {
     if (!data) return;
@@ -112,15 +126,44 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     params.delete('workId'); params.delete('workKind');
     history.replaceState(null, '', `${location.pathname}${params.size ? `?${params}` : ''}#work`);
   }, [data]);
+  const latestRefresh = useRef(refresh);
+  useLayoutEffect(() => { latestRefresh.current = refresh; }, [refresh]);
+  const beginWrite = () => {
+    if (activeWrites.current > 0) refreshAfterWrites.current = true;
+    activeWrites.current++;
+    request.current?.abort();
+    setLoading(false);
+  };
+  const finishWrite = (reconcile = false) => {
+    activeWrites.current--;
+    if (!activeWrites.current && !active.current) {
+      window.dispatchEvent(new Event('artel:work-updated'));
+      return;
+    }
+    if (reconcile) refreshAfterWrites.current = true;
+    if (!activeWrites.current && refreshAfterWrites.current && active.current) {
+      refreshAfterWrites.current = false;
+      void latestRefresh.current(false, true);
+    }
+  };
+  const previewOutcome = (id: string, status?: WorkStatus) => {
+    setPendingTasks(previous => {
+      const next = { ...previous };
+      if (status) next[id] = { status, archivedAt: isClosedWorkStatus(status) ? new Date().toISOString() : null };
+      else delete next[id];
+      return next;
+    });
+  };
   const toggleTask = async (task: WorkTask) => {
-    if (completing.current.has(task.id)) return;
+    if (!data || completing.current.has(task.id)) return;
     const status = isClosedWorkStatus(task.status) ? 'todo' : 'done';
     completing.current.add(task.id);
-    request.current?.abort(); setLoading(false);
-    setPendingTasks(previous => ({ ...previous, [task.id]: status }));
+    beginWrite();
+    let reconcile = false;
+    previewOutcome(task.id, status);
     setTaskErrors(previous => { const next = { ...previous }; delete next[task.id]; return next; });
     try {
-      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: task.version, status, archived: isClosedWorkStatus(status) }), signal: AbortSignal.timeout(20000) });
+      const response = await fetch(`/api/work/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Artel-Account': data.currentUser.id }, body: JSON.stringify({ version: task.version, status, archived: isClosedWorkStatus(status) }), signal: AbortSignal.timeout(20000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
       if (active.current) {
@@ -128,10 +171,12 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
         setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
       }
     } catch (reason) {
+      reconcile = true;
       if (active.current) setTaskErrors(previous => ({ ...previous, [task.id]: reason instanceof Error && reason.name !== 'TimeoutError' && reason.name !== 'TypeError' ? reason.message : 'Не удалось подтвердить сохранение. Обновите список перед повтором.' }));
     } finally {
       completing.current.delete(task.id);
-      if (active.current) setPendingTasks(previous => { const next = { ...previous }; delete next[task.id]; return next; });
+      finishWrite(reconcile);
+      if (active.current) previewOutcome(task.id);
     }
   };
   const people = new Map([...(data?.historicalUsers ?? []), ...(data?.users ?? [])].map(person => [person.id, person]));
@@ -140,15 +185,16 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
   const companyName = (id: string | null) => data?.companies.find(company => company.id === id)?.name ?? (id ? 'Компания недоступна' : '');
   const isManager = !!data && isScopedEmployee(data.currentUser);
   const work = data?.work;
+  const tasks = (work?.tasks ?? []).map(task => pendingTasks[task.id] ? { ...task, ...pendingTasks[task.id] } : task);
   const today = workToday();
   const events: CalendarEvent[] = [];
-  for (const task of (work?.tasks ?? []).filter(task => !task.archivedAt)) {
+  for (const task of tasks.filter(task => !task.archivedAt)) {
     if (task.dueDate) events.push({ id: `${task.id}-due`, day: task.dueDate, title: task.title, priority: task.priority ?? 4, reminder: false, editor: { kind: 'tasks', entry: task } });
     if (task.reminderAt) events.push({ id: `${task.id}-reminder`, day: localDay(new Date(task.reminderAt)), title: task.title, priority: task.priority ?? 4, reminder: true, editor: { kind: 'tasks', entry: task } });
   }
   for (const row of work?.companyRecords ?? []) if (row.reminderAt && !row.archivedAt) events.push({ id: row.id, day: localDay(new Date(row.reminderAt)), title: companyName(row.companyId), reminder: true, editor: { kind: 'companies', entry: row } });
   const records: Editor[] = [
-    ...(work?.tasks ?? []).map(entry => ({ kind: 'tasks' as const, entry })),
+    ...tasks.map(entry => ({ kind: 'tasks' as const, entry })),
     ...(work?.companyRecords ?? []).map(entry => ({ kind: 'companies' as const, entry })),
   ].filter(item => {
     const row = item.entry as WorkTask | WorkCompanyRecord;
@@ -164,12 +210,14 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     }
     return (view === 'archive' ? (b.entry as WorkTask).archivedAt! : b.entry!.createdAt).localeCompare(view === 'archive' ? (a.entry as WorkTask).archivedAt! : a.entry!.createdAt) || a.entry!.id.localeCompare(b.entry!.id);
   });
+  const hiddenError = Object.entries(taskErrors).find(([id]) =>
+    view === 'kanban' || view === 'calendar' || !records.some(record => record.entry?.id === id));
   const weekDays = Array.from({ length: 7 }, (_, index) => addDays(selectedWeek, index));
   const renderRecord = (item: Editor) => {
     const row = item.entry as WorkTask | WorkCompanyRecord;
     const task = 'title' in row ? row : null;
     const pending = Object.hasOwn(pendingTasks, row.id);
-    const status = task ? pendingTasks[row.id] ?? task.status : null;
+    const status = task?.status ?? null;
     const otherAssignees = task ? workAssigneeIds(task).filter(id => id !== task.createdBy) : [];
     return <div key={row.id} className={task ? `work-task-row${status === 'done' ? ' is-done' : ''}${pending ? ' is-saving' : ''}` : 'work-record-row'}>
       {task && <WorkTaskCheck task={task} status={status ?? task.status} disabled={pending} onToggle={() => void toggleTask(task)}/>}
@@ -212,14 +260,40 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       return { ...previous, work: { ...previous.work, [key]: visible ? [...remaining, entry] : remaining } };
     });
   };
-  const renderEditor = () => data && editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} taskBoards={data.taskBoards} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser}
-    onSaving={value => { editorSaving.current = value; if (value) { request.current?.abort(); setLoading(false); } }}
-    onClose={() => setEditor(null)} onTaskCount={onTaskCount} onCommentSaved={entry => { updateWorkList(editor, entry); if (view === 'kanban') setBoardRefresh(n => n + 1); }}
-    onSaved={(action, entry) => {
-      editorSaving.current = false;
-      updateWorkList(editor, entry);
+  const updateTaskBoards = (board: WorkBoard | null, id: string) => {
+    if (id === commonBoardId) return;
+    setData(previous => {
+      if (!previous) return previous;
+      const taskIds = new Set(previous.work.tasks.map(task => task.id));
+      const boards = (previous.taskBoards ?? []).filter(item => item.id !== id);
+      if (board) boards.push({ ...board, columns: board.columns.map(column => ({ ...column, cards: column.cards.filter(card => taskIds.has(card.id)) })) });
+      return { ...previous, taskBoards: boards };
+    });
+  };
+  const applyEditorSave = (edited: Editor, entry?: AnyWorkEntry, board?: WorkBoard | null) => {
+    updateWorkList(edited, entry);
+    if (edited.kind !== 'tasks') return;
+    if (board) updateTaskBoards(board, board.id);
+    const id = entry?.id ?? edited.entry?.id;
+    if (board !== undefined && id) {
+      setKanbanTask({ id, entry: entry as WorkTask | undefined, board });
+    } else {
+      // Older servers return just the task. Reconcile its placement if needed.
       if (view === 'kanban') setBoardRefresh(n => n + 1);
-      if (entry && 'boardId' in entry && entry.boardId && entry.boardId !== commonBoardId) void refresh();
+      const task = (entry ?? edited.entry) as WorkTask | undefined;
+      if (task?.boardId && task.boardId !== commonBoardId) refreshAfterWrites.current = true;
+    }
+  };
+  const renderEditor = () => data && editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} taskBoards={data.taskBoards} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser}
+    onPreviewOutcome={(id, status) => { editorClosing.current = !!status; previewOutcome(id, status); }} onSaving={(value, reconcile) => {
+      editorSaving.current = value;
+      if (value) beginWrite();
+      else { if (reconcile && view === 'kanban') setBoardRefresh(n => n + 1); finishWrite(reconcile); }
+    }}
+    onClose={() => setEditor(null)} onTaskCount={onTaskCount} onCommentSaved={(entry, board) => applyEditorSave(editor, entry, board)}
+    onSaved={(action, entry, board) => {
+      editorSaving.current = false;
+      applyEditorSave(editor, entry, board);
       if (action === 'handed-off' && view === 'archive') {
         setListScope('all');
         setView('board');
@@ -234,12 +308,16 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       <div className="work-toolbar-actions"><button className="button work-refresh mobile-icon-action" disabled={loading} onClick={() => { if (view === 'kanban') setBoardRefresh(n => n + 1); void refresh(true); }} aria-label="Обновить работу" title="Обновить работу"><RefreshCw size={16} aria-hidden="true" className={loading ? 'spin' : ''}/><span className="mobile-action-label">Обновить</span></button>
       </div>
     </div>
+    {Object.keys(pendingTasks).length > 0 && <p role="status" className="work-notice">Сохраняем изменения задач…</p>}
     {notice && <p className="work-notice" role="status">{notice}</p>}
+    {hiddenError && <p className="shipment-error" role="alert">{hiddenError[1]} <button type="button" onClick={() => void refresh()}>Обновить</button></p>}
     {error && <p className="shipment-error" role="alert">{error}</p>}
-    {!data && (loading ? <LoadingSkeleton label="Загружаем рабочее пространство" variant={view === 'calendar' ? 'work-calendar' : 'work'} rows={4}/> : <div className="panel work-empty">Данные не загружены. Нажмите «Обновить».</div>)}
+    {!data && (view !== 'kanban' || !loading) && (loading ? <LoadingSkeleton label="Загружаем рабочее пространство" variant={view === 'calendar' ? 'work-calendar' : 'work'} rows={4}/> : <div className="panel work-empty">Данные не загружены. Нажмите «Обновить».</div>)}
     {data && loading && <LoadingProgress label="Обновляем рабочее пространство"/>}
-    {data && view === 'kanban' && <WorkKanban actor={data.currentUser} users={data.users} refreshKey={boardRefresh}
-      onTasksChanged={() => void refresh()} openTask={(placement, entry) => openEditor({kind: 'tasks', placement, entry})}/>}
+    {view === 'kanban' && (data || loading) && <WorkKanban pendingOutcomes={pendingTasks} taskChange={kanbanTask} actor={data?.currentUser} users={data?.users ?? []} refreshKey={boardRefresh}
+      onWriteStart={beginWrite} onWriteEnd={finishWrite} onRemountRefresh={() => { if (active.current) setBoardRefresh(n => n + 1); }}
+      onTaskSaved={(entry, count) => { if (active.current) { updateWorkList({ kind: 'tasks', entry }, entry); onTaskCount(count); } }}
+      onBoardSaved={updateTaskBoards} openTask={(placement, entry) => openEditor({kind: 'tasks', placement, entry})}/>}
     {data && view !== 'kanban' && <>
       <div className="work-layout view-entrance">
         <section ref={workMain} className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
@@ -273,7 +351,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
   </div>;
 }
 
-function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, actor, onSaving, onClose: onDismiss, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; taskBoards?: WorkBoard[]; users: AccountUser[]; historicalUsers: WorkPerson[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry) => void; onCommentSaved: (entry: WorkTask) => void; onTaskCount: (count: number) => void }) {
+function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, actor, onSaving, onPreviewOutcome, onClose: onDismiss, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; taskBoards?: WorkBoard[]; users: AccountUser[]; historicalUsers: WorkPerson[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean, reconcile?: boolean) => void; onPreviewOutcome: (id: string, status?: WorkStatus) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry, board?: WorkBoard | null) => void; onCommentSaved: (entry: WorkTask, board?: WorkBoard | null) => void; onTaskCount: (count: number) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const focusSubtask = useRef<string | null>(null);
@@ -445,6 +523,8 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
         : 'saved'
     );
     setPendingAction(action);
+    let exitPreview: Promise<void> | undefined;
+    let reconcile = false;
     try {
       let body: Record<string, unknown> = { version: entry?.version };
       if (postingComment) {
@@ -477,21 +557,38 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
       } else if (placement && (!task || !task.createdAt || (!postingComment && method !== 'DELETE' && columnId !== initialColumn))) {
         body.placement = { boardId: placement.board.id, columnId, version: placement.board.version };
       }
-      const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (method === 'PATCH' && task && nextStatus) {
+        onPreviewOutcome(task.id, nextStatus);
+        // Keep the mounted form and selected files until the server confirms.
+        exitPreview = motion.complete(() => {});
+      }
+      const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, {
+        method, headers: { 'Content-Type': 'application/json', 'X-Artel-Account': actor.id }, body: JSON.stringify(body),
+        ...(exitPreview ? { signal: AbortSignal.timeout(files.length ? 120000 : 20000) } : {}),
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || (method === 'DELETE' ? 'Не удалось удалить запись.' : 'Не удалось сохранить запись.'));
+      if (!dialog.current?.isConnected) return;
       onTaskCount(result.todayTaskCount);
       if (postingComment) {
         measureActivity();
         setLatestCommentId((result.entry as WorkTask).comments?.at(-1)?.id);
         setEntry(result.entry);
         update('comment', '');
-        onCommentSaved(result.entry);
+        onCommentSaved(result.entry, result.board);
+      } else if (exitPreview) {
+        await exitPreview;
+        if (dialog.current?.isConnected) onSaved(action as SavedAction, result.entry, result.board);
       } else {
-        await motion.complete(() => onSaved(action as SavedAction, result.entry));
+        await motion.complete(() => onSaved(action as SavedAction, result.entry, result.board));
       }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.'); }
-    finally { inFlight.current = false; onSaving(false); setSaving(false); setPendingAction(null); }
+    } catch (reason) {
+      if (exitPreview) { reconcile = true; await exitPreview; motion.open(); }
+      setError(reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason.message : 'Не удалось подтвердить сохранение. Проверьте состояние задачи перед повтором.');
+    } finally {
+      if (exitPreview && task) onPreviewOutcome(task.id);
+      inFlight.current = false; onSaving(false, reconcile); setSaving(false); setPendingAction(null);
+    }
   };
   const isNote = editor.kind === 'notes';
   const input = (label: string, key: keyof typeof fields, options: { type?: string; required?: boolean; multiline?: boolean; max?: number; placeholder?: string; hideLabel?: boolean } = {}) => <label className="work-field">{!options.hideLabel && <span>{label}{options.required ? ' *' : ''}</span>}{options.multiline ? <textarea aria-label={label} placeholder={options.placeholder} value={fields[key]} rows={4} maxLength={options.max ?? 10000} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/> : <input type={options.type ?? 'text'} aria-label={label} placeholder={options.placeholder} value={fields[key]} maxLength={options.max ?? 200} required={options.required} disabled={saving} onChange={event => update(key, event.target.value)}/>}</label>;

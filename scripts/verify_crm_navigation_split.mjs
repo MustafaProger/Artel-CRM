@@ -68,7 +68,7 @@ report.routes = pages.map(([id]) => id);
 const primaryApi = {
   overview: '/api/settlements', work: '/api/work', shipments: '/api/shipments', trips: '/api/trip-requests',
   payments: '/api/banking', 'cabinet-balances': '/api/cabinets', china: '/api/china', accounts: '/api/auth/users',
-  directories: '/api/snapshot', invoices: '/api/invoices', operator: '/api/operator',
+  directories: '/api/directories', invoices: '/api/invoices', operator: '/api/operator',
 };
 const waitForData = (page, id) => page.waitForResponse(response => new URL(response.url()).pathname === primaryApi[id] && response.request().method() === 'GET' && response.status() === 200);
 async function loaded(page, id, selector) {

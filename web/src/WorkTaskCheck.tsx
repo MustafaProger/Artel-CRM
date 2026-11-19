@@ -4,7 +4,7 @@ import type { WorkStatus, WorkTask } from './work-model';
 export default function WorkTaskCheck({ task, status = task.status, disabled, onToggle }: {
   task: WorkTask; status?: WorkStatus; disabled: boolean; onToggle: () => void;
 }) {
-  if (task.status === 'failed') {
+  if (status === 'failed') {
     return <button type="button" className="work-task-check work-task-reopen" aria-label={`Вернуть в работу: ${task.title}`}
       title="Вернуть в работу" disabled={disabled} onClick={onToggle}>
       <span className="work-task-check-box" aria-hidden="true"><X size={15} strokeWidth={2.5}/></span>

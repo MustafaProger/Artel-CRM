@@ -14,33 +14,62 @@ type ProjectVisibility = 'personal' | 'shared';
 type Editor = { kind: 'board' | 'column'; board?: WorkBoard; column?: BoardColumn };
 type Mutation = (board: WorkBoard | undefined, method: string, fields: Record<string, unknown>) => Promise<void>;
 
-export default function WorkKanban({ actor, users, refreshKey, openTask, onTasksChanged }: {
-  actor: AccountUser; users: AccountUser[]; refreshKey: number;
-  onTasksChanged: () => void; openTask: (placement: TaskPlacement, entry?: WorkTask) => void;
+export interface SavedKanbanTask { id: string; entry?: WorkTask; board: WorkBoard | null }
+type CardMove = { cardId: string; columnId: string; beforeId?: string };
+
+function previewMove(board: WorkBoard, move: CardMove): WorkBoard {
+  const source = board.columns.find(column => column.cards.some(card => card.id === move.cardId));
+  const target = board.columns.find(column => column.id === move.columnId);
+  if (!source || !target || move.beforeId === move.cardId) return board;
+  const from = source.cards.findIndex(card => card.id === move.cardId);
+  const cards = target.cards.filter(card => card.id !== move.cardId);
+  const to = move.beforeId ? cards.findIndex(card => card.id === move.beforeId) : cards.length;
+  if (to < 0 || (source === target && from === to)) return board;
+  cards.splice(to, 0, source.cards[from]);
+  return { ...board, columns: board.columns.map(column => {
+    if (column === target) return { ...column, cards };
+    if (column === source) return { ...column, cards: source.cards.filter(card => card.id !== move.cardId) };
+    return column;
+  }) };
+}
+
+export default function WorkKanban({ actor, users, refreshKey, taskChange, pendingOutcomes, openTask, onTaskSaved, onBoardSaved, onWriteStart, onWriteEnd, onRemountRefresh }: {
+  taskChange?: SavedKanbanTask; pendingOutcomes: Record<string, Pick<WorkTask, 'status'>>;
+  actor?: AccountUser; users: AccountUser[]; refreshKey: number;
+  onTaskSaved: (task: WorkTask, count: number) => void;
+  onBoardSaved: (board: WorkBoard | null, id: string) => void;
+  onWriteStart: () => void; onWriteEnd: (reconcile?: boolean) => void; onRemountRefresh: () => void;
+  openTask: (placement: TaskPlacement, entry?: WorkTask) => void;
 }) {
   const [directory, setDirectory] = useState<BoardDirectory>();
   const [selection, setSelection] = useState('');
   const [editor, setEditor] = useState<Editor | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [moves, setMoves] = useState<CardMove[]>([]);
+  const moveQueue = useRef<CardMove[]>([]);
+  const [pendingTask, setPendingTask] = useState<Pick<WorkTask, 'id' | 'status'>>();
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [drag, setDrag] = useState('');
   const [drop, setDrop] = useState<{ columnId: string; beforeId?: string }>();
   const focusCard = useRef<{ id: string; checkbox?: boolean } | null>(null);
   const writing = useRef(false), read = useRef<AbortController | null>(null);
-  const refresh = useCallback(async () => {
-    if (writing.current) return;
+  const refresh = useCallback(async (keepError = false) => {
+    if (!mounted.current || writing.current) return;
     read.current?.abort();
     const controller = new AbortController();
     read.current = controller;
     try {
       const response = await fetch('/api/work/boards', { signal: controller.signal, cache: 'no-store' });
       const data = await response.json();
+      if (controller.signal.aborted) return;
       if (response.status === 401 || response.status === 403) { setDirectory(undefined); setEditor(null); }
       if (!response.ok) throw new Error(data.error || 'Не удалось загрузить доски.');
       if (!controller.signal.aborted) {
         setDirectory(data);
         setEditor(current => current?.board && !data.boards.some((b: WorkBoard) => b.id === current.board!.id) ? null : current);
-        setError('');
+        if (!keepError) setError('');
       }
     } catch (reason) {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Доски недоступны.');
@@ -54,11 +83,27 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
     return () => { read.current?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [refresh, refreshKey]);
 
+  const lastChange = useRef(taskChange);
+  useLayoutEffect(() => {
+    if (!taskChange || lastChange.current === taskChange) return;
+    lastChange.current = taskChange;
+    read.current?.abort();
+    setDirectory(previous => {
+      if (!previous) return previous;
+      const { id, entry, board } = taskChange;
+      const tasks = previous.tasks.filter(task => task.id !== id);
+      if (entry) tasks.push(entry);
+      const boards = board ? previous.boards.map(item => item.id === board.id && item.version <= board.version ? board : item) : previous.boards;
+      return { boards, tasks };
+    });
+  }, [taskChange]);
+
   const projects = directory?.boards.filter(board => board.id !== commonBoardId) ?? [];
   const groups = [...new Set(projects.map(project => project.group ?? ''))].sort((a, b) => a.localeCompare(b, 'ru'));
-  const people = users.filter(u => u.id !== actor.id && hasSection(u, 'work'));
+  const people = users.filter(u => u.id !== actor?.id && hasSection(u, 'work'));
   const taskById = new Map(directory?.tasks.map(t => [t.id, t]));
-  const board = projects.find(project => project.id === selection) ?? projects[0];
+  const savedBoard = projects.find(project => project.id === selection) ?? projects[0];
+  const board = savedBoard && moves.reduce(previewMove, savedBoard);
   const participants = board?.memberIds?.length
     ? [board.ownerId, ...board.memberIds].map(id => users.find(user => user.id === id)?.name ?? 'Бывший сотрудник').join(', ')
     : '';
@@ -79,28 +124,34 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
       easing: getComputedStyle(card).getPropertyValue('--motion-ease').trim() || 'ease-out',
     });
   }, [board, editor, saving, lanes]);
+  const acceptBoard = (board: WorkBoard | null, id: string) => {
+    setDirectory(previous => {
+      if (!previous) return previous;
+      const boards = previous.boards.filter(row => row.id !== id);
+      if (board) boards.push(board);
+      return { ...previous, boards: boards.sort((a, b) => a.title.localeCompare(b.title, 'ru')) };
+    });
+    onBoardSaved(board, id);
+  };
+
   const mutate: Mutation = async (target, method, fields) => {
+    if (!actor) throw new Error('Обновите рабочее пространство.');
     if (writing.current) throw new Error('Дождитесь сохранения.');
     writing.current = true;
+    onWriteStart();
     read.current?.abort();
     setSaving(true);
     setError('');
     let needsRefresh = false;
     try {
       const response = await fetch('/api/work/boards' + (target ? '/' + encodeURIComponent(target.id) : ''), {
-        method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(20000),
+        method, headers: { 'Content-Type': 'application/json', 'X-Artel-Account': actor.id }, signal: AbortSignal.timeout(20000),
         body: JSON.stringify({ version: target?.version, ...fields }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить доску.');
       const updated: WorkBoard | null = result.board;
-      if (updated && fields.action === 'moveCard' && typeof fields.cardId === 'string') focusCard.current = { id: fields.cardId };
-      setDirectory(previous => {
-        if (!previous) return previous;
-        const id = updated?.id ?? target?.id;
-        const boards = previous.boards.filter(row => row.id !== id);
-        return { ...previous, boards: (updated ? [...boards, updated] : boards).sort((a, b) => a.title.localeCompare(b.title, 'ru')) };
-      });
+      acceptBoard(updated, updated?.id ?? target!.id);
       if (updated) setSelection(updated.id);
     } catch (reason) {
       needsRefresh = true;
@@ -108,64 +159,112 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
     } finally {
       writing.current = false;
       setSaving(false);
-      if (needsRefresh) void refresh();
+      onWriteEnd(needsRefresh || method === 'DELETE');
+      if (!mounted.current) onRemountRefresh();
+      else if (needsRefresh) void refresh(true);
     }
   };
 
-  const saveTask = async (task: WorkTask, changes: Record<string, unknown>, errorMessage: string, checkbox = false) => {
-    if (writing.current) return;
+  const toggleTask = async (task: WorkTask, board: WorkBoard, column: BoardColumn) => {
+    if (!actor || writing.current) return;
+    const status = isClosedWorkStatus(task.status) ? 'todo' : 'done';
     writing.current = true;
-    setSaving(true);
-    setError('');
+    onWriteStart();
     read.current?.abort();
-    let failure = '';
+    setSaving(true);
+    setPendingTask({ id: task.id, status });
+    setError('');
+    let reconcile = false;
     try {
       const response = await fetch('/api/work/tasks/' + encodeURIComponent(task.id), {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(20000),
-        body: JSON.stringify({ version: task.version, ...changes }),
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Artel-Account': actor.id }, signal: AbortSignal.timeout(20000),
+        body: JSON.stringify({ version: task.version, status, archived: status === 'done',
+          ...(!task.createdAt ? { placement: { boardId: board.id, version: board.version, columnId: column.id } } : {}) }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || errorMessage);
-      onTasksChanged();
+      if (!response.ok) throw new Error(result.error || 'Не удалось изменить состояние задачи.');
+      const entry: WorkTask = result.entry;
+      setDirectory(previous => previous && { ...previous, tasks: [...previous.tasks.filter(row => row.id !== entry.id), entry] });
+      onTaskSaved(entry, result.todayTaskCount);
+      if (!task.createdAt) onBoardSaved(result.board ?? board, board.id);
     } catch (reason) {
-      failure = reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason.message : errorMessage;
+      reconcile = true;
+      setError(reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason.message : 'Не удалось подтвердить сохранение задачи. Обновите доску перед повтором.');
     } finally {
       writing.current = false;
-      await refresh();
-      if (failure) setError(failure);
-      focusCard.current = { id: task.id, checkbox };
+      focusCard.current = { id: task.id, checkbox: true };
+      setPendingTask(undefined);
       setSaving(false);
+      onWriteEnd(reconcile);
+      if (!mounted.current) onRemountRefresh();
+      else if (reconcile) void refresh(true);
     }
   };
 
   const move = async (column: BoardColumn, beforeId?: string) => {
     const cardId = drag;
     setDrag(''); setDrop(undefined);
-    if (!board || !cardId || cardId === beforeId) return;
-    try { await mutate(board, 'PATCH', { action: 'moveCard', cardId, columnId: column.id, beforeId }); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось перенести задачу.'); }
+    if (!actor || !board || !savedBoard || !cardId || (writing.current && !moveQueue.current.length)) return;
+    const next = { cardId, columnId: column.id, beforeId };
+    if (previewMove(board, next) === board) return;
+    moveQueue.current.push(next);
+    setMoves([...moveQueue.current]);
+    if (writing.current) return;
+    writing.current = true;
+    onWriteStart();
+    read.current?.abort();
+    setSaving(true);
+    setError('');
+    setSelection(savedBoard.id);
+    let confirmed = savedBoard;
+    let reconcile = false;
+    try {
+      // Each queued move uses the version acknowledged for the preceding move.
+      while (moveQueue.current.length) {
+        const intent = moveQueue.current[0];
+        const response = await fetch('/api/work/boards/' + encodeURIComponent(confirmed.id), {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Artel-Account': actor.id }, signal: AbortSignal.timeout(20000),
+          body: JSON.stringify({ version: confirmed.version, action: 'moveCard', ...intent }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Не удалось перенести задачу.');
+        confirmed = result.board;
+        acceptBoard(confirmed, confirmed.id);
+        focusCard.current = { id: intent.cardId };
+        moveQueue.current.shift();
+        setMoves([...moveQueue.current]);
+      }
+    } catch (reason) {
+      reconcile = true;
+      const hadQueuedMoves = moveQueue.current.length > 1;
+      moveQueue.current = [];
+      setMoves([]);
+      const message = reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason.message : 'Не удалось подтвердить перенос. Обновите доску перед повтором.';
+      setError(hadQueuedMoves ? message + ' Последующие переносы отменены.' : message);
+    } finally {
+      writing.current = false;
+      setSaving(false);
+      onWriteEnd(reconcile);
+      if (!mounted.current) onRemountRefresh();
+      else if (reconcile) void refresh(true);
+    }
   };
 
-  const toggleTask = (task: WorkTask, board: WorkBoard, column: BoardColumn) => {
-    const status = isClosedWorkStatus(task.status) ? 'todo' : 'done';
-    void saveTask(task, {
-      status, archived: status === 'done',
-      ...(!task.createdAt ? { placement: { boardId: board.id, version: board.version, columnId: column.id } } : {}),
-    }, 'Не удалось изменить состояние задачи.', true);
-  };
-
+  const pendingOutsideBoard = Object.keys(pendingOutcomes).length > 0;
+  const busy = saving || pendingOutsideBoard;
   const newProject = <button type="button" className="button primary mobile-icon-action" aria-label="Новый проект"
-    disabled={saving} title="Новый проект" onClick={() => setEditor({ kind: 'board' })}>
+    disabled={busy} title="Новый проект" onClick={() => setEditor({ kind: 'board' })}>
     <Plus size={16} aria-hidden="true"/><span className="mobile-action-label">Новый проект</span>
   </button>;
 
   return <section className="panel kb-panel" aria-label="Канбан">
     {error && <p role="alert" className="shipment-error">{error}</p>}
-    {!directory && !error && <LoadingSkeleton label="Загружаем доски" rows={3}/>}
-    {directory && (board ? <>
+    {saving && <p role="status" className="work-notice">Сохраняем изменения…</p>}
+    {(!directory || !actor) && !error && <LoadingSkeleton label="Загружаем доски" rows={3}/>}
+    {directory && actor && (board ? <>
       <header className="kb-heading">
         <div className="kb-board-name">
-          <WorkChoice projectHeading label="Выбрать проект" value={board.id} disabled={saving} onChange={setSelection}
+          <WorkChoice projectHeading label="Выбрать проект" value={board.id} disabled={busy} onChange={setSelection}
             options={groups.flatMap(group => projects.filter(project => (project.group ?? '') === group)
               .map(project => ({ value: project.id, name: project.title, group })))}/>
           {projectDetails && <small>{projectDetails}</small>}
@@ -173,7 +272,7 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
         <div className="kb-project-actions" role="group" aria-label="Действия с проектами">
           {newProject}
           {board.ownerId === actor.id && <button type="button" className="icon-button" aria-label="Настройки проекта"
-            title="Настройки проекта" disabled={saving} onClick={() => setEditor({ kind: 'board', board })}>
+            title="Настройки проекта" disabled={busy} onClick={() => setEditor({ kind: 'board', board })}>
             <Settings2 size={18} aria-hidden="true"/>
           </button>}
         </div>
@@ -182,7 +281,7 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
         {board.columns.map((column, index) => <section className={'kb-lane' + (drop?.columnId === column.id ? ' kb-hover' : '')}
           key={column.id} aria-label={column.title}
           onDragOver={event => {
-            if (!drag || saving) return;
+            if (!drag || pendingOutsideBoard || (saving && !moves.length)) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = 'move';
             const cardNode = (event.target as Element).closest<HTMLElement>('[data-card]');
@@ -190,36 +289,37 @@ export default function WorkKanban({ actor, users, refreshKey, openTask, onTasks
             if (cardNode && event.clientY > cardNode.getBoundingClientRect().top + cardNode.offsetHeight / 2) {
               beforeId = column.cards[column.cards.findIndex(card => card.id === beforeId) + 1]?.id;
             }
-            setDrop({ columnId: column.id, beforeId });
+            setDrop(current => current?.columnId === column.id && current.beforeId === beforeId ? current : { columnId: column.id, beforeId });
           }}
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(undefined); }}
           onDrop={event => { event.preventDefault(); void move(column, drop?.columnId === column.id ? drop.beforeId : undefined); }}>
           <header><span className={'kb-dot kb-tone-' + index % 4}/><h3>{column.title}</h3><span className="kb-count">{column.cards.length}</span>
-            <button className="icon-button" title="Настройки колонки" aria-label={'Настройки колонки ' + column.title} disabled={saving} onClick={() => setEditor({ kind: 'column', board, column })}><Pencil size={14}/></button>
+            <button className="icon-button" title="Настройки колонки" aria-label={'Настройки колонки ' + column.title} disabled={busy} onClick={() => setEditor({ kind: 'column', board, column })}><Pencil size={14}/></button>
           </header>
           <div className="kb-cards">{column.cards.map(card => {
             const task = taskById.get(card.id) ?? legacyBoardTask(board, card);
-            return <div key={card.id} data-card={card.id} draggable={!saving}
-              className={'kb-card' + (task.status === 'done' ? ' kb-card-done' : '') + (drag === card.id ? ' kb-dragging' : '') + (drop?.beforeId === card.id ? ' kb-insert' : '')}
+            const status = pendingTask?.id === task.id ? pendingTask.status : pendingOutcomes[task.id]?.status ?? task.status;
+            return <div key={card.id} data-card={card.id} draggable={!pendingOutsideBoard && (!saving || !!moves.length)}
+              className={'kb-card' + (status === 'done' ? ' kb-card-done' : '') + (drag === card.id ? ' kb-dragging' : '') + (drop?.beforeId === card.id ? ' kb-insert' : '')}
               onDragStart={e => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', card.id); setDrag(card.id); }}
               onDragEnd={() => { setDrag(''); setDrop(undefined); }}>
-              <WorkTaskCheck task={task} disabled={saving} onToggle={() => toggleTask(task, board, column)}/>
-              <button className="kb-card-open" type="button" disabled={saving} onClick={() => openTask({ board, column, card }, task)}>
+              <WorkTaskCheck task={task} status={status} disabled={busy} onToggle={() => void toggleTask(task, board, column)}/>
+              <button className="kb-card-open" type="button" disabled={busy} onClick={() => openTask({ board, column, card }, task)}>
                 <span><strong>{card.title}</strong>{card.description && <span className="kb-description">{card.description}</span>}
                   <CardDetails task={task}/></span>
                 <GripVertical size={15} aria-hidden="true"/>
               </button>
             </div>;
           })}</div>
-          <button className={'kb-add' + (drop?.columnId === column.id && !drop.beforeId ? ' kb-insert' : '')} disabled={saving} onClick={() => openTask({ board, column })}><Plus size={15}/>Добавить задачу</button>
+          <button className={'kb-add' + (drop?.columnId === column.id && !drop.beforeId ? ' kb-insert' : '')} disabled={busy} onClick={() => openTask({ board, column })}><Plus size={15}/>Добавить задачу</button>
         </section>)}
-        <button className="kb-new-column" disabled={saving} onClick={() => setEditor({ kind: 'column', board })}><Plus size={16}/>Добавить колонку</button>
+        <button className="kb-new-column" disabled={busy} onClick={() => setEditor({ kind: 'column', board })}><Plus size={16}/>Добавить колонку</button>
       </div>
     </> : <div className="kb-empty">
       <FolderKanban size={30} aria-hidden="true"/><h2>Проектов пока нет</h2>
       {newProject}
     </div>)}
-    {editor && directory && <BoardEditor editor={editor} actor={actor} people={people}
+    {editor && directory && actor && <BoardEditor editor={editor} actor={actor} people={people}
       groups={groups.filter(Boolean)} mutate={mutate} onClose={() => setEditor(null)}/>}
   </section>;
 }
