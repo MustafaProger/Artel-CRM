@@ -61,6 +61,9 @@ try {
       assert.ok(bounds.every(b => b.w >= 44 && b.h >= 44));
       assert.ok(bounds[0].x < bounds[1].x && bounds[1].x < bounds[2].x);
       assert.ok(bounds.every(b => b.y === bounds[0].y));
+      const footer = await card.locator('footer').boundingBox();
+      const last = bounds[2];
+      assert.ok(Math.abs(last.x + last.w - (footer.x + footer.width)) <= 1, `${engine}: actions align right at ${width}px`);
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), { message: `${engine} layout at ${width}px` }).toBe(true).catch(async error => {
         console.log(await page.evaluate(() => [...document.querySelectorAll('body *')].filter(node => node.getBoundingClientRect().right > innerWidth + 1).map(node => ({ tag: node.tagName, class: node.className, right: node.getBoundingClientRect().right, width: node.getBoundingClientRect().width })).slice(0, 20)));
         await page.screenshot({ path: resolve(output, `${engine}-overflow.png`), fullPage: true }); throw error;
