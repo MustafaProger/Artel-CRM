@@ -874,13 +874,13 @@ test('execution dates persist, sort earliest first, validate and protect retries
 });
 
 test('request projection and trips context preserve the existing catalog and permission scopes', async () => {
-  const { currentSnapshot, currentTripRequestSnapshot } = await import('../server/shipment-operations');
+  const { currentSnapshot, currentDirectorySnapshot } = await import('../server/shipment-operations');
   const { tripRequestCatalog } = await import('../server/trip-requests');
   const { scopeSnapshot } = await import('../server/auth-scope');
   const f = await fixture(); try {
     // Historical shipment roles must still make a company available in the shared queue.
     await f.store.mutate(f.source, data => { data.companies.find(row => row.id === 'customer')!.roles = []; return { changed: true, result: null }; });
-    const data = await f.store.read(f.source), full = currentSnapshot(f.base, data, false), lean = currentTripRequestSnapshot(f.base, data);
+    const data = await f.store.read(f.source), full = currentSnapshot(f.base, data, false), lean = currentDirectorySnapshot(f.base, data);
     assert.deepEqual(tripRequestCatalog(lean), tripRequestCatalog(full));
     for (const credential of [f.admin, f.one.cookie, f.two.cookie]) {
       const session = await f.request('/api/auth/session', 'GET', undefined, credential);

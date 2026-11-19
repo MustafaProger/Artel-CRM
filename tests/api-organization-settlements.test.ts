@@ -274,6 +274,9 @@ test('API adds organization ledgers while keeping global compatibility; snapshot
   assert.equal(Object.hasOwn(trace.body, 'organizations'), false);
   const current = (await request('/api/snapshot')).body as Snapshot;
   assert.deepEqual(savedIds.map(id => current.shipments.find(row => row.id === id)!.fields.paid_amount_source), ['500', '0', '0']);
+  const directorySummary = await request('/api/snapshot?shipments=omit&context=directories');
+  assert.equal(directorySummary.status, 200);
+  assert.deepEqual(directorySummary.body, { ...current, shipments: [] });
   assert.deepEqual(await store.read(base.provenance.sourceSha256), before);
   const reopened = new OperationsStore(directory), stored = await reopened.read(base.provenance.sourceSha256);
   assert.deepEqual(currentSnapshot(base, stored).shipments.map(row => [row.id, row.fields.paid_amount_source]), current.shipments.map(row => [row.id, row.fields.paid_amount_source]));

@@ -61,6 +61,12 @@ try {
     const board = (await api('/api/work/boards', { requestId: randomUUID(), title: engine, memberIds: [] })).board;
     const task = (await api('/api/work/tasks', { requestId: randomUUID(), title: 'Карточка ' + engine, placement: { boardId: board.id, columnId: board.columns[0].id, version: board.version } })).entry;
     const other = (await api('/api/work/tasks', { requestId: randomUUID(), title: 'Обычная ' + engine })).entry;
+    let neighbor;
+    if (!baseline) {
+      const latest = (await api('/api/work/boards')).boards.find(row => row.id === board.id);
+      neighbor = (await api('/api/work/tasks', { requestId: randomUUID(), title: 'Соседняя ' + engine,
+        placement: { boardId: latest.id, columnId: latest.columns[0].id, version: latest.version } })).entry;
+    }
     const browser = await launcher.launch();
     try {
       const context = await browser.newContext({ reducedMotion, serviceWorkers: 'block' });
@@ -138,6 +144,43 @@ try {
         await boardBox.click(); await expect(boardBox).toBeChecked();
         await expect(boardBox).not.toBeChecked(); await expect(page.getByRole('alert')).toContainText('параллельно');
         conflictPath = '';
+
+        // The second card is readable while the first write is still in flight.
+        // Saving its edited form awaits the first operation and retains server versions.
+        let announceFirst, releaseFirst;
+        const firstSeen = new Promise(resolve => { announceFirst = resolve; });
+        const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+        const firstUrl = '**/api/work/tasks/' + task.id;
+        await page.route(firstUrl, async route => { announceFirst(); await firstGate; await route.continue(); }, { times: 1 });
+        const neighborButton = page.locator('[data-card="' + neighbor.id + '"] .kb-card-open');
+        const changedTitle = 'Сохранена до ответа ' + engine;
+        let neighborWrites = 0;
+        const recordNeighbor = request => {
+          if (request.method() === 'PATCH' && request.url().endsWith('/api/work/tasks/' + neighbor.id)) neighborWrites++;
+        };
+        page.on('request', recordNeighbor);
+        try {
+          await boardBox.click();
+          await firstSeen;
+          await expect(page.locator(cardSelector + ' .kb-card-open')).toBeDisabled();
+          await expect(neighborButton).toBeEnabled();
+          await neighborButton.click();
+          const neighborDialog = page.getByRole('dialog');
+          await neighborDialog.getByRole('textbox', { name: 'Название', exact: true }).fill(changedTitle);
+          await neighborDialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
+          await expect(neighborDialog.locator('form')).toHaveAttribute('aria-busy', 'true');
+          assert.equal(neighborWrites, 0);
+        } finally { releaseFirst(); }
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(neighborButton.locator('strong')).toHaveText(changedTitle);
+        assert.equal(neighborWrites, 1);
+        page.off('request', recordNeighbor);
+        const committedTasks = (await api('/api/work')).work.tasks;
+        assert.equal(committedTasks.find(row => row.id === neighbor.id).title, changedTitle);
+        assert.equal(committedTasks.find(row => row.id === task.id).status, 'done');
+        await boardBox.click();
+        await expect(boardBox).toBeEnabled();
+        await expect(boardBox).not.toBeChecked();
 
         const oldDirectory = await api('/api/work/boards');
         let announceRead, releaseRead;

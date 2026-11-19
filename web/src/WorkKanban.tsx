@@ -39,7 +39,7 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
   onTaskSaved: (task: WorkTask, count: number) => void;
   onBoardSaved: (board: WorkBoard | null, id: string) => void;
   onWriteStart: () => void; onWriteEnd: (reconcile?: boolean) => void; onRemountRefresh: () => void;
-  openTask: (placement: TaskPlacement, entry?: WorkTask) => void;
+  openTask: (placement: TaskPlacement, entry?: WorkTask, boardWrite?: Promise<void>) => void;
 }) {
   const [directory, setDirectory] = useState<BoardDirectory>();
   const [selection, setSelection] = useState('');
@@ -48,6 +48,11 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
   const [saving, setSaving] = useState(false);
   const [moves, setMoves] = useState<CardMove[]>([]);
   const moveQueue = useRef<CardMove[]>([]);
+  const waitingEditors = useRef<Array<() => void>>([]);
+  const finishBoardWrite = (reconcile?: boolean) => {
+    onWriteEnd(reconcile);
+    for (const resume of waitingEditors.current.splice(0)) resume();
+  };
   const [pendingTask, setPendingTask] = useState<Pick<WorkTask, 'id' | 'status'>>();
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -80,13 +85,15 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
     const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
     const timer = window.setInterval(onVisible, 30000);
     document.addEventListener('visibilitychange', onVisible);
-    return () => { read.current?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+    window.addEventListener('online', onVisible);
+    return () => { read.current?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onVisible); };
   }, [refresh, refreshKey]);
 
   const lastChange = useRef(taskChange);
   useLayoutEffect(() => {
     if (!taskChange || lastChange.current === taskChange) return;
     lastChange.current = taskChange;
+    if (!directory) { void refresh(); return; }
     read.current?.abort();
     setDirectory(previous => {
       if (!previous) return previous;
@@ -96,7 +103,7 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
       const boards = board ? previous.boards.map(item => item.id === board.id && item.version <= board.version ? board : item) : previous.boards;
       return { boards, tasks };
     });
-  }, [taskChange]);
+  }, [taskChange, directory, refresh]);
 
   const projects = directory?.boards.filter(board => board.id !== commonBoardId) ?? [];
   const groups = [...new Set(projects.map(project => project.group ?? ''))].sort((a, b) => a.localeCompare(b, 'ru'));
@@ -114,7 +121,7 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
     const { id, checkbox } = focusCard.current;
     const card = lanes.current.querySelector<HTMLElement>(`[data-card="${CSS.escape(id)}"]`);
     focusCard.current = null;
-    if (!card) return;
+    if (!card || card.ownerDocument.querySelector('dialog[open]')) return;
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const control = card.querySelector<HTMLElement>(checkbox ? '.work-task-check input, button.work-task-check' : '.kb-card-open');
     control?.focus({ preventScroll: true });
@@ -159,7 +166,7 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
     } finally {
       writing.current = false;
       setSaving(false);
-      onWriteEnd(needsRefresh || method === 'DELETE');
+      finishBoardWrite(needsRefresh || method === 'DELETE');
       if (!mounted.current) onRemountRefresh();
       else if (needsRefresh) void refresh(true);
     }
@@ -195,7 +202,7 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
       focusCard.current = { id: task.id, checkbox: true };
       setPendingTask(undefined);
       setSaving(false);
-      onWriteEnd(reconcile);
+      finishBoardWrite(reconcile);
       if (!mounted.current) onRemountRefresh();
       else if (reconcile) void refresh(true);
     }
@@ -244,7 +251,7 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
     } finally {
       writing.current = false;
       setSaving(false);
-      onWriteEnd(reconcile);
+      finishBoardWrite(reconcile);
       if (!mounted.current) onRemountRefresh();
       else if (reconcile) void refresh(true);
     }
@@ -299,12 +306,17 @@ export default function WorkKanban({ actor, users, refreshKey, taskChange, pendi
           <div className="kb-cards">{column.cards.map(card => {
             const task = taskById.get(card.id) ?? legacyBoardTask(board, card);
             const status = pendingTask?.id === task.id ? pendingTask.status : pendingOutcomes[task.id]?.status ?? task.status;
+            const openingBlocked = pendingOutsideBoard || (saving && !pendingTask && !moves.length)
+              || pendingTask?.id === task.id || moves.some(move => move.cardId === task.id);
             return <div key={card.id} data-card={card.id} draggable={!pendingOutsideBoard && (!saving || !!moves.length)}
               className={'kb-card' + (status === 'done' ? ' kb-card-done' : '') + (drag === card.id ? ' kb-dragging' : '') + (drop?.beforeId === card.id ? ' kb-insert' : '')}
               onDragStart={e => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', card.id); setDrag(card.id); }}
               onDragEnd={() => { setDrag(''); setDrop(undefined); }}>
               <WorkTaskCheck task={task} status={status} disabled={busy} onToggle={() => void toggleTask(task, board, column)}/>
-              <button className="kb-card-open" type="button" disabled={busy} onClick={() => openTask({ board, column, card }, task)}>
+              <button className="kb-card-open" type="button" disabled={openingBlocked} onClick={() => {
+                const boardWrite = writing.current ? new Promise<void>(resume => waitingEditors.current.push(resume)) : undefined;
+                openTask({ board, column, card }, task, boardWrite);
+              }}>
                 <span><strong>{card.title}</strong>{card.description && <span className="kb-description">{card.description}</span>}
                   <CardDetails task={task}/></span>
                 <GripVertical size={15} aria-hidden="true"/>

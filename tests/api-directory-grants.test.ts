@@ -54,6 +54,44 @@ async function fixture() {
   return { admin, a: people[0], b: people[1], users, customers, shipments, supplier, product, password, grant, store, base, close: async () => { await new Promise<void>(done => server.close(() => done())); await rm(root, {recursive:true,force:true}); } };
 }
 
+test('catalog and shipment-omitting directory reads match the full directory snapshot for scoped and unrestricted users', async t => {
+  const f = await fixture();
+  t.after(f.close);
+  const sharedId = 'company-local-shared-directory-test';
+  await f.store.mutate(f.base.provenance.sourceSha256, data => {
+    const archived = data.companies.find(row => row.id === f.customers[1].id)!;
+    archived.directoryArchived = true;
+    // Historical deliveries of an unassigned client belong to two distinct employees.
+    data.companies.push({ ...archived, id: sharedId, name: 'Shared history QA', directoryArchived: false });
+    for (const row of f.shipments) {
+      const historical = structuredClone(data.shipments[row.id]);
+      historical.fields.customer_id = sharedId;
+      historical.fields.customer_name = 'Shared history QA';
+      data.shipments['shipment-local-shared-' + row.id] = historical;
+    }
+    return { changed: true, result: null };
+  });
+  await f.grant(['suppliers']);
+  for (const read of [f.admin, f.a, f.b]) {
+    const full = await read('/api/snapshot?context=directories');
+    assert.equal(full.status, 200);
+    const catalog = await read('/api/directories');
+    assert.equal(catalog.status, 200);
+    assert.deepEqual(catalog.body, { directories: full.body.directories, companies: full.body.companies });
+    const omitted = await read('/api/snapshot?shipments=omit&context=directories');
+    assert.equal(omitted.status, 200);
+    assert.deepEqual(omitted.body, { ...full.body, shipments: [] });
+    const ids = catalog.body.companies.map((row: Company) => row.id);
+    assert.ok(ids.includes(sharedId));
+    if (read === f.a) {
+      assert.ok(ids.includes(f.customers[0].id) && ids.includes(f.supplier.id));
+      assert.ok(!ids.includes(f.customers[1].id), 'a different employee’s archived client stays out of this directory');
+    } else {
+      assert.ok(catalog.body.companies.some((row: Company) => row.id === f.customers[1].id && row.directoryArchived));
+    }
+  }
+});
+
 test('directory grants: a new employee gets only own clients, overview, shipments and work; common catalogs default closed', async () => {
   const f = await fixture(); try {
     assert.deepEqual(f.users[0].sections, defaultEmployeeSections);

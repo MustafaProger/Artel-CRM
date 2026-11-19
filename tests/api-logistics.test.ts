@@ -64,6 +64,9 @@ test('logistics sessions are audience-bound, independent of CRM, persist, and ne
     const context = await f.request(prefix + '/context', 'GET', undefined, f.cookie);
     assert.equal(context.status, 200, context.text);
     assert.deepEqual(Object.keys(context.body).sort(), ['companies', 'directories']);
+    const directory = await f.request(prefix + '/directories', 'GET', undefined, f.cookie);
+    assert.equal(directory.status, 200);
+    assert.deepEqual(directory.body, context.body);
     assert.doesNotMatch(context.text, /PRIVATE-BANK|PRIVATE-ACCOUNT|PRIVATE-PAYMENT|bankName|settlementAccount|deletedEntries|provenance|passwordHash/);
     assert.ok(context.body.companies.some((company: { id: string }) => company.id === 'depot-participant'));
     assert.ok(context.body.companies.some((company: { id: string }) => company.id === 'unused-participant'));

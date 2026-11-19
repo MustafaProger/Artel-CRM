@@ -215,7 +215,7 @@ export class AuthPartition {
     const data = compose(core, auth, work, archive);
     if (workspace) data.revision += await this.archivedRevision(source);
     const raw: RawParts = { core: c.raw, auth: a.raw, work: w.raw, ...(archiveRow ? { archive: archiveRow.raw } : {}) };
-    if (this.validated?.core !== c.raw || this.validated?.auth !== a.raw || this.validated?.work !== w.raw || this.validated?.archive !== archiveRow?.raw) {
+    if (this.validated?.core !== c.raw || this.validated?.auth !== a.raw || this.validated?.work !== w.raw || (archiveRow && this.validatedArchive !== archiveRow.raw)) {
       // Archive metadata and payloads have no links into other partitions. Its
       // bytes were independently checked on this read by PartReader.
       const validatedArchive = archiveRow && this.validatedArchive === archiveRow.raw;
@@ -286,9 +286,13 @@ export class AuthPartition {
       const authChanged = !performanceSpan('partition.matches-auth', () => this.readers.auth.matches(auth)), workChanged = !performanceSpan('partition.matches-work', () => this.readers.work.matches(work));
       const coreChanged = !performanceSpan('partition.matches-core', () => this.readers.core.matches(core)) || !workOnly && !authChanged && !workChanged && !archiveChanged;
       if (workOnly && (coreChanged || archiveChanged || workAuthority(auth) !== authGuard)) throw new StoreError('Work transaction tried to change another domain');
-      // load() validated the committed snapshot. Unchanged sealed archive bytes
-      // are still valid, including when another domain changed in this callback.
-      performanceSpan('partition.validate-full', () => validate(archive && !archiveChanged ? { ...data, documentArchive: undefined } : data, source));
+      if (workspace) {
+        // load() validated the committed core. The guard above has compared its
+        // complete contents and rejected any change outside Work and its outbox.
+        performanceSpan('partition.validate-workspace', () => validate({ ...authView(auth), work: data.work, revision: data.revision }, source));
+      } else {
+        performanceSpan('partition.validate-full', () => validate(archive && !archiveChanged ? { ...data, documentArchive: undefined } : data, source));
+      }
       if (coreChanged) core.revision++;
       if (authChanged) auth.revision++;
       if (workChanged) work.revision++;

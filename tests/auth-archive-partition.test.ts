@@ -129,6 +129,20 @@ test('Work view preserves global revision across external changes and commits ta
   } finally { await f.close(); }
 });
 
+test('a warm workspace rejects invalid entries and outbox events without committing either partition', async () => {
+  const f = await archiveFixture();
+  try {
+    const before = await f.store.read(source);
+    for (const change of [
+      (d: OperationsData) => { d.work!.notes.push({ id: 'invalid' } as never); },
+      (d: OperationsData) => { d.push!.taskCompletions = { broken: { version: -1, at: 1, completedByName: 'Owner' } }; },
+    ]) {
+      await assert.rejects(f.store.mutateWork(source, data => { change(data); return { result: null, changed: true }; }, 'workspace'));
+      assert.deepEqual(await f.store.read(source), before);
+    }
+  } finally { await f.close(); }
+});
+
 test('Work detects changed archive checksum, source, shape and invalid binary payload after a warm read', async () => {
   const f = await archiveFixture();
   try {

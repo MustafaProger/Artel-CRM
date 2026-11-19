@@ -283,9 +283,9 @@ export function currentWorkSnapshot(base: Snapshot, store: OperationsData): Snap
   return { ...assembled.base, companies: assembled.companies, shipments: assembled.shipments, directories: assembled.directories };
 }
 
-/** Requests need the shared directory and historical role inference, not financial
- * recalculation. Keep the same structural/reference validation as other views. */
-export function currentTripRequestSnapshot(base: Snapshot, store: OperationsData): Snapshot {
+/** Directory and trip-request readers need current company roles and historical links
+ * from every shipment and payment, alongside the validated ownership and catalog data. */
+export function currentDirectorySnapshot(base: Snapshot, store: OperationsData): Snapshot {
   const snapshot = currentWorkSnapshot(base, store);
   const canonicalManagers = new Map(snapshot.managers.map(manager => [normalizeName(manager.label), manager.label]));
   for (const row of snapshot.shipments) if (row.manager) {

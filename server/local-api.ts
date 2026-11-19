@@ -47,7 +47,7 @@ import { prepareCompanyCleanup, prepareDirectoryCleanup } from './directory-clea
 import { deleteDirectoryEntry } from './directory-deletion';
 import { lookupCheckoCompany, validInn } from './checko';
 import { OperationsStore, StoreError, type OperationsStorage } from './operations-store';
-import { currentShipmentAccess, currentWorkSnapshot, currentTripRequestSnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
+import { currentShipmentAccess, currentWorkSnapshot, currentDirectorySnapshot, currentSnapshot, shipmentPage, prepareShipmentFields, inferCalculationRules } from './shipment-operations';
 import { buildSettlements } from './settlements';
 import { buildOrganizationSettlements, organizationSettlementsForActor, supplierPaymentTrace } from './organization-settlements';
 import { includeIdleCustomers, scopeSettlements } from './settlement-scope';
@@ -726,7 +726,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         if (logistics) requireTripSection(user, true);
         if (/^\/api\/shipment-trips(\/|$)/.test(pathname)) requireTripSection(user, /\/(saby|saby-workflow|etrn)(\/|$)/.test(pathname) || pathname === '/api/shipment-trips' && request.method === 'GET');
         const section = apiSection(pathname);
-        if (request.method !== 'GET' && pathname.startsWith('/api/work/')) {
+        if (pathname === '/api/work' || pathname.startsWith('/api/work/')) {
           const expectedUser = request.headers['x-artel-account'];
           if (expectedUser !== undefined && expectedUser !== user.id) throw new ApiError(409, 'Пользователь изменился. Обновите страницу.');
         }
@@ -852,7 +852,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const id = tripRequestMatch[1] ? decodeURIComponent(tripRequestMatch[1]) : undefined;
         if (id === 'context') {
           if (request.method !== 'GET') throw new ApiError(405, 'Метод не поддерживается.');
-          const full = currentTripRequestSnapshot(base, requestData);
+          const full = currentDirectorySnapshot(base, requestData);
           const scoped = actor ? scopeSnapshot(full, authorized(requestData)) : full;
           return write(response, 200, JSON.stringify({ companies: scoped.companies, directories: scoped.directories }));
         }
@@ -868,21 +868,21 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
           if (retry !== undefined && retry !== true) throw new ApiError(400, 'Некорректный запрос повтора поиска адреса.');
           if (fingerprint !== undefined && (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint))) throw new ApiError(400, 'Некорректный идентификатор поиска адреса.');
           const stored = await operations.read(base.provenance.sourceSha256);
-          const target = tripRequestGeocodeTarget(stored, currentTripRequestSnapshot(base, stored), actor ? authorized(stored) : null, identity);
+          const target = tripRequestGeocodeTarget(stored, currentDirectorySnapshot(base, stored), actor ? authorized(stored) : null, identity);
           if (version !== undefined && version !== target.version) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
           const currentFingerprint = createHash('sha256').update(target.fingerprint).digest('hex');
           if (fingerprint !== undefined && fingerprint !== currentFingerprint) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
           // Provider latency must never hold the business-store mutation lock.
           const location = target.location ?? await locations.poll(target.address, 5000, retry === true);
           const fresh = await operations.read(base.provenance.sourceSha256);
-          const latest = tripRequestGeocodeTarget(fresh, currentTripRequestSnapshot(base, fresh), actor ? authorized(fresh) : null, identity);
+          const latest = tripRequestGeocodeTarget(fresh, currentDirectorySnapshot(base, fresh), actor ? authorized(fresh) : null, identity);
           if (latest.fingerprint !== target.fingerprint) throw new ApiError(409, 'Заявка или площадка изменена. Обновите данные и повторите поиск.');
           return write(response, 200, JSON.stringify(location.status === 'pending' ? { ...location, fingerprint: currentFingerprint } : location));
         }
         if (!id && request.method === 'GET') {
           const stored = requestData;
           const currentActor = actor ? authorized(stored) : null;
-          const snapshot = currentTripRequestSnapshot(base, stored);
+          const snapshot = currentDirectorySnapshot(base, stored);
           const catalog = tripRequestCatalog(snapshot);
           const names = new Map(stored.accounts?.users.map(user => [user.id, user.name]));
           const requests = await Promise.all(listTripRequests(stored, snapshot, currentActor).map(async row => {
@@ -900,7 +900,7 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
         const mutateRequest = operations.mutateTripRequests?.bind(operations) ?? operations.mutate.bind(operations);
         const { saved, notificationQueued } = await mutateRequest<{ saved: Record<string, unknown>; notificationQueued: boolean }>(base.provenance.sourceSha256, async data => {
           const currentActor = actor ? authorized(data) : null;
-          const snapshot = currentTripRequestSnapshot(base, data);
+          const snapshot = currentDirectorySnapshot(base, data);
           if (request.method === 'DELETE') return { result: { saved: cancelTripRequest(data, snapshot, currentActor, id!, body), notificationQueued: false }, changed: true };
           const place = !id && snapshot.directories?.addresses.find(row => row.id === body.addressId && row.companyId === body.companyId && row.kind === 'delivery');
           const known = place ? await locations.read(typeof body.address === 'string' ? body.address : place.address || place.name) : null;
@@ -1345,13 +1345,22 @@ export function createSnapshotMiddleware(dataDirectory = defaultDataDirectory, o
       if (!allowed.includes(request.method ?? '')) throw new ApiError(405, 'Метод не поддерживается для этого маршрута.');
       if (request.method === 'GET') {
         const stored = requestData;
-        const fullSnapshot = currentSnapshot(base, stored);
         const directoryContext = pathname === '/api/directories' || pathname === '/api/snapshot' && url.searchParams.get('context') === 'directories';
-        if (actor && directoryContext && !logistics) requireSection(authorized(stored), 'directories');
-        const snapshot = actor ? scopeSnapshot(fullSnapshot, authorized(stored), directoryContext ? 'directories' : undefined) : fullSnapshot;
-        if (pathname === '/api/directories') return write(response, 200, JSON.stringify(logistics ? logisticsContext(fullSnapshot, authorized(stored)) : { directories: snapshot.directories, companies: snapshot.companies }));
+        const currentUser = actor ? authorized(stored) : null;
+        if (currentUser && directoryContext && !logistics) requireSection(currentUser, 'directories');
+        if (pathname === '/api/directories') {
+          const catalog = currentDirectorySnapshot(base, stored);
+          if (logistics) return write(response, 200, JSON.stringify(logisticsContext(catalog, authorized(stored))));
+          const scoped = currentUser ? scopeSnapshot(catalog, currentUser, 'directories') : catalog;
+          return write(response, 200, JSON.stringify({ directories: scoped.directories, companies: scoped.companies }));
+        }
+        const omitShipments = pathname === '/api/snapshot' && url.searchParams.get('shipments') === 'omit';
+        // Bank settlement allocations update only individual shipment fields. Directory
+        // snapshots still publish the full aggregates for unrestricted administrators.
+        const fullSnapshot = currentSnapshot(base, stored, !(directoryContext && omitShipments));
+        const snapshot = currentUser ? scopeSnapshot(fullSnapshot, currentUser, directoryContext ? 'directories' : undefined) : fullSnapshot;
         if (pathname === '/api/snapshot') {
-          if (url.searchParams.get('shipments') === 'omit') snapshot.shipments = [];
+          if (omitShipments) snapshot.shipments = [];
           return write(response, 200, JSON.stringify(snapshot));
         }
         if (pathname === '/api/shipment-trips') {

@@ -1,5 +1,5 @@
 import WorkTaskCheck from './WorkTaskCheck';
-import { commonBoardId, isBoardMember, type TaskPlacement, type WorkBoard } from './kanban-model';
+import { commonBoardId, isBoardMember, legacyBoardTask, type BoardDirectory, type TaskPlacement, type WorkBoard } from './kanban-model';
 import WorkKanban, { type SavedKanbanTask } from './WorkKanban';
 import { useDialogMotion } from './useDialogMotion'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
@@ -15,7 +15,7 @@ import ScrollableSegments from './ScrollableSegments';
 import { useViewEntrance } from './useViewEntrance';
 import UserAvatar from './UserAvatar';
 
-type Editor = { kind: WorkKind; entry?: AnyWorkEntry; dueDate?: string; status?: WorkStatus; placement?: TaskPlacement };
+type Editor = { kind: WorkKind; entry?: AnyWorkEntry; dueDate?: string; status?: WorkStatus; placement?: TaskPlacement; boardWrite?: Promise<void> };
 const savedNotices = {
   saved: 'Сохранено.',
   archived: 'Задача перенесена в архив.',
@@ -108,10 +108,12 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     const timer = window.setInterval(onVisible, 30000);
     const onWriteFromPreviousVisit = () => { setBoardRefresh(n => n + 1); void refresh(true); };
     document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onVisible);
     window.addEventListener('artel:work-updated', onWriteFromPreviousVisit);
     return () => {
       active.current = false; request.current?.abort(); window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onVisible);
       window.removeEventListener('artel:work-updated', onWriteFromPreviousVisit);
     };
   }, [refresh]);
@@ -168,6 +170,8 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       if (!response.ok) throw new Error(result.error || 'Не удалось сохранить. Обновите список и повторите.');
       if (active.current) {
         onTaskCount(result.todayTaskCount);
+        if (result.board) updateTaskBoards(result.board, result.board.id);
+        setKanbanTask({ id: task.id, entry: result.entry, board: result.board ?? null });
         setData(previous => previous ? { ...previous, work: { ...previous.work, tasks: previous.work.tasks.map(row => row.id === task.id && row.version <= result.entry.version ? result.entry : row) } } : previous);
       }
     } catch (reason) {
@@ -175,6 +179,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       if (active.current) setTaskErrors(previous => ({ ...previous, [task.id]: reason instanceof Error && reason.name !== 'TimeoutError' && reason.name !== 'TypeError' ? reason.message : 'Не удалось подтвердить сохранение. Обновите список перед повтором.' }));
     } finally {
       completing.current.delete(task.id);
+      if (reconcile && active.current) setBoardRefresh(n => n + 1);
       finishWrite(reconcile);
       if (active.current) previewOutcome(task.id);
     }
@@ -284,12 +289,13 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
       if (task?.boardId && task.boardId !== commonBoardId) refreshAfterWrites.current = true;
     }
   };
-  const renderEditor = () => data && editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}`} editor={editor} taskBoards={data.taskBoards} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser}
+  const renderEditor = () => data && editor && <WorkEditor key={`${editor.kind}-${editor.entry?.id ?? 'new'}-${editor.entry?.version ?? 0}-${editor.placement?.board.version ?? 0}`} editor={editor} taskBoards={data.taskBoards} users={data.users} historicalUsers={data.historicalUsers ?? []} companies={data.companies} actor={data.currentUser}
     onPreviewOutcome={(id, status) => { editorClosing.current = !!status; previewOutcome(id, status); }} onSaving={(value, reconcile) => {
       editorSaving.current = value;
       if (value) beginWrite();
       else { if (reconcile && view === 'kanban') setBoardRefresh(n => n + 1); finishWrite(reconcile); }
     }}
+    onOpenLatest={(entry, placement) => setEditor({ kind: 'tasks', entry, placement })}
     onClose={() => setEditor(null)} onTaskCount={onTaskCount} onCommentSaved={(entry, board) => applyEditorSave(editor, entry, board)}
     onSaved={(action, entry, board) => {
       editorSaving.current = false;
@@ -317,7 +323,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
     {view === 'kanban' && (data || loading) && <WorkKanban pendingOutcomes={pendingTasks} taskChange={kanbanTask} actor={data?.currentUser} users={data?.users ?? []} refreshKey={boardRefresh}
       onWriteStart={beginWrite} onWriteEnd={finishWrite} onRemountRefresh={() => { if (active.current) setBoardRefresh(n => n + 1); }}
       onTaskSaved={(entry, count) => { if (active.current) { updateWorkList({ kind: 'tasks', entry }, entry); onTaskCount(count); } }}
-      onBoardSaved={updateTaskBoards} openTask={(placement, entry) => openEditor({kind: 'tasks', placement, entry})}/>}
+      onBoardSaved={updateTaskBoards} openTask={(placement, entry, boardWrite) => openEditor({kind: 'tasks', placement, entry, boardWrite})}/>}
     {data && view !== 'kanban' && <>
       <div className="work-layout view-entrance">
         <section ref={workMain} className="work-main" aria-label={view === 'calendar' ? 'Календарь задач' : 'Задачи'}>
@@ -351,7 +357,7 @@ export default function WorkPage({ onTaskCount }: { onTaskCount: (count: number)
   </div>;
 }
 
-function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, actor, onSaving, onPreviewOutcome, onClose: onDismiss, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; taskBoards?: WorkBoard[]; users: AccountUser[]; historicalUsers: WorkPerson[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean, reconcile?: boolean) => void; onPreviewOutcome: (id: string, status?: WorkStatus) => void; onClose: () => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry, board?: WorkBoard | null) => void; onCommentSaved: (entry: WorkTask, board?: WorkBoard | null) => void; onTaskCount: (count: number) => void }) {
+function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, actor, onSaving, onPreviewOutcome, onClose: onDismiss, onOpenLatest, onSaved, onCommentSaved, onTaskCount }: { editor: Editor; taskBoards?: WorkBoard[]; users: AccountUser[]; historicalUsers: WorkPerson[]; companies: Company[]; actor: AccountUser; onSaving: (saving: boolean, reconcile?: boolean) => void; onPreviewOutcome: (id: string, status?: WorkStatus) => void; onClose: () => void; onOpenLatest: (task: WorkTask, placement?: TaskPlacement) => void; onSaved: (action: SavedAction, entry?: AnyWorkEntry, board?: WorkBoard | null) => void; onCommentSaved: (entry: WorkTask, board?: WorkBoard | null) => void; onTaskCount: (count: number) => void }) {
   const dialog = useRef<HTMLDialogElement>(null), inFlight = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const focusSubtask = useRef<string | null>(null);
@@ -444,6 +450,11 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
   const activeSubtasks = subtasks.filter(row => !row.removing);
   const archived = !!record?.archivedAt;
   const [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const [outcomeCheck, setOutcomeCheck] = useState<{ receipt?: { id: string; action: SavedAction }; message: string }>();
+  const [serverTask, setServerTask] = useState<{ task: WorkTask; placement?: TaskPlacement }>();
+  const [checkAgain, setCheckAgain] = useState(0);
+  const [unavailable, setUnavailable] = useState(false);
+  const reviewRequired = !!outcomeCheck || !!serverTask || unavailable;
   const [pendingAction, setPendingAction] = useState<SavedAction | 'comment' | null>(null);
   useLayoutEffect(() => {
     const body = document.body.style;
@@ -464,6 +475,59 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
   }, []);
   const motion = useDialogMotion(dialog, onDismiss);
   const onClose = motion.close;
+
+  // A failed PATCH may already be durable. Verify the receipt before enabling a repeat.
+  const recoveredSave = useRef(onSaved);
+  useLayoutEffect(() => { recoveredSave.current = onSaved; }, [onSaved]);
+  useEffect(() => {
+    if (!outcomeCheck || !task) return;
+    const controller = new AbortController();
+    const verify = async () => {
+      try {
+        const boardId = placement?.board.id ?? task.boardId;
+        const response = await fetch(boardId ? '/api/work/boards' : '/api/work', {
+          cache: 'no-store', headers: { 'X-Artel-Account': actor.id }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+        });
+        if (!response.ok) throw new Error('Не удалось сверить состояние задачи.');
+        let latest: WorkTask | undefined, nextPlacement: TaskPlacement | undefined;
+        if (boardId) {
+          const data: BoardDirectory = await response.json();
+          const board = data.boards.find(row => row.id === boardId);
+          const column = board?.columns.find(row => row.cards.some(card => card.id === task.id));
+          const card = column?.cards.find(row => row.id === task.id);
+          if (board && column && card) {
+            nextPlacement = { board, column, card };
+            latest = data.tasks.find(row => row.id === task.id) ?? legacyBoardTask(board, card);
+          }
+        } else {
+          const data: WorkResponse = await response.json();
+          if (data.currentUser.id !== actor.id) return;
+          latest = data.work.tasks.find(row => row.id === task.id);
+        }
+        if (controller.signal.aborted || !dialog.current?.isConnected) return;
+        if (outcomeCheck.receipt && latest?.outcomeRequestId === outcomeCheck.receipt.id && latest.updatedBy === actor.id && latest.version === task.version + 1) {
+          recoveredSave.current(outcomeCheck.receipt.action, latest, nextPlacement?.board ?? null);
+          return;
+        }
+        if (!latest) {
+          setUnavailable(true);
+          setError('Задача удалена или доступ к ней изменился. Закройте карточку.');
+        } else if (latest.version !== task.version || placement && nextPlacement?.board.version !== placement.board.version) {
+          setServerTask({ task: latest, placement: nextPlacement });
+          setError('Запись изменилась. Ваш черновик оставлен для сверки. Откройте актуальную карточку перед повторным сохранением.');
+        } else {
+          setError(outcomeCheck.message);
+        }
+        setOutcomeCheck(undefined);
+      } catch {
+        if (!controller.signal.aborted) setError('Не удалось подтвердить сохранение. Черновик сохранён в форме. Проверьте соединение и повторите проверку.');
+      }
+    };
+    const retry = () => setCheckAgain(n => n + 1);
+    window.addEventListener('online', retry);
+    void verify();
+    return () => { controller.abort(); window.removeEventListener('online', retry); };
+  }, [outcomeCheck, checkAgain, task, placement, actor.id]);
 
   const addSubtask = () => {
     const id = crypto.randomUUID();
@@ -512,7 +576,7 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
   } = {}) => {
     const postingComment = activityAction === 'comment';
     const handingOff = activityAction === 'handed-off';
-    if (inFlight.current) return;
+    if (inFlight.current || reviewRequired) return;
     if (method !== 'DELETE' && !postingComment && !formRef.current?.reportValidity()) return;
     inFlight.current = true; onSaving(true); setSaving(true); setError('');
     const action = activityAction ?? (
@@ -523,6 +587,8 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
         : 'saved'
     );
     setPendingAction(action);
+    const outcomeId = method === 'PATCH' && task && nextStatus ? crypto.randomUUID() : undefined;
+    let responseStatus: number | undefined;
     let exitPreview: Promise<void> | undefined;
     let reconcile = false;
     try {
@@ -558,14 +624,20 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
         body.placement = { boardId: placement.board.id, columnId, version: placement.board.version };
       }
       if (method === 'PATCH' && task && nextStatus) {
+        body.outcomeRequestId = outcomeId;
         onPreviewOutcome(task.id, nextStatus);
         // Keep the mounted form and selected files until the server confirms.
         exitPreview = motion.complete(() => {});
+      }
+      if (editor.boardWrite) {
+        await editor.boardWrite;
+        if (!formRef.current?.isConnected) return;
       }
       const response = await fetch(`/api/work/${editor.kind}${entry ? `/${encodeURIComponent(entry.id)}` : ''}`, {
         method, headers: { 'Content-Type': 'application/json', 'X-Artel-Account': actor.id }, body: JSON.stringify(body),
         ...(exitPreview ? { signal: AbortSignal.timeout(files.length ? 120000 : 20000) } : {}),
       });
+      responseStatus = response.status;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || (method === 'DELETE' ? 'Не удалось удалить запись.' : 'Не удалось сохранить запись.'));
       if (!dialog.current?.isConnected) return;
@@ -583,8 +655,20 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
         await motion.complete(() => onSaved(action as SavedAction, result.entry, result.board));
       }
     } catch (reason) {
-      if (exitPreview) { reconcile = true; await exitPreview; motion.open(); }
-      setError(reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason.message : 'Не удалось подтвердить сохранение. Проверьте состояние задачи перед повтором.');
+      const message = reason instanceof Error && !['TimeoutError', 'TypeError'].includes(reason.name) ? reason.message : 'Не удалось подтвердить сохранение. Проверьте состояние задачи перед повтором.';
+      if (exitPreview) {
+        reconcile = true;
+        await exitPreview;
+        if (!dialog.current?.isConnected) return;
+        motion.open();
+        if (outcomeId && (responseStatus === undefined || responseStatus === 409 || responseStatus < 400 || responseStatus >= 500)) {
+          setOutcomeCheck({ receipt: { id: outcomeId, action: action as SavedAction }, message });
+        }
+      } else if (task && responseStatus === 409 && dialog.current?.isConnected) {
+        reconcile = true;
+        setOutcomeCheck({ message });
+      }
+      setError(message);
     } finally {
       if (exitPreview && task) onPreviewOutcome(task.id);
       inFlight.current = false; onSaving(false, reconcile); setSaving(false); setPendingAction(null);
@@ -628,7 +712,7 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
   </>;
   const form = <form ref={formRef} aria-busy={saving} onSubmit={event => { event.preventDefault(); void save(entry ? 'PATCH' : 'POST'); }}>
     <header className="work-editor-heading"><div className="work-editor-title"><h2 id="work-editor-title">{heading}</h2>{task && isClosedWorkStatus(task.status) && <TaskOutcome status={task.status}/>}</div><button type="button" className="icon-button" aria-label="Закрыть рабочую запись" disabled={saving} onClick={close}><X size={20}/></button></header>
-    <div className="work-editor-body">
+    <div className="work-editor-body" inert={reviewRequired}>
       <div className="work-editor-content">
       {editor.kind !== 'companies' && input('Название', 'title', { required: true, hideLabel: isNote, placeholder: isNote ? 'Название' : editor.kind === 'tasks' ? 'Название задачи' : undefined })}
       {editor.kind === 'tasks' && <div className="work-description-field">
@@ -720,29 +804,32 @@ function WorkEditor({ editor, taskBoards, users, historicalUsers, companies, act
 
     </div>
     <footer className={`work-editor-footer${editor.kind === 'tasks' ? ' work-task-editor-footer' : ''}`}>
-      {error && <p ref={errorMessage} tabIndex={-1} className="shipment-error work-action-error" role="alert">{error}</p>}
-      {entry && <button type="button" className="button work-delete" aria-label="Удалить" title="Удалить" disabled={saving} onClick={() => void save('DELETE')}>
+      {error && <p ref={errorMessage} tabIndex={-1} className="shipment-error work-action-error" role="alert">{error}
+        {outcomeCheck && <> <button type="button" className="button" onClick={() => setCheckAgain(n => n + 1)}>Проверить сохранение</button></>}
+        {serverTask && <> <button type="button" className="button" onClick={() => onOpenLatest(serverTask.task, serverTask.placement)}>Открыть актуальную карточку</button></>}
+      </p>}
+      {entry && <button type="button" className="button work-delete" aria-label="Удалить" title="Удалить" disabled={saving || reviewRequired} onClick={() => void save('DELETE')}>
         {pendingAction === 'deleted' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Trash2 size={16} aria-hidden="true"/>}
         <span className="work-footer-label">{pendingAction === 'deleted' ? 'Удаляем…' : 'Удалить'}</span>
       </button>}
-      {entry && editor.kind === 'companies' && <button type="button" className="button" disabled={saving} onClick={() => void save('PATCH', { nextArchived: !archived })}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
+      {entry && editor.kind === 'companies' && <button type="button" className="button" disabled={saving || reviewRequired} onClick={() => void save('PATCH', { nextArchived: !archived })}>{pendingAction === 'archived' ? 'Переносим в архив…' : pendingAction === 'restored' ? 'Возвращаем в работу…' : archived ? 'Вернуть в работу' : 'В архив задач'}</button>}
       {task && <div className="work-task-outcome-actions">
         {archived || isClosedWorkStatus(task.status) ?
-          <button type="button" className="button" aria-label="Вернуть в работу" title="Вернуть в работу" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'todo', nextArchived: false })}>
+          <button type="button" className="button" aria-label="Вернуть в работу" title="Вернуть в работу" disabled={saving || reviewRequired} onClick={() => void save('PATCH', { nextStatus: 'todo', nextArchived: false })}>
             {pendingAction === 'restored' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Undo2 size={16} aria-hidden="true"/>}
             <span className="work-footer-label">{pendingAction === 'restored' ? 'Возвращаем…' : 'Вернуть в работу'}</span>
           </button> : <>
-            <button type="button" className="button work-mark-failed" aria-label="Не выполнена" title="Не выполнена" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'failed' })}>
+            <button type="button" className="button work-mark-failed" aria-label="Не выполнена" title="Не выполнена" disabled={saving || reviewRequired} onClick={() => void save('PATCH', { nextStatus: 'failed' })}>
               {pendingAction === 'failed' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <X size={16} aria-hidden="true"/>}
               <span className="work-footer-label">{pendingAction === 'failed' ? 'Сохраняем…' : 'Не выполнена'}</span>
             </button>
-            <button type="button" className="button" aria-label="Выполнить" title="Выполнить" disabled={saving} onClick={() => void save('PATCH', { nextStatus: 'done' })}>
+            <button type="button" className="button" aria-label="Выполнить" title="Выполнить" disabled={saving || reviewRequired} onClick={() => void save('PATCH', { nextStatus: 'done' })}>
               {pendingAction === 'archived' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Check size={16} aria-hidden="true"/>}
               <span className="work-footer-label">{pendingAction === 'archived' ? 'Сохраняем…' : 'Выполнить'}</span>
             </button>
           </>}
       </div>}
-      <button className="button primary" type="submit" aria-label="Сохранить" title="Сохранить" disabled={saving}>
+      <button className="button primary" type="submit" aria-label="Сохранить" title="Сохранить" disabled={saving || reviewRequired}>
         {pendingAction === 'saved' ? <LoaderCircle size={16} className="spin" aria-hidden="true"/> : <Save size={16} aria-hidden="true"/>}
         <span className="work-footer-label">{pendingAction === 'saved' ? 'Сохраняем…' : 'Сохранить'}</span>
       </button>

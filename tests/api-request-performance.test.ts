@@ -177,8 +177,13 @@ test('archive-separated Work, navigation and directory reads retain responses an
   assert.deepEqual(await capture(), expected);
 });
 
-test('pending Work and board writes bind to their initiating account, including after body admission', async t => {
+test('Work recovery reads and pending writes bind to their initiating account, including after body admission', async t => {
   const f = await fixture(t);
+  for (const path of ['/api/work', '/api/work/boards']) {
+    const response = await fetch(f.url + path, { headers: { cookie: f.cookie('owner'), 'X-Artel-Account': 'employee' } });
+    assert.equal(response.status, 409);
+    assert.deepEqual(Object.keys(await response.json()), ['error']);
+  }
   const post = async (path: string, expected: string, body: Record<string, unknown>) => fetch(f.url + path, {
     method: 'POST', headers: { cookie: f.cookie('owner'), 'X-Artel-Account': expected, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });

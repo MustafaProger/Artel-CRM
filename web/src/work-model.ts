@@ -31,6 +31,8 @@ export interface WorkSubtask { id: string; title: string; done: boolean }
 export const workSubtaskLimit = 50;
 
 export interface WorkTask extends WorkEntry {
+  /** Identifies the last committed editor outcome when its HTTP acknowledgement is lost. */
+  outcomeRequestId?: string;
   boardId?: string;
   /** Older records use the single assigneeId. */
   assigneeIds?: string[];

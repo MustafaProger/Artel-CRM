@@ -19,6 +19,7 @@ const isSupervisor = isAdministrator;
 const canAccess = (data: OperationsData, actor: AccountUser, entry: AnyWorkEntry) =>
   'status' in entry && entry.boardId ? canReadBoardTask(data, entry.boardId, actor.id)
     : isSupervisor(actor) || isScopedEmployee(actor) && isMyWork(entry, actor.id);
+const validRequestId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const validAssignees = (value: unknown): value is string[] => Array.isArray(value) && value.every(identifier) && new Set(value).size === value.length;
 
 /** A handed-over task grants its company label in Work, never ownership of that
@@ -55,6 +56,7 @@ export function validateWorkData(value: unknown): asserts value is WorkData | un
       if (!object(row) || !identifier(row.id) || ids.has(row.id) || !Number.isSafeInteger(row.version) || Number(row.version) < 1 || !identifier(row.assigneeId) || !identifier(row.createdBy) || !identifier(row.updatedBy) || !instant(row.createdAt) || !instant(row.updatedAt)) throw new StoreError('Invalid work entry');
       ids.add(row.id);
       if (kind === 'tasks' && (!boundedText(row.title, 200, true) || !boundedText(row.description, 10000) || !workStatuses.some(status => status.id === row.status) || row.priority !== undefined && !workPriorities.includes(row.priority as 1 | 2 | 3 | 4) || row.companyId !== null && !identifier(row.companyId) || row.dueDate !== null && !date(row.dueDate) || row.reminderAt !== null && !instant(row.reminderAt))) throw new StoreError('Invalid work task');
+      if (kind === 'tasks' && row.outcomeRequestId !== undefined && !validRequestId(row.outcomeRequestId)) throw new StoreError('Invalid task outcome request');
       if (kind === 'tasks' && row.boardId !== undefined && !identifier(row.boardId)) throw new StoreError('Invalid task project');
       if (kind === 'tasks' && row.assigneeIds !== undefined && (!validAssignees(row.assigneeIds) || row.assigneeIds[0] !== row.assigneeId)) throw new StoreError('Invalid task assignees');
       if (kind === 'tasks' && row.notifyOnCompletion !== undefined && typeof row.notifyOnCompletion !== 'boolean') throw new StoreError('Invalid task completion setting');
@@ -233,10 +235,11 @@ function saveWorkEntry(data: OperationsData, snapshot: Snapshot, kindValue: stri
     }
     return { deleted: true, id, changed: true };
   }
-  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks', 'assigneeIds', 'handoff', 'notifyOnCompletion'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
+  const allowed = ['version', 'requestId', 'assigneeId', ...(kind !== 'notes' ? ['archived', 'comment', 'addAttachments'] : []), ...(kind === 'tasks' ? ['title', 'description', 'status', 'priority', 'companyId', 'dueDate', 'reminderAt', 'subtasks', 'assigneeIds', 'handoff', 'notifyOnCompletion', 'outcomeRequestId'] : kind === 'companies' ? ['companyId', 'question', 'comment', 'reminderAt'] : ['title', 'content'])];
   if (Object.keys(body).some(key => !allowed.includes(key))) throw new ApiError(400, 'В запросе есть неизвестные параметры.');
   if (previous && body.requestId !== undefined || !previous && body.version !== undefined) throw new ApiError(400, 'Некорректные параметры создания или изменения.');
-  if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId))) throw new ApiError(400, 'Некорректный идентификатор запроса.');
+  if (body.outcomeRequestId !== undefined && (method !== 'PATCH' || !validRequestId(body.outcomeRequestId) || !body.status)) throw new ApiError(400, 'Некорректный идентификатор изменения задачи.');
+  if (body.requestId !== undefined && !validRequestId(body.requestId)) throw new ApiError(400, 'Некорректный идентификатор запроса.');
   const get = (name: string, fallback: unknown) => body[name] === undefined ? previous ? (previous as unknown as Record<string, unknown>)[name] : fallback : body[name];
   // Notes belong to their creator. Keep the stored assignment for older notes.
   const previousAssignees = previous ? workAssigneeIds(previous) : [];
@@ -279,7 +282,7 @@ function saveWorkEntry(data: OperationsData, snapshot: Snapshot, kindValue: stri
     if (!workPriorities.includes(priority as 1 | 2 | 3 | 4)) throw new ApiError(400, 'Неизвестный приоритет задачи.');
     const subtasks = body.subtasks === undefined ? (previous as WorkTask | undefined)?.subtasks : body.subtasks;
     if (subtasks !== undefined && !validSubtasks(subtasks)) throw new ApiError(400, `Укажите названия подзадач. Допускается до ${workSubtaskLimit} подзадач по 200 символов.`);
-    entry = { ...common, ...(boardId ? { boardId } : {}), ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
+    entry = { ...common, ...(typeof body.outcomeRequestId === 'string' ? { outcomeRequestId: body.outcomeRequestId } : {}), ...(boardId ? { boardId } : {}), ...(assigneeIds.length > 1 ? { assigneeIds: [...assigneeIds] } : {}), title: stringField(get('title', ''), 'Название', 200, true), description: stringField(get('description', ''), 'Описание', 10000), status: status as WorkTask['status'], priority: priority as WorkTask['priority'], companyId: companyId as string | null, dueDate: optionalDate(get('dueDate', null), 'Срок'), reminderAt: optionalDate(get('reminderAt', null), 'Напоминание', true), ...(subtasks === undefined ? {} : { subtasks: subtasks.map(({ id, title, done }) => ({ id, title: title.trim(), done })) }) };
   } else if (kind === 'companies') {
     const comment = body.comment === undefined ? '' : stringField(body.comment, 'Комментарий', 10000);
     const comments = [...((previous as WorkCompanyRecord | undefined)?.comments ?? [])];
@@ -324,7 +327,7 @@ function saveWorkEntry(data: OperationsData, snapshot: Snapshot, kindValue: stri
       // A lost POST response can be retried without producing a second task or comment.
       if (!canAccess(data, actor, duplicate) || duplicate.createdBy !== actor.id) throw new ApiError(409, 'Идентификатор запроса уже использован.');
       const comparable = (row: AnyWorkEntry) => Object.fromEntries(Object.entries(row)
-        .filter(([key]) => !['version', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'comments', 'attachments'].includes(key))
+        .filter(([key]) => !['version', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'comments', 'attachments', 'outcomeRequestId'].includes(key))
         .map(([key, value]) => [key, key === 'archivedAt' ? Boolean(value) : value]));
       const originalComment = (duplicate as WorkCompanyRecord).comments?.[0]?.text ?? '';
       if (JSON.stringify(comparable(duplicate)) !== JSON.stringify(comparable(entry)) || kind !== 'notes' && originalComment !== String(body.comment ?? '').trim()) throw new ApiError(409, 'Запрос уже сохранён с другими значениями. Обновите список.');
