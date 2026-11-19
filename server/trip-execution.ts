@@ -19,7 +19,7 @@ export function validateTripExecutions(value: unknown): asserts value is Record<
     if (row.completed && Object.values(row.deliveries).some(v => (v as TripExecutionEvent).at > (row.completed as TripExecutionEvent).at)) throw new Error('Invalid completion time');
   }
 }
-export function readTripExecution(snapshot: Snapshot, data: OperationsData, tripId: string): TripExecution {
+export function readTripExecution(snapshot: Pick<Snapshot, 'shipments'>, data: OperationsData, tripId: string): TripExecution {
   const rows = snapshot.shipments.filter(row => row.fields.trip_id === tripId);
   const saved = data.tripExecutions?.[tripId];
   const facts = driverTripConfirmation(snapshot, data, tripId);

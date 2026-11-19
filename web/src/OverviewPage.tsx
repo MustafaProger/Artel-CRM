@@ -13,7 +13,7 @@ const time = (value: string | null) => {
 }
 
 export default function OverviewPage({ onOpenMenu, menuOpen }: { onOpenMenu: () => void, menuOpen: boolean }) {
-  const [data, setData] = useState<SettlementsReport | null>(null)
+  const [data, setData] = useState<Pick<SettlementsReport, 'organizations' | 'unassignedShipmentCount'> | null>(null)
   const [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState<string | null>(null)
   const activeRequest = useRef<AbortController | null>(null), requestNumber = useRef(0)
@@ -23,7 +23,7 @@ export default function OverviewPage({ onOpenMenu, menuOpen }: { onOpenMenu: () 
     activeRequest.current = controller
     setLoading(true)
     try {
-      const response = await fetch('/api/settlements', { signal: controller.signal, cache: 'no-store' })
+      const response = await fetch('/api/settlements?view=organizations', { signal: controller.signal, cache: 'no-store' })
       if (controller.signal.aborted || request !== requestNumber.current) return
       if (response.status === 401 || response.status === 403) {
         setData(null); setUpdatedAt(null)

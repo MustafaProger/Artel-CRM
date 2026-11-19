@@ -1,3 +1,4 @@
+import { routeModule, RoutePlaceholder } from './route-module'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
 import PageLoading from './PageLoading'
 import { pageCatalog, enabledPages, type PageId } from './page-catalog'
@@ -8,38 +9,38 @@ import PersonalSettings from './PersonalSettings'
 import './sidebar-notifications.css'
 import ScrollableSegments from './ScrollableSegments'
 import { useViewEntrance } from './useViewEntrance'
-import { Component, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownLeft, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleHelp, Database, FileText, ClipboardList, Globe, Headphones, Banknote, Landmark, LayoutDashboard, LogOut, Menu, PackageCheck, Route, Search, Settings, PanelLeftClose, PanelLeftOpen, Truck, UsersRound, Wallet, X, type LucideIcon } from 'lucide-react'
 import type { Snapshot, Company, Shipment, Payment, DirectoryData } from './model'
 const pageModules = {
-  invoices: () => import('./InvoicePage'),
-  operator: () => import('./OperatorPage'),
-  china: () => import('./ChinaPage'),
-  payments: () => import('./BankingPage'),
-  'cabinet-balances': () => import('./CabinetBalances'),
-  overview: () => import('./OverviewPage'),
-  shipments: () => import('./ShipmentsPage'),
-  trips: () => import('./TripsWorkspace'),
-  directories: () => import('./DirectoriesPage'),
-  documents: () => import('./DocumentsPage'),
-  work: () => import('./WorkPage'),
-  accounts: () => import('./AccountManagement'),
+  invoices: routeModule(() => import('./InvoicePage')),
+  operator: routeModule(() => import('./OperatorPage')),
+  china: routeModule(() => import('./ChinaPage')),
+  payments: routeModule(() => import('./BankingPage')),
+  'cabinet-balances': routeModule(() => import('./CabinetBalances')),
+  overview: routeModule(() => import('./OverviewPage')),
+  shipments: routeModule(() => import('./ShipmentsPage')),
+  trips: routeModule(() => import('./TripsWorkspace')),
+  directories: routeModule(() => import('./DirectoriesPage')),
+  documents: routeModule(() => import('./DocumentsPage')),
+  work: routeModule(() => import('./WorkPage')),
+  accounts: routeModule(() => import('./AccountManagement')),
 }
-const InvoicePage = lazy(pageModules.invoices)
-const OperatorPage = lazy(pageModules.operator)
-const ChinaPage = lazy(pageModules.china)
-const BankingPage = lazy(pageModules.payments)
-const CabinetBalances = lazy(pageModules['cabinet-balances'])
-const OverviewPage = lazy(pageModules.overview)
-const ShipmentsPage = lazy(pageModules.shipments)
-const TripsWorkspace = lazy(pageModules.trips)
-const DirectoriesPage = lazy(pageModules.directories)
-const DocumentsPage = lazy(pageModules.documents)
-const WorkPage = lazy(pageModules.work)
+const InvoicePage = pageModules.invoices.Page
+const OperatorPage = pageModules.operator.Page
+const ChinaPage = pageModules.china.Page
+const BankingPage = pageModules.payments.Page
+const CabinetBalances = pageModules['cabinet-balances'].Page
+const OverviewPage = pageModules.overview.Page
+const ShipmentsPage = pageModules.shipments.Page
+const TripsWorkspace = pageModules.trips.Page
+const DirectoriesPage = pageModules.directories.Page
+const DocumentsPage = pageModules.documents.Page
+const WorkPage = pageModules.work.Page
 import AuthGate from './AuthGate'
-const DriverWorkspace = lazy(() => import('./DriverWorkspace'))
+const DriverWorkspace = routeModule(() => import('./DriverWorkspace')).Page
 import { hasSection, hasDirectoryGrant, hasFullDirectoryAccess, availableDirectoryTabs, canDeleteShipments, canWriteShipments, isAdministrator, type AccountUser } from './auth-model'
-const AccountManagement = lazy(pageModules.accounts)
+const AccountManagement = pageModules.accounts.Page
 import { number, money, shortNumber, formatDate, monthName, roleName, descendingDate, downloadCsv, sum } from './utils'
 
 type Page = PageId | 'settings'
@@ -65,7 +66,7 @@ export default function App(){
     navigator.serviceWorker?.addEventListener('message', rememberInvoice)
     return () => navigator.serviceWorker?.removeEventListener('message', rememberInvoice)
   }, [])
-  return <AuthGate>{(user,onLogout,onUserChanged)=><PageLoadBoundary><Suspense fallback={<PageLoading/>}>{user.role==='driver'?<DriverWorkspace key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
+  return <AuthGate>{(user,onLogout,onUserChanged)=><PageLoadBoundary><Suspense fallback={<PageLoading/>}>{user.role==='driver'?<DriverWorkspace key={`${user.id}:${user.version}`} user={user} onLogout={onLogout} onUserChanged={onUserChanged}/>:<WorkspaceApp key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged}/>}</Suspense></PageLoadBoundary>}</AuthGate>}
 class PageLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
@@ -122,14 +123,15 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
   useEffect(() => {
     if (!pageAllowed || !(page in pageModules)) return
     // Load the selected module alongside its prerequisite data, not after it.
-    // Suspense/ErrorBoundary still owns import errors when the page renders.
-    void pageModules[page as keyof typeof pageModules]().catch(() => {})
+    // A mounted route reports any chunk failure through PageLoadBoundary.
+    void pageModules[page as keyof typeof pageModules].preload().catch(() => {})
   }, [page, pageAllowed, user.version])
   const activeView = useRef({ page, userVersion: user.version })
   activeView.current = { page, userVersion: user.version }
   const snapshotRequest = useRef(0)
   const snapshotController = useRef<AbortController | null>(null)
-  const requiresSnapshot = ['accounts', 'shipments', 'directories', 'payments'].includes(page)
+  const requiresSnapshot = page === 'shipments' || page === 'directories'
+  const navigationRead = useRef<{ version: number; at: number } | null>(null)
   // Only unrestricted administrators see the same companies independently of ownership assignments.
   const reuseDirectories = canManage && !user.customSections && hasFullDirectoryAccess(user)
   const directoryData = directoryRead?.userId === user.id && directoryRead.userVersion === user.version &&
@@ -175,19 +177,25 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
     setError(''); setSnapshotPage(null)
     if (!pageAllowed) return
     if (requiresSnapshot) void fetchData()
-    if (requiresSnapshot && page !== 'directories' && !hasSection(user, 'work')) return () => snapshotController.current?.abort()
+    const needsCounts = page !== 'shipments' || hasSection(user, 'work')
+    const recentCounts = canManage && !user.customSections && navigationRead.current?.version === user.version &&
+      Date.now() - navigationRead.current.at < 15_000
+    if (!needsCounts || recentCounts) return () => { if (requiresSnapshot) snapshotController.current?.abort() }
     // These pages fetch their own scoped data. The sidebar count must neither
     // build a financial snapshot nor delay mounting the page and its first GET.
     const controller = new AbortController()
-    void fetch('/api/navigation', { cache: 'no-store', signal: controller.signal })
+    const timer = window.setTimeout(() => {
+      void fetch('/api/navigation', { cache: 'no-store', signal: controller.signal })
       .then(async response => { if (!response.ok) throw new Error('Navigation unavailable'); return response.json() })
       .then(result => {
         if (controller.signal.aborted) return
-        if (!requiresSnapshot || page === 'directories') setShipmentCount(result.shipmentCount)
+        navigationRead.current = { version: user.version, at: Date.now() }
+        if (page !== 'shipments') setShipmentCount(result.shipmentCount)
         if (page !== 'work') setTodayTaskCount(result.todayTaskCount)
       })
       .catch(() => { if (!controller.signal.aborted && !requiresSnapshot) setShipmentCount(undefined) })
-    return () => { controller.abort(); if (requiresSnapshot) snapshotController.current?.abort() }
+    }, 200)
+    return () => { window.clearTimeout(timer); controller.abort(); if (requiresSnapshot) snapshotController.current?.abort() }
   }, [page, pageAllowed, user.version])
   useEffect(() => {
     const handle = () => {
@@ -206,6 +214,7 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
   useEffect(() => { document.title = `${active.title} — Артэль CRM` }, [active.title])
   const notifyExport = () => setToast('Файл CSV подготовлен и скачан')
   const shipmentLoadingHeader = <header className="shipment-toolbar shipment-loading-toolbar"><div className="shipment-header"><h1>Отгрузки</h1><button className="button shipment-header-action shipment-menu" aria-label="Открыть меню" title="Меню разделов" aria-controls="app-navigation" aria-expanded={menu} onClick={()=>setMenu(true)}><Menu size={22}/></button></div></header>
+  const routePlaceholder = page === 'shipments' ? <>{shipmentLoadingHeader}<PageLoading/></> : <PageLoading title={['overview', 'invoices'].includes(page) ? active.title : undefined} onOpenMenu={() => setMenu(true)} menuOpen={menu}/>
   return <div className={`app-shell ${page === 'shipments' ? 'shipments-focus' : page === 'operator' ? 'operator-shell' : ''} ${collapsed && page !== 'shipments' ? 'sidebar-collapsed' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={event => {event.preventDefault();document.getElementById('main-content')?.focus()}}>К содержимому</a>
     <button className={`sidebar-scrim ${menu ? 'is-open' : ''}`} aria-label="Закрыть меню" aria-hidden={!menu} tabIndex={-1} onClick={() => setMenu(false)}/>
@@ -237,21 +246,21 @@ function WorkspaceApp({user,onLogout,onUserChanged}:{user:AccountUser;onLogout:(
     <div className="workspace-main" inert={menu}>
       <main id="main-content" tabIndex={-1}>{page !== 'shipments' && (page !== 'invoices' || !pageAllowed) && (page !== 'overview' || !pageAllowed) && <div key={`heading:${page}`} className="page-heading page-heading-compact view-entrance-heading"><h1>{active.title}</h1><button className="icon-button page-menu" aria-label="Открыть меню" aria-controls="app-navigation" aria-expanded={menu} onClick={() => setMenu(true)}><Menu size={22}/></button></div>}
       <PersonalSettings user={user} onUserChanged={onUserChanged} visible={page === 'settings'}/>
-      {page === 'shipments' && (!snapshotReady || !pageAllowed) && shipmentLoadingHeader}
-      {page !== 'settings' && (!pageAllowed ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error && !snapshotReady ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error} Проверьте соединение и попробуйте снова.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : requiresSnapshot && !snapshotReady ? <PageLoading/> : <PageLoadBoundary key={page}><Suspense fallback={page === 'shipments' ? <>{shipmentLoadingHeader}<PageLoading/></> : <PageLoading title={['overview', 'invoices'].includes(page) ? active.title : undefined} onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}><div key={page} className="page-content">{requiresSnapshot && error && snapshotReady && <div className="soft-notice" role="alert">{error} Показаны ранее загруженные данные. <button className="button" onClick={fetchData}>Повторить загрузку</button></div>}
+      {page === 'shipments' && (!pageAllowed || error && !snapshotReady) && shipmentLoadingHeader}
+      {page !== 'settings' && (!pageAllowed ? <p className="soft-notice" role="alert">Раздел недоступен. Обратитесь к администратору.</p> : requiresSnapshot && error && !snapshotReady ? <div className="panel error-state"><Database size={32}/><h2>Данные пока недоступны</h2><p>{error} Проверьте соединение и попробуйте снова.</p><button className="button primary" onClick={fetchData}>Повторить загрузку</button></div> : page === 'directories' && !snapshotReady ? <PageLoading/> : <PageLoadBoundary key={page}><Suspense fallback={routePlaceholder}><RoutePlaceholder.Provider value={routePlaceholder}><div key={page} className="page-content">{requiresSnapshot && error && snapshotReady && <div className="soft-notice" role="alert">{error} Показаны ранее загруженные данные. <button className="button" onClick={fetchData}>Повторить загрузку</button></div>}
       {page === 'overview' && <OverviewPage onOpenMenu={() => setMenu(true)} menuOpen={menu}/>}
       {page === 'china' && (canManage ? <ChinaPage canManage={canManage}/> : <p className="soft-notice">Учёт Китая доступен директору и администратору.</p>)}
       {page === 'invoices' && <InvoicePage user={user} menuOpen={menu} onOpenMenu={() => setMenu(true)}/>}
       {page === 'operator' && <OperatorPage key={user.id} creatorName={user.name}/>}
-      {page === 'accounts' && data && <AccountManagement directories={data.directories} onChanged={fetchData}/>}
+      {page === 'accounts' && <AccountManagement key={user.version} onChanged={() => setDirectoryRead(previous => previous ? { ...previous, fetchedAt: 0 } : previous)}/>}
       {page === 'documents' && <DocumentsPage/>}
       {page === 'work' && <WorkPage onTaskCount={setTodayTaskCount}/>}
       {page === 'cabinet-balances' && <CabinetBalances/>}
-      {page === 'shipments' && data && <ShipmentsPage canWrite={canWriteShipments(user)} canDelete={canDeleteShipments(user)} canFilterManagers={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={data} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
+      {page === 'shipments' && <ShipmentsPage canWrite={canWriteShipments(user)} canDelete={canDeleteShipments(user)} canFilterManagers={canManage} onOpenMenu={()=>setMenu(true)} menuOpen={menu} data={snapshotReady ? data : null} period={period} onPeriodChange={setPeriod} onChanged={fetchData} onOpenCompany={company=>setDetail({kind:'company',item:company})}/>}
       {page === 'directories' && directoryData && <DirectoriesPage allowedTabs={availableDirectoryTabs(user) as import('./DirectoriesPage').DirectoryTab[]} canManageTab={tab => ['customers', 'addresses'].includes(tab) || hasDirectoryGrant(user, tab)} canManage={hasSection(user, 'directories')} canViewAccounts={hasSection(user, 'accounts')} data={directoryData} onChanged={refreshDirectories}/>}
       {page === 'trips' && <TripsWorkspace key={`${user.id}:${user.version}`} canWrite={canWriteShipments(user)} allowDelete={canDeleteShipments(user)} canManagePlaces={canManage && availableDirectoryTabs(user).includes('addresses')}/>}
-      {page === 'payments' && data && (canManage ? <BankingPage legacy={<Payments data={data} period={period} onPeriodChange={setPeriod} open={setDetail} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
-      </div></Suspense></PageLoadBoundary>)}
+      {page === 'payments' && (canManage ? <BankingPage key={user.version} legacy={<PaymentArchiveWorkspace key={user.version} period={period} onPeriodChange={setPeriod} notify={notifyExport}/>}/> : <p className="soft-notice">Банковские платежи доступны директору и администратору.</p>)}
+      </div></RoutePlaceholder.Provider></Suspense></PageLoadBoundary>)}
       {page === 'shipments' && <footer className="page-footer"><span><span className="tiny-mark">а</span> Артэль CRM <span className="footer-divider">/</span> Учёт отгрузок</span><span>Компании · Топливо · Расчёты</span></footer>}
       </main>
     </div>
@@ -321,13 +330,37 @@ function SidebarNavigation({ page, userVersion, children }: { page: Page; userVe
   </div>
 }
 
-function NavItem({title,icon:Icon,active,onClick,count}: {title:string;icon:LucideIcon;active:boolean;onClick:()=>void;count?:number}) {return <button className={`nav-item ${active?'active':''}`} aria-label={title} title={title} onClick={onClick} aria-current={active?'page':undefined}><Icon size={19} strokeWidth={1.7}/><span>{title}</span>{count !== undefined && <small>{number(count)}</small>}</button>}
+function NavItem({id,title,icon:Icon,active,onClick,count}: {id:PageId;title:string;icon:LucideIcon;active:boolean;onClick:()=>void;count?:number}) {
+  const preload = () => { if (!active && id in pageModules) void pageModules[id as keyof typeof pageModules].preload().catch(() => {}) }
+  return <button onPointerEnter={preload} onFocus={preload} className={`nav-item ${active?'active':''}`} aria-label={title} title={title} onClick={onClick} aria-current={active?'page':undefined}><Icon size={19} strokeWidth={1.7}/><span>{title}</span>{count !== undefined && <small>{number(count)}</small>}</button>}
 function Stat({label,value,unit,description,icon:Icon,trend}: {label:string;value:string;unit?:string;description?:string;icon:LucideIcon;trend?:number[]}) {return <div className="stat-card"><div className="stat-label">{label}<Icon size={18}/></div><div className="stat-value">{value}<span>{unit}</span></div>{(description || trend) && <div className="stat-bottom">{description && <span>{description}</span>}{trend && <Sparkline values={trend}/>}</div>}</div>}
 function Sparkline({values}: {values:number[]}) {const max = Math.max(...values,1),min=Math.min(...values,0);return <svg viewBox="0 0 84 26" className="sparkline" aria-hidden="true"><polyline points={values.map((v,i)=>`${i*84/Math.max(values.length-1,1)},${24-(v-min)/(max-min)*21}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/></svg>}
 function Empty(){return <div className="empty-state"><Search size={25}/><strong>Ничего не найдено</strong><span>Попробуйте другой запрос или сбросьте фильтры.</span></div>}
 function SearchField({value,onChange,placeholder}: {value:string;onChange:(v:string)=>void;placeholder:string}) {return <label className="table-search"><Search size={17}/><input aria-label={placeholder} placeholder={placeholder} value={value} onChange={e=>onChange(e.target.value)}/>{value&&<button className="clear-input" aria-label="Очистить поиск" onClick={()=>onChange('')}><X size={14}/></button>}</label>}
 function Pagination({page,setPage,total,size=12}: {page:number;setPage:(n:number)=>void;total:number;size?:number}) {const max=Math.max(1,Math.ceil(total/size));return <div className="pagination"><span>{total?`${number((page-1)*size+1)}–${number(Math.min(page*size,total))}`:'0'} из {number(total)}</span><div><button className="icon-button" disabled={page<=1} aria-label="Предыдущая страница" onClick={()=>setPage(page-1)}><ChevronLeft size={17}/></button><span>{page} <span className="muted">/ {max}</span></span><button className="icon-button" disabled={page>=max} aria-label="Следующая страница" onClick={()=>setPage(page+1)}><ChevronRight size={17}/></button></div></div>}
 function ExportButton({onClick,disabled=false}: {onClick:()=>void;disabled?:boolean}) {return <button className="button" disabled={disabled} onClick={onClick}><ArrowDownToLine size={16}/>Экспорт CSV</button>}
+function PaymentArchiveWorkspace({period, onPeriodChange, notify}: {period:string; onPeriodChange:(value:string)=>void; notify:()=>void}) {
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [detail, setDetail] = useState<Detail | null>(null)
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  useEffect(() => {
+    const controller = new AbortController()
+    setError('')
+    void fetch('/api/snapshot?shipments=omit', { cache: 'no-store', signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('Не удалось загрузить архив выписок.')
+        const result: Snapshot = await response.json()
+        if (!controller.signal.aborted) setSnapshot(result)
+      })
+      .catch(reason => { if (!controller.signal.aborted) setError(reason.message) })
+    return () => controller.abort()
+  }, [retry])
+  if (error) return <div className="panel error-state" role="alert"><p>{error}</p><button className="button" onClick={() => setRetry(value => value + 1)}>Повторить загрузку</button></div>
+  if (!snapshot) return <PageLoading/>
+  return <><Payments data={snapshot} period={period} onPeriodChange={onPeriodChange} open={setDetail} notify={notify}/>{detail && <DetailDialog detail={detail} data={snapshot} onClose={() => setDetail(null)} open={setDetail}/>}</>
+}
+
 function Payments({data,period,onPeriodChange,open,notify}: {data:Snapshot;period:string;onPeriodChange:(value:string)=>void;open:(d:Detail)=>void;notify:()=>void}) {
  const [query,setQuery]=useState(''),[direction,setDirection]=useState('all'),[page,setPage]=useState(1)
  useEffect(()=>setPage(1),[query,direction,period])

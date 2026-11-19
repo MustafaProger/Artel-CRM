@@ -1,3 +1,4 @@
+import { readAuthority } from './request-views';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
@@ -122,7 +123,7 @@ export function queueInvoiceRevocations(data: OperationsData, hashes: string[]) 
 }
 
 export async function syncInvoiceEvents(bridge: InvoiceBridge, store: OperationsStorage, source: string) {
-  const current = await store.read(source);
+  const current = await readAuthority(store, source);
   for (const sessionHash of Object.keys(current.push?.invoiceRevocations ?? {}).slice(0, 20)) {
     await bridge.service('/internal/crm/sessions/revoke', { sessionHash });
     await store.mutate(source, data => {

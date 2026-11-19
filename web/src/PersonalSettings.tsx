@@ -1,5 +1,5 @@
 import { Bell, ChevronDown } from 'lucide-react'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { canOverseeTripRequests, hasSection, type AccountUser } from './auth-model'
 import NotificationSources, { type NotificationSource } from './NotificationSources'
 import PersonalProfileSettings from './PersonalProfileSettings'
@@ -11,6 +11,14 @@ export default function PersonalSettings({ user, onUserChanged, visible }: {
   user: AccountUser; onUserChanged: (user: AccountUser) => void; visible: boolean
 }) {
   const notifications = useRef<HTMLElement>(null)
+  const [startNotifications, setStartNotifications] = useState(visible)
+  useEffect(() => {
+    if (startNotifications) return
+    if (visible) { setStartNotifications(true); return }
+    // Renew existing push registrations after the initial workspace has begun loading.
+    const timer = window.setTimeout(() => setStartNotifications(true), 1000)
+    return () => window.clearTimeout(timer)
+  }, [visible, startNotifications])
   const showNotifications = () => {
     notifications.current?.scrollIntoView({ block: 'start' })
     notifications.current?.focus({ preventScroll: true })
@@ -35,7 +43,7 @@ export default function PersonalSettings({ user, onUserChanged, visible }: {
           <span aria-hidden="true"><Bell size={20}/></span>
           <h2 id="personal-notifications-title">Уведомления</h2>
         </header>
-        {sources.length > 0 ? <PushSettings key={user.id} userId={user.id} kind={audience}>
+        {sources.length > 0 ? (visible || startNotifications) && <PushSettings key={user.id} userId={user.id} kind={audience}>
           <NotificationSources userId={user.id} sources={sources} visible={visible}/>
         </PushSettings> : <p className="personal-settings-empty">Для вашей учётной записи пока нет доступных источников уведомлений.</p>}
       </section>

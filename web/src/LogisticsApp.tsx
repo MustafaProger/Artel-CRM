@@ -23,7 +23,7 @@ const pages: { id: LogisticsPage; title: string; description: string; icon: Luci
 const pageFromHash = (): LogisticsPage => pages.find(item => `#${item.id}` === location.hash)?.id ?? 'trips'
 
 export default function LogisticsApp() {
-  return <AuthGate workspace="logistics">{(user, onLogout, onUserChanged) => user.role === 'driver' ? <DriverWorkspace key={user.id} user={user} onLogout={onLogout} onUserChanged={onUserChanged} settingsAvailable={false}/> : <LogisticsWorkspace key={`${user.id}:${user.version}`} user={user} onLogout={onLogout}/>}</AuthGate>
+  return <AuthGate workspace="logistics">{(user, onLogout, onUserChanged) => user.role === 'driver' ? <DriverWorkspace key={`${user.id}:${user.version}`} user={user} onLogout={onLogout} onUserChanged={onUserChanged} settingsAvailable={false}/> : <LogisticsWorkspace key={`${user.id}:${user.version}`} user={user} onLogout={onLogout}/>}</AuthGate>
 }
 
 function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: () => void }) {
@@ -48,7 +48,7 @@ function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: (
     return apiFetch('/api/context', { cache: 'no-store', signal: pending.signal })
       .then(async response => {
         const result = await response.json()
-        if (!response.ok) throw new Error(result.error || 'Не удалось загрузить справочники рейсов.')
+        if (!response.ok) { if ([401, 403].includes(response.status) && sequence === request.current) setData(null); throw new Error(result.error || 'Не удалось загрузить справочники рейсов.') }
         if (sequence === request.current) setData(result)
       })
       .catch(reason => { if (!pending.signal.aborted && sequence === request.current) setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.') })
@@ -82,9 +82,9 @@ function LogisticsWorkspace({ user, onLogout }: { user: AccountUser; onLogout: (
       <div key={active.id} className="logistics-page-heading view-entrance-heading"><div><h1>{active.title}</h1><p>{active.description}</p></div><span className="logistics-workspace-label">Рабочее место логиста</span></div>
       {!canEnter ? <p className="shipment-error" role="alert">Раздел «Рейсы» недоступен. Обратитесь к администратору.</p> : <>
         {error && <div className="shipment-error logistics-load-error" role="alert"><span>{error}</span><button className="button" disabled={loading} onClick={refresh}>Повторить загрузку</button></div>}
-        {!data && loading && <PageLoading/>}
-        {data && <div key={active.id} className="logistics-page-content view-entrance">
-          {active.id === 'trips' ? <TripsPage data={data} canManagePlaces={canManage} onChanged={refresh} canWrite={canWriteShipments(user)} allowDelete={canDeleteShipments(user)}/> : <>
+        {!data && loading && active.id !== 'trips' && <PageLoading/>}
+        {(data || active.id === 'trips' && !error) && <div key={active.id} className="logistics-page-content view-entrance">
+          {active.id === 'trips' ? <TripsPage data={data} canManagePlaces={canManage} onChanged={refresh} canWrite={canWriteShipments(user)} allowDelete={canDeleteShipments(user)}/> : data && <>
             {!canManage && <p className="logistics-readonly">Справочник доступен для просмотра. Изменения вносит администратор.</p>}
             <DirectoriesPage key={active.id} data={data} onChanged={refresh} canManage={canManage} initialTab={active.id} allowedTabs={[active.id]} hideTabs/>
           </>}

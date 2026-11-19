@@ -128,7 +128,7 @@ try {
     report.checks.push({ label, scenario: 'A1 B A2 ignores late A1 and B snapshots', passed: true });
     activeGates = [];
 
-    // Adding a synthetic employee refreshes the App snapshot while the account draft stays open.
+    // Creating an employee updates the form from the response while preserving its draft.
     await page.evaluate(() => { location.hash = 'accounts'; });
     await expect(page.locator('.account-row').first()).toBeVisible();
     await page.getByRole('button', { name: 'Добавить пользователя', exact: true }).click();
@@ -137,13 +137,13 @@ try {
     const login = editor.getByLabel('Логин', { exact: true });
     await login.fill(`qa.draft.${label}`);
     await editor.getByLabel('Новый сотрудник', { exact: true }).fill(`Учебный сотрудник ${label}`);
-    gate = hold('/api/snapshot');
+    gate = hold('/api/auth/employees', undefined, 'POST');
     await editor.getByRole('button', { name: 'Добавить сотрудника', exact: true }).click(); await reach(gate);
     assert.equal(await handle.evaluate(element => element.isConnected), true, 'Snapshot refresh unmounted the account editor');
     await expect(editor).toBeVisible(); await expect(pendingUi(page)).toHaveCount(0);
     await expect(login).toHaveValue(`qa.draft.${label}`);
-    await login.fill(`qa.draft.${label}.kept`); await login.focus();
-    await release(gate); await paint(page);
+    await release(gate); await expect(login).toBeEditable();
+    await login.fill(`qa.draft.${label}.kept`); await login.focus(); await paint(page);
     assert.equal(await handle.evaluate(element => element.isConnected), true, 'Snapshot completion replaced the account editor');
     await expect(login).toHaveValue(`qa.draft.${label}.kept`); await expect(login).toBeFocused();
     await page.screenshot({ path: resolve(output, `${label}-preserved-draft.png`), fullPage: true });

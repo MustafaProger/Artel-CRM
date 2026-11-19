@@ -1,3 +1,4 @@
+import PageLoading from './PageLoading'
 import { useDirectAction } from './useDirectAction'
 import { useViewEntrance } from './useViewEntrance'
 import LoadingSkeleton, { LoadingProgress } from './LoadingSkeleton'
@@ -36,7 +37,7 @@ import { compareTripsNewestFirst } from './trip-order'
 import './shipments.css'
 import './trips.css'
 
-export default function TripsPage({ data, canManagePlaces, onChanged, canWrite, allowDelete }: { data: DirectoryData; canManagePlaces: boolean; onChanged: () => void; canWrite: boolean; allowDelete: boolean }) {
+export default function TripsPage({ data, canManagePlaces, onChanged, canWrite, allowDelete }: { data: DirectoryData | null; canManagePlaces: boolean; onChanged: () => void; canWrite: boolean; allowDelete: boolean }) {
   const issueVersions = useRef(new Map<string, number>())
   const updateWorkflowIssues = useCallback((tripId: string, issues: import('./trip-workflow-issues').TripWorkflowIssue[]) => {
     issueVersions.current.set(tripId, (issueVersions.current.get(tripId) ?? 0) + 1)
@@ -159,9 +160,10 @@ export default function TripsPage({ data, canManagePlaces, onChanged, canWrite, 
     reloadAll()
     await onChanged()
   })
-  const directories = data.directories
-  const companyNames = useMemo(() => new Map([...requestCompanies, ...data.companies].map(company => [company.id, company.name])), [data.companies, requestCompanies])
+  const directories = data?.directories
+  const companyNames = useMemo(() => new Map([...requestCompanies, ...(data?.companies ?? [])].map(company => [company.id, company.name])), [data?.companies, requestCompanies])
   const driverNames = useMemo(() => new Map(directories?.drivers.map(driver => [driver.id, driver.name])), [directories?.drivers])
+  if (!data) return <PageLoading/>
   if (!directories) return <p className="soft-notice">Не удалось загрузить справочники рейсов.</p>
   const companyName = (id: string | null) => (id ? companyNames.get(id) : undefined) ?? 'Не указано'
   const driverName = (id: string | null) => (id ? driverNames.get(id) : undefined) ?? 'Не указан'

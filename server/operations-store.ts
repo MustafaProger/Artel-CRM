@@ -240,7 +240,7 @@ export function encodeOperations(data: OperationsData, sourceSha256 = data.sourc
   return encoded;
 }
 
-export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth' | 'readAuth' | 'readBoards' | 'readWorkspace'>>;
+export type OperationsStorage = Pick<OperationsStore, 'read' | 'mutate'> & Partial<Pick<OperationsStore, 'backup' | 'mutateWork' | 'mutateTripRequests' | 'mutateAuth' | 'readAuth' | 'readBoards' | 'readWorkspace' | 'readDocuments' | 'readCoreFields'>>;
 
 export class LegacyOperationsStore {
   readonly path: string;
@@ -351,6 +351,14 @@ export class OperationsStore extends LegacyOperationsStore {
     const auth = await this.authStore(source);
     if (auth) return auth.read(source);
     return await isWorkPartition(this.path, source) ? this.partition.read(source) : super.read(source);
+  }
+  async readDocuments(source: string): Promise<OperationsData> {
+    const auth = await this.authStore(source);
+    return auth ? auth.readDocuments(source) : this.read(source);
+  }
+  async readCoreFields(source: string, fields: readonly (keyof OperationsData)[]): Promise<OperationsData> {
+    const auth = await this.authStore(source);
+    return auth ? auth.readCoreFields(source, fields) : this.read(source);
   }
   async readWorkspace(source: string): Promise<OperationsData> {
     const auth = await this.authStore(source);

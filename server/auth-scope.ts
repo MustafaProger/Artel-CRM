@@ -18,12 +18,13 @@ export function ownsShipment(actor: AccountUser, row: Shipment, snapshot: Pick<S
 }
 /** Explicit company assignments also cover supplier and other directory cards.
  * Historical shipment ownership is a fallback only for unassigned clients. */
-export function ownCustomerIds(snapshot: Snapshot, actor: AccountUser): Set<string> {
+export function ownCustomerIds(snapshot: Snapshot, actor: AccountUser, ownedRows?: readonly Shipment[]): Set<string> {
   if (canManage(actor)) return new Set(snapshot.companies.filter(company => company.roles.includes('customer')).map(company => company.id));
   if (!actor.managerId || !snapshot.directories?.managers.some(employee => employee.id === actor.managerId)) return new Set();
   return new Set([
     ...(snapshot.directories.customerManagers?.filter(link => link.managerId === actor.managerId).map(link => link.companyId) ?? []),
-    ...snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot) && !row.fields.source_request_id).flatMap(row => row.customerId ? [row.customerId] : []),
+    ...(ownedRows ?? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)))
+      .flatMap(row => row.customerId && !row.fields.source_request_id ? [row.customerId] : []),
   ]);
 }
 export function requireOwnedShipment(actor: AccountUser, row: Shipment, snapshot: Snapshot) {
@@ -46,24 +47,34 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
   }
   const shipmentAccess = !context && (hasSection(actor, 'shipments') || hasSection(actor, 'trips'));
   const directoryAccess = context !== 'work' && hasSection(actor, 'directories');
-  const shipments = shipmentAccess ? snapshot.shipments.filter(row => ownsShipment(actor, row, snapshot)).map(row => {
-    const mixed = row.fields.trip_id && snapshot.shipments.some(other => other.fields.trip_id === row.fields.trip_id && !ownsShipment(actor, other, snapshot));
-    return mixed ? { ...row, tripReadOnly: true, fields: { ...row.fields, trip_total_tonnes: null, trip_additional_costs: null } } : row;
-  }) : [];
+  const hiddenTripIds = new Set<string>();
+  const ownedRows: Shipment[] = [];
+  if (shipmentAccess) {
+    for (const row of snapshot.shipments) {
+      if (ownsShipment(actor, row, snapshot)) ownedRows.push(row);
+      else if (row.fields.trip_id) hiddenTripIds.add(row.fields.trip_id);
+    }
+  }
+  const shipments = ownedRows.map(row => row.fields.trip_id && hiddenTripIds.has(row.fields.trip_id)
+    ? { ...row, tripReadOnly: true, fields: { ...row.fields, trip_total_tonnes: null, trip_additional_costs: null } } : row);
   const ids = new Set(shipments.map(row => row.id));
   const customerIds = administrator && !overviewAccess && !shipmentAccess && !hasCustomerDirectoryAccess(actor) && context !== 'work'
-    ? new Set<string>() : ownCustomerIds(snapshot, actor);
+    ? new Set<string>() : ownCustomerIds(snapshot, actor, shipmentAccess ? ownedRows : undefined);
   const requestCustomerIds = new Set(shipments.filter(row => row.fields.source_request_id).map(row => row.customerId));
+  const requestAddressIds = new Set(shipments.filter(row => row.fields.source_request_id).map(row => row.fields.unloading_address_id));
+  const workCompanies = new Set(workCompanyIds);
   const directoryCompanyIds = new Set((snapshot.directories?.oilDepots ?? []).filter(() => directoryAccess && hasDirectoryGrant(actor, 'oilDepots')).flatMap(row => [row.ownerCompanyId, row.loadingActorCompanyId, row.infrastructureOwnerCompanyId]));
   const sharedCompany = (company: Company) => directoryAccess && (company.roles.includes('supplier') && hasDirectoryGrant(actor, 'suppliers') || company.roles.includes('other') && hasDirectoryGrant(actor, 'oilDepots') || company.roles.includes('carrier') && (hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))); 
+  const sharedCompanyIds = new Set(snapshot.companies.filter(sharedCompany).map(company => company.id));
   // Shared company lookup is operational input, never a back door to directory details or records.
   const companies = (directoryAccess || shipmentAccess || financialAccess || overviewAccess || hasSection(actor, 'work') ? snapshot.companies : [])
-    .filter(company => sharedCompany(company) || directoryCompanyIds.has(company.id) || administrator && context !== 'directories' && (overviewAccess || financialAccess || shipmentAccess || context === 'work') || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanyIds.includes(company.id) || context !== 'directories' && company.roles.some(role => role === 'supplier' || role === 'carrier'))
+    .filter(company => sharedCompanyIds.has(company.id) || directoryCompanyIds.has(company.id) || administrator && context !== 'directories' && (overviewAccess || financialAccess || shipmentAccess || context === 'work') || customerIds.has(company.id) || requestCustomerIds.has(company.id) || context === 'work' && workCompanies.has(company.id) || context !== 'directories' && company.roles.some(role => role === 'supplier' || role === 'carrier'))
     .map(company => ({
-    ...(directoryAccess && (customerIds.has(company.id) || sharedCompany(company)) ? company : companyLookup(company)),
+    ...(directoryAccess && (customerIds.has(company.id) || sharedCompanyIds.has(company.id)) ? company : companyLookup(company)),
     roles: context === 'directories' && directoryAccess && !administrator && customerIds.has(company.id) ? company.roles : company.roles.filter(role => role === 'customer' ? customerIds.has(company.id) || requestCustomerIds.has(company.id) : role === 'supplier' ? context !== 'directories' || hasDirectoryGrant(actor, 'suppliers') : role === 'other' ? hasDirectoryGrant(actor, 'oilDepots') : role === 'carrier' && (context !== 'directories' || hasDirectoryGrant(actor, 'vehicles') || hasDirectoryGrant(actor, 'drivers'))),
     shipmentIds: company.shipmentIds.filter(id => ids.has(id)), paymentIds: financialAccess ? company.paymentIds : [], managerLabels: [], flags: [],
   }));
+  const visibleCompanyIds = new Set(companies.map(company => company.id));
   const metric = (values: (string | null)[]) => { const valid = values.filter((v): v is string => v !== null && /^[+-]?\d+(?:\.\d+)?$/.test(v)); return { total: valid.length ? valid.reduce((sum, v) => sum.plus(v), new Exact(0)).toFixed() : null, numericCount: valid.length, missingCount: values.length - valid.length }; };
   const totals = (rows: Shipment[]) => ({ shipmentCount: rows.length, paymentCount: 0, liters: metric(rows.map(r => r.liters)), revenue: metric(rows.map(r => r.revenue)), cost: metric(rows.map(r => r.cost)), incoming: metric([]), outgoing: metric([]) });
   const dates = shipments.flatMap(s => s.date ? [s.date] : []).sort();
@@ -81,7 +92,7 @@ export function scopeSnapshot(snapshot: Snapshot, actor: AccountUser, context?: 
     managers: directoryAccess && hasDirectoryGrant(actor, 'managers') ? catalog.managers : catalog.managers.filter(employee => employee.id === actor.managerId),
     deletedEntries: undefined,
     customerManagers: catalog.customerManagers?.filter(link => administrator && customerIds.has(link.companyId) || link.managerId === actor.managerId),
-    addresses: catalog.addresses.filter(address => companies.some(company => company.id === address.companyId) && (customerIds.has(address.companyId) || snapshot.companies.some(company => company.id === address.companyId && sharedCompany(company)) || shipmentAccess) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || shipments.some(row => row.fields.source_request_id && row.fields.unloading_address_id === address.id))),
+    addresses: catalog.addresses.filter(address => visibleCompanyIds.has(address.companyId) && (customerIds.has(address.companyId) || sharedCompanyIds.has(address.companyId) || shipmentAccess) && (address.kind !== 'delivery' || customerIds.has(address.companyId) || requestAddressIds.has(address.id))),
     assignedCustomerIds: administrator ? undefined : [...customerIds],
     currentEmployeeId: !administrator && actor.managerId && catalog.managers.some(employee => employee.id === actor.managerId) ? actor.managerId : null,
     duplicates: [],

@@ -199,10 +199,10 @@ try {
 
   // A loss of access must also clear the new organization drilldown.
   const organizationDenied = route => route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Тестовая потеря доступа к организациям.' }) });
-  await page.route('**/api/settlements', organizationDenied);
+  await page.route('**/api/settlements?view=organizations', organizationDenied);
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await expect(page.locator('.organization-company-details, .organization-company-button, .overview-organization-picker')).toHaveCount(0);
-  await page.unroute('**/api/settlements', organizationDenied);
+  await page.unroute('**/api/settlements?view=organizations', organizationDenied);
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
   check('403 clears organization balances and transaction detail before retry');
@@ -387,24 +387,24 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const refreshFailure = route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Тестовая временная недоступность обзора.' }) });
   const balancesBeforeError = await companyButtons().getByTestId('organization-company-balance').allTextContents();
-  await page.route('**/api/settlements', refreshFailure);
+  await page.route('**/api/settlements?view=organizations', refreshFailure);
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await expect(page.locator('.overview-error')).toContainText('Тестовая временная недоступность обзора.');
   await expect(page.locator('.overview-error')).toContainText('могут быть неактуальны');
   assert.deepEqual(await companyButtons().getByTestId('organization-company-balance').allTextContents(), balancesBeforeError);
-  await page.unroute('**/api/settlements', refreshFailure);
+  await page.unroute('**/api/settlements?view=organizations', refreshFailure);
   await page.getByRole('button', { name: 'Повторить загрузку', exact: true }).click();
   await expect(page.locator('.overview-error')).toHaveCount(0);
   check('Failed refresh retains balances with an actionable stale-data warning; retry clears it');
   for (const status of [401, 403]) {
     await companyButtons().filter({ hasText: companies[0].name }).click();
     const denied = route => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ error: `Тестовая потеря доступа: ${status}.` }) });
-    await page.route('**/api/settlements', denied);
+    await page.route('**/api/settlements?view=organizations', denied);
     await page.getByRole('button', { name: 'Обновить', exact: true }).click();
     await expect(page.locator('.overview-error')).toContainText(`Тестовая потеря доступа: ${status}.`);
     await expect(page.locator('.organization-company-details, .organization-company-button, .overview-organization-picker')).toHaveCount(0);
     await expect(page.locator('.overview-page')).not.toContainText(companies[0].name);
-    await page.unroute('**/api/settlements', denied);
+    await page.unroute('**/api/settlements?view=organizations', denied);
     await page.getByRole('button', { name: 'Обновить', exact: true }).click();
     await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
     await page.locator('.overview-organization-picker [data-organization-id="artel"]').click();
@@ -415,16 +415,16 @@ try {
   const emptyLedger = row => ({ ...row, companies: [], sources: [], review: [], totals: { shipped: '0', incoming: '0', debt: '0', advance: '0', allocated: '0' } });
   const emptyReport = { ...emptyLedger(currentReport), organizations: currentReport.organizations.map(row => ({ ...row, suppliers: emptyLedger(row.suppliers), clients: emptyLedger(row.clients) })) };
   const emptyResponse = route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(emptyReport) });
-  await page.route('**/api/settlements', emptyResponse);
+  await page.route('**/api/settlements?view=organizations', emptyResponse);
   await page.reload(); await expect(companyButtons()).toHaveCount(0);
   await expect(page.locator('[data-total="debt"]')).toContainText('0,00');
   await capture('empty-overview', 320); await audit('empty-overview', 320);
-  await page.unroute('**/api/settlements', emptyResponse);
-  await page.route('**/api/settlements', refreshFailure);
+  await page.unroute('**/api/settlements?view=organizations', emptyResponse);
+  await page.route('**/api/settlements?view=organizations', refreshFailure);
   await page.reload(); await expect(page.locator('.overview-error')).toContainText('Тестовая временная недоступность обзора.');
   await expect(companyButtons()).toHaveCount(0); await expect(page.locator('.overview-organization-picker')).toHaveCount(0);
   await capture('unavailable-overview', 320); await audit('unavailable-overview', 320);
-  await page.unroute('**/api/settlements', refreshFailure);
+  await page.unroute('**/api/settlements?view=organizations', refreshFailure);
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await expect(page.locator('.overview-organization-picker button')).toHaveCount(2);
   check('Empty and initially unavailable organization reports render without invented data; retry restores the isolated fixture');

@@ -117,6 +117,13 @@ export class JsonSnapshot {
     this.#fragments.set(key, raw); return raw;
   }
   clone(): unknown { return copy(this.#value); }
+  pick(keys: readonly string[]): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    const data = this.#value;
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new TypeError('Expected a JSON object');
+    for (const key of keys) if (Object.hasOwn(data, key)) assign(result, key, copy(data[key]));
+    return result;
+  }
   matches(input: unknown): boolean {
     return matches(input, this.#value);
   }

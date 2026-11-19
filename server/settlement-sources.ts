@@ -47,7 +47,9 @@ export function settlementSources(store: OperationsData) {
   const byIdentity = new Map<string, BankOperation[]>();
   for (const row of candidates) {
     const key = JSON.stringify([row.provider, row.account, row.bankOperationId]);
-    byIdentity.set(key, [...byIdentity.get(key) ?? [], row]);
+    const group = byIdentity.get(key);
+    if (group) group.push(row);
+    else byIdentity.set(key, [row]);
   }
   const signature = (row: BankOperation) => JSON.stringify([
     row.statementDate, row.direction, row.booked, decimal(row.amount)?.toFixed() ?? row.amount,
@@ -57,6 +59,10 @@ export function settlementSources(store: OperationsData) {
   ]);
   const operations: BankOperation[] = [], conflicts: BankOperation[] = [], organizationConflicts: BankOperation[] = [];
   for (const rows of byIdentity.values()) {
+    if (rows.length === 1) {
+      operations.push(rows[0]);
+      continue;
+    }
     // The global ledger need not choose an organization. Organization ledgers
     // must not infer ownership from the order of connector slots.
     if (new Set(rows.map(row => organizationForConnection(row.connectionId))).size > 1) organizationConflicts.push(...new Map(rows.map(row => [row.id, row])).values());

@@ -98,14 +98,20 @@ class PartReader {
   matches(value: unknown) { return !!this.cache && this.cache.raw === this.cache.snapshot.raw && this.cache.snapshot.matches(value); }
   encode(value: unknown) { return new JsonSnapshot(value, this.cache?.snapshot); }
   byteLength(raw: string) { return this.cache?.raw === raw ? this.cache.bytes.length : Buffer.byteLength(raw); }
-  async read(path: string) {
-    const bytes = await performanceSpan('partition.read-bytes', () => boundedRead(path));
-    if (this.cache?.bytes.equals(bytes)) return { value: performanceSpan('partition.clone-cached', () => this.cache!.snapshot.clone()), raw: this.cache.raw };
+  fromBytes(bytes: Buffer) {
+    if (this.cache?.bytes.equals(bytes)) return this.cache;
     const raw = bytes.toString('utf8');
     const verified = performanceSpan('partition.unseal', () => unsealVerified(raw));
     const snapshot = JsonSnapshot.fromVerified(verified.value, verified.canonicalRaw);
     this.cache = { bytes, raw, snapshot };
-    return { value: snapshot.clone(), raw };
+    return this.cache;
+  }
+  async inspect(path: string) {
+    return this.fromBytes(await performanceSpan('partition.read-bytes', () => boundedRead(path)));
+  }
+  async read(path: string) {
+    const { raw, snapshot } = await this.inspect(path);
+    return { value: performanceSpan('partition.clone-cached', () => snapshot.clone()), raw };
   }
 }
 export async function authPartitionVersion(path: string, source: string): Promise<1 | 2 | null> {
@@ -136,7 +142,10 @@ export class AuthPartition {
   private readers = { core: new PartReader(), auth: new PartReader(), work: new PartReader(), archive: new PartReader() };
   private validated?: RawParts;
   private validatedArchive?: string;
-  private archiveSummary?: { source: string; version: string; revision: number };
+  private archiveSummary?: { source: string; version: string; revision: number; raw: string; snapshot: JsonSnapshot };
+  private checkedCore?: { core: string; auth: string };
+  private checkedAuth?: { raw: string; source: string };
+  private checkedWork?: { raw: string; source: string };
   constructor(readonly rootPath: string, readonly version: 1 | 2 = 1) {
     this.directory = resolve(dirname(rootPath), version === 1 ? 'auth-storage' : 'auth-storage-v2');
     this.corePath = resolve(this.directory, 'core.json'); this.authPath = resolve(this.directory, 'auth.json'); this.workPath = resolve(this.directory, 'work.json');
@@ -185,42 +194,60 @@ export class AuthPartition {
   }
   private async auth(source: string) {
     const row = await this.readers.auth.read(this.authPath);
-    const value = performanceSpan('partition.validate-auth', () => { checkAuth(row.value, source); return row.value; });
-    return { value, raw: row.raw };
+    if (this.checkedAuth?.raw !== row.raw || this.checkedAuth.source !== source) {
+      performanceSpan('partition.validate-auth', () => checkAuth(row.value, source));
+      this.checkedAuth = { raw: row.raw, source };
+    }
+    return { value: row.value as AuthState, raw: row.raw };
   }
-  private async archivedRevision(source: string) {
-    // Work needs the global revision but no document payloads. Compliant writers
-    // atomically replace the file under this latch. ctime also catches in-place
-    // repairs, including same-size edits with restored modification timestamps.
-    const info = await stat(this.archivePath, { bigint: true });
-    if (!info.isFile()) throw new StoreError('Missing archive partition');
-    const version = [info.dev, info.ino, info.size, info.ctimeNs, info.mtimeNs].join('/');
-    if (this.archiveSummary?.source === source && this.archiveSummary.version === version) return this.archiveSummary.revision;
-    const row = await this.readers.archive.read(this.archivePath);
-    checkArchive(row.value, source);
-    if (row.raw !== this.validatedArchive && row.value.documentArchive !== undefined) validateDocumentArchive(row.value.documentArchive);
-    this.validatedArchive = row.raw;
-    this.archiveSummary = { source, version, revision: row.value.revision };
-    return row.value.revision;
+  private async work(source: string) {
+    const row = await this.readers.work.read(this.workPath);
+    if (this.checkedWork?.raw !== row.raw || this.checkedWork.source !== source) {
+      checkWork(row.value, source);
+      this.checkedWork = { raw: row.raw, source };
+    }
+    return { value: row.value as WorkState, raw: row.raw };
+  }
+  private async archive(source: string) {
+    // Archive files are installed by atomic rename under the transaction latch.
+    // Inspect the opened file, including its sealed envelope prefix, rather than
+    // pairing a path stat with a later open that might address a different inode.
+    const file = await open(this.archivePath, 'r');
+    try {
+      const info = await file.stat({ bigint: true });
+      if (!info.isFile() || info.size > BigInt(maxBytes)) throw new StoreError('Invalid archive partition size');
+      const prefix = Buffer.alloc(80);
+      const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
+      const version = [info.dev, info.ino, info.size, info.ctimeNs, info.mtimeNs, prefix.subarray(0, bytesRead).toString('hex')].join('/');
+      if (this.archiveSummary?.source === source && this.archiveSummary.version === version) return this.archiveSummary;
+      const bytes = await performanceSpan('partition.read-archive-bytes', () => file.readFile());
+      const { raw, snapshot } = this.readers.archive.fromBytes(bytes);
+      const value = snapshot.clone();
+      checkArchive(value, source);
+      if (raw !== this.validatedArchive && value.documentArchive !== undefined) validateDocumentArchive(value.documentArchive);
+      this.validatedArchive = raw;
+      this.archiveSummary = { source, version, revision: value.revision, raw, snapshot };
+      return this.archiveSummary;
+    } finally { await file.close(); }
   }
   private async load(source: string, workspace = false) {
     await performanceSpan('partition.recover', () => this.recover(source));
-    const c = await performanceSpan('partition.read-core', () => this.readers.core.read(this.corePath)), a = await performanceSpan('partition.read-auth', () => this.auth(source)), w = await performanceSpan('partition.read-work', () => this.readers.work.read(this.workPath));
-    identity(c.value, source); checkWork(w.value, source);
+    const c = await performanceSpan('partition.read-core', () => this.readers.core.read(this.corePath));
+    const a = await performanceSpan('partition.read-auth', () => this.auth(source));
+    const w = await performanceSpan('partition.read-work', () => this.work(source));
+    identity(c.value, source);
     const core = c.value as unknown as OperationsData, auth = a.value, work = w.value;
-    const archiveRow = this.version === 2 && !workspace ? await performanceSpan('partition.read-archive', () => this.readers.archive.read(this.archivePath)) : undefined;
-    if (archiveRow) checkArchive(archiveRow.value, source);
-    const archive = archiveRow?.value as ArchiveState | undefined;
+    const archiveRow = this.version === 2 ? await performanceSpan('partition.read-archive', () => this.archive(source)) : undefined;
+    const archive = archiveRow && !workspace ? archiveRow.snapshot.clone() as ArchiveState : undefined;
     if (workspace && 'documentArchive' in core) throw new StoreError('Duplicate archive partition domain');
     const data = compose(core, auth, work, archive);
-    if (workspace) data.revision += await this.archivedRevision(source);
-    const raw: RawParts = { core: c.raw, auth: a.raw, work: w.raw, ...(archiveRow ? { archive: archiveRow.raw } : {}) };
-    if (this.validated?.core !== c.raw || this.validated?.auth !== a.raw || this.validated?.work !== w.raw || (archiveRow && this.validatedArchive !== archiveRow.raw)) {
-      // Archive metadata and payloads have no links into other partitions. Its
-      // bytes were independently checked on this read by PartReader.
-      const validatedArchive = archiveRow && this.validatedArchive === archiveRow.raw;
-      performanceSpan('partition.validate-full', () => validate(validatedArchive ? { ...data, documentArchive: undefined } : data, source));
-      if (archiveRow) this.validatedArchive = archiveRow.raw;
+    if (workspace) data.revision += archiveRow!.revision;
+    const raw: RawParts = { core: c.raw, auth: a.raw, work: w.raw, ...(archive ? { archive: archiveRow!.raw } : {}) };
+    if (this.validated?.core !== c.raw || this.validated?.auth !== a.raw || this.validated?.work !== w.raw) {
+      // archive() verifies v2 document data independently. Switching between
+      // full and workspace views does not invalidate the other three domains.
+      performanceSpan('partition.validate-full', () => validate(archiveRow ? { ...data, documentArchive: undefined } : data, source));
+      this.checkedCore = { core: c.raw, auth: a.raw };
       this.validated = raw;
     }
     return { core, auth, work, archive, data, raw };
@@ -234,9 +261,37 @@ export class AuthPartition {
     return partitionLock(this.latch, async () => {
       await this.recover(source);
       const { value: authority } = await this.auth(source);
-      const { value: work } = await this.readers.work.read(this.workPath);
-      checkWork(work, source);
+      const { value: work } = await this.work(source);
       return { ...authView(authority), ...work };
+    }, 'interactive');
+  }
+  async readDocuments(source: string) {
+    if (this.version !== 2) return this.read(source);
+    return partitionLock(this.latch, async () => {
+      await this.recover(source);
+      const authority = await this.auth(source);
+      const archive = await this.archive(source);
+      return { ...authView(authority.value), ...archive.snapshot.pick(['documentArchive']), revision: authority.value.revision + archive.revision };
+    }, 'interactive');
+  }
+  async readCoreFields(source: string, fields: readonly (keyof OperationsData)[]) {
+    if (this.version !== 2) return this.read(source);
+    return partitionLock(this.latch, async () => {
+      await this.recover(source);
+      const authority = await this.auth(source);
+      const { raw, snapshot } = await this.readers.core.inspect(this.corePath);
+      // A fresh process or external writer must validate the complete core,
+      // including cross-domain references. Later projections inspect exact bytes.
+      if (this.checkedCore?.core !== raw || this.checkedCore.auth !== authority.raw) {
+        const core = snapshot.clone() as OperationsData;
+        identity(core, source);
+        if ('documentArchive' in core) throw new StoreError('Duplicate archive partition domain');
+        const combined = compose(core, authority.value, { sourceSha256: source, revision: 0 });
+        validate(combined, source);
+        this.checkedCore = { core: raw, auth: authority.raw };
+      }
+      const part = snapshot.pick(['revision', ...fields]);
+      return { ...authView(authority.value), ...part, revision: authority.value.revision + Number(part.revision) };
     }, 'interactive');
   }
   private async bound(raw: RawParts) {
@@ -276,7 +331,7 @@ export class AuthPartition {
     const workspace = workOnly && this.version === 2 && view === 'workspace';
     return partitionLock(resolve(this.directory, workOnly ? 'work-queue.lock' : interactive ? 'interactive-queue.lock' : 'core-queue.lock'), () => partitionLock(this.latch, async () => {
       const before = await performanceSpan(workspace ? 'partition.load-workspace' : 'partition.load-full', () => this.load(source, workspace)), { data } = before;
-      const authGuard = workAuthority(before.auth);
+      const authGuard = workOnly ? workAuthority(before.auth) : undefined;
       const { result, changed } = await performanceSpan('partition.update', () => update(data));
       if (!changed) return result;
       if (workspace && data.documentArchive !== undefined) throw new StoreError('Work transaction tried to change another domain');
@@ -307,14 +362,27 @@ export class AuthPartition {
       await this.bound(next);
       const changedCount = Number(coreChanged) + Number(authChanged) + Number(workChanged) + Number(archiveChanged);
       if (changedCount > 1) {
-        const journal = this.version === 1 ? { sourceSha256: source, ...next } : { format: 'artel-auth-redo-v2', sourceSha256: source, parts: Object.fromEntries(Object.entries(encoded).filter(([, value]) => value !== undefined).map(([part, value]) => [part, value!.raw])) };
-        await atomicFile(this.journalPath, seal(journal));
-        if (workspace) {
-          // Locked, validated Work and outbox images. A crash leaves the same
-          // durable redo journal for recoverV2 before any subsequent access.
-          const parts = (['auth', 'work'] as const).filter(part => encoded[part]);
+        if (this.version === 1) {
+          await atomicFile(this.journalPath, seal({ sourceSha256: source, ...next }));
+          await performanceSpan('partition.recover', () => this.recover(source));
+        } else {
+          const parts = (Object.keys(encoded) as Part[]).filter(part => encoded[part]);
+          if (!workspace) {
+            // Validate the canonical images before publishing the durable WAL.
+            // A callback can supply a toJSON method. The disk image must still
+            // satisfy the same checks as crash recovery would perform.
+            const c = encoded.core ? encoded.core.clone() : core;
+            const a = encoded.auth ? encoded.auth.clone() : auth;
+            const w = encoded.work ? encoded.work.clone() : work;
+            const ar = encoded.archive ? encoded.archive.clone() : archive;
+            identity(c, source); checkAuth(a, source); checkWork(w, source); checkArchive(ar, source);
+            const durable = compose(c as unknown as OperationsData, a, w, ar);
+            validate(archiveChanged ? durable : { ...durable, documentArchive: undefined }, source);
+          }
+          const images = Object.fromEntries(parts.map(part => [part, next[part]]));
+          await atomicFile(this.journalPath, seal({ format: 'artel-auth-redo-v2', sourceSha256: source, parts: images }));
           await this.installRedo(parts, next);
-        } else await performanceSpan('partition.recover', () => this.recover(source));
+        }
       }
       else if (coreChanged) await atomicFile(this.corePath, next.core);
       else if (authChanged) await atomicFile(this.authPath, next.auth);
@@ -323,6 +391,8 @@ export class AuthPartition {
       this.readers.core.remember(next.core, encoded.core); this.readers.auth.remember(next.auth, encoded.auth); this.readers.work.remember(next.work, encoded.work);
       if (next.archive) { this.readers.archive.remember(next.archive, encoded.archive); this.validatedArchive = next.archive; }
       this.validated = next;
+      this.checkedCore = { core: next.core, auth: next.auth };
+      if (archiveChanged) this.archiveSummary = undefined;
       return result;
     }, workspace ? 'interactive' : undefined));
   }

@@ -1,3 +1,4 @@
+import { readCore, readAuthority } from './request-views';
 import { isAdministrator } from '../web/src/auth-model';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -10,7 +11,7 @@ import { readYandexBrowserBalance } from './yandex-browser-balance';
 import { ApiError } from './api-error';
 import { requireUser } from './auth';
 import { requireSection } from './permissions';
-import type { OperationsStorage } from './operations-store';
+import type { OperationsData, OperationsStorage } from './operations-store';
 
 type Environment = Record<string, string | undefined>;
 export interface CabinetStorage { version: 1; connections: Record<string, CabinetConnection & { encryptedCredentials: string }> }
@@ -91,13 +92,14 @@ function inputText(value: unknown, name: string, max: number, trim = true) {
   if (!text || text.length > max || [...text].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) throw new ApiError(400, `Проверьте поле «${name}».`);
   return text;
 }
-export async function cabinetRoutes(store: OperationsStorage, source: string, env: Environment, request: IncomingMessage, response: ServerResponse, readBody: () => Promise<Record<string, unknown>>) {
-  const initial = await store.read(source);
+export async function cabinetRoutes(store: OperationsStorage, source: string, env: Environment, request: IncomingMessage, response: ServerResponse, readBody: () => Promise<Record<string, unknown>>, guardDriver?: (data: OperationsData) => void) {
+  const path = request.url?.split('?')[0];
+  const initial = path === '/api/cabinets' && request.method === 'GET' ? await readCore(store, source, ['cabinets']) : await readAuthority(store, source);
+  guardDriver?.(initial);
   const user = requireUser(initial, request);
   requireSection(user, 'cabinet-balances');
   const canAuthorizeLicard = isAdministrator(user) && !!env.ARTEL_LICARD_AUTH_SOCKET;
   const send = (status: number, value: unknown) => { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); };
-  const path = request.url?.split('?')[0];
   if (path === '/api/cabinets/licard/auth') {
     if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
     if (!canAuthorizeLicard) throw new ApiError(403, 'Подтверждение входа в ЛИКАРД доступно администраторам.');
@@ -143,7 +145,7 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     if (request.method !== 'POST') throw new ApiError(405, 'Метод не поддерживается.');
     const body = await readBody(); if (Object.keys(body).length) throw new ApiError(400, 'Обновление не принимает дополнительные поля.');
     await syncCabinetConnection(store, source, env, syncId, request);
-    const fresh = await store.read(source);
+    const fresh = await readCore(store, source, ['cabinets']);
     const connection = fresh.cabinets?.connections[syncId];
     requireSection(requireUser(fresh, request), 'cabinet-balances');
     return send(200, { connection: connection ? publicConnection(connection) : null });
@@ -154,9 +156,11 @@ export async function cabinetRoutes(store: OperationsStorage, source: string, en
     try { encryptionKey(env); ready = true; } catch { /* Read-only page remains available before setup. */ }
     const data = initial;
     const result: CabinetResponse = { connections: Object.values(data.cabinets?.connections ?? {}).map(publicConnection), credentialStorageReady: ready, ...(canAuthorizeLicard ? { canAuthorizeLicard: true } : {}) };
-    const yandex = await readYandexBrowserBalance(env.ARTEL_YANDEX_BALANCE_FILE);
+    const [yandex, licard] = await Promise.all([
+      readYandexBrowserBalance(env.ARTEL_YANDEX_BALANCE_FILE),
+      readLicardBrowserBalance(env.ARTEL_LICARD_BALANCE_FILE),
+    ]);
     if (yandex) result.connections.push(yandex);
-    const licard = await readLicardBrowserBalance(env.ARTEL_LICARD_BALANCE_FILE);
     if (licard) result.connections.push(licard);
     return send(200, result);
   }
@@ -222,7 +226,7 @@ export async function syncCabinetConnection(store: OperationsStorage, source: st
   try { await operation; } finally { runs.delete(id); }
 }
 export async function refreshDueCabinets(store: OperationsStorage, source: string, env: Environment) {
-  const data = await store.read(source);
+  const data = await readCore(store, source, ['cabinets']);
   let refreshed = 0;
   for (const row of Object.values(data.cabinets?.connections ?? {})) {
     if (!['glopro', 'natcar', 'rosneft'].includes(row.provider) || row.state === 'auth_required' || (row.lastAttemptAt && Date.now() - Date.parse(row.lastAttemptAt) < 300_000)) continue;

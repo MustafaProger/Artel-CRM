@@ -1,3 +1,4 @@
+import { readCore } from '../request-views';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BankOperation } from '../../web/src/banking-model';
 import type { SberStatementsResult } from '../../web/src/sber-model';
@@ -13,6 +14,7 @@ import { replaceStatementDay } from './statement-publication';
 
 export class SberService {
   constructor(readonly store: OperationsStorage, readonly source: string, readonly env: Record<string, string | undefined> = process.env, readonly request?: SberRequest, readonly connection: SberConnection = defaultSberConnection) {}
+  read() { return readCore(this.store, this.source, [this.connection.slot]); }
   async mutate<T>(update: (data: OperationsData) => { result: T; changed: boolean }): Promise<T> {
     // Storage CAS retries never repeat a request to the bank or token endpoint.
     for (let attempt = 0; ; attempt++) {
@@ -28,9 +30,10 @@ export class SberService {
     try { sberEncryptionKey(this.env); } catch { if (!missing.includes('Ключ защиты банковского доступа на сервере')) missing.push('Ключ защиты банковского доступа на сервере'); }
     return missing;
   }
-  async list(query: URLSearchParams): Promise<SberStatementsResult> {
+  async list(query: URLSearchParams): Promise<SberStatementsResult> { return this.listFromData(await this.read(), query); }
+  listFromData(data: OperationsData, query: URLSearchParams): SberStatementsResult {
     const period = sberPeriod(query.get('from') ?? SBER_FIRST_DAY, query.get('to') ?? today());
-    const state = (await this.store.read(this.source))[this.connection.slot] ?? emptySber(this.connection), job = state.job;
+    const state = data[this.connection.slot] ?? emptySber(this.connection), job = state.job;
     const direction = query.get('direction'), term = (query.get('q') ?? '').trim().toLocaleLowerCase('ru-RU');
     if (direction && !['incoming', 'outgoing'].includes(direction)) throw new ApiError(400, 'Некорректное направление платежа.');
     const operations = state.operations.filter(row => row.statementDate >= period.from && row.statementDate <= period.to && (!direction || row.direction === direction) && (!term || [row.payer.name, row.payee.name, row.payer.inn, row.payee.inn, row.payer.account, row.payee.account, row.purpose, row.documentNumber].some(value => value?.toLocaleLowerCase('ru-RU').includes(term))));
@@ -45,7 +48,7 @@ export class SberService {
     };
   }
   async start(from: unknown, to: unknown) {
-    const period = sberPeriod(from, to), state = (await this.store.read(this.source))[this.connection.slot] ?? emptySber(this.connection);
+    const period = sberPeriod(from, to), state = (await this.read())[this.connection.slot] ?? emptySber(this.connection);
     const missing = this.missing(state);
     if (missing.length) throw new ApiError(409, 'Доступ к Сберу не настроен на сервере. Требуются: ' + missing.join(', ') + '.');
     await this.mutate(data => {
@@ -64,7 +67,7 @@ export class SberService {
   }
   async dispatch(now = Date.now(), initial?: Promise<OperationsData>) {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false };
-    const state = (await (initial ?? this.store.read(this.source)))[this.connection.slot] ?? emptySber(this.connection);
+    const state = (await (initial ?? this.read()))[this.connection.slot] ?? emptySber(this.connection);
     if (this.missing(state).length || !state.job && !syncDue(state.lastScheduledAt, state.lastSuccessAt, now)) return { enabled: true, pending: false };
     if (!state.job) await this.mutate(data => {
       const current = data[this.connection.slot]!;
@@ -75,7 +78,7 @@ export class SberService {
       return { result: null, changed: true };
     });
     const result = await this.tick();
-    const after = (await this.store.read(this.source))[this.connection.slot];
+    const after = (await this.read())[this.connection.slot];
     return { enabled: true, ...result, failed: !!after?.lastError };
   }
   private async locked<T>(work: (state: SberData, fence: string, client: SberClient) => Promise<T>): Promise<T | null> {
@@ -92,7 +95,7 @@ export class SberService {
     if (!state) return null;
     const vault: SberTokenVault = {
       read: async () => {
-        const current = (await this.store.read(this.source))[this.connection.slot];
+        const current = (await this.read())[this.connection.slot];
         if (current?.lease?.id !== fence || current.lease.until <= Date.now()) throw new ApiError(423, 'Истёк срок текущего запроса к Сберу.');
         return current.encryptedTokens ? decryptSberTokens(current.encryptedTokens, this.env, this.connection) : undefined;
       },
@@ -134,7 +137,7 @@ export class SberService {
     }
   }
   async tick(): Promise<{ pending: boolean }> {
-    const queued = (await this.store.read(this.source))[this.connection.slot]?.job;
+    const queued = (await this.read())[this.connection.slot]?.job;
     if (!queued || !bankJobDue(queued)) return { pending: !!queued };
     return await this.locked(async (state, fence, client) => {
       const job = state.job;
@@ -201,11 +204,12 @@ export class SberService {
           return { result: null, changed: true };
         });
       }
-      return { pending: !!(await this.store.read(this.source))[this.connection.slot]?.job };
+      return { pending: !!(await this.read())[this.connection.slot]?.job };
     }) ?? { pending: true };
   }
-  async operation(id: string): Promise<BankOperation> {
-    const row = (await this.store.read(this.source))[this.connection.slot]?.operations.find(row => row.id === id);
+  async operation(id: string): Promise<BankOperation> { return this.operationFromData(await this.read(), id); }
+  operationFromData(data: OperationsData, id: string): BankOperation {
+    const row = data[this.connection.slot]?.operations.find(row => row.id === id);
     if (!row) throw new ApiError(404, 'Операция Сбера не найдена.');
     return row;
   }

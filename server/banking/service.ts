@@ -1,3 +1,4 @@
+import { readCore } from '../request-views';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { type BankCard, type BankConnectionState, type BankListResult } from '../../web/src/banking-model';
 import type { OperationsData, OperationsStorage } from '../operations-store';
@@ -19,6 +20,7 @@ export class BankingService {
     const config = bankConfig(definition, this.env);
     return config;
   }
+  read() { return readCore(this.store, this.source, ['banking']); }
   async mutate<T>(update: (data: OperationsData) => { result: T; changed: boolean }) {
     // Retry CAS conflicts only; the callback is pure and never calls a bank.
     for (let attempt = 0; ; attempt++) {
@@ -27,7 +29,7 @@ export class BankingService {
     }
   }
   async list(query: URLSearchParams): Promise<BankListResult> {
-    return this.listFromData(await this.store.read(this.source), query);
+    return this.listFromData(await this.read(), query);
   }
   // Synchronous projection for a caller that has just authorized this same view.
   // Call list() instead when a request body/provider await may have intervened.
@@ -52,9 +54,13 @@ export class BankingService {
     const scope = activeRows.filter(row => !query.get('connection') || row.connectionId === query.get('connection'));
     return { connections, items: rows.slice((page - 1) * size, page * size).map(row => ({ ...row, bankData: {} })), total: rows.length, page, pageSize: size, totals: totals(rows), statuses: [...new Set(scope.map(row => row.status ?? '__missing__'))].sort(), storedCount: scope.length, scheduleEnabled: this.env.ARTEL_BANK_SYNC_ENABLED === 'true' };
   }
-  async rows(query: URLSearchParams) { return filterOperations(((await this.store.read(this.source)).banking?.operations ?? []).filter(row => row.provider === 'tbank'), query); }
-  async operation(id: string) {
-    const row = (await this.store.read(this.source)).banking?.operations.find(row => row.id === id);
+  rowsFromData(data: OperationsData, query: URLSearchParams) {
+    return filterOperations((data.banking?.operations ?? []).filter(row => row.provider === 'tbank'), query);
+  }
+  async rows(query: URLSearchParams) { return this.rowsFromData(await this.read(), query); }
+  async operation(id: string) { return this.operationFromData(await this.read(), id); }
+  operationFromData(data: OperationsData, id: string) {
+    const row = data.banking?.operations.find(row => row.id === id);
     if (!row || row.provider !== 'tbank') throw new ApiError(404, 'Банковская операция не найдена.');
     return row;
   }
@@ -100,7 +106,7 @@ export class BankingService {
   adapter() { return tbankAdapter(this.http); }
   async tick(id: string) {
     this.config(id);
-    const queued = (await this.store.read(this.source)).banking?.connections[id]?.job;
+    const queued = (await this.read()).banking?.connections[id]?.job;
     if (!queued || !bankJobDue(queued)) return { pending: !!queued };
     return this.locked(id, async (config, state, fence) => {
       const job = state.job;
@@ -128,7 +134,7 @@ export class BankingService {
           }
           return { result: null, changed: true };
         });
-        return { pending: !!(await this.store.read(this.source)).banking?.connections[id].job };
+        return { pending: !!(await this.read()).banking?.connections[id].job };
       } catch (error) {
         await this.mutate(data => {
           const current = data.banking!.connections[id];
@@ -157,7 +163,7 @@ export class BankingService {
   }
   async dispatch(now = Date.now(), initial?: Promise<OperationsData>) {
     if (this.env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false };
-    const data = (await (initial ?? this.store.read(this.source))).banking ?? emptyBanking();
+    const data = (await (initial ?? this.read())).banking ?? emptyBanking();
     const due = activeBankConnections.filter(def => !this.config(def.id).missing.length).map(def => ({ def, state: data.connections[def.id] })).filter(({state}) => state?.job ? bankJobDue(state.job, now) : state?.lastSuccessAt && (state.webhookPending || syncDue(state.lastScheduledAt, state.lastSuccessAt, now))).sort((a, b) => (a.state?.lastAttemptAt ?? '').localeCompare(b.state?.lastAttemptAt ?? ''))[0];
     if (!due) return { enabled: true, pending: false };
     if (!due.state?.job) await this.mutate(data => {

@@ -1,3 +1,4 @@
+import { readCore } from '../request-views';
 import type { OperationsStorage } from '../operations-store';
 import { BankingService } from './service';
 import { sberConnections } from './sber-connections';
@@ -10,7 +11,7 @@ export async function dispatchBanks(store: OperationsStorage, source: string, en
   if (env.ARTEL_BANK_SYNC_ENABLED !== 'true') return { enabled: false, pending: false, failed: false, connections: [] };
   // One fresh planning view for this tick. Claims, tokens and publication still
   // use their own fresh transactions before any provider action.
-  const initial = store.read(source);
+  const initial = readCore(store, source, ['banking', 'sber', 'sberArtel']);
   const results = await Promise.allSettled([
     new BankingService(store, source, env, bankRequest).dispatch(now, initial),
     ...Object.values(sberConnections).map(connection => new SberService(store, source, env, sberRequest, connection).dispatch(now, initial)),

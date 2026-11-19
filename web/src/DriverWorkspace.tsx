@@ -49,6 +49,7 @@ export default function DriverWorkspace({ user, onLogout, onUserChanged, setting
   const [detailError, setDetailError] = useState('')
   const [revision, setRevision] = useState(0)
   const sequence = useRef(0)
+  const receivedList = useRef(false)
   const detailSequence = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const refresh = useCallback(() => {
@@ -61,7 +62,12 @@ export default function DriverWorkspace({ user, onLogout, onUserChanged, setting
     void apiFetch('/api/driver/trips', { cache: 'no-store', signal: pending.signal }).then(async response => {
       const result = await response.json()
       if (!response.ok) { if ([401, 403].includes(response.status) && !pending.signal.aborted && generation === sequence.current) { setTrips([]); setTripsLoaded(false) } throw new Error(result.error || 'Не удалось загрузить ваши рейсы.') }
-      if (generation === sequence.current) { setTrips(result.trips); setTripsLoaded(true); setRevision(value => value + 1) }
+      if (generation === sequence.current) {
+        setTrips(result.trips); setTripsLoaded(true)
+        // Direct links already start a fresh detail read alongside the initial list.
+        if (receivedList.current) setRevision(value => value + 1)
+        receivedList.current = true
+      }
     }).catch(reason => {
       if (!pending.signal.aborted && generation === sequence.current) { setError(reason instanceof Error ? reason.message : 'Нет связи с сервером.') }
     }).finally(() => { if (!pending.signal.aborted && generation === sequence.current) setLoading(false) })

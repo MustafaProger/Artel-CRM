@@ -23,7 +23,7 @@ async function request(url: string, method = 'GET', body?: unknown) {
   if (!response.ok) throw new Error(result.error || 'Не удалось сохранить данные.');
   return result;
 }
-export default function AccountManagement({ directories, onChanged }: { directories?: Directories; onChanged: () => void }) {
+export default function AccountManagement({ onChanged }: { onChanged: () => void }) {
   const [users, setUsers] = useState<AccountListUser[]>([]), [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<AccountUser | null | undefined>(undefined), [form, setForm] = useState(empty), [employeeName, setEmployeeName] = useState('');
   const [roleFilter, setRoleFilter] = useState<RoleFilterValue>('all'), [search, setSearch] = useState(''), [driverId, setDriverId] = useState('');
@@ -41,9 +41,9 @@ export default function AccountManagement({ directories, onChanged }: { director
     });
     return () => window.cancelAnimationFrame(frame);
   }, [editorRequest]);
-  const [employees, setEmployees] = useState(directories?.managers ?? []);
+  const [employees, setEmployees] = useState<Directories['managers']>([]);
   const [currentUserId, setCurrentUserId] = useState('');
-  const [staffDrivers, setStaffDrivers] = useState(directories?.drivers ?? []);
+  const [staffDrivers, setStaffDrivers] = useState<Directories['drivers']>([]);
   const refresh = async () => { const result = await request('/api/auth/users'); setUsers(result.users); setCurrentUserId(result.currentUserId); setEmployees(result.staff.managers); setStaffDrivers(result.staff.drivers); };
   useEffect(() => { void refresh().catch(e => setError(e.message)).finally(() => setLoading(false)); }, []);
   const edit = (user: AccountUser | null) => {

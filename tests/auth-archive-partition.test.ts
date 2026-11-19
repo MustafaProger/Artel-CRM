@@ -216,3 +216,78 @@ test('Work payload cache requires exact content and length and always rechecks f
     validateWorkData(work);
   }
 });
+
+test('full reads reuse the sealed archive and see atomic replacement and same-size in-place corruption', async () => {
+  const f = await archiveFixture();
+  try {
+    const { withPerformanceTrace } = await import('../server/performance-trace');
+    const fresh = new OperationsStore(f.directory);
+    async function readArchiveBytes() {
+      let reads = 0;
+      const data = await withPerformanceTrace('archive-cache', () => fresh.read(source), trace => {
+        reads = trace.spans.filter(span => span.name === 'partition.read-archive-bytes').length;
+      });
+      return { reads, name: data.documentArchive!.categories[0].name };
+    }
+    assert.deepEqual(await readArchiveBytes(), { reads: 1, name: 'Synthetic' });
+    assert.deepEqual(await readArchiveBytes(), { reads: 0, name: 'Synthetic' });
+    // A different process may replace the archive without touching the pointer.
+    const raw = await readFile(f.part.archivePath, 'utf8');
+    const repaired = JSON.parse(raw).data;
+    repaired.documentArchive.categories[0].name = 'Different';
+    const path = f.part.archivePath + '.test';
+    await writeFile(path, seal(repaired));
+    const mtime = (await stat(f.part.archivePath)).mtime;
+    await fs.utimes(path, mtime, mtime);
+    await fs.rename(path, f.part.archivePath);
+    assert.deepEqual(await readArchiveBytes(), { reads: 1, name: 'Different' });
+    assert.deepEqual(await readArchiveBytes(), { reads: 0, name: 'Different' });
+    await writeFile(f.part.archivePath, seal(repaired).replace('YWJj', 'YWJk'));
+    await fs.utimes(f.part.archivePath, mtime, mtime);
+    await assert.rejects(fresh.read(source), /checksum/);
+    await assert.rejects(fresh.mutate(source, () => { throw Error('Unexpected write callback'); }), /checksum/);
+    await assert.rejects(fresh.readDocuments(source), /checksum/);
+  } finally { await f.close(); }
+});
+
+test('narrow core and document reads isolate returned references, see current rights and validate complete changed core', async () => {
+  const f = await archiveFixture();
+  try {
+    const full = await f.store.read(source);
+    const documentView = await f.store.readDocuments(source);
+    assert.deepEqual(documentView.documentArchive, full.documentArchive);
+    assert.deepEqual(documentView.shipments, {});
+    assert.equal(documentView.work, undefined);
+    documentView.documentArchive!.categories[0].name = 'Local mutation';
+    assert.deepEqual((await f.store.readDocuments(source)).documentArchive, full.documentArchive);
+    const workless = await f.store.readCoreFields(source, ['shipments', 'sourceOperationsCleared']);
+    assert.deepEqual(workless.shipments, full.shipments);
+    assert.equal(workless.work, undefined);
+    assert.equal(workless.documentArchive, undefined);
+    workless.shipments.example.version++;
+    assert.deepEqual((await f.store.readCoreFields(source, ['shipments'])).shipments, full.shipments);
+    assert.deepEqual((await f.store.readCoreFields(source, ['banking'])).shipments, {});
+    await new OperationsStore(f.directory).mutateAuth(source, d => { d.accounts!.users[0].active = false; return { changed: true, result: null }; });
+    assert.equal((await f.store.readDocuments(source)).accounts!.users[0].active, false);
+    assert.equal((await f.store.readCoreFields(source, ['companies'])).accounts!.users[0].active, false);
+    const core = JSON.parse(await readFile(f.part.corePath, 'utf8')).data;
+    core.shipments.example.version = -1;
+    await writeFile(f.part.corePath, seal(core));
+    await assert.rejects(f.store.readCoreFields(source, ['companies']));
+  } finally { await f.close(); }
+});
+
+test('mixed commit rejects malformed canonical images before publishing its WAL', async () => {
+  const f = await archiveFixture();
+  try {
+    const before = await f.store.read(source);
+    await assert.rejects(f.store.mutate(source, d => {
+      d.shipments.example.version++;
+      d.work!.notes = [];
+      Object.assign(d.work!, { toJSON: () => ({ tasks: null }) });
+      return { changed: true, result: null };
+    }));
+    await assert.rejects(stat(f.part.journalPath), { code: 'ENOENT' });
+    assert.deepEqual(await new OperationsStore(f.directory).read(source), before);
+  } finally { await f.close(); }
+});

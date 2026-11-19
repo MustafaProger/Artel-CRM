@@ -215,3 +215,37 @@ test('Work recovery reads and pending writes bind to their initiating account, i
   assert.equal(await status, 409);
   assert.equal((await f.external.read(source)).work?.tasks.length, 0);
 });
+
+test('the compact overview returns the exact organization projection and access status for every account', async t => {
+  const f = await fixture(t);
+  for (const user of f.users) {
+    const full = await f.get('/api/settlements', user.id);
+    const compact = await f.get('/api/settlements?view=organizations', user.id);
+    assert.equal(compact.status, full.status, user.id);
+    if (full.status !== 200) assert.deepEqual(compact.body, full.body, user.id);
+    else {
+      const { organizations, unassignedShipmentCount } = full.body;
+      assert.deepEqual(compact.body, { organizations, unassignedShipmentCount }, user.id);
+    }
+  }
+});
+
+test('module reads preserve flat-store responses and use no full reads after archive migration', async t => {
+  const f = await fixture(t), directory = dirname(f.store.path);
+  const paths = ['/api/snapshot?shipments=omit', '/api/settlements?view=organizations', '/api/settlements', '/api/shipments', '/api/shipments/missing',
+    '/api/shipment-trips?view=process', '/api/driver/trips', '/api/operator', '/api/china', '/api/cabinets', '/api/documents',
+    '/api/trip-requests', '/api/trip-requests/context', '/api/banking', '/api/banking/sber/sber-artel/statements', '/api/banking/sber/statements'];
+  const values = new Map<string, { status: number; body: unknown }>();
+  for (const path of paths) {
+    const { status, body } = await f.get(path);
+    assert.ok(status < 500, path);
+    values.set(path, { status, body });
+  }
+  await migrateAuthStorage(directory, source);
+  await migrateArchiveStorage(directory, source);
+  for (const path of paths) {
+    const { status, body, reads } = await f.get(path);
+    assert.deepEqual({ status, body }, values.get(path), path);
+    assert.equal(reads, 0, path);
+  }
+});

@@ -64,10 +64,18 @@ function supplierSettlements(shipments: Shipment[], companies: Company[], operat
   const companyById = new Map(companies.map(company => [company.id, company]));
   const supplierIds = new Set(shipments.flatMap(row => row.supplierId ? [row.supplierId] : []));
   const suppliers = companies.filter(company => company.roles.includes('supplier') || supplierIds.has(company.id));
+  const suppliersByInn = new Map<string, Company[]>();
+  for (const supplier of suppliers) {
+    const inn = checkedInn(supplier.inn);
+    if (!inn) continue;
+    const known = suppliersByInn.get(inn);
+    if (known) known.push(supplier);
+    else suppliersByInn.set(inn, [supplier]);
+  }
   const groupFor = (key: string, inn: string | null, name: string, companyId?: string | null) => {
     let group = groups.get(key);
     if (!group) {
-      const known = inn ? suppliers.filter(company => checkedInn(company.inn) === inn) : [];
+      const known = inn ? suppliersByInn.get(inn) ?? [] : [];
       group = { key, name: known[0]?.name ?? name, inn, companyIds: known.map(company => company.id), shipped: '0', openingPaid: '0', incoming: '0', allocated: '0', debt: '0', advance: '0', issues: [], shipments: [], receipts: [] };
       groups.set(key, group);
     }
@@ -105,7 +113,7 @@ function supplierSettlements(shipments: Shipment[], companies: Company[], operat
     const inn = checkedInn(row.payee.inn);
     if (!inn) { reject('ИНН получателя отсутствует или некорректен.'); continue; }
     if (ownInns.has(inn)) { reject('Перевод между собственными счетами не является оплатой поставщику.'); continue; }
-    if (!groups.has(`inn:${inn}`) && !suppliers.some(company => checkedInn(company.inn) === inn)) { reject('Получатель не сопоставлен с поставщиком. Проверьте справочник; списание не включено в аванс.'); continue; }
+    if (!groups.has(`inn:${inn}`) && !suppliersByInn.has(inn)) { reject('Получатель не сопоставлен с поставщиком. Проверьте справочник; списание не включено в аванс.'); continue; }
     const source = sourceFor(row), group = groupFor(`inn:${inn}`, inn, row.payee.name ?? `ИНН ${inn}`);
     const receipt: SettlementReceipt = { id: row.id, bankOperationId: row.bankOperationId, documentNumber: row.documentNumber ?? null, date: row.statementDate, bank: source.bankName, company: source.company, connectionId: row.connectionId, account: row.account, purpose: row.purpose ?? null, amount: amount.toFixed(), allocated: '0', advance: amount.toFixed(), allocations: [] };
     group.receipts.push(receipt);
@@ -142,13 +150,12 @@ function supplierSettlements(shipments: Shipment[], companies: Company[], operat
 
 type CompleteOrganizationSettlement = OrganizationSettlement & { suppliers: SettlementsReport };
 
-export function buildOrganizationSettlements(shipments: Shipment[], companies: Company[], store: OperationsData): { organizations: CompleteOrganizationSettlement[]; clientAllocations: PaymentAllocation[] } {
+function organizationClientLedgers(shipments: Shipment[], companies: Company[], store: OperationsData, bank: ReturnType<typeof settlementSources>) {
   // Deduplicate across ALL connectors before separating organizations. Otherwise
   // one bank operation imported into two slots could be spent once per company.
-  const { operations, conflicts, organizationConflicts, sources, ownAccounts, ownInns } = settlementSources(store);
+  const { operations, organizationConflicts } = bank;
   const ambiguousIdentities = new Set(organizationConflicts.map(row => JSON.stringify([row.provider, row.account, row.bankOperationId])));
-  const clientAllocations: PaymentAllocation[] = [];
-  const organizations = ourOrganizations.map(organization => {
+  return ourOrganizations.map(organization => {
     const rows = shipments.filter(row => shipmentOrganizationId(row) === organization.id);
     const review: SettlementReview[] = [];
     const active = operations.filter(row => {
@@ -158,22 +165,30 @@ export function buildOrganizationSettlements(shipments: Shipment[], companies: C
       if (issue) { review.push(bankReview(row, issue)); return false; }
       return true;
     });
+    const result = buildSettlements(rows, companies, storeWithOperations(store, active));
+    return { organization, rows, active, review, result };
+  });
+}
+
+export function buildOrganizationSettlements(shipments: Shipment[], companies: Company[], store: OperationsData): { organizations: CompleteOrganizationSettlement[]; clientAllocations: PaymentAllocation[] } {
+  const bank = settlementSources(store);
+  const { operations, conflicts, organizationConflicts, sources, ownAccounts, ownInns } = bank;
+  const byId = new Map([...operations, ...conflicts, ...organizationConflicts].map(row => [row.id, row]));
+  const ledgers = organizationClientLedgers(shipments, companies, store, bank);
+  const organizations = ledgers.map(({ organization, rows, active, review, result }) => {
     for (const row of conflicts) if (organizationForConnection(row.connectionId) === organization.id) review.push(bankReview(row, 'Одна операция банка загружена через несколько подключений с разными реквизитами или суммами. Требуется сверка выписок.'));
     for (const row of organizationConflicts) if (organizationForConnection(row.connectionId) === organization.id && !review.some(item => item.id === row.id)) review.push(bankReview(row, 'Одна операция банка загружена в подключениях разных наших организаций. Принадлежность платежа требует сверки.'));
-    const result = buildSettlements(rows, companies, storeWithOperations(store, active));
     const clients = result.report;
     clients.scope = 'all';
-    clientAllocations.push(...result.allocations);
     addPaymentReferences(clients, active);
     const suppliers = supplierSettlements(rows, companies, active, ownAccounts, ownInns);
     clients.sources = sources.filter(source => organizationForConnection(source.id) === organization.id);
     suppliers.sources = clients.sources;
-    const byId = new Map([...operations, ...conflicts, ...organizationConflicts].map(row => [row.id, row]));
     clients.review.push(...review.filter(row => byId.get(row.id)?.direction === 'incoming'));
     suppliers.review.push(...review.filter(row => byId.get(row.id)?.direction === 'outgoing'));
     return { id: organization.id, name: organization.name, clients, suppliers };
   });
-  return { organizations, clientAllocations };
+  return { organizations, clientAllocations: ledgers.flatMap(({ result }) => result.allocations) };
 }
 
 function scopeSuppliers(report: SettlementsReport, snapshot: Snapshot, actor: AccountUser): SettlementsReport {
@@ -235,9 +250,12 @@ export function supplierPaymentTrace(organizations: CompleteOrganizationSettleme
 /** Global totals remain a compatibility view. Once a client has assigned rows,
  * unassigned history cannot consume the same money again alongside org FIFO. */
 export function shipmentSettlementAllocations(shipments: Shipment[], companies: Company[], store: OperationsData): PaymentAllocation[] {
-  const global = buildSettlements(shipments, companies, store);
-  if (!shipments.some(shipmentOrganizationId)) return global.allocations;
   const assigned = new Set(shipments.filter(shipmentOrganizationId).map(row => row.id));
+  if (!assigned.size) return buildSettlements(shipments, companies, store).allocations;
+  const ledgers = organizationClientLedgers(shipments, companies, store, settlementSources(store));
+  const allocated = ledgers.flatMap(({ result }) => result.allocations);
+  if (assigned.size === shipments.length) return allocated;
+  const global = buildSettlements(shipments, companies, store);
   const legacyIds = new Set(global.report.companies.filter(group => !group.shipments.some(row => assigned.has(row.id))).flatMap(group => group.shipments.map(row => row.id)));
-  return [...global.allocations.filter(row => legacyIds.has(row.shipmentId)), ...buildOrganizationSettlements(shipments, companies, store).clientAllocations];
+  return [...global.allocations.filter(row => legacyIds.has(row.shipmentId)), ...allocated];
 }
